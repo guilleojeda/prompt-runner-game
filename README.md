@@ -2,7 +2,9 @@
 
 Juego educativo de AWS User Group AI Argentina. El participante configura las habilidades e instrucciones de un agente real y pulsa Probar. La interfaz bloquea la edición mientras se calcula el intento; después reproduce una animación si estaba habilitada y muestra el resultado. Se juega colaborativamente en una pantalla durante el booth de AWS en Nerdearla y después individualmente por web.
 
-**Estado del proyecto:** entrada React mínima y circuito de publicación implementados y verificables localmente. La preparación de AWS y el primer despliegue todavía requieren credenciales temporales vigentes de la cuenta de destino. La página inicial no permite registrarse ni jugar. Las capacidades del juego descritas a continuación siguen siendo la especificación objetivo. El nombre del juego es provisional.
+**Web publicada:** [Abrir la aplicación](https://d1ilpq1n58tzqo.cloudfront.net).
+
+**Estado del proyecto:** entrada React mínima y circuito de publicación automático operativos. La página inicial no permite registrarse ni jugar. Las capacidades del juego descritas a continuación siguen siendo la especificación objetivo. El nombre del juego es provisional.
 
 ## Desarrollo local
 
@@ -58,7 +60,7 @@ Las consultas de servicios se conservan por tema, con fecha, fuentes y límites 
 
 **Decisión final de ejecución:** AgentCore Runtime con Strands TypeScript y el proveedor nativo de Amazon Bedrock, inicialmente Sonnet 5 global mediante Converse sin streaming. No se usa Mantle. El registro conserva snapshots y resoluciones, y React/SVG compone la animación a partir de esos datos. El flujo acordado es Probar → cálculo con controles bloqueados → animación opcional a velocidad fija, hacia adelante y sin controles → resultado. La implementación está pendiente.
 
-Están aprobados el contrato de registro, el reproductor, DynamoDB on-demand con S3 privado para cuerpos de inferencia, un único ambiente, la política diaria de cuota y Cognito Essentials con Managed Login. La primera versión usa el correo predeterminado de Cognito, aceptando sus 50 emails diarios y mensajes estándar; SES se incorporará en una fase posterior sobre el mismo user pool. El frontend React estático se publicará en S3 privado mediante CloudFront con Origin Access Control, usando CDK y GitHub Actions.
+Están aprobados el contrato de registro, el reproductor, DynamoDB on-demand con S3 privado para cuerpos de inferencia, un único ambiente, la política diaria de cuota y Cognito Essentials con Managed Login. La primera versión usa el correo predeterminado de Cognito, aceptando sus 50 emails diarios y mensajes estándar; SES se incorporará en una fase posterior sobre el mismo user pool. El frontend React estático está publicado en S3 privado mediante CloudFront con Origin Access Control, usando CDK y GitHub Actions.
 
 | Documento | Contenido |
 |---|---|

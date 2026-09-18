@@ -1,6 +1,6 @@
 # Plataforma y operación
 
-Especificación acordada del producto. El código disponible implementa la entrada React mínima y el circuito de publicación S3/CloudFront por CDK y GitHub Actions; su primera publicación real sigue pendiente de verificación. Identidad, backend, persistencia y ejecución del juego siguen pendientes; las secciones correspondientes describen el objetivo aprobado, no capacidades ya disponibles. [Índice de documentación](../../README.md).
+Especificación acordada del producto. El código disponible implementa la entrada React mínima y el circuito de publicación S3/CloudFront por CDK y GitHub Actions; la URL pública está en [README](../../README.md). Identidad, backend, persistencia y ejecución del juego siguen pendientes; las secciones correspondientes describen el objetivo aprobado, no capacidades ya disponibles. [Índice de documentación](../../README.md).
 
 ## Tecnologías y restricciones confirmadas
 
@@ -52,7 +52,7 @@ El tiempo de cálculo no es una restricción de experiencia fijada por el usuari
 
 ## Configuración, seguridad y entrega
 
-Las credenciales y secretos permanecen fuera del frontend y de los archivos públicos. El usuario proporcionará acceso a AWS cuando sea necesario. La cuenta de destino indicada no equivale a haber verificado permisos, cuotas, acceso a modelos ni recursos existentes.
+Las credenciales y secretos permanecen fuera del frontend y de los archivos públicos. La publicación usa credenciales temporales mediante OIDC. La preparación de servicios de fases posteriores puede requerir acceso temporal de operador; la verificación del hosting no acredita cuotas ni acceso a modelos.
 
 Las descripciones e instrucciones del público solo influyen en la selección de acciones del catálogo del juego. No otorgan acceso a secretos, herramientas externas ni ejecución de código generado. Los esquemas y efectos reales pertenecen a la implementación; el servidor valida las solicitudes antes de ejecutarlas.
 
@@ -71,7 +71,7 @@ Las capacidades publicadas y sus límites se conservan en referencias técnicas.
 | Acceso por email | [Identidad y correo](../reference/identidad.md) | Cognito Managed Login Essentials con correo predeterminado, confirmación y recuperación; falta implementarlo y verificar el límite de correo. SES propio queda para una fase posterior. |
 | Cálculo independiente del navegador | [Tareas y sesiones](../reference/agentcore.md#continuidad-sesión-y-almacenamiento) | Verificar la tarea de background y la recuperación del intento y su presentación al recargar. |
 | DynamoDB y registros | [Contrato de registro](../architecture/registro-de-ejecucion.md) y [datos](../architecture/datos.md) | Almacenamiento on-demand y S3 privado decididos; faltan implementación, accesos y verificación operativa. |
-| Despliegue | [CDK y GitHub Actions](../reference/datos-y-entrega.md) | Hosting y workflow están implementados; faltan preparación AWS, URL pública y verificación operativa. El ambiente inicial es único. |
+| Despliegue | [CDK y GitHub Actions](../reference/datos-y-entrega.md) | Hosting y workflow operativos mediante OIDC; [URL pública](../../README.md) y preparación AWS documentadas. El ambiente inicial es único. |
 
 El estado observado mediante lecturas de la cuenta se documenta por separado en [cuenta AWS](../reference/cuenta-aws.md). Una consulta de cuota o disponibilidad no prueba la capacidad de la aplicación ni una inferencia exitosa.
 
