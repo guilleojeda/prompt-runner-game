@@ -104,18 +104,23 @@ export class PromptRunnerAccessStack extends cdk.Stack {
       description: 'Phase 0 CloudFormation execution permissions for hosting only.',
       statements: [
         new iam.PolicyStatement({
+          sid: 'ReadBootstrapVersion',
+          actions: ['ssm:GetParameters'],
+          resources: [
+            `arn:${cdk.Aws.PARTITION}:ssm:${region}:${account}:parameter/cdk-bootstrap/hnb659fds/version`,
+          ],
+        }),
+        new iam.PolicyStatement({
           sid: 'HostingBucket',
           actions: [
             's3:CreateBucket',
             's3:DeleteBucket',
-            's3:GetBucketLocation',
-            's3:GetBucketPolicy',
-            's3:GetBucketOwnershipControls',
-            's3:GetBucketPublicAccessBlock',
-            's3:GetBucketTagging',
-            's3:GetEncryptionConfiguration',
-            's3:GetBucketVersioning',
+            // CloudFormation reads the full bucket model, including unset optional settings.
+            's3:Get*',
             's3:ListBucket',
+            's3:ListTagsForResource',
+            's3:TagResource',
+            's3:UntagResource',
             's3:PutBucketPolicy',
             's3:PutBucketPublicAccessBlock',
             's3:PutBucketTagging',
@@ -150,6 +155,7 @@ export class PromptRunnerAccessStack extends cdk.Stack {
             'cloudfront:CreateInvalidation',
             'cloudfront:DeleteDistribution',
             'cloudfront:GetDistribution',
+            'cloudfront:GetDistributionConfig',
             'cloudfront:GetInvalidation',
             'cloudfront:ListTagsForResource',
             'cloudfront:TagResource',
@@ -192,7 +198,8 @@ export class PromptRunnerAccessStack extends cdk.Stack {
           actions: [
             'lambda:CreateFunction',
             'lambda:DeleteFunction',
-            'lambda:GetFunction',
+            // Provider read callbacks also inspect runtime, recursion and signing settings.
+            'lambda:Get*',
             'lambda:InvokeFunction',
             'lambda:ListTags',
             'lambda:PublishVersion',
