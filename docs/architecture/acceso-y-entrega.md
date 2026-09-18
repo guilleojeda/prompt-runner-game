@@ -56,6 +56,20 @@ El circuito de entrega es:
 - Los recursos de datos e identidad se conservan ante despliegues o reemplazos rutinarios. Los formatos de registros se versionan; un lector nuevo debe poder reproducir los registros retenidos.
 - Las comprobaciones posteriores al despliegue vinculan versión de código y entorno con acceso real, inferencia, persistencia y replay. Un rollback de código no borra usuarios o intentos ni sustituye la compatibilidad de datos.
 
+## Ambiente operativo
+
+La [URL pública del frontend](https://d1ilpq1n58tzqo.cloudfront.net) sirve la entrada React mínima. Todavía no ofrece registro ni juego. El ambiente está en la cuenta `387483252302`, región `us-east-1`:
+
+| Recurso | Identificador |
+|---|---|
+| Acceso inicial | Stack `PromptRunnerAccess` |
+| Bootstrap CDK | Stack `CDKToolkit`, qualifier `hnb659fds` |
+| Hosting | Stack `PromptRunnerHosting` |
+| Distribución CloudFront | `E121DZBSJ73SOP` |
+| Origen privado | Bucket `prompt-runner-game-website-387483252302-us-east-1` |
+
+La preparación ya está hecha. Para una actualización habitual, abrir una PR, esperar sus checks e integrar a `main`; Actions publica el assembly verificado. Solo los cambios de permisos requieren actualizar primero `PromptRunnerAccess` con acceso temporal de operador, siguiendo el procedimiento siguiente.
+
 ## Preparación inicial de AWS
 
 La preparación usa credenciales temporales de operador fuera del repositorio. No se guardan access keys en GitHub. Confirmar primero la identidad y la región; una credencial vencida o de otra cuenta no sirve para preparar este ambiente:
