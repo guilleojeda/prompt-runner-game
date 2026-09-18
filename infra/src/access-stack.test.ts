@@ -103,6 +103,12 @@ describe('PromptRunnerAccessStack', () => {
     });
     synthesized.resourceCountIs('AWS::CloudFormation::CustomResource', 0);
     expect(synthesized.toJSON().Parameters).toBeUndefined();
-    expect(JSON.stringify(synthesized.toJSON())).not.toContain('cdk-bootstrap');
+    expect(synthesized.toJSON().Rules).toBeUndefined();
+    expect(
+      Object.values(synthesized.toJSON().Resources).every(
+        (resource: { Type: string }) =>
+          resource.Type.startsWith('AWS::IAM::') || resource.Type === 'AWS::CDK::Metadata',
+      ),
+    ).toBe(true);
   });
 });
