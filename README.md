@@ -2,7 +2,30 @@
 
 Juego educativo de AWS User Group AI Argentina. El participante configura las habilidades e instrucciones de un agente real y pulsa Probar. La interfaz bloquea la edición mientras se calcula el intento; después reproduce una animación si estaba habilitada y muestra el resultado. Se juega colaborativamente en una pantalla durante el booth de AWS en Nerdearla y después individualmente por web.
 
-**Estado del proyecto:** requisitos acordados, pendientes de implementación. Este repositorio todavía no contiene una aplicación ejecutable. El nombre del juego es provisional.
+**Estado del proyecto:** entrada React mínima y circuito de publicación implementados y verificables localmente. La preparación de AWS y el primer despliegue todavía requieren credenciales temporales vigentes de la cuenta de destino. La página inicial no permite registrarse ni jugar. Las capacidades del juego descritas a continuación siguen siendo la especificación objetivo. El nombre del juego es provisional.
+
+## Desarrollo local
+
+Usar la versión de Node indicada en `.nvmrc` y npm. Desde la raíz:
+
+```sh
+npm ci
+npm run dev
+```
+
+La URL local aparece en la salida de Vite. Para ejecutar los mismos controles que GitHub Actions, sin credenciales AWS:
+
+```sh
+npm run check
+```
+
+El comando verifica formato, lint, tipos, tests de infraestructura, build y síntesis CDK. No llama a modelos ni necesita servicios de backend. `apps/web/` contiene la web y `infra/` la infraestructura. El lockfile fija las versiones instaladas; `.work/` conserva evidencia local y está excluido de Git.
+
+## Publicación
+
+Los pull requests ejecutan los checks sin credenciales de despliegue. Después de integrar a `main`, GitHub Actions vuelve a verificar y publica mediante CDK con credenciales temporales OIDC. Hay un único ambiente, en la cuenta AWS `387483252302`, región `us-east-1`; las actualizaciones afectan la URL pública.
+
+El frontend se sirve por HTTPS desde CloudFront, con un origen S3 privado y OAC. La metadata del build permite contrastar la revisión publicada con el commit y el run de Actions, sin mostrarla en la pantalla del juego. La preparación inicial y la operación se documentan en [acceso y entrega](docs/architecture/acceso-y-entrega.md).
 
 ## Documentación del producto
 

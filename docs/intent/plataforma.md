@@ -1,6 +1,6 @@
 # Plataforma y operación
 
-Especificación acordada del producto. Las decisiones de plataforma están acordadas; la implementación, los recursos AWS y la configuración operativa del circuito de entrega siguen pendientes. [Índice de documentación](../../README.md).
+Especificación acordada del producto. El código disponible implementa la entrada React mínima y el circuito de publicación S3/CloudFront por CDK y GitHub Actions; su primera publicación real sigue pendiente de verificación. Identidad, backend, persistencia y ejecución del juego siguen pendientes; las secciones correspondientes describen el objetivo aprobado, no capacidades ya disponibles. [Índice de documentación](../../README.md).
 
 ## Tecnologías y restricciones confirmadas
 
@@ -58,7 +58,7 @@ Las descripciones e instrucciones del público solo influyen en la selección de
 
 La configuración del modelo, parámetros de inferencia, límites de turnos, cuota diaria, pesos, valores de objetos y niveles debe estar documentada. Cuando se muestre dinero, también las tarifas y su fecha. Un cambio en las habilidades o instrucciones del jugador no requiere un despliegue ni crear nuevos recursos de agente.
 
-La entrega incluye CI con GitHub Actions y despliegue automático de cambios verificados mediante CDK en TypeScript. El ambiente inicial es único y sus actualizaciones afectan al público; la implementación debe concretar la estrategia de ramas, la autenticación de CI ante AWS, la configuración de S3/CloudFront/OAC y las URLs AWS. Al implementar deben incorporarse instrucciones reproducibles de instalación, configuración, ejecución y operación, y un modo de prueba identificado que permita desarrollar sin inferencia real.
+La entrega usa pull requests con checks y despliegue automático desde `main` mediante GitHub Actions, OIDC y CDK en TypeScript. El ambiente es único y sus actualizaciones afectan al público. [README](../../README.md#desarrollo-local) describe la instalación y los comandos; [acceso y entrega](../architecture/acceso-y-entrega.md) conserva la preparación y operación. La entrada actual puede desarrollarse y verificarse sin credenciales ni inferencia. Cuando se incorpore el agente se documentará su modo de prueba sin inferencia real.
 
 ## Hechos y elecciones pendientes antes de implementar
 

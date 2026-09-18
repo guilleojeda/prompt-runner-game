@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Robot">
+  <rect width="64" height="64" rx="16" fill="#253428" />
+  <rect x="14" y="18" width="36" height="30" rx="9" fill="#d8b36a" />
+  <circle cx="25" cy="33" r="4" fill="#253428" />
+  <circle cx="39" cy="33" r="4" fill="#253428" />
+  <path d="M32 18V10M27 10h10" stroke="#d8b36a" stroke-width="4" stroke-linecap="round" />
+</svg>
