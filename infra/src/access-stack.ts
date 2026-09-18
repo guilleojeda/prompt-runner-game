@@ -238,7 +238,9 @@ export class PromptRunnerAccessStack extends cdk.Stack {
             'lambda:PublishLayerVersion',
           ],
           resources: [
-            `arn:${cdk.Aws.PARTITION}:lambda:${region}:${account}:layer:PromptRunnerHosting-*`,
+            // CloudFormation uses these logical-ID prefixes as layer names, without the stack name.
+            `arn:${cdk.Aws.PARTITION}:lambda:${region}:${account}:layer:WebsiteAssetsDeploymentAwsCliLayer*`,
+            `arn:${cdk.Aws.PARTITION}:lambda:${region}:${account}:layer:WebsiteEntryDeploymentAwsCliLayer*`,
           ],
         }),
       ],

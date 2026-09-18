@@ -68,11 +68,11 @@ aws iam list-open-id-connect-providers
 gh api repos/guilleojeda/prompt-runner-game/actions/oidc/customization/sub
 ```
 
-STS debe devolver la cuenta `387483252302`. Revisar un bootstrap existente antes de cambiar sus políticas. Si ya existe el proveedor `token.actions.githubusercontent.com`, reutilizar su ARN mediante `GITHUB_OIDC_PROVIDER_ARN` al sintetizar el acceso; no cambiar la confianza de otros repositorios. Si no existe, el template de preparación lo crea como recurso nativo IAM.
+STS debe devolver la cuenta `387483252302`. Revisar un bootstrap existente antes de cambiar sus políticas. Si el proveedor `token.actions.githubusercontent.com` ya existía antes de crear `PromptRunnerAccess`, reutilizar su ARN mediante `GITHUB_OIDC_PROVIDER_ARN` al sintetizar el acceso; no cambiar la confianza de otros repositorios. Si `PromptRunnerAccess` creó el proveedor, mantener su declaración en las actualizaciones del stack, sin convertirlo en una importación que lo elimine del template. Si no existe, el template de preparación lo crea como recurso nativo IAM.
 
 La confianza de este repositorio usa audiencia `sts.amazonaws.com` y subject exacto `repo:guilleojeda@18320860/prompt-runner-game@1373331195:ref:refs/heads/main`. Los identificadores inmutables provienen de la configuración real de GitHub. El job de una PR no recibe permiso `id-token: write` ni puede asumir ese rol.
 
-El acceso inicial se prepara una vez, por separado del stack de hosting. Su template crea el rol de GitHub, el rol fijo del publicador de assets y la política de ejecución de CloudFormation limitada a este frontend. El bootstrap debe usar esa política explícita; no se utiliza su default `AdministratorAccess`. El stack del hosting importa el rol fijo y no administra los permisos de su propio pipeline.
+El acceso inicial se prepara una vez, por separado del stack de hosting; sus políticas se actualizan con el mismo comando de CloudFormation cuando cambian los permisos declarados. Su template crea el rol de GitHub, el rol fijo del publicador de assets y la política de ejecución de CloudFormation limitada a este frontend. El bootstrap debe usar esa política explícita; no se utiliza su default `AdministratorAccess`. El stack del hosting importa el rol fijo y no administra los permisos de su propio pipeline.
 
 La cuenta AWS es exclusiva de este proyecto. La política permite etiquetar distribuciones de esta cuenta durante su creación, cuando aún no existe el tag `Application`; las operaciones restantes de distribución usan ese tag. OAC y cache policies usan IDs generados y permisos limitados a la cuenta. Estas condiciones asumen esa exclusividad y deben revisarse antes de alojar proyectos ajenos en la misma cuenta.
 
