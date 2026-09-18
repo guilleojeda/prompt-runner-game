@@ -1,6 +1,6 @@
 # Acceso, publicación y entrega
 
-**Cognito con correo predeterminado y un ambiente aprobados; SES se incorporará en una fase posterior. Hosting aprobado: React estático en S3 privado, servido por CloudFront con Origin Access Control (OAC), publicado por CDK en TypeScript y GitHub Actions. La implementación sigue pendiente.** El renderer y el flujo de animación están aprobados en [animación](animacion.md). Las restricciones elegidas por el usuario se mantienen en [plataforma](../intent/plataforma.md); las capacidades verificadas se conservan en [identidad](../reference/identidad.md), [datos y entrega](../reference/datos-y-entrega.md) y [cuenta AWS](../reference/cuenta-aws.md).
+**Publicación implementada: React estático en S3 privado, servido por CloudFront con Origin Access Control (OAC), publicado por CDK en TypeScript y GitHub Actions.** La entrada actual es mínima; Cognito, el juego y su renderer siguen pendientes. Cognito con correo predeterminado y un único ambiente están aprobados; SES se incorporará después. El renderer y el flujo de animación se definen en [animación](animacion.md). Las restricciones elegidas por el usuario se mantienen en [plataforma](../intent/plataforma.md); las referencias técnicas están en [identidad](../reference/identidad.md), [datos y entrega](../reference/datos-y-entrega.md) y [cuenta AWS](../reference/cuenta-aws.md).
 
 ## Primera versión: Cognito con correo predeterminado
 
@@ -31,7 +31,7 @@ Cognito con Resend también evita solicitar producción SES, pero añade una Lam
 
 ## Frontend y publicación
 
-La decisión aprobada es **React estático en un bucket S3 privado, servido por CloudFront mediante Origin Access Control (OAC)**. El build y la publicación de assets y configuración se ejecutan con GitHub Actions y CDK en TypeScript. Puede comenzar con URLs AWS para web, identidad y API; no se exige dominio propio en esta fase. La implementación debe crear y verificar esos recursos; las rutas de la SPA deben resolver correctamente al recargar y los errores de assets y API no deben convertirse ciegamente en HTML.
+El hosting usa **React estático en un bucket S3 privado, servido por CloudFront mediante Origin Access Control (OAC)**. El build y la publicación de assets y configuración se ejecutan con GitHub Actions y CDK en TypeScript. Se utiliza la URL AWS, sin dominio propio. La única ruta de la entrada inicial es `/`; se puede recargar y no existe una redirección general de errores a HTML. Al agregar rutas de la SPA se incorporará su recarga sin convertir errores de assets o API en una respuesta HTML exitosa.
 
 El renderer aprobado utiliza React y sprites dentro de SVG, a partir de registros cerrados y un único reloj de reproducción. El [diseño de animación](animacion.md) define clips, trayectorias, fases, carga y compatibilidad, con avance continuo a velocidad fija y sin controles del usuario; CSS se usa para estilos y no como un reloj independiente. No requiere motor de física del navegador, SSR ni video prerenderizado. El diagnóstico técnico se abre aparte; no se requiere editar JSON para jugar.
 
@@ -56,7 +56,62 @@ El circuito de entrega es:
 - Los recursos de datos e identidad se conservan ante despliegues o reemplazos rutinarios. Los formatos de registros se versionan; un lector nuevo debe poder reproducir los registros retenidos.
 - Las comprobaciones posteriores al despliegue vinculan versión de código y entorno con acceso real, inferencia, persistencia y replay. Un rollback de código no borra usuarios o intentos ni sustituye la compatibilidad de datos.
 
-La cuenta no mostró el bootstrap CDK predeterminado. Prepararlo o identificar uno personalizado, establecer OIDC y verificar permisos pertenecen a la ejecución autorizada posterior. No se creó infraestructura en esta etapa. Las versiones de paquetes se fijarán con un lockfile y compatibilidad comprobada; el CLI CDK y su librería no se comparan por igualdad numérica.
+## Preparación inicial de AWS
+
+La preparación usa credenciales temporales de operador fuera del repositorio. No se guardan access keys en GitHub. Confirmar primero la identidad y la región; una credencial vencida o de otra cuenta no sirve para preparar este ambiente:
+
+```sh
+aws sts get-caller-identity
+aws cloudformation describe-stacks --stack-name CDKToolkit --region us-east-1
+aws ssm get-parameter --name /cdk-bootstrap/hnb659fds/version --region us-east-1
+aws iam list-open-id-connect-providers
+gh api repos/guilleojeda/prompt-runner-game/actions/oidc/customization/sub
+```
+
+STS debe devolver la cuenta `387483252302`. Revisar un bootstrap existente antes de cambiar sus políticas. Si ya existe el proveedor `token.actions.githubusercontent.com`, reutilizar su ARN mediante `GITHUB_OIDC_PROVIDER_ARN` al sintetizar el acceso; no cambiar la confianza de otros repositorios. Si no existe, el template de preparación lo crea como recurso nativo IAM.
+
+La confianza de este repositorio usa audiencia `sts.amazonaws.com` y subject exacto `repo:guilleojeda@18320860/prompt-runner-game@1373331195:ref:refs/heads/main`. Los identificadores inmutables provienen de la configuración real de GitHub. El job de una PR no recibe permiso `id-token: write` ni puede asumir ese rol.
+
+El acceso inicial se prepara una vez, por separado del stack de hosting. Su template crea el rol de GitHub, el rol fijo del publicador de assets y la política de ejecución de CloudFormation limitada a este frontend. El bootstrap debe usar esa política explícita; no se utiliza su default `AdministratorAccess`. El stack del hosting importa el rol fijo y no administra los permisos de su propio pipeline.
+
+La cuenta AWS es exclusiva de este proyecto. La política permite etiquetar distribuciones de esta cuenta durante su creación, cuando aún no existe el tag `Application`; las operaciones restantes de distribución usan ese tag. OAC y cache policies usan IDs generados y permisos limitados a la cuenta. Estas condiciones asumen esa exclusividad y deben revisarse antes de alojar proyectos ajenos en la misma cuenta.
+
+Después de comprobar la cuenta y los recursos existentes:
+
+```sh
+npm run synth
+aws cloudformation deploy \
+  --stack-name PromptRunnerAccess \
+  --template-file cdk.out/PromptRunnerAccess.template.json \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --region us-east-1
+npx cdk bootstrap aws://387483252302/us-east-1 \
+  --cloudformation-execution-policies arn:aws:iam::387483252302:policy/prompt-runner-game-phase0-cfn-execution
+gh variable set AWS_DEPLOY_ROLE_ARN \
+  --repo guilleojeda/prompt-runner-game \
+  --body arn:aws:iam::387483252302:role/prompt-runner-game-github-actions-deploy-us-east-1
+```
+
+`PromptRunnerAccess` se sintetiza sin depender del bootstrap ni de assets. Desplegarlo directamente con CloudFormation evita que la preparación dependa del rol que todavía debe crear. La variable de GitHub contiene solo un ARN público. La aplicación `PromptRunnerHosting` se publica posteriormente desde `main`, nunca mediante este procedimiento manual. Una ampliación futura de servicios requiere actualizar declarativamente la política de preparación antes de usar esos permisos desde CI.
+
+## Verificación y diagnóstico de publicación
+
+`npm ci` y `npm run check` reproducen los controles de CI. Los pull requests no despliegan. En `main`, el job de publicación depende del éxito de los checks y descarga el Cloud Assembly de ese mismo SHA; publica ese artefacto sin reconstruirlo. Los despliegues de `main` se serializan sin cancelar una actualización en curso.
+
+Para diagnosticar una ejecución, usar su ID en lugar de asumir que el último run corresponde al cambio esperado:
+
+```sh
+gh run list --repo guilleojeda/prompt-runner-game --branch main
+gh run view RUN_ID --repo guilleojeda/prompt-runner-game --log-failed
+aws cloudformation describe-stack-events --stack-name PromptRunnerHosting --region us-east-1
+aws cloudformation describe-stacks --stack-name PromptRunnerHosting --region us-east-1
+```
+
+El output `WebsiteUrl` entrega la URL HTTPS de CloudFront; `BuildRevision` identifica la revisión publicada. Compararla con el commit del run y con `document.documentElement.dataset.buildRevision` después de abrir y recargar la web. La carga debe resolver React, CSS y favicon sin errores de consola o red. Un asset inexistente debe devolver un error, y un GET anónimo directo al bucket de origen debe ser rechazado.
+
+Los assets con hash se conservan para que una pestaña abierta siga resolviendo su build. Se publican antes del documento de entrada. El HTML y la metadata mutable no se cachean de forma indefinida; una invalidación de CloudFront no reemplaza el control de caché del navegador. No se configura una respuesta HTML general para errores del origen.
+
+Si falla una actualización, conservar el log completo y el estado de CloudFormation antes de reintentar. Corregir el código o la configuración en el mismo circuito de PR, checks y `main`; no publicar manualmente otra copia del frontend para ocultar un fallo del pipeline. Bootstrap y acceso inicial son las únicas operaciones preparatorias realizadas con credenciales de operador.
 
 ## Comprobaciones de aceptación relevantes
 
