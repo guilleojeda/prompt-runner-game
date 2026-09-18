@@ -1,0 +1,12 @@
+/.work/
+node_modules/
+dist/
+cdk.out/
+coverage/
+playwright-report/
+test-results/
+.env
+.env.*
+!.env.example
+*.tsbuildinfo
+.DS_Store
