@@ -41,6 +41,13 @@ describe('PromptRunnerAccessStack', () => {
       Version: '2012-10-17',
     });
     const policies = synthesized.findResources('AWS::IAM::Policy');
+    expect(
+      Object.values(policies).filter((resource) =>
+        resource.Properties.Roles.some(
+          (role: { Ref?: string }) => role.Ref === githubRoleEntry?.[0],
+        ),
+      ),
+    ).toHaveLength(1);
     const githubPolicy = Object.values(policies).find((resource) =>
       resource.Properties.PolicyDocument.Statement.some(
         (statement: { Sid?: string }) => statement.Sid === 'AssumePhase0CdkBootstrapRoles',

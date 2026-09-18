@@ -71,7 +71,7 @@ Las capacidades publicadas y sus límites se conservan en referencias técnicas.
 | Acceso por email | [Identidad y correo](../reference/identidad.md) | Cognito Managed Login Essentials con correo predeterminado, confirmación y recuperación; falta implementarlo y verificar el límite de correo. SES propio queda para una fase posterior. |
 | Cálculo independiente del navegador | [Tareas y sesiones](../reference/agentcore.md#continuidad-sesión-y-almacenamiento) | Verificar la tarea de background y la recuperación del intento y su presentación al recargar. |
 | DynamoDB y registros | [Contrato de registro](../architecture/registro-de-ejecucion.md) y [datos](../architecture/datos.md) | Almacenamiento on-demand y S3 privado decididos; faltan implementación, accesos y verificación operativa. |
-| Despliegue | [CDK y GitHub Actions](../reference/datos-y-entrega.md) | La topología React estático en S3 privado con CloudFront/OAC y publicación mediante CDK TypeScript y GitHub Actions está decidida; faltan implementación, permisos, URLs AWS y verificación operativa. El ambiente inicial es único. |
+| Despliegue | [CDK y GitHub Actions](../reference/datos-y-entrega.md) | Hosting y workflow están implementados; faltan preparación AWS, URL pública y verificación operativa. El ambiente inicial es único. |
 
 El estado observado mediante lecturas de la cuenta se documenta por separado en [cuenta AWS](../reference/cuenta-aws.md). Una consulta de cuota o disponibilidad no prueba la capacidad de la aplicación ni una inferencia exitosa.
 
