@@ -72,7 +72,7 @@ jobs:
         with:
           aws-region: us-east-1
           allowed-account-ids: '387483252302'
-          role-to-assume: ${{ vars.GITHUB_ACTIONS_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           role-session-name: github-actions-${{ github.run_id }}
       - name: Deploy checked Cloud Assembly
         run: npm run deploy

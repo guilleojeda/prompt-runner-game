@@ -87,7 +87,7 @@ aws cloudformation deploy \
   --region us-east-1
 npx cdk bootstrap aws://387483252302/us-east-1 \
   --cloudformation-execution-policies arn:aws:iam::387483252302:policy/prompt-runner-game-phase0-cfn-execution
-gh variable set GITHUB_ACTIONS_ROLE_ARN \
+gh variable set AWS_DEPLOY_ROLE_ARN \
   --repo guilleojeda/prompt-runner-game \
   --body arn:aws:iam::387483252302:role/prompt-runner-game-github-actions-deploy-us-east-1
 ```
