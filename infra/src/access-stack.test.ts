@@ -106,8 +106,12 @@ describe('PromptRunnerAccessStack', () => {
     expect(synthesized.toJSON().Rules).toBeUndefined();
     expect(
       Object.values(synthesized.toJSON().Resources).every(
-        (resource: { Type: string }) =>
-          resource.Type.startsWith('AWS::IAM::') || resource.Type === 'AWS::CDK::Metadata',
+        (resource) =>
+          typeof resource === 'object' &&
+          resource !== null &&
+          'Type' in resource &&
+          typeof resource.Type === 'string' &&
+          (resource.Type.startsWith('AWS::IAM::') || resource.Type === 'AWS::CDK::Metadata'),
       ),
     ).toBe(true);
   });
