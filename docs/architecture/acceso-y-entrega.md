@@ -74,6 +74,8 @@ La confianza de este repositorio usa audiencia `sts.amazonaws.com` y subject exa
 
 El acceso inicial se prepara una vez, por separado del stack de hosting. Su template crea el rol de GitHub, el rol fijo del publicador de assets y la política de ejecución de CloudFormation limitada a este frontend. El bootstrap debe usar esa política explícita; no se utiliza su default `AdministratorAccess`. El stack del hosting importa el rol fijo y no administra los permisos de su propio pipeline.
 
+La cuenta AWS es exclusiva de este proyecto. La política permite etiquetar distribuciones de esta cuenta durante su creación, cuando aún no existe el tag `Application`; las operaciones restantes de distribución usan ese tag. OAC y cache policies usan IDs generados y permisos limitados a la cuenta. Estas condiciones asumen esa exclusividad y deben revisarse antes de alojar proyectos ajenos en la misma cuenta.
+
 Después de comprobar la cuenta y los recursos existentes:
 
 ```sh

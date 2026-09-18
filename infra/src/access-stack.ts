@@ -138,6 +138,13 @@ export class PromptRunnerAccessStack extends cdk.Stack {
           conditions: { StringEquals: { 'aws:RequestTag/Application': 'prompt-runner-game' } },
         }),
         new iam.PolicyStatement({
+          // This project owns the account. Initial tagging cannot require an existing resource tag.
+          sid: 'TagHostingDistribution',
+          actions: ['cloudfront:TagResource'],
+          resources: [`arn:${cdk.Aws.PARTITION}:cloudfront::${account}:distribution/*`],
+          conditions: { StringEquals: { 'aws:RequestTag/Application': 'prompt-runner-game' } },
+        }),
+        new iam.PolicyStatement({
           sid: 'CloudFrontDistribution',
           actions: [
             'cloudfront:CreateInvalidation',
