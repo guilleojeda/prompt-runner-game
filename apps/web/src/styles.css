@@ -113,6 +113,59 @@ h1 {
   margin-bottom: 1.1rem;
 }
 
+.confirmation-success,
+.form-error {
+  margin: 0 0 1rem;
+  padding: 0.7rem 0.8rem;
+  border-radius: 0.45rem;
+  line-height: 1.45;
+}
+
+.confirmation-success {
+  border: 1px solid rgba(155, 197, 158, 0.45);
+  color: #bde0bf !important;
+  background: rgba(66, 104, 69, 0.28);
+}
+
+.form-error {
+  border: 1px solid rgba(237, 146, 128, 0.55);
+  color: #f0b0a2 !important;
+  background: rgba(118, 47, 42, 0.25);
+}
+
+.confirmation-card form {
+  display: grid;
+  gap: 0.55rem;
+  margin-bottom: 0.9rem;
+}
+
+.confirmation-card label {
+  color: #f2efe8;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.confirmation-card input {
+  width: 100%;
+  min-height: 2.7rem;
+  margin-bottom: 0.55rem;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid rgba(242, 239, 232, 0.3);
+  border-radius: 0.45rem;
+  color: #f7f1e1;
+  background: rgba(20, 19, 15, 0.65);
+}
+
+.confirmation-card input:focus {
+  border-color: #d8b36a;
+  outline: 3px solid rgba(242, 200, 121, 0.3);
+  outline-offset: 1px;
+}
+
+.confirmation-card input:disabled {
+  opacity: 0.65;
+}
+
 .auth-card strong {
   color: #f7f1e1;
   overflow-wrap: anywhere;
@@ -190,6 +243,23 @@ h1 {
 .secondary-button:hover:not(:disabled),
 .secondary-button:focus-visible {
   background: rgba(216, 179, 106, 0.12);
+}
+
+.text-button {
+  display: block;
+  padding: 0.35rem 0;
+  border: 0;
+  color: #d8b36a;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+.text-button:hover:not(:disabled),
+.text-button:focus-visible {
+  color: #f2c879;
 }
 
 button:disabled {

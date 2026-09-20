@@ -1,6 +1,6 @@
 # Referencia técnica: identidad y correo
 
-Consulta de fuentes oficiales: **16–17 de septiembre de 2026**. La decisión vigente es Cognito con correo predeterminado en la primera versión y SES propio en una fase posterior, según [acceso y entrega](../architecture/acceso-y-entrega.md). No se crearon user pools, identidades o envíos de correo. El producto exige registro abierto y control del email según [plataforma](../intent/plataforma.md).
+Consulta de fuentes oficiales: **16–20 de septiembre de 2026**. La decisión vigente es Cognito con correo predeterminado en la primera versión y SES propio en una fase posterior, según [acceso y entrega](../architecture/acceso-y-entrega.md). La implementación actual y sus condiciones de acceso se describen en el documento de arquitectura. El producto exige registro abierto y control del email según [plataforma](../intent/plataforma.md).
 
 ## Registro y acceso en Cognito
 
@@ -12,6 +12,8 @@ Consulta de fuentes oficiales: **16–17 de septiembre de 2026**. La decisión v
 | Páginas administradas | Ofrecen registro, acceso, recuperación y verificación. La página de registro administrada todavía exige contraseña, aunque se habiliten factores passwordless para el acceso. |
 
 Fuentes: [registro y confirmación](https://docs.aws.amazon.com/cognito/latest/developerguide/signing-up-users-in-your-app.html), [SignUp](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_SignUp.html), [flujos](https://docs.aws.amazon.com/cognito/latest/developerguide/amazon-cognito-user-pools-authentication-flow-methods.html), [planes](https://docs.aws.amazon.com/cognito/latest/developerguide/cognito-sign-in-feature-plans.html).
+
+Managed Login solo ofrece la confirmación y el reenvío dentro de la transacción de registro: `/confirm` recibe una redirección desde `/signup` y `/resendcode` desde esa confirmación. No son entradas directas soportadas para retomar una cuenta pendiente tras abandonar el flujo. La aplicación usa las APIs públicas de reenvío y confirmación para cubrir esa continuidad. [Endpoints de Managed Login](https://docs.aws.amazon.com/cognito/latest/developerguide/managed-login-endpoints.html).
 
 Las operaciones públicas de registro y autenticación no requieren credenciales IAM. Las variantes administrativas sí. Si el app client tiene secreto, interviene `SecretHash`; eso pertenece a un cliente confidencial, no a un secreto que pueda publicarse en React. AWS SDK JavaScript v3 expone las operaciones de registro, confirmación y challenge. [Modelo de autorización](https://docs.aws.amazon.com/cognito/latest/developerguide/authentication-flows-public-server-side.html), [SDK](https://docs.aws.amazon.com/AWSJavaScriptSDK/v3/latest/client/cognito-identity-provider).
 
@@ -44,7 +46,7 @@ El sandbox SES publica 200 destinatarios por 24 horas y uno por segundo, restrin
 
 El límite incluye correos de alta, reenvío, recuperación, verificación de atributos e invitaciones. Confirmar el código o entrar normalmente con contraseña no envía otro correo. Por tanto, cien usuarios simultáneos no equivalen a cien emails diarios: importa cuántos eventos de envío ocurren. [Operaciones que generan correo](https://docs.aws.amazon.com/cognito/latest/developerguide/user-pool-email.html).
 
-Al agotarse una cuota de envío, `SignUp` puede devolver `LimitExceeded` y haber creado igualmente un usuario `UNCONFIRMED`. La aplicación debe permitir reenvío posterior, sin confirmar una casilla que no demostró acceso. Las APIs de reenvío y recuperación documentan errores de límite y entrega; no se verificó el error exacto de un agotamiento diario real ni si un envío fallido consume cuota. [SignUp](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_SignUp.html), [ResendConfirmationCode](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_ResendConfirmationCode.html), [ForgotPassword](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_ForgotPassword.html).
+Al agotarse una cuota de envío, `SignUp` puede devolver `LimitExceeded` y haber creado igualmente un usuario `UNCONFIRMED`. La aplicación debe permitir reenvío posterior, sin confirmar una casilla que no demostró acceso. Las APIs de reenvío y recuperación documentan errores de límite y entrega; el agotamiento diario real devolvió `LimitExceededException` en la API de reenvío. No se determinó si un envío fallido consume cuota. [SignUp](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_SignUp.html), [ResendConfirmationCode](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_ResendConfirmationCode.html), [ForgotPassword](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_ForgotPassword.html).
 
 El estado efectivo del entorno está en [cuenta AWS](cuenta-aws.md). El sandbox de esa cuenta afecta SES propio; no implica que toda modalidad de correo Cognito esté bloqueada.
 
