@@ -6,6 +6,7 @@ import { User } from 'oidc-client-ts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
 import { AuthFailure, type AuthClient, type AuthConfig, type AuthSession } from './auth.js';
+import type { PendingConfirmationClient } from './pending-confirmation.js';
 
 const config: AuthConfig = {
   issuer: 'https://cognito-idp.us-east-1.amazonaws.com/us-east-1_test',
@@ -78,6 +79,71 @@ describe('access screen', () => {
     expect(await screen.findByRole('button', { name: 'Entrar o crear una cuenta' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Entrar o crear una cuenta' }));
     await waitFor(() => expect(beginLogin).toHaveBeenCalledOnce());
+  });
+
+  it('confirms a pending account with an already received code before any resend', async () => {
+    const authClient = client();
+    const confirmationClient: PendingConfirmationClient = {
+      confirm: vi.fn().mockResolvedValue(undefined),
+      resend: vi.fn().mockResolvedValue(undefined),
+    };
+    render(<App authClient={authClient} confirmationClient={confirmationClient} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirmar una cuenta pendiente' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Email' }), {
+      target: { value: 'pending@example.com' },
+    });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Código de confirmación' }), {
+      target: { value: '123456' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar email' }));
+
+    expect(await screen.findByRole('button', { name: 'Entrar o crear una cuenta' })).toBeTruthy();
+    expect(confirmationClient.confirm).toHaveBeenCalledWith('pending@example.com', '123456');
+    expect(confirmationClient.resend).not.toHaveBeenCalled();
+    expect(authClient.beginLogin).not.toHaveBeenCalled();
+    expect(screen.queryByText('Cuenta confirmada')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Cerrar sesión' })).toBeNull();
+    expect(screen.getByText('Email confirmado. Ahora ingresá para continuar.')).toBeTruthy();
+  });
+
+  it('clears resend success before a failed confirmation and shows operation-specific busy text', async () => {
+    let releaseResend!: () => void;
+    const confirmationClient: PendingConfirmationClient = {
+      confirm: vi.fn().mockRejectedValue(new Error('código inválido')),
+      resend: vi.fn().mockImplementation(
+        () =>
+          new Promise<void>((resolve) => {
+            releaseResend = resolve;
+          }),
+      ),
+    };
+    render(<App authClient={client()} confirmationClient={confirmationClient} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirmar una cuenta pendiente' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Email' }), {
+      target: { value: 'pending@example.com' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Reenviar código' }));
+    expect(await screen.findByRole('button', { name: 'Reenviando…' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Confirmar email' })).toBeTruthy();
+    releaseResend();
+    expect(
+      await screen.findByText(
+        'Te enviamos un nuevo código. Usá ese código para confirmar tu email.',
+      ),
+    ).toBeTruthy();
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Código de confirmación' }), {
+      target: { value: 'wrong' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar email' }));
+    expect((await screen.findByRole('alert')).textContent).toContain(
+      'No se pudo completar la confirmación',
+    );
+    expect(
+      screen.queryByText('Te enviamos un nuevo código. Usá ese código para confirmar tu email.'),
+    ).toBeNull();
   });
 
   it('keeps a remote logout failure without rendering the prior identity', async () => {

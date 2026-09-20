@@ -31,7 +31,7 @@ El comando verifica formato, lint, tipos, pruebas de autenticación e infraestru
 
 ## Acceso
 
-El registro y la recuperación se realizan en las páginas de Cognito en español, con email y contraseña. La cuenta se habilita después de confirmar el código recibido. El correo predeterminado tiene un límite compartido de 50 envíos diarios para altas, reenvíos y recuperación; entrar con contraseña no envía otro correo. Se usan los mensajes estándar de Cognito.
+El registro y la recuperación se realizan en las páginas de Cognito en español, con email y contraseña. La cuenta se habilita después de confirmar el código recibido. Si abandonaste la confirmación, podés retomarla desde la opción de cuenta pendiente en la web: usá el código recibido o solicitá otro, y después iniciá sesión. El correo predeterminado tiene un límite compartido de 50 envíos diarios para altas, reenvíos y recuperación; entrar con contraseña no envía otro correo. Se usan los mensajes estándar de Cognito.
 
 Una recarga conserva la sesión en la misma pestaña. Si ya no hay una sesión válida, se vuelve a ingresar a la misma cuenta. Cerrar sesión elimina el estado local, revoca la renovación y cierra la sesión administrada de Cognito. Los detalles y límites están en [acceso y entrega](docs/architecture/acceso-y-entrega.md).
 
