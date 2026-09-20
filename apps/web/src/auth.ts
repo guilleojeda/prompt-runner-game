@@ -145,7 +145,7 @@ export async function loadAuthConfig(
 ): Promise<AuthConfig> {
   let response: Response;
   try {
-    response = await fetchImpl(endpoint, { headers: { Accept: 'application/json' } });
+    response = await bindFetch(fetchImpl)(endpoint, { headers: { Accept: 'application/json' } });
   } catch (error) {
     throw new AuthFailure('configuration', 'No se pudo cargar la configuración de acceso.', {
       cause: error,
@@ -235,6 +235,10 @@ function defaultStorage(): Storage | undefined {
   }
 }
 
+function bindFetch(fetchImpl: typeof globalThis.fetch): typeof globalThis.fetch {
+  return fetchImpl.bind(globalThis);
+}
+
 function createNonce(): string {
   const bytes = new Uint8Array(32);
   globalThis.crypto.getRandomValues(bytes);
@@ -280,7 +284,7 @@ export class CognitoAuthClient implements AuthClient {
 
   public constructor(config: AuthConfig, options: AuthClientOptions = {}) {
     this.config = validateAuthConfig(config);
-    this.fetchImpl = options.fetch ?? globalThis.fetch;
+    this.fetchImpl = bindFetch(options.fetch ?? globalThis.fetch);
     this.location = options.location ?? globalThis.location;
     const storage = options.storage ?? defaultStorage();
     this.storage = storage;

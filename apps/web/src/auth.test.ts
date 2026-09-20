@@ -298,6 +298,33 @@ describe('auth configuration and Cognito boundaries', () => {
     expect(callback).toHaveBeenCalledOnce();
   });
 
+  it('binds a native fetch transport before validating userInfo', async () => {
+    const manager = userManagerForTest();
+    await manager.storeUser(user());
+    const nativeFetch = vi.fn(function (this: unknown) {
+      if (this !== globalThis) {
+        throw new TypeError('Illegal invocation');
+      }
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ sub: 'subject-a', email: 'a@example.com', email_verified: true }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      );
+    });
+    const client = new CognitoAuthClient(config, {
+      userManager: manager,
+      fetch: nativeFetch,
+    });
+
+    await expect(client.initialize()).resolves.toMatchObject({
+      identity: { sub: 'subject-a', email: 'a@example.com' },
+    });
+    expect(nativeFetch).toHaveBeenCalledWith(`${config.domain}/oauth2/userInfo`, {
+      headers: { Authorization: 'Bearer access-token', Accept: 'application/json' },
+    });
+  });
+
   it('does not create a session from an unverified userInfo response', async () => {
     const manager = userManagerForTest();
     await manager.storeUser(user({ profile: { sub: 'subject-a', email: 'a@example.com' } }));

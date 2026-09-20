@@ -25,6 +25,8 @@ El cliente público usa `oidc-client-ts` para Code Grant con PKCE S256 y validac
 
 Los tokens y la transacción OAuth se conservan en `sessionStorage`. La recarga puede recuperar la sesión de esa pestaña, pero debe validar la identidad con Cognito antes de mostrar la cuenta. Si el access token venció, se intenta renovarlo con un refresh token válido; si la sesión ya no sirve, se pide un nuevo ingreso. Una falla transitoria ofrece reintentar y no habilita acceso a partir de un perfil viejo.
 
+El cliente conserva las duraciones predeterminadas de Cognito: access token e ID token de una hora, refresh token de 30 días y ventana del desafío de autenticación (`AuthSessionValidity`) de tres minutos. Esta última no limita la duración de la sesión web. Los tokens emitidos confirman la duración de una hora; `DescribeUserPoolClient` informa las otras dos duraciones. La caducidad del access token permite renovar la sesión con un refresh válido; no obliga a volver a ingresar mientras esa renovación funcione. [Duraciones y unidades de Cognito](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_CreateUserPoolClient.html).
+
 Cerrar sesión elimina el estado local, revoca el refresh token y navega al endpoint `/logout` de Cognito para cerrar también su cookie. Una falla remota no vuelve a abrir la cuenta local y se informa al usuario. No se promete cerrar sesiones de otros dispositivos. Al abrir otra pestaña o navegador sin estado local, la persona vuelve por Managed Login y mantiene su misma cuenta e identificador.
 
 ## Fase posterior: correo propio con SES
@@ -70,13 +72,13 @@ El circuito de entrega es:
 
 La [URL pública del frontend](https://d1ilpq1n58tzqo.cloudfront.net) ofrece acceso y cuenta. La configuración del robot y las partidas se incorporan en entregas posteriores. El ambiente está en la cuenta `387483252302`, región `us-east-1`:
 
-| Recurso | Identificador |
-|---|---|
-| Acceso inicial | Stack `PromptRunnerAccess` |
-| Bootstrap CDK | Stack `CDKToolkit`, qualifier `hnb659fds` |
-| Hosting | Stack `PromptRunnerHosting` |
-| Distribución CloudFront | `E121DZBSJ73SOP` |
-| Origen privado | Bucket `prompt-runner-game-website-387483252302-us-east-1` |
+| Recurso                 | Identificador                                              |
+| ----------------------- | ---------------------------------------------------------- |
+| Acceso inicial          | Stack `PromptRunnerAccess`                                 |
+| Bootstrap CDK           | Stack `CDKToolkit`, qualifier `hnb659fds`                  |
+| Hosting                 | Stack `PromptRunnerHosting`                                |
+| Distribución CloudFront | `E121DZBSJ73SOP`                                           |
+| Origen privado          | Bucket `prompt-runner-game-website-387483252302-us-east-1` |
 
 La preparación ya está hecha. Para una actualización habitual, abrir una PR, esperar sus checks e integrar a `main`; Actions publica el assembly verificado. Solo los cambios de permisos requieren actualizar primero `PromptRunnerAccess` con acceso temporal de operador, siguiendo el procedimiento siguiente.
 
