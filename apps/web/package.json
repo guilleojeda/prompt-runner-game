@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@vitejs/plugin-react": "5.2.0",
+    "oidc-client-ts": "3.3.0",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   }

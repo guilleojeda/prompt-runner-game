@@ -9,6 +9,7 @@ import {
   aws_s3_deployment as s3deploy,
 } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
+import { createAuthenticationResources } from './auth.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -87,6 +88,11 @@ export class PromptRunnerHostingStack extends cdk.Stack {
     });
     cdk.Tags.of(this.distribution).add('Application', 'prompt-runner-game');
 
+    const authentication = createAuthenticationResources(this, {
+      region: props.env?.region ?? APPLICATION_REGION,
+      productionWebOrigin: `https://${this.distribution.domainName}/`,
+    });
+
     const assetDeploymentRole = iam.Role.fromRoleArn(
       this,
       'AssetDeploymentRole',
@@ -111,7 +117,10 @@ export class PromptRunnerHostingStack extends cdk.Stack {
     });
 
     const entryDeployment = new s3deploy.BucketDeployment(this, 'WebsiteEntryDeployment', {
-      sources: [s3deploy.Source.asset(webDistPath, { exclude: ['assets/**'] })],
+      sources: [
+        s3deploy.Source.asset(webDistPath, { exclude: ['assets/**'] }),
+        s3deploy.Source.jsonData('auth-config.json', authentication.config),
+      ],
       destinationBucket: this.websiteBucket,
       prune: false,
       retainOnDelete: true,
@@ -119,9 +128,16 @@ export class PromptRunnerHostingStack extends cdk.Stack {
       cacheControl: [s3deploy.CacheControl.noCache()],
       metadata: { 'build-revision': buildRevision },
       distribution: this.distribution,
-      distributionPaths: ['/', '/index.html', '/favicon.svg', '/manifest.webmanifest'],
+      distributionPaths: [
+        '/',
+        '/index.html',
+        '/favicon.svg',
+        '/manifest.webmanifest',
+        '/auth-config.json',
+      ],
     });
     entryDeployment.node.addDependency(assetsDeployment);
+    entryDeployment.node.addDependency(authentication.managedLoginBranding);
 
     new cdk.CfnOutput(this, 'WebsiteUrl', {
       description: 'HTTPS URL served by CloudFront.',
