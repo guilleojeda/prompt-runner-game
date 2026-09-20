@@ -114,6 +114,70 @@ describe('PromptRunnerHostingStack', () => {
     }
   });
 
+  it('configures a retained Essentials pool for verified email access', () => {
+    const synthesized = template();
+    const pools = synthesized.findResources('AWS::Cognito::UserPool');
+    expect(Object.keys(pools)).toHaveLength(1);
+    const pool = Object.values(pools)[0];
+
+    expect(pool.Properties).toMatchObject({
+      AccountRecoverySetting: {
+        RecoveryMechanisms: [{ Name: 'verified_email', Priority: 1 }],
+      },
+      AdminCreateUserConfig: { AllowAdminCreateUserOnly: false },
+      AutoVerifiedAttributes: ['email'],
+      DeletionProtection: 'ACTIVE',
+      EmailConfiguration: { EmailSendingAccount: 'COGNITO_DEFAULT' },
+      Policies: { SignInPolicy: { AllowedFirstAuthFactors: ['PASSWORD'] } },
+      UserPoolTier: 'ESSENTIALS',
+      UsernameAttributes: ['email'],
+      VerificationMessageTemplate: { DefaultEmailOption: 'CONFIRM_WITH_CODE' },
+    });
+    expect(pool.Properties.EmailConfiguration).toEqual({ EmailSendingAccount: 'COGNITO_DEFAULT' });
+    expect(pool.Properties).not.toHaveProperty('SmsConfiguration');
+    expect(pool.Properties).not.toHaveProperty('LambdaConfig');
+    expect(pool.Properties).not.toHaveProperty('MfaConfiguration');
+    expect(pool.Properties).not.toHaveProperty('EmailVerificationMessage');
+    expect(pool.Properties).not.toHaveProperty('EmailVerificationSubject');
+    expect(pool.DeletionPolicy).toBe('Retain');
+    expect(pool.UpdateReplacePolicy).toBe('Retain');
+  });
+
+  it('creates a public code client, Managed Login v2 domain, and default branding', () => {
+    const synthesized = template();
+    const clients = synthesized.findResources('AWS::Cognito::UserPoolClient');
+    const client = Object.values(clients)[0];
+    expect(client.Properties).toMatchObject({
+      AllowedOAuthFlows: ['code'],
+      AllowedOAuthFlowsUserPoolClient: true,
+      AllowedOAuthScopes: ['openid', 'email'],
+      GenerateSecret: false,
+      ReadAttributes: ['email', 'email_verified'],
+      SupportedIdentityProviders: ['COGNITO'],
+      WriteAttributes: ['email'],
+    });
+    expect(client.Properties).not.toHaveProperty('ClientSecret');
+    expect(client.Properties.CallbackURLs).toHaveLength(2);
+    expect(client.Properties.LogoutURLs).toEqual(client.Properties.CallbackURLs);
+    expect(client.Properties.CallbackURLs[1]).toBe('http://localhost:5173/');
+    expect(client.Properties.CallbackURLs[0]).toEqual({
+      'Fn::Join': ['', ['https://', { 'Fn::GetAtt': [expect.any(String), 'DomainName'] }, '/']],
+    });
+
+    synthesized.hasResourceProperties('AWS::Cognito::UserPoolDomain', {
+      Domain: 'prompt-runner-game',
+      ManagedLoginVersion: 2,
+    });
+    synthesized.hasResourceProperties('AWS::Cognito::ManagedLoginBranding', {
+      UseCognitoProvidedValues: true,
+    });
+    const branding = Object.values(
+      synthesized.findResources('AWS::Cognito::ManagedLoginBranding'),
+    )[0];
+    expect(branding.Properties).not.toHaveProperty('Settings');
+    expect(branding.Properties).not.toHaveProperty('Assets');
+  });
+
   it('uses the pre-created deployment role and publishes entry after assets', () => {
     const synthesized = template();
 
@@ -136,6 +200,23 @@ describe('PromptRunnerHostingStack', () => {
     expect(websiteEntry?.[1].Properties.SystemMetadata['cache-control']).toBe('no-cache');
     expect(websiteEntry?.[1].DependsOn).toEqual(
       expect.arrayContaining([assetDeploymentEntry?.[0]]),
+    );
+    expect(websiteEntry?.[1].DependsOn).toEqual(expect.arrayContaining(['ManagedLoginBranding']));
+    expect(websiteEntry?.[1].Properties.SourceBucketNames).toHaveLength(2);
+    expect(websiteEntry?.[1].Properties.SourceMarkers[1]).toEqual({
+      '<<marker:0xbaba:0>>': expect.anything(),
+      '<<marker:0xbaba:1>>': expect.anything(),
+      '<<marker:0xbaba:2>>': expect.anything(),
+      '<<marker:0xbaba:3>>': expect.anything(),
+      '<<marker:0xbaba:4>>': expect.anything(),
+    });
+    const authConfigMarkers = JSON.stringify(websiteEntry?.[1].Properties.SourceMarkers[1]);
+    expect(authConfigMarkers).toContain('cognito-idp.us-east-1.amazonaws.com');
+    expect(authConfigMarkers).toContain('.auth.us-east-1.amazoncognito.com');
+    expect(authConfigMarkers).not.toContain('.amazoncognito.com/');
+    expect(websiteEntry?.[1].Properties.DistributionPaths).toContain('/auth-config.json');
+    expect(JSON.stringify(websiteEntry?.[1].Properties.SourceMarkers[1])).not.toContain(
+      'ClientSecret',
     );
     const functions = synthesized.findResources('AWS::Lambda::Function');
     expect(Object.values(functions)).toHaveLength(1);

@@ -25,6 +25,15 @@ body {
     radial-gradient(circle at 20% 0%, rgba(79, 111, 80, 0.36), transparent 36rem), #14130f;
 }
 
+button {
+  font: inherit;
+}
+
+button:focus-visible {
+  outline: 3px solid #f2c879;
+  outline-offset: 3px;
+}
+
 .shell {
   width: min(100% - 3rem, 62rem);
   min-height: 100vh;
@@ -69,11 +78,12 @@ h1 {
   line-height: 1.6;
 }
 
-.card {
+.auth-card,
+.notice {
   display: flex;
   align-items: center;
   gap: 1.2rem;
-  width: min(100%, 34rem);
+  width: min(100%, 42rem);
   padding: 1.25rem;
   border: 1px solid rgba(242, 239, 232, 0.14);
   border-radius: 1rem;
@@ -81,17 +91,40 @@ h1 {
   box-shadow: 0 1.5rem 4rem rgba(0, 0, 0, 0.22);
 }
 
-.card h2 {
-  margin-bottom: 0.35rem;
-  color: #f7f1e1;
-  font-size: 1.05rem;
+.auth-card-content {
+  min-width: 0;
 }
 
-.card p,
-.status {
-  margin-bottom: 0;
+.auth-card h2 {
+  margin-bottom: 0.5rem;
+  color: #f7f1e1;
+  font-size: 1.45rem;
+}
+
+.auth-card p,
+.notice p {
+  margin-bottom: 1.1rem;
   color: #b9b4a8;
   line-height: 1.5;
+}
+
+.auth-card p:last-of-type,
+.notice p:last-child {
+  margin-bottom: 1.1rem;
+}
+
+.auth-card strong {
+  color: #f7f1e1;
+  overflow-wrap: anywhere;
+}
+
+.card-kicker {
+  margin-bottom: 0.45rem !important;
+  color: #d8b36a !important;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 
 .robot {
@@ -115,9 +148,102 @@ h1 {
   background: #d8b36a;
 }
 
+.account-mark {
+  display: grid;
+  flex: 0 0 auto;
+  width: 4.3rem;
+  height: 4.3rem;
+  place-items: center;
+  border: 2px solid #9bc59e;
+  border-radius: 1.25rem;
+  color: #9bc59e;
+  background: #253428;
+  font-size: 2rem;
+}
+
+.primary-button,
+.secondary-button {
+  min-height: 2.75rem;
+  padding: 0.65rem 1rem;
+  border-radius: 0.55rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.primary-button {
+  border: 1px solid #d8b36a;
+  color: #1b180f;
+  background: #d8b36a;
+}
+
+.secondary-button {
+  border: 1px solid rgba(216, 179, 106, 0.8);
+  color: #f7f1e1;
+  background: transparent;
+}
+
+.primary-button:hover:not(:disabled),
+.primary-button:focus-visible {
+  background: #f2c879;
+}
+
+.secondary-button:hover:not(:disabled),
+.secondary-button:focus-visible {
+  background: rgba(216, 179, 106, 0.12);
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.notice {
+  align-items: flex-start;
+  width: min(100%, 42rem);
+}
+
+.notice p {
+  margin: 0;
+}
+
+.error-notice {
+  display: block;
+  border-color: rgba(237, 146, 128, 0.55);
+  background: rgba(118, 47, 42, 0.25);
+}
+
+.error-notice .secondary-button {
+  margin-top: 0.25rem;
+}
+
+.spinner {
+  flex: 0 0 auto;
+  width: 1.2rem;
+  height: 1.2rem;
+  margin-top: 0.1rem;
+  border: 2px solid rgba(242, 239, 232, 0.25);
+  border-top-color: #d8b36a;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
 .status {
+  margin-bottom: 0;
   color: #d8b36a;
   font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none;
+  }
 }
 
 @media (max-width: 40rem) {
@@ -126,7 +252,7 @@ h1 {
     padding: 4rem 0;
   }
 
-  .card {
+  .auth-card {
     align-items: flex-start;
   }
 }

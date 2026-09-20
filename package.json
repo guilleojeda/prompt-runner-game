@@ -26,6 +26,7 @@
   },
   "devDependencies": {
     "@eslint/js": "9.39.5",
+    "@testing-library/react": "16.3.0",
     "@types/node": "22.20.3",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
@@ -36,6 +37,7 @@
     "eslint-plugin-react-hooks": "7.1.1",
     "eslint-plugin-react-refresh": "0.4.26",
     "globals": "16.5.0",
+    "jsdom": "26.1.0",
     "prettier": "3.9.8",
     "tsx": "4.23.13",
     "typescript": "5.9.3",

@@ -1,6 +1,6 @@
 # Acceso, publicación y entrega
 
-**Publicación implementada: React estático en S3 privado, servido por CloudFront con Origin Access Control (OAC), publicado por CDK en TypeScript y GitHub Actions.** La entrada actual es mínima; Cognito, el juego y su renderer siguen pendientes. Cognito con correo predeterminado y un único ambiente están aprobados; SES se incorporará después. El renderer y el flujo de animación se definen en [animación](animacion.md). Las restricciones elegidas por el usuario se mantienen en [plataforma](../intent/plataforma.md); las referencias técnicas están en [identidad](../reference/identidad.md), [datos y entrega](../reference/datos-y-entrega.md) y [cuenta AWS](../reference/cuenta-aws.md).
+**Acceso con Cognito y publicación de React estático en S3 privado, servido por CloudFront con Origin Access Control (OAC), mediante CDK en TypeScript y GitHub Actions.** La aplicación ofrece una cuenta verificada; el juego y su renderer siguen pendientes. Se usa correo predeterminado y un único ambiente; SES se incorporará después. El renderer y el flujo de animación se definen en [animación](animacion.md). Las restricciones elegidas por el usuario se mantienen en [plataforma](../intent/plataforma.md); las referencias técnicas están en [identidad](../reference/identidad.md), [datos y entrega](../reference/datos-y-entrega.md) y [cuenta AWS](../reference/cuenta-aws.md).
 
 ## Primera versión: Cognito con correo predeterminado
 
@@ -15,7 +15,17 @@ Se aceptan inicialmente estas condiciones del servicio:
 - Se usan **mensajes estándar de Cognito**, sin personalizar asunto o cuerpo. Managed Login y la aplicación están en español; la primera versión no exige traducir los correos estándar.
 - Si el proveedor impide un envío por cuota o por error, se informa el impedimento y se permite reintentar cuando corresponda. Un alta puede haber dejado un usuario `UNCONFIRMED`; se conserva ese estado y se ofrece reenvío, sin marcar la casilla como verificada para sortear el límite.
 
-La API usa el authorizer JWT de HTTP API, con issuer/cliente y scope de aplicación explícitos para usar access tokens. Cada operación obtiene el `sub` validado y comprueba propiedad de configuraciones e intentos. El JWT por sí solo no autoriza leer cualquier identificador. La confirmación de email sigue siendo necesaria y no se reemplaza por validar la sintaxis de la dirección.
+La cuenta actual obtiene su identidad desde `userInfo` de Cognito con los scopes `openid email`; solo se habilita después de validar el email verificado y la identidad de la sesión. No necesita una API propia ni guarda perfiles duplicados. La contraseña y los códigos se ingresan en Cognito.
+
+El backend de datos incorporará el authorizer JWT de HTTP API, con issuer/cliente y scope de aplicación explícitos para usar access tokens. Cada operación obtendrá el `sub` validado y comprobará propiedad de configuraciones e intentos. La guarda de la pantalla no sustituye esa autorización de servidor; un JWT tampoco autoriza leer cualquier identificador.
+
+### Sesión del navegador
+
+El cliente público usa `oidc-client-ts` para Code Grant con PKCE S256 y validación de la transacción. El callback y el retorno de logout son `/`, por lo que la autenticación no necesita rutas nuevas ni un fallback de errores a HTML. La configuración pública se carga de `/auth-config.json`: contiene issuer, client ID, dominio y URLs de retorno, nunca un secreto de cliente. CDK resuelve esos valores al publicar el assembly verificado, sin reconstruir React después del despliegue.
+
+Los tokens y la transacción OAuth se conservan en `sessionStorage`. La recarga puede recuperar la sesión de esa pestaña, pero debe validar la identidad con Cognito antes de mostrar la cuenta. Si el access token venció, se intenta renovarlo con un refresh token válido; si la sesión ya no sirve, se pide un nuevo ingreso. Una falla transitoria ofrece reintentar y no habilita acceso a partir de un perfil viejo.
+
+Cerrar sesión elimina el estado local, revoca el refresh token y navega al endpoint `/logout` de Cognito para cerrar también su cookie. Una falla remota no vuelve a abrir la cuenta local y se informa al usuario. No se promete cerrar sesiones de otros dispositivos. Al abrir otra pestaña o navegador sin estado local, la persona vuelve por Managed Login y mantiene su misma cuenta e identificador.
 
 ## Fase posterior: correo propio con SES
 
@@ -58,7 +68,7 @@ El circuito de entrega es:
 
 ## Ambiente operativo
 
-La [URL pública del frontend](https://d1ilpq1n58tzqo.cloudfront.net) sirve la entrada React mínima. Todavía no ofrece registro ni juego. El ambiente está en la cuenta `387483252302`, región `us-east-1`:
+La [URL pública del frontend](https://d1ilpq1n58tzqo.cloudfront.net) ofrece acceso y cuenta. La configuración del robot y las partidas se incorporan en entregas posteriores. El ambiente está en la cuenta `387483252302`, región `us-east-1`:
 
 | Recurso | Identificador |
 |---|---|
@@ -86,7 +96,9 @@ STS debe devolver la cuenta `387483252302`. Revisar un bootstrap existente antes
 
 La confianza de este repositorio usa audiencia `sts.amazonaws.com` y subject exacto `repo:guilleojeda@18320860/prompt-runner-game@1373331195:ref:refs/heads/main`. Los identificadores inmutables provienen de la configuración real de GitHub. El job de una PR no recibe permiso `id-token: write` ni puede asumir ese rol.
 
-El acceso inicial se prepara una vez, por separado del stack de hosting; sus políticas se actualizan con el mismo comando de CloudFormation cuando cambian los permisos declarados. Su template crea el rol de GitHub, el rol fijo del publicador de assets y la política de ejecución de CloudFormation limitada a este frontend. El bootstrap debe usar esa política explícita; no se utiliza su default `AdministratorAccess`. El stack del hosting importa el rol fijo y no administra los permisos de su propio pipeline.
+El acceso inicial se prepara una vez, por separado del stack de hosting; sus políticas se actualizan con el mismo comando de CloudFormation cuando cambian los permisos declarados. Su template crea el rol de GitHub, el rol fijo del publicador de assets y la política de ejecución de CloudFormation para hosting e identidad. Se conserva el nombre físico `prompt-runner-game-phase0-cfn-execution` para mantener su ARN y la asociación con el bootstrap. El bootstrap debe usar esa política explícita; no se utiliza su default `AdministratorAccess`. El stack del hosting importa el rol fijo y no administra los permisos de su propio pipeline.
+
+La descripción física de esa política también conserva el texto inicial: IAM no permite modificarla y CloudFormation intentaría reemplazar el recurso. Su documento de permisos sí se actualiza; la descripción histórica no limita los servicios declarados en ese documento.
 
 La cuenta AWS es exclusiva de este proyecto. La política permite etiquetar distribuciones de esta cuenta durante su creación, cuando aún no existe el tag `Application`; las operaciones restantes de distribución usan ese tag. OAC y cache policies usan IDs generados y permisos limitados a la cuenta. Estas condiciones asumen esa exclusividad y deben revisarse antes de alojar proyectos ajenos en la misma cuenta.
 

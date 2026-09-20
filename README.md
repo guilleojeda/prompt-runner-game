@@ -4,7 +4,7 @@ Juego educativo de AWS User Group AI Argentina. El participante configura las ha
 
 **Web publicada:** [Abrir la aplicación](https://d1ilpq1n58tzqo.cloudfront.net).
 
-**Estado del proyecto:** entrada React mínima y circuito de publicación automático operativos. La página inicial no permite registrarse ni jugar. Las capacidades del juego descritas a continuación siguen siendo la especificación objetivo. El nombre del juego es provisional.
+**Estado del proyecto:** acceso mediante Cognito y circuito de publicación automático. La aplicación permite crear una cuenta, confirmar el email, iniciar y cerrar sesión y recuperar la contraseña. La configuración del robot y las partidas descritas a continuación siguen siendo la especificación objetivo. El nombre del juego es provisional.
 
 ## Desarrollo local
 
@@ -15,13 +15,25 @@ npm ci
 npm run dev
 ```
 
-La URL local aparece en la salida de Vite. Para ejecutar los mismos controles que GitHub Actions, sin credenciales AWS:
+Vite usa `http://localhost:5173/`, registrado como retorno de Cognito. Para probar el acceso real con el mismo ambiente publicado:
+
+```sh
+VITE_AUTH_CONFIG_URL=https://d1ilpq1n58tzqo.cloudfront.net/auth-config.json npm run dev
+```
+
+El servidor de desarrollo obtiene la configuración pública y adapta los retornos a localhost. Sin esa configuración, la web informa que no puede iniciar el acceso. Para ejecutar los mismos controles que GitHub Actions, sin credenciales AWS:
 
 ```sh
 npm run check
 ```
 
-El comando verifica formato, lint, tipos, tests de infraestructura, build y síntesis CDK. No llama a modelos ni necesita servicios de backend. `apps/web/` contiene la web y `infra/` la infraestructura. El lockfile fija las versiones instaladas; `.work/` conserva evidencia local y está excluido de Git.
+El comando verifica formato, lint, tipos, pruebas de autenticación e infraestructura, build y síntesis CDK. No llama a modelos ni necesita credenciales AWS o enviar correo. `apps/web/` contiene la web y `infra/` la infraestructura. El lockfile fija las versiones instaladas; `.work/` conserva evidencia local y está excluido de Git.
+
+## Acceso
+
+El registro y la recuperación se realizan en las páginas de Cognito en español, con email y contraseña. La cuenta se habilita después de confirmar el código recibido. El correo predeterminado tiene un límite compartido de 50 envíos diarios para altas, reenvíos y recuperación; entrar con contraseña no envía otro correo. Se usan los mensajes estándar de Cognito.
+
+Una recarga conserva la sesión en la misma pestaña. Si ya no hay una sesión válida, se vuelve a ingresar a la misma cuenta. Cerrar sesión elimina el estado local, revoca la renovación y cierra la sesión administrada de Cognito. Los detalles y límites están en [acceso y entrega](docs/architecture/acceso-y-entrega.md).
 
 ## Publicación
 

@@ -50,6 +50,7 @@ export class PromptRunnerAccessStack extends cdk.Stack {
     });
     const websiteBucketArn = `arn:${cdk.Aws.PARTITION}:s3:::${websiteBucketNameFor(account)}`;
     const bootstrapAssetsBucketArn = `arn:${cdk.Aws.PARTITION}:s3:::cdk-hnb659fds-assets-${account}-${region}`;
+    const cognitoUserPoolArn = `arn:${cdk.Aws.PARTITION}:cognito-idp:${region}:${account}:userpool/*`;
 
     assetDeploymentRole.addToPolicy(
       new iam.PolicyStatement({
@@ -101,6 +102,8 @@ export class PromptRunnerAccessStack extends cdk.Stack {
 
     const phase0CfnExecutionPolicy = new iam.ManagedPolicy(this, 'Phase0CfnExecutionPolicy', {
       managedPolicyName: 'prompt-runner-game-phase0-cfn-execution',
+      // IAM ManagedPolicy.Description is Replacement; preserve the deployed value while
+      // extending this same physical policy for the next CloudFormation cycle.
       description: 'Phase 0 CloudFormation execution permissions for hosting only.',
       statements: [
         new iam.PolicyStatement({
@@ -135,6 +138,71 @@ export class PromptRunnerAccessStack extends cdk.Stack {
           sid: 'ReadBootstrapAssets',
           actions: ['s3:GetBucketLocation', 's3:GetObject', 's3:GetObjectVersion', 's3:ListBucket'],
           resources: [bootstrapAssetsBucketArn, `${bootstrapAssetsBucketArn}/*`],
+        }),
+        new iam.PolicyStatement({
+          // CloudFormation cannot know the user-pool ARN until Cognito creates it.
+          // The request tag narrows this account-level create permission to this app.
+          sid: 'CognitoCreateUserPool',
+          actions: ['cognito-idp:CreateUserPool'],
+          resources: ['*'],
+          conditions: {
+            StringEquals: {
+              'aws:RequestTag/Application': 'prompt-runner-game',
+              'aws:RequestedRegion': region,
+            },
+          },
+        }),
+        new iam.PolicyStatement({
+          // ListUserPools is an account-level CloudFormation handler operation.
+          sid: 'CognitoListUserPools',
+          actions: ['cognito-idp:ListUserPools'],
+          resources: ['*'],
+          conditions: { StringEquals: { 'aws:RequestedRegion': region } },
+        }),
+        new iam.PolicyStatement({
+          // UserPool is the only taggable Cognito resource in this phase.
+          sid: 'CognitoUserPoolTagsOnCreate',
+          actions: ['cognito-idp:TagResource'],
+          resources: [cognitoUserPoolArn],
+          conditions: {
+            StringEquals: { 'aws:RequestTag/Application': 'prompt-runner-game' },
+          },
+        }),
+        new iam.PolicyStatement({
+          // These resources share the same user-pool ARN and application-tag boundary.
+          sid: 'CognitoManagedResources',
+          actions: [
+            'cognito-idp:DescribeUserPool',
+            'cognito-idp:DeleteUserPool',
+            'cognito-idp:GetUserPoolMfaConfig',
+            'cognito-idp:UpdateUserPool',
+            'cognito-idp:ListTagsForResource',
+            'cognito-idp:TagResource',
+            'cognito-idp:UntagResource',
+            'cognito-idp:CreateUserPoolClient',
+            'cognito-idp:DescribeUserPoolClient',
+            'cognito-idp:DeleteUserPoolClient',
+            'cognito-idp:UpdateUserPoolClient',
+            'cognito-idp:ListUserPoolClients',
+            'cognito-idp:CreateUserPoolDomain',
+            'cognito-idp:DeleteUserPoolDomain',
+            'cognito-idp:UpdateUserPoolDomain',
+            'cognito-idp:CreateManagedLoginBranding',
+            'cognito-idp:DescribeManagedLoginBranding',
+            'cognito-idp:DescribeManagedLoginBrandingByClient',
+            'cognito-idp:DeleteManagedLoginBranding',
+            'cognito-idp:UpdateManagedLoginBranding',
+          ],
+          resources: [cognitoUserPoolArn],
+          conditions: { StringEquals: { 'aws:ResourceTag/Application': 'prompt-runner-game' } },
+        }),
+        new iam.PolicyStatement({
+          // DescribeUserPoolDomain has no IAM resource type in the service authorization table.
+          // Limit its required account-level read to the hosting region.
+          sid: 'CognitoDescribeUserPoolDomain',
+          actions: ['cognito-idp:DescribeUserPoolDomain'],
+          resources: ['*'],
+          conditions: { StringEquals: { 'aws:RequestedRegion': region } },
         }),
         new iam.PolicyStatement({
           sid: 'CloudFrontCreateDistribution',
