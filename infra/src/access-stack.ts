@@ -711,7 +711,7 @@ export class PromptRunnerAccessStack extends cdk.Stack {
           actions: ['bedrock-agentcore:TagResource'],
           // Runtime and its generated workload identity authorize tags before
           // assigning their IDs; both requests carry the application tag.
-          resources: [runtimeAnyArn, workloadIdentityAnyArn],
+          resources: [runtimeAnyArn, workloadIdentityDirectoryArn, workloadIdentityAnyArn],
           conditions: {
             StringEquals: {
               'aws:RequestTag/Application': 'prompt-runner-game',

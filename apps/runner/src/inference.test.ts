@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer';
 import { Readable } from 'node:stream';
 import { HttpRequest, HttpResponse } from '@smithy/core/transport';
 import type { HttpHandlerOptions, RequestHandler, RequestHandlerOutput } from '@smithy/types';
@@ -303,7 +304,7 @@ describe('auditable Strands Bedrock decision', () => {
     });
     expect(handler.requests).toHaveLength(1);
     expect(recorded.receipts[0]).toMatchObject({ statusCode: 429, complete: true });
-    expect(recorded.receipts[0]?.bytes).toEqual(bytes);
+    expect(Buffer.compare(recorded.receipts[0]?.bytes ?? new Uint8Array(), bytes)).toBe(0);
     expect(recorded.receipts[0]?.bytes?.byteLength).toBeGreaterThan(400 * 1024);
   });
 
@@ -551,8 +552,8 @@ describe('auditable Strands Bedrock decision', () => {
     const downstream = await readStream(output.response.body);
 
     expect(recorded.requests[0]).toEqual(encoder.encode('{"request":true}'));
-    expect(recorded.receipts[0]?.bytes).toEqual(largeBytes);
-    expect(downstream).toEqual(largeBytes);
+    expect(Buffer.compare(recorded.receipts[0]?.bytes ?? new Uint8Array(), largeBytes)).toBe(0);
+    expect(Buffer.compare(downstream, largeBytes)).toBe(0);
     expect(largeBytes.byteLength).toBeGreaterThan(400 * 1024);
   });
 });

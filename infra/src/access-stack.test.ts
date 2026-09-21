@@ -493,6 +493,7 @@ describe('PromptRunnerAccessStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, (
         Action: 'bedrock-agentcore:TagResource',
         Resource: [
           'arn:aws:bedrock-agentcore:us-east-1:387483252302:runtime/*',
+          'arn:aws:bedrock-agentcore:us-east-1:387483252302:workload-identity-directory/default',
           'arn:aws:bedrock-agentcore:us-east-1:387483252302:workload-identity-directory/default/workload-identity/*',
         ],
         Condition: {
