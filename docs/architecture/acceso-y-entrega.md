@@ -120,6 +120,10 @@ La descripción física de esa política también conserva el texto inicial: IAM
 
 Los permisos nuevos de borradores se declaran en una política complementaria de `PromptRunnerAccess`, asociada al mismo rol de ejecución del bootstrap. La política original ya se aproxima al máximo de tamaño de IAM; separarlas evita reemplazar su ARN o recrear el bootstrap. La preparación de acceso actualiza ambas declaraciones y sus asociaciones antes de que main despliegue la aplicación.
 
+AgentCore crea el endpoint predeterminado y una identidad interna junto al Runtime. Antes de asignar sus identificadores, autoriza la creación del endpoint y el etiquetado sobre los recursos literales `runtime/*` y `workload-identity-directory/default/workload-identity/*`. Por eso esos permisos de creación usan los ARN de cuenta/región con condiciones `aws:RequestTag/Application=prompt-runner-game` y `aws:RequestedRegion=us-east-1`; un prefijo basado en el nombre futuro no coincide con esos recursos. Las operaciones posteriores conservan los ARN del Runtime propio. Ante una denegación del provider, comprobar la acción y el recurso reales en CloudTrail, incluida la operación interna, antes de cambiar permisos.
+
+Un acuerdo de modelo disponible no prueba que la cuenta pueda inferir. Antes de aceptar la ejecución, verificar una llamada real al perfil acordado y la cuota aplicada; una denegación de habilitación de cuenta requiere resolver el acceso con AWS. No se sustituye el modelo para presentar esa verificación como exitosa.
+
 La cuenta AWS es exclusiva de este proyecto. La política permite etiquetar distribuciones de esta cuenta durante su creación, cuando aún no existe el tag `Application`; las operaciones restantes de distribución usan ese tag. OAC y cache policies usan IDs generados y permisos limitados a la cuenta. Estas condiciones asumen esa exclusividad y deben revisarse antes de alojar proyectos ajenos en la misma cuenta.
 
 Después de comprobar la cuenta y los recursos existentes:
