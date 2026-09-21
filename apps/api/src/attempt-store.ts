@@ -157,6 +157,22 @@ const isTransactionCancellation = (error: unknown): boolean =>
   error instanceof Error &&
   (error.name === 'TransactionCanceledException' ||
     error.name === 'TransactionInProgressException');
+const isTransactionConflict = (error: unknown): boolean => {
+  if (!isTransactionCancellation(error)) return false;
+  const reasons = (error as { CancellationReasons?: unknown }).CancellationReasons;
+  return (
+    (Array.isArray(reasons) &&
+      reasons.some(
+        (reason) =>
+          typeof reason === 'object' &&
+          reason !== null &&
+          (reason as { Code?: unknown }).Code === 'TransactionConflict',
+      )) ||
+    (error instanceof Error && error.message.includes('TransactionConflict'))
+  );
+};
+const delay = (milliseconds: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 const toRecord = (item: Record<string, unknown>): PersistedAttempt => {
   const config = item.config as AttemptConfig;
@@ -382,7 +398,18 @@ export class DynamoAttemptStore implements AttemptStore {
         }),
       );
     } catch (error) {
-      const winner = await this.getByRequest(input.owner, input.requestKey);
+      let winner = await this.getByRequest(input.owner, input.requestKey);
+      // DynamoDB can cancel two transactions that contend on the same
+      // idempotency key before either caller observes the committed request
+      // item. Poll the authoritative mapping after a transaction conflict;
+      // this only rereads and never retries the write.
+      if (!winner && isTransactionConflict(error)) {
+        for (const milliseconds of [10, 25, 50, 100]) {
+          await delay(milliseconds);
+          winner = await this.getByRequest(input.owner, input.requestKey);
+          if (winner) break;
+        }
+      }
       if (winner) {
         if (fingerprintOf(winner.draft) !== fingerprint) throw new IdempotencyConflictError();
         return { attempt: summaryOf(winner), admitted: false };
@@ -603,6 +630,7 @@ export class DynamoAttemptStore implements AttemptStore {
             },
             ExpressionAttributeValues: marshall({
               ':pending': 'pending',
+              ':false': false,
               ':cancelled': 'cancelled',
               ':true': true,
               ':reason': 'cancelled_before_start',

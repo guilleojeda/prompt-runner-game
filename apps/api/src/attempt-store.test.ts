@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, TransactionCanceledException } from '@aws-sdk/client-dynamodb';
 import { marshall } from '@aws-sdk/util-dynamodb';
 import { createDefaultDraft, type DraftSnapshot } from '../../../shared/robot';
 import {
@@ -257,5 +257,101 @@ describe('attempt lifecycle store', () => {
     });
     await store.recoverBodies('a', attempt.id);
     expect(updates).toBe(0);
+  });
+
+  it('rereads a winner after a same-key transaction conflict without retrying the write', async () => {
+    const draft = savedDraft().draft;
+    const winnerStore = new MemoryAttemptStore({ draft: savedDraft() });
+    const winner = await winnerStore.admit({
+      owner: 'a',
+      requestKey: 'transaction-conflict',
+      expectedVersion: 1,
+      draft,
+    });
+    const winnerRecord = await winnerStore.get('a', winner.attempt.id);
+    if (!winnerRecord) throw new Error('test setup did not create winner');
+    let requestReads = 0;
+    let transactions = 0;
+    const client = {
+      send: async (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
+        const name = command.constructor.name;
+        if (name === 'TransactWriteItemsCommand') {
+          transactions += 1;
+          const error = new TransactionCanceledException({
+            message: 'transaction conflict',
+            $metadata: {},
+          });
+          (error as unknown as { CancellationReasons: unknown[] }).CancellationReasons = [
+            { Code: 'TransactionConflict' },
+          ];
+          throw error;
+        }
+        if (name !== 'GetItemCommand') throw new Error(`unexpected command ${name}`);
+        const key = command.input.Key as { SK?: { S?: string } };
+        const sk = key.SK?.S;
+        if (sk === 'REQUEST#transaction-conflict') {
+          requestReads += 1;
+          return requestReads >= 3 ? { Item: marshall({ attemptId: winner.attempt.id }) } : {};
+        }
+        if (sk === 'DRAFT') return { Item: marshall({ version: 1, draft }) };
+        if (sk === `ATTEMPT#${winner.attempt.id}`)
+          return { Item: marshall(winnerRecord, { removeUndefinedValues: true }) };
+        if (sk === 'STATE#state-0')
+          return { Item: marshall({ snapshot: winnerRecord.currentSnapshot }) };
+        return {};
+      },
+    };
+    const store = new DynamoAttemptStore({
+      client: client as unknown as DynamoDBClient,
+      tableName: 'attempts',
+    });
+    const result = await store.admit({
+      owner: 'a',
+      requestKey: 'transaction-conflict',
+      expectedVersion: 1,
+      draft,
+    });
+    expect(result.admitted).toBe(false);
+    expect(result.attempt.id).toBe(winner.attempt.id);
+    expect(requestReads).toBe(3);
+    expect(transactions).toBe(1);
+  });
+
+  it('binds every pending-cancel condition value in the Dynamo command', async () => {
+    const draft = savedDraft().draft;
+    const memory = new MemoryAttemptStore({ draft: savedDraft() });
+    const admitted = await memory.admit({
+      owner: 'a',
+      requestKey: 'pending-cancel-command',
+      expectedVersion: 1,
+      draft,
+    });
+    const record = await memory.get('a', admitted.attempt.id);
+    if (!record) throw new Error('test setup did not create pending record');
+    let updateInput: Record<string, unknown> | undefined;
+    const client = {
+      send: async (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
+        const name = command.constructor.name;
+        if (name === 'UpdateItemCommand') {
+          updateInput = command.input;
+          return {};
+        }
+        if (name !== 'GetItemCommand') throw new Error(`unexpected command ${name}`);
+        const key = command.input.Key as { SK?: { S?: string } };
+        return {
+          Item:
+            key.SK?.S === 'STATE#state-0'
+              ? marshall({ snapshot: record.currentSnapshot })
+              : marshall(record, { removeUndefinedValues: true }),
+        };
+      },
+    };
+    const store = new DynamoAttemptStore({
+      client: client as unknown as DynamoDBClient,
+      tableName: 'attempts',
+    });
+    await store.requestCancel('a', record.id, '2026-09-21T15:00:00.000Z');
+    const values = updateInput?.ExpressionAttributeValues as Record<string, { BOOL?: boolean }>;
+    expect(values[':false']).toEqual({ BOOL: false });
   });
 });

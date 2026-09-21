@@ -61,10 +61,10 @@ export function createRobotResources(scope: Construct, props: RobotResourcesProp
       sid: 'DraftTableReadWrite',
       actions: [
         'dynamodb:GetItem',
+        'dynamodb:ConditionCheckItem',
         'dynamodb:PutItem',
         'dynamodb:UpdateItem',
         'dynamodb:Query',
-        'dynamodb:TransactWriteItems',
       ],
       resources: [draftTable.tableArn],
     }),

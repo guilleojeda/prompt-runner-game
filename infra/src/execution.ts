@@ -191,10 +191,10 @@ export function createExecutionResources(
       sid: 'ReadWriteAttemptRecords',
       actions: [
         'dynamodb:GetItem',
+        'dynamodb:ConditionCheckItem',
         'dynamodb:PutItem',
         'dynamodb:UpdateItem',
         'dynamodb:Query',
-        'dynamodb:TransactWriteItems',
       ],
       resources: [props.draftTable.tableArn],
     }),

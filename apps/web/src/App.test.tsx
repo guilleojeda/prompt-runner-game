@@ -453,4 +453,30 @@ describe('access screen', () => {
       (screen.getByRole('button', { name: 'Cerrar sesión' }) as HTMLButtonElement).disabled,
     ).toBe(true);
   });
+
+  it('settles attempt discovery when the authenticated App rerenders for workspace busy state', async () => {
+    window.sessionStorage.clear();
+    const authClient = client({ initialize: vi.fn().mockResolvedValue(session()) });
+    const draftApi: DraftApi = {
+      getDraft: vi.fn().mockResolvedValue({ version: 0, draft: createDefaultDraft() }),
+      putDraft: vi.fn().mockResolvedValue({ version: 1, draft: createDefaultDraft() }),
+    };
+    const attemptApi = emptyAttemptApi();
+    const listAttempts = vi.mocked(attemptApi.listAttempts);
+
+    render(
+      <App
+        authClient={authClient}
+        draftApi={draftApi}
+        attemptApi={attemptApi}
+        configLoader={async () => config}
+      />,
+    );
+
+    expect(await screen.findByRole('heading', { name: 'Historial' })).toBeTruthy();
+    await waitFor(() => expect(listAttempts).toHaveBeenCalledTimes(2));
+    expect((screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+  });
 });

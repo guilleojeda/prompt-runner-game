@@ -571,6 +571,10 @@ export function App({
     }
   }, []);
 
+  const handleApiAuthRequired = useCallback((): void => {
+    setApiAuthError(true);
+  }, []);
+
   return (
     <main className="shell">
       <header>
@@ -637,7 +641,7 @@ export function App({
                 paused={renewing || phase !== 'account'}
                 locked={attemptBusy}
                 onTry={runnerApi ? () => attemptWorkspaceRef.current?.start() : undefined}
-                onAuthRequired={() => setApiAuthError(true)}
+                onAuthRequired={handleApiAuthRequired}
               />
             )}
             {runnerApi &&
@@ -651,7 +655,7 @@ export function App({
                   session={session}
                   authPaused={renewing || phase !== 'account'}
                   onBusyChange={handleAttemptBusyChange}
-                  onAuthRequired={() => setApiAuthError(true)}
+                  onAuthRequired={handleApiAuthRequired}
                 />
               )}
             {editorApi && editorConfig && !session.user.scopes.includes(editorConfig.apiScope) && (
