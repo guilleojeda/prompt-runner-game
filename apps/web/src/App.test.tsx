@@ -541,9 +541,11 @@ describe('access screen', () => {
     expect((screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement).disabled).toBe(
       true,
     );
-    expect(
-      (screen.getByRole('button', { name: 'Cerrar sesión' }) as HTMLButtonElement).disabled,
-    ).toBe(false);
+    await waitFor(() =>
+      expect(
+        (screen.getByRole('button', { name: 'Cerrar sesión' }) as HTMLButtonElement).disabled,
+      ).toBe(false),
+    );
     expect(screen.getByText('a@example.com')).toBeTruthy();
     expect(
       screen.getByText('La sesión necesita volver a validarse antes de continuar.'),
