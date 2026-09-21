@@ -18,6 +18,7 @@ import {
   IdempotencyConflictError,
   QuotaExceededError,
   createDynamoAttemptStore,
+  S3BodyStore,
   type AttemptStore,
 } from './attempt-store.js';
 import { summaryOf, type PersistedAttempt } from '../../../shared/server/attempt.js';
@@ -394,7 +395,8 @@ export const handleRequest = async (
       );
     }
 
-    const attemptStore = dependencies.attemptStore ?? createDynamoAttemptStore();
+    const attemptStore =
+      dependencies.attemptStore ?? createDynamoAttemptStore({ bodyStore: new S3BodyStore() });
     if (isAttemptCollection && method === 'POST') {
       const input = attemptInput(requestBody(event));
       const admitted = await attemptStore.admit({ owner: identity.sub, ...input });

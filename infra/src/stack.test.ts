@@ -345,10 +345,10 @@ describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, 
         Sid: 'DraftTableReadWrite',
         Action: expect.arrayContaining([
           'dynamodb:GetItem',
+          'dynamodb:ConditionCheckItem',
           'dynamodb:PutItem',
           'dynamodb:UpdateItem',
           'dynamodb:Query',
-          'dynamodb:TransactWriteItems',
         ]),
       }),
     );
@@ -461,6 +461,7 @@ describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, 
       'bedrock:InvokeModel',
     );
     const runtimeLogPolicyJson = JSON.stringify(runnerPolicy?.Properties.PolicyDocument);
+    expect(runtimeLogPolicyJson).toContain('dynamodb:ConditionCheckItem');
     expect(runtimeLogPolicyJson).toContain('logs:DescribeLogStreams');
     expect(runtimeLogPolicyJson).toContain('logs:DescribeLogGroups');
     expect(runtimeLogPolicyJson).toContain('logs:PutResourcePolicy');
@@ -469,9 +470,27 @@ describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, 
     );
     const runtimeLogStatements = (
       runnerPolicy?.Properties.PolicyDocument as {
-        Statement: Array<{ Sid?: string; Resource?: unknown; Condition?: unknown }>;
+        Statement: Array<{
+          Sid?: string;
+          Action?: unknown;
+          Resource?: unknown;
+          Condition?: unknown;
+        }>;
       }
     ).Statement;
+    expect(
+      runtimeLogStatements.find((statement) => statement.Sid === 'ReadWriteAttemptRecords'),
+    ).toEqual(
+      expect.objectContaining({
+        Action: expect.arrayContaining([
+          'dynamodb:GetItem',
+          'dynamodb:ConditionCheckItem',
+          'dynamodb:PutItem',
+          'dynamodb:UpdateItem',
+          'dynamodb:Query',
+        ]),
+      }),
+    );
     expect(
       runtimeLogStatements.find((statement) => statement.Sid === 'RuntimeLogResourcePolicy'),
     ).toEqual(
