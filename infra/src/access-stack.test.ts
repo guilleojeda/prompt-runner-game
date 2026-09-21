@@ -334,8 +334,14 @@ describe('PromptRunnerAccessStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, (
           'arn:aws:logs:us-east-1:387483252302:log-group:/aws/lambda/prompt-runner-game-draft-api',
       }),
     );
-    expect(JSON.stringify(phase2?.Properties.PolicyDocument)).not.toContain(
-      'apigateway:TagResource',
+    expect(bySid('TagDraftApiStages')).toEqual(
+      expect.objectContaining({
+        Action: ['apigateway:TagResource', 'apigateway:UntagResource'],
+        Resource: expect.arrayContaining([
+          'arn:aws:apigateway:us-east-1::/apis/*/stages',
+          'arn:aws:apigateway:us-east-1::/apis/*/stages/*',
+        ]),
+      }),
     );
     expect(bySid('CognitoRobotResourceServer')).toEqual(
       expect.objectContaining({

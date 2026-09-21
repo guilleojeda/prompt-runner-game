@@ -471,6 +471,14 @@ export class PromptRunnerAccessStack extends cdk.Stack {
           ],
         }),
         new iam.PolicyStatement({
+          // The CloudFormation Stage handler uses the API Gateway v2 tagging
+          // operations directly on create/update. Keep those permissions on
+          // this API's stage collection and stage resources only.
+          sid: 'TagDraftApiStages',
+          actions: ['apigateway:TagResource', 'apigateway:UntagResource'],
+          resources: [apiGatewayStagesCollectionArn, apiGatewayStageArn],
+        }),
+        new iam.PolicyStatement({
           sid: 'CognitoRobotResourceServer',
           actions: [
             'cognito-idp:CreateResourceServer',
