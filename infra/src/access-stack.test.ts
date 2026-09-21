@@ -521,16 +521,28 @@ describe('PromptRunnerAccessStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, (
         Resource: `arn:aws:bedrock-agentcore:us-east-1:387483252302:runtime/${AGENT_RUNTIME_NAME}-*`,
       }),
     );
+    expect(bySid('CreateAgentRuntimeWorkloadIdentity')).toEqual(
+      expect.objectContaining({
+        Action: 'bedrock-agentcore:CreateWorkloadIdentity',
+        Resource: [
+          'arn:aws:bedrock-agentcore:us-east-1:387483252302:workload-identity-directory/default',
+          'arn:aws:bedrock-agentcore:us-east-1:387483252302:workload-identity-directory/default/workload-identity/*',
+        ],
+        Condition: {
+          StringEquals: {
+            'aws:RequestTag/Application': 'prompt-runner-game',
+            'aws:RequestedRegion': 'us-east-1',
+          },
+        },
+      }),
+    );
     expect(bySid('ProvisionAgentRuntimeDependencies')).toEqual(
       expect.objectContaining({
-        Action: expect.arrayContaining([
-          'bedrock-agentcore:GetAgentRuntimeEndpoint',
-          'bedrock-agentcore:CreateWorkloadIdentity',
-        ]),
-        Resource: expect.arrayContaining([
-          'arn:aws:bedrock-agentcore:us-east-1:387483252302:workload-identity-directory/default',
-          `arn:aws:bedrock-agentcore:us-east-1:387483252302:workload-identity-directory/default/workload-identity/${AGENT_RUNTIME_NAME}-*`,
-        ]),
+        Action: ['bedrock-agentcore:GetAgentRuntime', 'bedrock-agentcore:GetAgentRuntimeEndpoint'],
+        Resource: [
+          `arn:aws:bedrock-agentcore:us-east-1:387483252302:runtime/${AGENT_RUNTIME_NAME}-*`,
+          `arn:aws:bedrock-agentcore:us-east-1:387483252302:runtime/${AGENT_RUNTIME_NAME}-*/runtime-endpoint/*`,
+        ],
       }),
     );
     expect(bySid('AgentRuntimeEndpointLifecycle')).toEqual(

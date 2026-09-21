@@ -516,6 +516,7 @@ export class PromptRunnerAccessStack extends cdk.Stack {
     const runtimeAnyArn = `arn:${cdk.Aws.PARTITION}:bedrock-agentcore:${region}:${account}:runtime/*`;
     const runtimeEndpointArn = `${runtimeArn}/runtime-endpoint/*`;
     const workloadIdentityDirectoryArn = `arn:${cdk.Aws.PARTITION}:bedrock-agentcore:${region}:${account}:workload-identity-directory/default`;
+    const workloadIdentityAnyArn = `${workloadIdentityDirectoryArn}/workload-identity/*`;
     const workloadIdentityArn = `${workloadIdentityDirectoryArn}/workload-identity/${AGENT_RUNTIME_NAME}-*`;
     const runtimeAssetBucketArn = `arn:${cdk.Aws.PARTITION}:s3:::cdk-hnb659fds-assets-${account}-${region}`;
     const runtimeIdentityServiceLinkedRoleArn = `arn:${cdk.Aws.PARTITION}:iam::${account}:role/aws-service-role/runtime-identity.bedrock-agentcore.amazonaws.com/AWSServiceRoleForBedrockAgentCoreRuntimeIdentity`;
@@ -687,25 +688,30 @@ export class PromptRunnerAccessStack extends cdk.Stack {
           },
         }),
         new iam.PolicyStatement({
+          sid: 'CreateAgentRuntimeWorkloadIdentity',
+          actions: ['bedrock-agentcore:CreateWorkloadIdentity'],
+          resources: [workloadIdentityDirectoryArn, workloadIdentityAnyArn],
+          conditions: {
+            StringEquals: {
+              'aws:RequestTag/Application': 'prompt-runner-game',
+              'aws:RequestedRegion': region,
+            },
+          },
+        }),
+        new iam.PolicyStatement({
           sid: 'ProvisionAgentRuntimeDependencies',
           actions: [
             'bedrock-agentcore:GetAgentRuntime',
             'bedrock-agentcore:GetAgentRuntimeEndpoint',
-            'bedrock-agentcore:CreateWorkloadIdentity',
           ],
-          resources: [
-            runtimeArn,
-            runtimeEndpointArn,
-            workloadIdentityArn,
-            workloadIdentityDirectoryArn,
-          ],
+          resources: [runtimeArn, runtimeEndpointArn],
         }),
         new iam.PolicyStatement({
           sid: 'TagAgentRuntimeOnCreate',
           actions: ['bedrock-agentcore:TagResource'],
           // Runtime and its generated workload identity authorize tags before
           // assigning their IDs; both requests carry the application tag.
-          resources: [runtimeAnyArn, `${workloadIdentityDirectoryArn}/workload-identity/*`],
+          resources: [runtimeAnyArn, workloadIdentityAnyArn],
           conditions: {
             StringEquals: {
               'aws:RequestTag/Application': 'prompt-runner-game',
