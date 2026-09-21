@@ -5,6 +5,7 @@ import type {
 } from 'aws-lambda';
 import {
   DraftConflictError,
+  DraftIncompatibleError,
   DraftStorageError,
   createDynamoDraftStore,
   type DraftStore,
@@ -12,6 +13,8 @@ import {
 import { DraftValidationError, type RobotDraft, validateDraft } from '../../../shared/robot.js';
 
 const APPLICATION_SCOPE = 'prompt-runner/robot';
+const STORED_DRAFT_INCOMPATIBLE_MESSAGE =
+  'El borrador guardado no es compatible con la versión actual.';
 
 interface Identity {
   readonly sub: string;
@@ -35,6 +38,26 @@ class ApiError extends Error {
     this.code = code;
   }
 }
+
+const requestMethod = (event: APIGatewayProxyEventV2): string =>
+  event.requestContext?.http?.method?.toUpperCase() ?? 'UNKNOWN';
+
+const respond = (
+  event: APIGatewayProxyEventV2,
+  statusCode: number,
+  code: string,
+  body: unknown,
+): APIGatewayProxyStructuredResultV2 => {
+  console.log(
+    JSON.stringify({
+      requestId: event.requestContext?.requestId ?? 'unknown',
+      method: requestMethod(event),
+      status: statusCode,
+      code,
+    }),
+  );
+  return jsonResponse(statusCode, body);
+};
 
 const jsonResponse = (statusCode: number, body: unknown): APIGatewayProxyStructuredResultV2 => ({
   statusCode,
@@ -228,13 +251,16 @@ export const handleRequest = async (
   try {
     const method = event.requestContext.http.method.toUpperCase();
     if (requestPath(event) !== '/draft' || (method !== 'GET' && method !== 'PUT')) {
-      return jsonResponse(404, { code: 'not_found', message: 'Ruta no encontrada.' });
+      return respond(event, 404, 'not_found', {
+        code: 'not_found',
+        message: 'Ruta no encontrada.',
+      });
     }
     if (
       event.queryStringParameters?.owner !== undefined ||
       event.queryStringParameters?.sub !== undefined
     ) {
-      return jsonResponse(400, {
+      return respond(event, 400, 'invalid', {
         code: 'invalid',
         message: 'El propietario lo determina la sesión.',
       });
@@ -243,24 +269,41 @@ export const handleRequest = async (
     const identity = await verifyIdentity(event, { ...config, fetch: dependencies.fetch });
     const store = dependencies.store ?? createDynamoDraftStore();
     if (method === 'GET') {
-      return jsonResponse(200, await store.get(identity.sub));
+      return respond(event, 200, 'ok', await store.get(identity.sub));
     }
     const input = putInput(requestBody(event));
-    return jsonResponse(200, await store.put(identity.sub, input.expectedVersion, input.draft));
+    return respond(
+      event,
+      200,
+      'ok',
+      await store.put(identity.sub, input.expectedVersion, input.draft),
+    );
   } catch (error) {
     if (error instanceof DraftConflictError) {
-      return jsonResponse(409, currentConflict(error));
+      return respond(event, 409, 'conflict', currentConflict(error));
     }
     if (error instanceof ApiError) {
-      return jsonResponse(error.statusCode, { code: error.code, message: error.message });
+      return respond(event, error.statusCode, error.code, {
+        code: error.code,
+        message: error.message,
+      });
+    }
+    if (error instanceof DraftIncompatibleError) {
+      return respond(event, 500, 'stored_draft_incompatible', {
+        code: 'stored_draft_incompatible',
+        message: STORED_DRAFT_INCOMPATIBLE_MESSAGE,
+      });
     }
     if (error instanceof DraftStorageError) {
-      return jsonResponse(503, {
+      return respond(event, 503, 'dependency_unavailable', {
         code: 'dependency_unavailable',
         message: 'No se pudo acceder a la configuración.',
       });
     }
-    return jsonResponse(500, { code: 'internal', message: 'Ocurrió un error inesperado.' });
+    return respond(event, 500, 'internal', {
+      code: 'internal',
+      message: 'Ocurrió un error inesperado.',
+    });
   }
 };
 

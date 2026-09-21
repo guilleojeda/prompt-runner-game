@@ -2,7 +2,7 @@ import { ConditionalCheckFailedException, type DynamoDBClient } from '@aws-sdk/c
 import { marshall } from '@aws-sdk/util-dynamodb';
 import { describe, expect, it, vi } from 'vitest';
 import { createDefaultDraft } from '../../../shared/robot';
-import { createDynamoDraftStore } from './draft';
+import { DraftIncompatibleError, createDynamoDraftStore } from './draft';
 
 const commandClient = (send: ReturnType<typeof vi.fn>) => ({ send }) as unknown as DynamoDBClient;
 
@@ -84,4 +84,24 @@ describe('Dynamo draft store', () => {
     expect(send.mock.calls[0][0].input.Item.PK).toEqual({ S: 'USER#user-a' });
     expect(send.mock.calls[1][0].input.Item.PK).toEqual({ S: 'USER#user-b' });
   });
+
+  it.each(['schemaVersion', 'catalogVersion'] as const)(
+    'classifies an unknown stored %s as incompatible without writing',
+    async (versionKey) => {
+      const draft = { ...createDefaultDraft(), [versionKey]: 99 };
+      const send = vi.fn().mockResolvedValue({
+        Item: marshall({
+          PK: 'USER#user-a',
+          SK: 'DRAFT',
+          version: 1,
+          updatedAt: '2026-09-21T00:00:00.000Z',
+          draft,
+        }),
+      });
+      const store = createDynamoDraftStore({ client: commandClient(send), tableName: 'Drafts' });
+
+      await expect(store.get('user-a')).rejects.toBeInstanceOf(DraftIncompatibleError);
+      expect(send).toHaveBeenCalledTimes(1);
+    },
+  );
 });

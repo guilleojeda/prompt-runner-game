@@ -134,4 +134,14 @@ describe('robot draft contract', () => {
     expect(draftsEqual(omitted, empty)).toBe(false);
     expect(draftsEqual(omitted, omitted)).toBe(true);
   });
+
+  it('serializes frozen catalog schemas directly without mutating them', () => {
+    const before = JSON.stringify(ROBOT_CATALOG);
+    const bytes = draftByteLength(createDefaultDraft());
+
+    expect(bytes).toBe(1480);
+    expect(JSON.stringify(ROBOT_CATALOG)).toBe(before);
+    expect(Object.isFrozen(ROBOT_CATALOG)).toBe(true);
+    expect(Object.isFrozen(ROBOT_CATALOG[0].inputSchema)).toBe(true);
+  });
 });

@@ -39,6 +39,7 @@ export interface RobotEditorProps {
 interface InFlightSave {
   generation: number;
   promise: Promise<boolean>;
+  operation: object;
 }
 
 interface ReconciliationTarget {
@@ -108,6 +109,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
   const sessionRef = useRef(session);
   const onAuthRequiredRef = useRef(onAuthRequired);
   const sendSaveRef = useRef<() => Promise<boolean>>(() => Promise.resolve(false));
+  const setLoadedSnapshotRef = useRef<(snapshot: DraftSnapshot) => void>(() => undefined);
 
   pausedRef.current = paused;
   sessionRef.current = session;
@@ -118,9 +120,20 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     draftRef.current = copy;
     setDraft(copy);
     const isConflict = conflict !== null;
+    const hasPendingOperation = inFlightRef.current !== null || reconciliationRef.current !== null;
     if (isConflict) {
       setStatus('conflict');
       setMessage('Otra pestaña guardó una versión distinta. Elegí cómo resolver el conflicto.');
+    } else if (hasPendingOperation) {
+      setStatus(inFlightRef.current ? 'saving' : 'error');
+      setMessage(
+        inFlightRef.current
+          ? 'Guardando… Este cambio quedará pendiente.'
+          : 'No se pudo comprobar el guardado. Podés reintentar.',
+      );
+      if (!inFlightRef.current && retryMode !== 'save') {
+        setRetryMode('reconcile');
+      }
     } else if (confirmedRef.current && draftsEqual(copy, confirmedRef.current.draft)) {
       setStatus('clean');
       setMessage(null);
@@ -131,13 +144,16 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     if (!isConflict) {
       setConflict(null);
     }
-    setRetryMode(null);
+    if (!hasPendingOperation) {
+      setRetryMode(null);
+    }
   };
 
   const setLoadedSnapshot = (snapshot: DraftSnapshot): void => {
     const copy = cloneDraft(snapshot.draft);
     confirmedRef.current = { ...snapshot, draft: copy };
     draftRef.current = copy;
+    reconciliationRef.current = null;
     setDraft(copy);
     setConflict(null);
     setRetryMode(null);
@@ -145,60 +161,88 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     setStatus('clean');
   };
 
-  const reconcile = async (target: ReconciliationTarget): Promise<boolean> => {
-    if (!isCurrent(generationRef, target.generation, sessionRef.current)) {
-      return false;
+  setLoadedSnapshotRef.current = setLoadedSnapshot;
+
+  const reconcile = (target: ReconciliationTarget): Promise<boolean> => {
+    const existing = inFlightRef.current;
+    if (existing) {
+      return existing.promise;
     }
+    if (!isCurrent(generationRef, target.generation, sessionRef.current)) {
+      return Promise.resolve(false);
+    }
+    reconciliationRef.current = target;
     setStatus('saving');
     setMessage('Comprobando si el último guardado llegó al servidor…');
-    try {
-      const remote = await api.getDraft();
-      if (!isCurrent(generationRef, target.generation, sessionRef.current)) {
-        return false;
-      }
-      if (draftsEqual(remote.draft, target.draft)) {
-        confirmedRef.current = remote;
-        const current = draftRef.current;
-        if (current && draftsEqual(current, remote.draft)) {
-          setStatus('clean');
-          setMessage(null);
-        } else {
-          setStatus('dirty');
-          setMessage('El último guardado llegó. También hay cambios posteriores pendientes.');
+    const operation = {};
+    const promise = (async (): Promise<boolean> => {
+      try {
+        const remote = await Promise.resolve().then(() => api.getDraft());
+        if (!isCurrent(generationRef, target.generation, sessionRef.current)) {
+          return false;
         }
+        if (draftsEqual(remote.draft, target.draft)) {
+          if (inFlightRef.current?.operation === operation) {
+            inFlightRef.current = null;
+          }
+          confirmedRef.current = remote;
+          const current = draftRef.current;
+          if (current && draftsEqual(current, remote.draft)) {
+            setStatus('clean');
+            setMessage(null);
+          } else {
+            setStatus('dirty');
+            setMessage('El último guardado llegó. También hay cambios posteriores pendientes.');
+          }
+          reconciliationRef.current = null;
+          setRetryMode(null);
+          return true;
+        }
+        if (remote.version <= target.expectedVersion) {
+          if (inFlightRef.current?.operation === operation) {
+            inFlightRef.current = null;
+          }
+          setStatus('error');
+          setMessage('No se confirmó el guardado. Podés reintentar con la misma versión.');
+          reconciliationRef.current = target;
+          setRetryMode('save');
+          return false;
+        }
+        if (inFlightRef.current?.operation === operation) {
+          inFlightRef.current = null;
+        }
+        setConflict(remote);
+        setStatus('conflict');
+        setMessage('Otra pestaña guardó una versión distinta. Elegí cómo resolver el conflicto.');
         reconciliationRef.current = null;
         setRetryMode(null);
-        return true;
-      }
-      if (remote.version <= target.expectedVersion) {
-        setStatus('error');
-        setMessage('No se confirmó el guardado. Podés reintentar con la misma versión.');
+        return false;
+      } catch (error) {
+        if (!isCurrent(generationRef, target.generation, sessionRef.current)) {
+          return false;
+        }
+        if (inFlightRef.current?.operation === operation) {
+          inFlightRef.current = null;
+        }
+        if (error instanceof DraftApiFailure && error.code === 'authentication') {
+          setStatus('error');
+          setMessage(error.message);
+          onAuthRequiredRef.current?.();
+        } else {
+          setStatus('error');
+          setMessage('No se pudo comprobar el guardado. Podés reintentar.');
+        }
         reconciliationRef.current = target;
-        setRetryMode('save');
+        setRetryMode('reconcile');
         return false;
+      } finally {
+        if (inFlightRef.current?.operation === operation) {
+          inFlightRef.current = null;
+        }
       }
-      setConflict(remote);
-      setStatus('conflict');
-      setMessage('Otra pestaña guardó una versión distinta. Elegí cómo resolver el conflicto.');
-      reconciliationRef.current = null;
-      setRetryMode(null);
-      return false;
-    } catch (error) {
-      if (!isCurrent(generationRef, target.generation, sessionRef.current)) {
-        return false;
-      }
-      if (error instanceof DraftApiFailure && error.code === 'authentication') {
-        setStatus('error');
-        setMessage(error.message);
-        onAuthRequiredRef.current?.();
-      } else {
-        setStatus('error');
-        setMessage('No se pudo comprobar el guardado. Podés reintentar.');
-      }
-      reconciliationRef.current = target;
-      setRetryMode('reconcile');
-      return false;
-    }
+    })();
+    inFlightRef.current = { generation: target.generation, promise, operation };
+    return promise;
   };
 
   const sendSave = (): Promise<boolean> => {
@@ -213,7 +257,8 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
       !current ||
       !currentConfirmed ||
       pausedRef.current ||
-      draftsEqual(current, currentConfirmed.draft)
+      (draftsEqual(current, currentConfirmed.draft) &&
+        !(reconciliationRef.current !== null && retryMode === 'save'))
     ) {
       return Promise.resolve(true);
     }
@@ -228,7 +273,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
 
     const sentDraft = cloneDraft(current);
     const expectedVersion = currentConfirmed.version;
-    let canScheduleQueuedSave = false;
+    const operation = {};
     setStatus('saving');
     setMessage(null);
     const promise = (async (): Promise<boolean> => {
@@ -237,6 +282,10 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
         if (!isCurrent(generationRef, generation, sessionRef.current)) {
           return false;
         }
+        if (inFlightRef.current?.generation === generation) {
+          inFlightRef.current = null;
+        }
+        reconciliationRef.current = null;
         confirmedRef.current = saved;
         const latest = draftRef.current;
         if (latest && draftsEqual(latest, saved.draft)) {
@@ -247,14 +296,17 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
           setMessage('Guardado. Hay cambios posteriores pendientes.');
         }
         setRetryMode(null);
-        canScheduleQueuedSave = true;
         return true;
       } catch (error) {
         if (!isCurrent(generationRef, generation, sessionRef.current)) {
           return false;
         }
+        if (inFlightRef.current?.generation === generation) {
+          inFlightRef.current = null;
+        }
         if (error instanceof DraftApiFailure && error.code === 'conflict') {
           if (error.current) {
+            reconciliationRef.current = null;
             setConflict(error.current);
             setStatus('conflict');
             setMessage(
@@ -276,9 +328,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
         if (error instanceof DraftApiFailure && error.ambiguous) {
           reconciliationRef.current = { generation, expectedVersion, draft: sentDraft };
           setRetryMode('reconcile');
-          const reconciled = await reconcile(reconciliationRef.current);
-          canScheduleQueuedSave = reconciled;
-          return reconciled;
+          return reconcile(reconciliationRef.current);
         }
         setStatus('error');
         setMessage(
@@ -286,27 +336,9 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
         );
         setRetryMode('save');
         return false;
-      } finally {
-        if (inFlightRef.current?.generation === generation) {
-          inFlightRef.current = null;
-          const latest = draftRef.current;
-          const saved = confirmedRef.current;
-          if (
-            canScheduleQueuedSave &&
-            latest &&
-            saved &&
-            !draftsEqual(latest, saved.draft) &&
-            !pausedRef.current &&
-            generationRef.current === generation
-          ) {
-            window.setTimeout(() => {
-              void sendSave();
-            }, 600);
-          }
-        }
       }
     })();
-    inFlightRef.current = { generation, promise };
+    inFlightRef.current = { generation, promise, operation };
     return promise;
   };
 
@@ -323,9 +355,21 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
           return false;
         }
       } else {
+        const reconciliation = reconciliationRef.current;
+        if (reconciliation && retryMode === 'reconcile') {
+          if (!(await reconcile(reconciliation))) {
+            return false;
+          }
+          continue;
+        }
         const current = draftRef.current;
         const currentConfirmed = confirmedRef.current;
-        if (!current || !currentConfirmed || draftsEqual(current, currentConfirmed.draft)) {
+        if (
+          !current ||
+          !currentConfirmed ||
+          (draftsEqual(current, currentConfirmed.draft) &&
+            !(reconciliation !== null && retryMode === 'save'))
+        ) {
           return true;
         }
         if (!(await sendSave())) {
@@ -343,7 +387,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
 
   const retry = (): void => {
     const target = reconciliationRef.current;
-    if (retryMode === 'reconcile' && target) {
+    if (target && retryMode === 'reconcile') {
       void reconcile(target);
       return;
     }
@@ -358,7 +402,13 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     hasUnconfirmedChanges: () => {
       const current = draftRef.current;
       const saved = confirmedRef.current;
-      return Boolean(current && saved && !draftsEqual(current, saved.draft));
+      return Boolean(
+        current &&
+        saved &&
+        (inFlightRef.current !== null ||
+          reconciliationRef.current !== null ||
+          !draftsEqual(current, saved.draft)),
+      );
     },
     discardPending: () => {
       const replacement = conflict ?? confirmedRef.current;
@@ -391,7 +441,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
         ) {
           return;
         }
-        setLoadedSnapshot(snapshot);
+        setLoadedSnapshotRef.current(snapshot);
       })
       .catch((error: unknown) => {
         if (
@@ -430,7 +480,9 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     const hasPending =
       draft !== null &&
       saved !== null &&
-      !draftsEqual(draft, saved.draft) &&
+      (inFlightRef.current !== null ||
+        reconciliationRef.current !== null ||
+        !draftsEqual(draft, saved.draft)) &&
       status !== 'loading' &&
       status !== 'clean';
     if (!hasPending) {
@@ -488,7 +540,8 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
           <h2 id="robot-editor-title">Prepará tu robot</h2>
           <p className="editor-intro">
             Elegí sus habilidades y escribí las instrucciones que recibirá. Los cambios se guardan
-            automáticamente.
+            automáticamente. Por ahora podés preparar y guardar tu robot; ejecutar el recorrido
+            todavía no está disponible.
           </p>
         </div>
         <span className={`save-state save-state-${status}`} role="status" aria-live="polite">

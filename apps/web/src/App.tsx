@@ -262,6 +262,7 @@ export function App({
   const draftApiRef = useRef<DraftApi | null>(draftApi ?? null);
   const currentSessionRef = useRef<AuthSession | null>(null);
   const editorRef = useRef<RobotEditorHandle | null>(null);
+  const logoutAttemptRef = useRef(0);
   const draftApiFactoryRef = useRef(draftApiFactory);
   const confirmationRef = useRef<PendingConfirmationClient | null>(confirmationClient ?? null);
   const initializationRef = useRef<Promise<AuthSession | null> | null>(null);
@@ -448,6 +449,7 @@ export function App({
   };
 
   const performLogout = async () => {
+    logoutAttemptRef.current += 1;
     const client = clientRef.current;
     currentSessionRef.current = null;
     setSession(null);
@@ -480,8 +482,13 @@ export function App({
   };
 
   const waitAndLogout = async () => {
+    const attempt = logoutAttemptRef.current + 1;
+    logoutAttemptRef.current = attempt;
     setLogoutChoiceBusy(true);
     const saved = await editorRef.current?.flushPending();
+    if (logoutAttemptRef.current !== attempt) {
+      return;
+    }
     setLogoutChoiceBusy(false);
     if (saved) {
       await performLogout();
@@ -489,6 +496,8 @@ export function App({
   };
 
   const discardAndLogout = () => {
+    logoutAttemptRef.current += 1;
+    setLogoutChoiceBusy(false);
     editorRef.current?.discardPending();
     void performLogout();
   };
@@ -652,12 +661,7 @@ export function App({
             >
               Reintentar guardado
             </button>
-            <button
-              className="text-button"
-              type="button"
-              onClick={discardAndLogout}
-              disabled={logoutChoiceBusy}
-            >
+            <button className="text-button" type="button" onClick={discardAndLogout}>
               Descartar cambios locales y salir
             </button>
           </div>

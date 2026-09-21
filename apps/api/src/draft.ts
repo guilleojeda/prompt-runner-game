@@ -35,6 +35,16 @@ export class DraftStorageError extends Error {
   }
 }
 
+export class DraftIncompatibleError extends Error {
+  public constructor(
+    message = 'El borrador guardado no es compatible con la versión actual.',
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = 'DraftIncompatibleError';
+  }
+}
+
 const keyFor = (sub: string): Record<string, AttributeValue> =>
   marshall({ PK: `USER#${sub}`, SK: 'DRAFT' });
 
@@ -45,16 +55,16 @@ const isConditionalFailure = (error: unknown): boolean =>
 const readSnapshot = (item: Record<string, unknown>): DraftSnapshot => {
   const version = item.version;
   if (typeof version !== 'number' || !Number.isSafeInteger(version) || version < 1) {
-    throw new DraftStorageError('El registro guardado tiene una versión inválida.');
+    throw new DraftIncompatibleError('El borrador guardado tiene una versión incompatible.');
   }
   if (typeof item.updatedAt !== 'string' || item.updatedAt.length === 0) {
-    throw new DraftStorageError('El registro guardado no tiene una fecha válida.');
+    throw new DraftIncompatibleError();
   }
   let draft: RobotDraft;
   try {
     draft = validateDraft(item.draft);
   } catch (error) {
-    throw new DraftStorageError('El registro guardado tiene una configuración inválida.', {
+    throw new DraftIncompatibleError('El borrador guardado tiene una configuración incompatible.', {
       cause: error,
     });
   }
@@ -95,10 +105,10 @@ export const createDynamoDraftStore = (options: DynamoDraftStoreOptions = {}): D
     try {
       return readSnapshot(unmarshall(response.Item));
     } catch (error) {
-      if (error instanceof DraftStorageError) {
+      if (error instanceof DraftIncompatibleError) {
         throw error;
       }
-      throw new DraftStorageError('No se pudo interpretar la configuración.', { cause: error });
+      throw new DraftIncompatibleError(undefined, { cause: error });
     }
   };
 

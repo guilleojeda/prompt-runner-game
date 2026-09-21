@@ -114,4 +114,49 @@ describe('DraftApiClient', () => {
       current: undefined,
     });
   });
+
+  it('treats a successful PUT with an unreadable or invalid body as ambiguous', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('{broken', { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ version: 0, draft: { instructions: 'invalid' } }), {
+          status: 200,
+        }),
+      );
+    const client = new DraftApiClient(config, {
+      tokenProvider: () => 'access-token',
+      fetch: fetchImpl,
+    });
+
+    await expect(client.putDraft(0, createDefaultDraft())).rejects.toMatchObject({
+      code: 'server',
+      ambiguous: true,
+    });
+    await expect(client.putDraft(0, createDefaultDraft())).rejects.toMatchObject({
+      code: 'server',
+      ambiguous: true,
+    });
+  });
+
+  it('preserves a stored draft incompatibility message on GET', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          code: 'stored_draft_incompatible',
+          message: 'La versión guardada no es compatible.',
+        }),
+        { status: 500 },
+      ),
+    );
+    const client = new DraftApiClient(config, {
+      tokenProvider: () => 'access-token',
+      fetch: fetchImpl,
+    });
+
+    await expect(client.getDraft()).rejects.toMatchObject({
+      code: 'server',
+      message: 'La versión guardada no es compatible.',
+    });
+  });
 });
