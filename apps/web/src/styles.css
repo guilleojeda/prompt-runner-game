@@ -91,6 +91,252 @@ h1 {
   box-shadow: 0 1.5rem 4rem rgba(0, 0, 0, 0.22);
 }
 
+.robot-editor {
+  width: min(100%, 62rem);
+  padding: 1.5rem;
+  border: 1px solid rgba(242, 239, 232, 0.14);
+  border-radius: 1rem;
+  background: rgba(242, 239, 232, 0.07);
+  box-shadow: 0 1.5rem 4rem rgba(0, 0, 0, 0.22);
+}
+
+.editor-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1.5rem;
+  margin-bottom: 1.4rem;
+}
+
+.editor-heading h2 {
+  margin-bottom: 0.45rem;
+  color: #f7f1e1;
+  font-size: clamp(1.5rem, 3vw, 2rem);
+}
+
+.editor-intro,
+.field-help,
+.editor-hint,
+.editor-loading,
+.editor-message,
+.editor-paused {
+  color: #b9b4a8;
+  line-height: 1.5;
+}
+
+.editor-intro {
+  max-width: 42rem;
+  margin-bottom: 0;
+}
+
+.save-state {
+  flex: 0 0 auto;
+  padding: 0.45rem 0.65rem;
+  border: 1px solid rgba(216, 179, 106, 0.5);
+  border-radius: 999px;
+  color: #f2c879;
+  font-size: 0.84rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.save-state-clean {
+  border-color: rgba(155, 197, 158, 0.55);
+  color: #bde0bf;
+}
+
+.save-state-error,
+.save-state-conflict {
+  border-color: rgba(237, 146, 128, 0.6);
+  color: #f0b0a2;
+}
+
+.editor-form {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.editor-form fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 1rem;
+  border: 1px solid rgba(242, 239, 232, 0.16);
+  border-radius: 0.7rem;
+}
+
+.editor-form legend {
+  padding: 0 0.4rem;
+  color: #f7f1e1;
+  font-weight: 700;
+}
+
+.editor-form label {
+  display: block;
+  margin-bottom: 0.4rem;
+  color: #f2efe8;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.editor-form textarea {
+  display: block;
+  width: 100%;
+  min-height: 2.8rem;
+  resize: vertical;
+  padding: 0.65rem 0.7rem;
+  border: 1px solid rgba(242, 239, 232, 0.28);
+  border-radius: 0.45rem;
+  color: #f7f1e1;
+  background: rgba(20, 19, 15, 0.65);
+  font: inherit;
+  line-height: 1.45;
+}
+
+.editor-form textarea:focus {
+  border-color: #d8b36a;
+  outline: 3px solid rgba(242, 200, 121, 0.3);
+  outline-offset: 1px;
+}
+
+.editor-form fieldset:disabled {
+  opacity: 0.65;
+}
+
+.field-help {
+  margin: 0 0 0.85rem;
+  font-size: 0.9rem;
+}
+
+.skill-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+.skill-card {
+  min-width: 0;
+  padding: 0.85rem;
+  border: 1px solid rgba(242, 239, 232, 0.12);
+  border-radius: 0.6rem;
+  background: rgba(20, 19, 15, 0.3);
+}
+
+.skill-card-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.8rem;
+  margin-bottom: 0.7rem;
+}
+
+.skill-toggle {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 0.55rem;
+  margin: 0 !important;
+  font-size: 1rem !important;
+}
+
+.skill-toggle input {
+  width: 1.1rem;
+  height: 1.1rem;
+  accent-color: #d8b36a;
+}
+
+.skill-help {
+  color: #8f8b81;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  text-align: right;
+}
+
+.byte-count {
+  color: #8f8b81;
+  font-size: 0.82rem;
+  text-align: right;
+}
+
+.byte-count-over {
+  color: #f0b0a2;
+}
+
+.editor-hint,
+.editor-message,
+.editor-paused {
+  margin: 0 0 1rem;
+  padding: 0.7rem 0.8rem;
+  border-radius: 0.45rem;
+}
+
+.editor-hint,
+.editor-paused {
+  border: 1px solid rgba(216, 179, 106, 0.35);
+  background: rgba(216, 179, 106, 0.12);
+}
+
+.editor-message {
+  border: 1px solid rgba(237, 146, 128, 0.45);
+  color: #f0b0a2;
+  background: rgba(118, 47, 42, 0.22);
+}
+
+.conflict-card {
+  margin-top: 1.25rem;
+  padding: 1rem;
+  border: 1px solid rgba(237, 146, 128, 0.55);
+  border-radius: 0.7rem;
+  background: rgba(118, 47, 42, 0.2);
+}
+
+.conflict-card h3 {
+  margin: 0 0 0.4rem;
+  color: #f7f1e1;
+}
+
+.conflict-card p {
+  color: #d4c9bc;
+  line-height: 1.5;
+}
+
+.conflict-preview {
+  margin: 0.8rem 0 1rem;
+  padding: 0.7rem;
+  border-left: 3px solid #d8b36a;
+  background: rgba(20, 19, 15, 0.35);
+}
+
+.conflict-preview p {
+  margin: 0.35rem 0 0;
+  white-space: pre-wrap;
+}
+
+.conflict-preview li {
+  white-space: pre-wrap;
+}
+
+.editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  align-items: center;
+}
+
+.logout-prompt {
+  display: grid;
+  gap: 0.8rem;
+  width: min(100%, 62rem);
+}
+
+.logout-prompt h2 {
+  margin: 0 0 0.4rem;
+  color: #f7f1e1;
+  font-size: 1.15rem;
+}
+
+.logout-prompt p {
+  margin: 0;
+}
+
 .auth-card-content {
   min-width: 0;
 }
@@ -324,5 +570,18 @@ button:disabled {
 
   .auth-card {
     align-items: flex-start;
+  }
+
+  .editor-heading {
+    display: block;
+  }
+
+  .save-state {
+    display: inline-block;
+    margin-top: 0.8rem;
+  }
+
+  .skill-list {
+    grid-template-columns: 1fr;
   }
 }

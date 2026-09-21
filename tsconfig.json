@@ -13,5 +13,12 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["apps/web/src", "apps/web/vite.config.ts", "infra/bin", "infra/src"]
+  "include": [
+    "apps/web/src",
+    "apps/web/vite.config.ts",
+    "infra/bin",
+    "infra/src",
+    "apps/api/src",
+    "shared"
+  ]
 }

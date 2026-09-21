@@ -4,10 +4,14 @@ import { Construct } from 'constructs';
 
 export const COGNITO_DOMAIN_PREFIX = 'prompt-runner-game';
 export const LOCAL_CALLBACK_ORIGIN = 'http://localhost:5173/';
+export const ROBOT_SCOPE_IDENTIFIER = 'prompt-runner';
+export const ROBOT_SCOPE_NAME = 'robot';
+export const ROBOT_SCOPE = `${ROBOT_SCOPE_IDENTIFIER}/${ROBOT_SCOPE_NAME}`;
 
 export interface AuthenticationResources {
   readonly userPool: cognito.CfnUserPool;
   readonly userPoolClient: cognito.CfnUserPoolClient;
+  readonly resourceServer: cognito.CfnUserPoolResourceServer;
   readonly userPoolDomain: cognito.CfnUserPoolDomain;
   readonly managedLoginBranding: cognito.CfnManagedLoginBranding;
   readonly config: {
@@ -65,7 +69,7 @@ export function createAuthenticationResources(
     generateSecret: false,
     allowedOAuthFlowsUserPoolClient: true,
     allowedOAuthFlows: ['code'],
-    allowedOAuthScopes: ['openid', 'email'],
+    allowedOAuthScopes: ['openid', 'email', ROBOT_SCOPE],
     callbackUrLs: callbackUrls,
     logoutUrLs: callbackUrls,
     supportedIdentityProviders: ['COGNITO'],
@@ -73,6 +77,19 @@ export function createAuthenticationResources(
     writeAttributes: ['email'],
     enableTokenRevocation: true,
   });
+
+  const resourceServer = new cognito.CfnUserPoolResourceServer(scope, 'RobotResourceServer', {
+    identifier: ROBOT_SCOPE_IDENTIFIER,
+    name: 'prompt-runner-game API',
+    userPoolId: userPool.ref,
+    scopes: [
+      {
+        scopeName: ROBOT_SCOPE_NAME,
+        scopeDescription: 'Read and save the signed-in user robot draft.',
+      },
+    ],
+  });
+  userPoolClient.addDependency(resourceServer);
 
   const userPoolDomain = new cognito.CfnUserPoolDomain(scope, 'UserPoolDomain', {
     userPoolId: userPool.ref,
@@ -96,5 +113,5 @@ export function createAuthenticationResources(
     logoutUri: props.productionWebOrigin,
   };
 
-  return { userPool, userPoolClient, userPoolDomain, managedLoginBranding, config };
+  return { userPool, userPoolClient, resourceServer, userPoolDomain, managedLoginBranding, config };
 }

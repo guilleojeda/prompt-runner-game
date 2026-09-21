@@ -8,6 +8,8 @@ import {
   createAuthClient,
   loadAuthConfig,
 } from './auth.js';
+import { createDraftApiClient, type DraftApi } from './draft-api.js';
+import { RobotEditor, type RobotEditorHandle } from './RobotEditor.js';
 import {
   CognitoPendingConfirmationClient,
   ConfirmationFailure,
@@ -27,9 +29,11 @@ type ConfirmationOperation = 'confirm' | 'resend' | null;
 
 export interface AppProps {
   authClient?: AuthClient;
+  draftApi?: DraftApi;
   confirmationClient?: PendingConfirmationClient;
   configLoader?: () => Promise<AuthConfig>;
   clientFactory?: (config: AuthConfig) => AuthClient;
+  draftApiFactory?: (config: AuthConfig, tokenProvider: () => string) => DraftApi;
   confirmationClientFactory?: (config: AuthConfig) => PendingConfirmationClient;
 }
 
@@ -230,9 +234,11 @@ function ErrorNotice({
 
 export function App({
   authClient,
+  draftApi,
   confirmationClient,
   configLoader = loadAuthConfig,
   clientFactory = createAuthClient,
+  draftApiFactory = (config, tokenProvider) => createDraftApiClient(config, tokenProvider),
   confirmationClientFactory = createDefaultConfirmationClient,
 }: AppProps) {
   const [phase, setPhase] = useState<AppPhase>('loading');
@@ -245,7 +251,18 @@ export function App({
   const [confirmationBusy, setConfirmationBusy] = useState(false);
   const [confirmationMessage, setConfirmationMessage] = useState<string | null>(null);
   const [confirmationOperation, setConfirmationOperation] = useState<ConfirmationOperation>(null);
+  const [renewing, setRenewing] = useState(false);
+  const [logoutPrompt, setLogoutPrompt] = useState(false);
+  const [logoutChoiceBusy, setLogoutChoiceBusy] = useState(false);
+  const [apiAuthError, setApiAuthError] = useState(false);
+  const [editorApi, setEditorApi] = useState<DraftApi | null>(draftApi ?? null);
+  const [editorConfig, setEditorConfig] = useState<AuthConfig | null>(null);
   const clientRef = useRef<AuthClient | null>(authClient ?? null);
+  const configRef = useRef<AuthConfig | null>(null);
+  const draftApiRef = useRef<DraftApi | null>(draftApi ?? null);
+  const currentSessionRef = useRef<AuthSession | null>(null);
+  const editorRef = useRef<RobotEditorHandle | null>(null);
+  const draftApiFactoryRef = useRef(draftApiFactory);
   const confirmationRef = useRef<PendingConfirmationClient | null>(confirmationClient ?? null);
   const initializationRef = useRef<Promise<AuthSession | null> | null>(null);
 
@@ -256,12 +273,23 @@ export function App({
         let client = clientRef.current;
         if (!client) {
           const config = await configLoader();
+          configRef.current = config;
+          setEditorConfig(config);
           const nextClient = clientFactory(config);
           const nextConfirmationClient =
             confirmationRef.current ?? confirmationClientFactory(config);
           clientRef.current = nextClient;
           confirmationRef.current = nextConfirmationClient;
           client = nextClient;
+          draftApiRef.current ??= draftApiFactoryRef.current(
+            config,
+            () => currentSessionRef.current?.user.access_token ?? '',
+          );
+          setEditorApi(draftApiRef.current);
+        } else if (draftApiRef.current && !configRef.current) {
+          const config = await configLoader();
+          configRef.current = config;
+          setEditorConfig(config);
         }
         setHasClient(true);
         return client.initialize();
@@ -287,7 +315,10 @@ export function App({
     };
 
     function applySession(session: AuthSession | null): void {
+      currentSessionRef.current = session;
       setSession(session);
+      setRenewing(false);
+      setApiAuthError(false);
       setPhase(session ? 'account' : 'visitor');
       setError(null);
       setRetryAction(null);
@@ -303,25 +334,30 @@ export function App({
 
     const delay = Math.max(1, expiresAt * 1000 - Date.now());
     const timer = window.setTimeout(() => {
-      setSession(null);
+      setRenewing(true);
       setError(null);
       setPhase('loading');
       void client
         .initialize()
         .then((renewedSession) => {
-          setSession(renewedSession);
-          setPhase(renewedSession ? 'account' : 'visitor');
+          const sameIdentity =
+            renewedSession !== null && renewedSession.identity.sub === session.identity.sub;
+          currentSessionRef.current = sameIdentity ? renewedSession : null;
+          setRenewing(false);
+          setSession(sameIdentity ? renewedSession : null);
+          setPhase(sameIdentity ? 'account' : 'visitor');
           setRetryAction(null);
         })
         .catch((renewalError: unknown) => {
           setError(errorMessage(renewalError));
           setRetryAction(retryActionForError(renewalError, true));
+          setRenewing(true);
           setPhase('error');
         });
     }, delay);
 
     return () => window.clearTimeout(timer);
-  }, [phase, session?.user.expires_at]);
+  }, [phase, session?.identity.sub, session?.user.expires_at]);
 
   const beginLogin = async () => {
     const client = clientRef.current;
@@ -411,9 +447,12 @@ export function App({
     }
   };
 
-  const logout = async () => {
+  const performLogout = async () => {
     const client = clientRef.current;
+    currentSessionRef.current = null;
     setSession(null);
+    setRenewing(false);
+    setLogoutPrompt(false);
     if (!client) {
       setPhase('visitor');
       return;
@@ -432,6 +471,28 @@ export function App({
     }
   };
 
+  const logout = () => {
+    if (editorRef.current?.hasUnconfirmedChanges()) {
+      setLogoutPrompt(true);
+      return;
+    }
+    void performLogout();
+  };
+
+  const waitAndLogout = async () => {
+    setLogoutChoiceBusy(true);
+    const saved = await editorRef.current?.flushPending();
+    setLogoutChoiceBusy(false);
+    if (saved) {
+      await performLogout();
+    }
+  };
+
+  const discardAndLogout = () => {
+    editorRef.current?.discardPending();
+    void performLogout();
+  };
+
   const restoreSession = async () => {
     const client = clientRef.current;
     if (!client) {
@@ -440,14 +501,23 @@ export function App({
       setError('La configuración de acceso todavía no está lista.');
       return;
     }
-    setSession(null);
+    if (!renewing) {
+      setSession(null);
+      currentSessionRef.current = null;
+    }
     setError(null);
     setPhase('loading');
     try {
       const restoredSession = await client.initialize();
-      setSession(restoredSession);
+      const previous = currentSessionRef.current;
+      const sameIdentity =
+        restoredSession !== null &&
+        (previous === null || restoredSession.identity.sub === previous.identity.sub);
+      currentSessionRef.current = sameIdentity ? restoredSession : null;
+      setRenewing(false);
+      setSession(sameIdentity ? restoredSession : null);
       setRetryAction(null);
-      setPhase(restoredSession ? 'account' : 'visitor');
+      setPhase(sameIdentity ? 'account' : 'visitor');
     } catch (restoreError) {
       setError(errorMessage(restoreError));
       setRetryAction(retryActionForError(restoreError, true));
@@ -505,7 +575,93 @@ export function App({
         />
       )}
       {phase === 'account' && session && (
-        <AccountCard identity={session.identity} onLogout={() => void logout()} busy={false} />
+        <AccountCard identity={session.identity} onLogout={logout} busy={false} />
+      )}
+      {session &&
+        (phase === 'account' ||
+          phase === 'loading' ||
+          phase === 'error' ||
+          phase === 'signing-in') && (
+          <>
+            {editorApi && editorConfig && session.user.scopes.includes(editorConfig.apiScope) && (
+              <RobotEditor
+                ref={editorRef}
+                api={editorApi}
+                session={session}
+                paused={renewing || phase !== 'account'}
+                onAuthRequired={() => setApiAuthError(true)}
+              />
+            )}
+            {editorApi && editorConfig && !session.user.scopes.includes(editorConfig.apiScope) && (
+              <section className="notice error-notice" role="alert">
+                <p>Para guardar tu robot, necesitás volver a ingresar con tu cuenta.</p>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={() => void beginLogin()}
+                >
+                  Volver a ingresar
+                </button>
+              </section>
+            )}
+            {apiAuthError && (
+              <section className="notice error-notice" role="alert">
+                <p>
+                  La sesión dejó de tener acceso a la configuración. Volvé a ingresar para
+                  continuar.
+                </p>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={() => void beginLogin()}
+                >
+                  Volver a ingresar
+                </button>
+              </section>
+            )}
+          </>
+        )}
+      {logoutPrompt && session && (
+        <section
+          className="notice logout-prompt"
+          role="alert"
+          aria-labelledby="logout-prompt-title"
+        >
+          <div>
+            <h2 id="logout-prompt-title">Tenés cambios sin confirmar</h2>
+            <p>
+              Elegí si querés esperar el guardado, reintentarlo o descartar esos cambios antes de
+              cerrar sesión. Una escritura que ya salió puede haberse guardado; al descartar se
+              pierden los cambios locales pendientes.
+            </p>
+          </div>
+          <div className="editor-actions">
+            <button
+              className="primary-button"
+              type="button"
+              onClick={() => void waitAndLogout()}
+              disabled={logoutChoiceBusy}
+            >
+              {logoutChoiceBusy ? 'Esperando guardado…' : 'Esperar guardado'}
+            </button>
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => void waitAndLogout()}
+              disabled={logoutChoiceBusy}
+            >
+              Reintentar guardado
+            </button>
+            <button
+              className="text-button"
+              type="button"
+              onClick={discardAndLogout}
+              disabled={logoutChoiceBusy}
+            >
+              Descartar cambios locales y salir
+            </button>
+          </div>
+        </section>
       )}
       {phase === 'logging-out' && session === null && (
         <section className="notice" role="status" aria-live="polite">

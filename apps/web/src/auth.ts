@@ -12,6 +12,8 @@ export interface AuthConfig {
   domain: string;
   redirectUri: string;
   logoutUri: string;
+  apiBaseUrl: string;
+  apiScope: string;
 }
 
 export interface AuthIdentity {
@@ -61,6 +63,8 @@ const CONFIG_KEYS: readonly (keyof AuthConfig)[] = [
   'domain',
   'redirectUri',
   'logoutUri',
+  'apiBaseUrl',
+  'apiScope',
 ];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -96,6 +100,7 @@ export function validateAuthConfig(value: unknown): AuthConfig {
   const domain = isAbsoluteUrl(config.domain);
   const redirectUri = isAbsoluteUrl(config.redirectUri);
   const logoutUri = isAbsoluteUrl(config.logoutUri);
+  const apiBaseUrl = isAbsoluteUrl(config.apiBaseUrl);
 
   if (!issuer || issuer.protocol !== 'https:' || issuer.search || issuer.hash) {
     throw new AuthFailure('configuration', 'El emisor de acceso no es una URL HTTPS válida.');
@@ -129,6 +134,12 @@ export function validateAuthConfig(value: unknown): AuthConfig {
   ) {
     throw new AuthFailure('configuration', 'La URL de retorno de acceso no es válida.');
   }
+  if (!apiBaseUrl || !isSecureOrLocalhost(apiBaseUrl) || apiBaseUrl.search || apiBaseUrl.hash) {
+    throw new AuthFailure('configuration', 'La URL de la API no es válida.');
+  }
+  if (!/^[-a-zA-Z0-9_./]+$/u.test(config.apiScope) || config.apiScope.includes(' ')) {
+    throw new AuthFailure('configuration', 'El alcance de la API no es válido.');
+  }
 
   return {
     issuer: config.issuer,
@@ -136,6 +147,8 @@ export function validateAuthConfig(value: unknown): AuthConfig {
     domain: config.domain,
     redirectUri: config.redirectUri,
     logoutUri: config.logoutUri,
+    apiBaseUrl: config.apiBaseUrl,
+    apiScope: config.apiScope,
   };
 }
 
@@ -258,7 +271,7 @@ function managerSettings(config: AuthConfig, storage: Storage): UserManagerSetti
     redirect_uri: config.redirectUri,
     post_logout_redirect_uri: config.logoutUri,
     response_type: 'code',
-    scope: 'openid email',
+    scope: `openid email ${config.apiScope}`,
     extraQueryParams: { lang: 'es' },
     // oidc-client-ts removes nonce from the cached profile by default; retain it so the
     // callback can compare the ID token nonce with the one generated for this transaction.

@@ -16,6 +16,8 @@ const config = {
   domain: 'https://prompt-runner.auth.us-east-1.amazoncognito.com',
   redirectUri: 'https://d1ilpq1n58tzqo.cloudfront.net/',
   logoutUri: 'https://d1ilpq1n58tzqo.cloudfront.net/',
+  apiBaseUrl: 'https://api.example.test/',
+  apiScope: 'prompt-runner/robot',
 };
 
 type UserInput = ConstructorParameters<typeof User>[0];
@@ -161,6 +163,14 @@ function productionClientHarness(
 }
 
 describe('auth configuration and Cognito boundaries', () => {
+  it('accepts the API Gateway endpoint without a trailing slash', () => {
+    const deployedConfig = {
+      ...config,
+      apiBaseUrl: 'https://example.execute-api.us-east-1.amazonaws.com',
+    };
+    expect(validateAuthConfig(deployedConfig).apiBaseUrl).toBe(deployedConfig.apiBaseUrl);
+  });
+
   beforeEach(() => {
     window.sessionStorage.clear();
     vi.restoreAllMocks();
@@ -209,7 +219,7 @@ describe('auth configuration and Cognito boundaries', () => {
     expect(redirect.pathname).toBe('/oauth2/authorize');
     expect(redirect.searchParams.get('response_type')).toBe('code');
     expect(redirect.searchParams.get('client_id')).toBe(config.clientId);
-    expect(redirect.searchParams.get('scope')).toBe('openid email');
+    expect(redirect.searchParams.get('scope')).toBe('openid email prompt-runner/robot');
     expect(redirect.searchParams.get('lang')).toBe('es');
     expect(redirect.searchParams.get('state')).toBeTruthy();
     expect(redirect.searchParams.get('nonce')).toBeTruthy();

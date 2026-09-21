@@ -1,6 +1,6 @@
 # Experiencia y alcance
 
-Especificación vigente de la experiencia. La implementación está pendiente. Se relaciona con [intentos](intentos.md), [agente](agente.md), [reglas del juego](juego.md), [consumo y puntaje](consumo-y-puntaje.md) y [plataforma](plataforma.md).
+Especificación vigente de la experiencia. El acceso y la preparación persistida del robot están implementados. El circuito de partidas y animación sigue pendiente. Se relaciona con [intentos](intentos.md), [agente](agente.md), [reglas del juego](juego.md), [consumo y puntaje](consumo-y-puntaje.md) y [plataforma](plataforma.md).
 
 ## Propósito y participantes
 
@@ -16,6 +16,14 @@ La interfaz está en español y debe poder entenderse sin conocer AWS ni program
 - **Juego individual:** cada participante entra a la aplicación web desde un navegador de escritorio, crea una cuenta con email verificado y usa las mismas mecánicas y posibilidades de edición. El registro, la cuota y el guardado se definen en [plataforma](plataforma.md).
 
 La primera versión no requiere soporte para celulares o tablets. El booth y el juego individual usan las mismas reglas y los dos recorridos previstos; sólo cambia quién opera la interfaz. La pantalla compartida debe mantener texto reconocible, obstáculos distinguibles y resultados visibles desde el proyector.
+
+## Preparación disponible
+
+La vista privada muestra las habilidades, sus descripciones e instrucciones y guarda automáticamente al dejar de escribir durante 600 ms. La persona puede seguir editando mientras se guarda una versión anterior; el aviso Guardado sólo corresponde al texto visible confirmado por el servidor. Hay estados de carga, cambios pendientes, guardado, error con reintento, límite de bytes y conflicto entre pestañas.
+
+Un conflicto conserva el texto local y permite revisar la versión guardada antes de elegir cuál conservar. La resolución vuelve a comprobar la versión para no pisar una tercera edición. La renovación de la misma sesión pausa las escrituras y oculta la vista privada sin descartar cambios pendientes; otra identidad nunca hereda esos cambios. Al cerrar sesión con cambios sin confirmar se ofrece esperar/reintentar o descartar explícitamente los cambios locales pendientes. Una escritura ya enviada puede haber quedado guardada; salir no promete revertirla y no espera indefinidamente a la red. La cola local se detiene. La advertencia nativa al salir no garantiza guardar después de un cierre abrupto.
+
+La pantalla está en español y se opera con teclado. No ofrece Probar, selector de nivel, historial o Animación hasta que esas capacidades estén disponibles. El circuito objetivo se mantiene a continuación.
 
 ## Circuito de una partida
 

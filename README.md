@@ -4,7 +4,7 @@ Juego educativo de AWS User Group AI Argentina. El participante configura las ha
 
 **Web publicada:** [Abrir la aplicación](https://d1ilpq1n58tzqo.cloudfront.net).
 
-**Estado del proyecto:** acceso mediante Cognito y circuito de publicación automático. La aplicación permite crear una cuenta, confirmar el email, iniciar y cerrar sesión y recuperar la contraseña. La configuración del robot y las partidas descritas a continuación siguen siendo la especificación objetivo. El nombre del juego es provisional.
+**Estado del proyecto:** acceso mediante Cognito, editor del robot con guardado en servidor y publicación automática. La aplicación permite crear una cuenta, confirmar el email, iniciar/cerrar sesión, recuperar la contraseña y preparar instrucciones y habilidades. La ejecución de partidas descrita a continuación sigue siendo la especificación objetivo. El nombre del juego es provisional.
 
 ## Desarrollo local
 
@@ -21,19 +21,29 @@ Vite usa `http://localhost:5173/`, registrado como retorno de Cognito. Para prob
 VITE_AUTH_CONFIG_URL=https://d1ilpq1n58tzqo.cloudfront.net/auth-config.json npm run dev
 ```
 
-El servidor de desarrollo obtiene la configuración pública y adapta los retornos a localhost. Sin esa configuración, la web informa que no puede iniciar el acceso. Para ejecutar los mismos controles que GitHub Actions, sin credenciales AWS:
+El servidor de desarrollo obtiene la configuración pública y adapta los retornos a localhost; usa la misma API y los mismos datos del ambiente publicado. Sin esa configuración, la web informa que no puede iniciar el acceso. Para ejecutar los mismos controles que GitHub Actions, sin credenciales AWS:
 
 ```sh
 npm run check
 ```
 
-El comando verifica formato, lint, tipos, pruebas de autenticación e infraestructura, build y síntesis CDK. No llama a modelos ni necesita credenciales AWS o enviar correo. `apps/web/` contiene la web y `infra/` la infraestructura. El lockfile fija las versiones instaladas; `.work/` conserva evidencia local y está excluido de Git.
+El comando verifica formato, lint, tipos, pruebas de autenticación, editor, contrato del robot, API e infraestructura, builds de web/API y síntesis CDK. No llama a modelos ni necesita credenciales AWS o enviar correo. `apps/web/` contiene la web, `apps/api/` la Lambda de borradores, `shared/` el contrato y catálogo comunes, e `infra/` la infraestructura. El lockfile fija las versiones instaladas; `.work/` conserva evidencia local y está excluido de Git.
 
 ## Acceso
 
 El registro y la recuperación se realizan en las páginas de Cognito en español, con email y contraseña. La cuenta se habilita después de confirmar el código recibido. Si abandonaste la confirmación, podés retomarla desde la opción de cuenta pendiente en la web: usá el código recibido o solicitá otro, y después iniciá sesión. El correo predeterminado tiene un límite compartido de 50 envíos diarios para altas, reenvíos y recuperación; entrar con contraseña no envía otro correo. Se usan los mensajes estándar de Cognito.
 
 Una recarga conserva la sesión en la misma pestaña. Si ya no hay una sesión válida, se vuelve a ingresar a la misma cuenta. Cerrar sesión elimina el estado local, revoca la renovación y cierra la sesión administrada de Cognito. Los detalles y límites están en [acceso y entrega](docs/architecture/acceso-y-entrega.md).
+
+## Preparar el robot
+
+Después de ingresar, podés habilitar habilidades del catálogo, escribir sus descripciones y editar las instrucciones. El editor guarda automáticamente después de una pausa breve y muestra el estado: esperá **Guardado** antes de cerrar el navegador para recuperar esos cambios al volver a ingresar. Los textos se conservan literalmente, incluso vacíos o equivocados. También se puede guardar sin habilidades habilitadas.
+
+Si otra pestaña guardó antes, el editor conserva tus cambios y muestra un conflicto. Podés usar la versión guardada o decidir reemplazarla con tus cambios después de revisarla. Una nueva edición concurrente vuelve a producir un conflicto. Un error de red permite reintentar; si se perdió una respuesta de guardado, se consulta el servidor antes de decidir qué repetir.
+
+El límite de configuración es 65.536 bytes de JSON UTF-8, incluidos los contratos fijos de las habilidades. El editor lo informa y no trunca textos. Las copias pendientes permanecen sólo en memoria: un cierre abrupto puede perder cambios que el servidor no confirmó. No se guarda una segunda copia del borrador en el almacenamiento del navegador.
+
+Por ahora se prepara la configuración; ejecutar el recorrido todavía no está disponible. Los detalles de guardado y concurrencia están en [datos](docs/architecture/datos.md).
 
 ## Publicación
 

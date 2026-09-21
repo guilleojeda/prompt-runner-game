@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import { Match, Template } from 'aws-cdk-lib/assertions';
 import { describe, expect, it } from 'vitest';
 import { APPLICATION_ACCOUNT, APPLICATION_REGION, PromptRunnerHostingStack } from './stack.js';
+import { DRAFT_LAMBDA_NAME, DRAFT_LAMBDA_ROLE_NAME, DRAFT_LOG_GROUP_NAME } from './robot.js';
 
 function template() {
   const app = new cdk.App();
@@ -150,7 +151,7 @@ describe('PromptRunnerHostingStack', () => {
     expect(client.Properties).toMatchObject({
       AllowedOAuthFlows: ['code'],
       AllowedOAuthFlowsUserPoolClient: true,
-      AllowedOAuthScopes: ['openid', 'email'],
+      AllowedOAuthScopes: ['openid', 'email', 'prompt-runner/robot'],
       GenerateSecret: false,
       ReadAttributes: ['email', 'email_verified'],
       SupportedIdentityProviders: ['COGNITO'],
@@ -171,6 +172,15 @@ describe('PromptRunnerHostingStack', () => {
     synthesized.hasResourceProperties('AWS::Cognito::ManagedLoginBranding', {
       UseCognitoProvidedValues: true,
     });
+    synthesized.hasResourceProperties('AWS::Cognito::UserPoolResourceServer', {
+      Identifier: 'prompt-runner',
+      Scopes: [
+        {
+          ScopeDescription: 'Read and save the signed-in user robot draft.',
+          ScopeName: 'robot',
+        },
+      ],
+    });
     const branding = Object.values(
       synthesized.findResources('AWS::Cognito::ManagedLoginBranding'),
     )[0];
@@ -181,7 +191,7 @@ describe('PromptRunnerHostingStack', () => {
   it('uses the pre-created deployment role and publishes entry after assets', () => {
     const synthesized = template();
 
-    synthesized.resourceCountIs('AWS::IAM::Role', 0);
+    synthesized.resourceCountIs('AWS::IAM::Role', 1);
     synthesized.resourceCountIs('Custom::CDKBucketDeployment', 2);
     const deployments = synthesized.findResources('Custom::CDKBucketDeployment');
     const deploymentProperties = Object.values(deployments).map((resource) => resource.Properties);
@@ -209,6 +219,7 @@ describe('PromptRunnerHostingStack', () => {
       '<<marker:0xbaba:2>>': expect.anything(),
       '<<marker:0xbaba:3>>': expect.anything(),
       '<<marker:0xbaba:4>>': expect.anything(),
+      '<<marker:0xbaba:5>>': expect.anything(),
     });
     const authConfigMarkers = JSON.stringify(websiteEntry?.[1].Properties.SourceMarkers[1]);
     expect(authConfigMarkers).toContain('cognito-idp.us-east-1.amazonaws.com');
@@ -219,10 +230,100 @@ describe('PromptRunnerHostingStack', () => {
       'ClientSecret',
     );
     const functions = synthesized.findResources('AWS::Lambda::Function');
-    expect(Object.values(functions)).toHaveLength(1);
-    expect(Object.values(functions)[0].Properties).toMatchObject({
+    expect(Object.values(functions)).toHaveLength(2);
+    const deploymentFunction = Object.values(functions).find(
+      (resource) =>
+        resource.Properties.Role ===
+        'arn:aws:iam::387483252302:role/prompt-runner-game-frontend-asset-deployment-us-east-1',
+    );
+    expect(deploymentFunction?.Properties).toMatchObject({
       Role: 'arn:aws:iam::387483252302:role/prompt-runner-game-frontend-asset-deployment-us-east-1',
     });
+    const draftFunction = Object.values(functions).find(
+      (resource) => resource.Properties.FunctionName === DRAFT_LAMBDA_NAME,
+    );
+    expect(draftFunction?.Properties).toMatchObject({
+      Handler: 'index.handler',
+      Runtime: 'nodejs22.x',
+      Role: { 'Fn::GetAtt': [expect.any(String), 'Arn'] },
+      Timeout: 15,
+      Environment: {
+        Variables: {
+          DRAFT_TABLE_NAME: { Ref: expect.any(String) },
+          COGNITO_CLIENT_ID: { Ref: expect.any(String) },
+          COGNITO_USERINFO_URL: { 'Fn::Join': expect.any(Array) },
+        },
+      },
+    });
+    const roles = synthesized.findResources('AWS::IAM::Role');
+    expect(Object.values(roles)[0].Properties.RoleName).toBe(DRAFT_LAMBDA_ROLE_NAME);
+    const logGroups = synthesized.findResources('AWS::Logs::LogGroup');
+    expect(Object.values(logGroups)[0].Properties.LogGroupName).toBe(DRAFT_LOG_GROUP_NAME);
     synthesized.hasOutput('BuildRevision', { Value: 'test-revision' });
+  });
+
+  it('publishes only the authenticated draft routes with restricted CORS', () => {
+    const synthesized = template();
+
+    const apis = synthesized.findResources('AWS::ApiGatewayV2::Api');
+    const api = Object.values(apis)[0];
+    expect(api.Properties).toMatchObject({
+      Name: DRAFT_LAMBDA_NAME,
+      ProtocolType: 'HTTP',
+      CorsConfiguration: {
+        AllowCredentials: false,
+        AllowHeaders: ['Authorization', 'Content-Type'],
+        AllowMethods: ['GET', 'PUT', 'OPTIONS'],
+        AllowOrigins: [
+          { 'Fn::Join': ['', ['https://', { 'Fn::GetAtt': [expect.any(String), 'DomainName'] }]] },
+          'http://localhost:5173',
+        ],
+      },
+    });
+    const routes = Object.values(synthesized.findResources('AWS::ApiGatewayV2::Route'));
+    expect(routes).toHaveLength(2);
+    for (const route of routes) {
+      expect(route.Properties).toMatchObject({
+        AuthorizationType: 'JWT',
+        AuthorizationScopes: ['prompt-runner/robot'],
+        Target: { 'Fn::Join': expect.any(Array) },
+      });
+      expect(['GET /draft', 'PUT /draft']).toContain(route.Properties.RouteKey);
+    }
+  });
+
+  it('retains the on-demand draft table and limits the Lambda data policy', () => {
+    const synthesized = template();
+
+    const tables = synthesized.findResources('AWS::DynamoDB::Table');
+    expect(Object.values(tables)).toHaveLength(1);
+    const table = Object.values(tables)[0];
+    expect(table.Properties).toMatchObject({
+      BillingMode: 'PAY_PER_REQUEST',
+      KeySchema: [
+        { AttributeName: 'PK', KeyType: 'HASH' },
+        { AttributeName: 'SK', KeyType: 'RANGE' },
+      ],
+    });
+    expect(table).toMatchObject({ DeletionPolicy: 'Retain', UpdateReplacePolicy: 'Retain' });
+    expect(table.Properties).not.toHaveProperty('TimeToLiveSpecification');
+
+    const policies = synthesized.findResources('AWS::IAM::Policy');
+    const runtimePolicies = Object.values(policies).filter((policy) =>
+      JSON.stringify(policy.Properties.PolicyDocument).includes('DraftTableReadWrite'),
+    );
+    expect(runtimePolicies).toHaveLength(1);
+    const statements = runtimePolicies[0].Properties.PolicyDocument.Statement;
+    expect(statements).toContainEqual(
+      expect.objectContaining({
+        Sid: 'DraftTableReadWrite',
+        Action: ['dynamodb:GetItem', 'dynamodb:PutItem'],
+      }),
+    );
+    expect(JSON.stringify(statements)).not.toContain('dynamodb:Scan');
+    expect(JSON.stringify(statements)).not.toContain('dynamodb:DeleteItem');
+    expect(JSON.stringify(runtimePolicies[0].Properties.PolicyDocument)).not.toMatch(
+      /s3:|bedrock:|cognito-idp:|iam:/,
+    );
   });
 });

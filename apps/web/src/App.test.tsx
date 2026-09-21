@@ -1,12 +1,14 @@
 // @vitest-environment jsdom
 
 import { StrictMode } from 'react';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { User } from 'oidc-client-ts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
 import { AuthFailure, type AuthClient, type AuthConfig, type AuthSession } from './auth.js';
+import { DraftApiClient } from './draft-api.js';
 import type { PendingConfirmationClient } from './pending-confirmation.js';
+import { createDefaultDraft } from '../../../shared/robot.js';
 
 const config: AuthConfig = {
   issuer: 'https://cognito-idp.us-east-1.amazonaws.com/us-east-1_test',
@@ -14,6 +16,8 @@ const config: AuthConfig = {
   domain: 'https://prompt-runner.auth.us-east-1.amazoncognito.com',
   redirectUri: 'https://d1ilpq1n58tzqo.cloudfront.net/',
   logoutUri: 'https://d1ilpq1n58tzqo.cloudfront.net/',
+  apiBaseUrl: 'https://api.example.test/',
+  apiScope: 'prompt-runner/robot',
 };
 
 const invalidConfirmationConfig: AuthConfig = {
@@ -24,20 +28,23 @@ const invalidConfirmationConfig: AuthConfig = {
 function session(
   email = 'a@example.com',
   expiresAt = Math.floor(Date.now() / 1000) + 600,
+  accessToken = 'access-token',
+  sub = 'subject-a',
 ): AuthSession {
   return {
-    identity: { sub: 'subject-a', email },
+    identity: { sub, email },
     user: new User({
-      access_token: 'access-token',
+      access_token: accessToken,
       refresh_token: 'refresh-token',
       token_type: 'Bearer',
+      scope: 'openid email prompt-runner/robot',
       session_state: null,
       profile: {
         iss: 'https://cognito-idp.us-east-1.amazonaws.com/us-east-1_test',
         aud: 'client-public',
         iat: Math.floor(Date.now() / 1000),
         exp: Math.floor(Date.now() / 1000) + 600,
-        sub: 'subject-a',
+        sub,
         email,
       },
       expires_at: expiresAt,
@@ -243,5 +250,88 @@ describe('access screen', () => {
     expect(await screen.findByText('a@example.com')).toBeTruthy();
     await waitFor(() => expect(initialize).toHaveBeenCalledTimes(2));
     expect(screen.getByText('a@example.com')).toBeTruthy();
+  });
+
+  it('keeps a pending draft through same-sub renewal and saves with the renewed token', async () => {
+    vi.useFakeTimers();
+    const first = session('a@example.com', (Date.now() + 800) / 1000, 'old-token');
+    const renewed = session('a@example.com', (Date.now() + 600_000) / 1000, 'new-token');
+    let currentSession = first;
+    let resolveRenewal!: (value: AuthSession) => void;
+    const initialize = vi
+      .fn<() => Promise<AuthSession | null>>()
+      .mockImplementationOnce(async () => {
+        currentSession = first;
+        return first;
+      })
+      .mockImplementationOnce(
+        () =>
+          new Promise<AuthSession>((resolve) => {
+            resolveRenewal = (value) => {
+              currentSession = value;
+              resolve(value);
+            };
+          }),
+      );
+    const authClient = client({ initialize });
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (_input, init) => {
+      if (init?.method === 'PUT') {
+        const body = JSON.parse(String(init.body)) as {
+          expectedVersion: number;
+          draft: ReturnType<typeof createDefaultDraft>;
+        };
+        return new Response(
+          JSON.stringify({ version: body.expectedVersion + 1, draft: body.draft }),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          },
+        );
+      }
+      return new Response(JSON.stringify({ version: 0, draft: createDefaultDraft() }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    const draftApi = new DraftApiClient(config, {
+      tokenProvider: () => currentSession.user.access_token,
+      fetch: fetchImpl,
+    });
+    render(<App authClient={authClient} draftApi={draftApi} configLoader={async () => config} />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByLabelText('Qué debe tener en cuenta el robot')).toBeTruthy();
+
+    await act(async () => {
+      vi.advanceTimersByTime(300);
+    });
+    fireEvent.change(screen.getByLabelText('Qué debe tener en cuenta el robot'), {
+      target: { value: 'Texto pendiente durante la renovación' },
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+    });
+    expect(initialize).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls.filter((call) => call[1]?.method === 'PUT')).toHaveLength(0);
+    expect(screen.getByDisplayValue('Texto pendiente durante la renovación')).toBeTruthy();
+
+    await act(async () => {
+      resolveRenewal(renewed);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(600);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const putCall = fetchImpl.mock.calls.find((call) => call[1]?.method === 'PUT');
+    expect(putCall?.[1]).toMatchObject({
+      headers: expect.objectContaining({ Authorization: 'Bearer new-token' }),
+    });
+    expect(screen.getByDisplayValue('Texto pendiente durante la renovación')).toBeTruthy();
   });
 });

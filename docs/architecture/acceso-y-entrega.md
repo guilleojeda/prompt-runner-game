@@ -19,17 +19,25 @@ La cuenta actual obtiene su identidad desde `userInfo` de Cognito con los scopes
 
 Esta pantalla cubre una limitación de Managed Login: Cognito no ofrece una entrada directa soportada para volver a confirmar una cuenta pendiente después de abandonar su flujo. `/confirm` y `/resendcode` son rutas de redirección internas, por lo que no se construyen enlaces basados en sus parámetros internos. [Endpoints administrados de Cognito](https://docs.aws.amazon.com/cognito/latest/developerguide/managed-login-endpoints.html).
 
-El backend de datos incorporará el authorizer JWT de HTTP API, con issuer/cliente y scope de aplicación explícitos para usar access tokens. Cada operación obtendrá el `sub` validado y comprobará propiedad de configuraciones e intentos. La guarda de la pantalla no sustituye esa autorización de servidor; un JWT tampoco autoriza leer cualquier identificador.
+El backend de borradores usa el authorizer JWT de HTTP API, con issuer/cliente y scope `prompt-runner/robot` en GET y PUT `/draft`. Lambda exige un access token del cliente esperado y valida UserInfo con email verificado y sub coincidente antes de acceder a datos. El sub validado determina la clave del borrador; no se acepta otro propietario como selector. La pertenencia de intentos se incorporará con su API. La guarda de la pantalla no sustituye esa autorización de servidor; un JWT tampoco autoriza leer cualquier identificador.
 
 ### Sesión del navegador
 
-El cliente público usa `oidc-client-ts` para Code Grant con PKCE S256 y validación de la transacción. El callback y el retorno de logout son `/`, por lo que la autenticación no necesita rutas nuevas ni un fallback de errores a HTML. La configuración pública se carga de `/auth-config.json`: contiene issuer, client ID, dominio y URLs de retorno, nunca un secreto de cliente. CDK resuelve esos valores al publicar el assembly verificado, sin reconstruir React después del despliegue.
+El cliente público usa `oidc-client-ts` para Code Grant con PKCE S256 y validación de la transacción. El callback y el retorno de logout son `/`, por lo que la autenticación no necesita rutas nuevas ni un fallback de errores a HTML. La configuración pública se carga de `/auth-config.json`: contiene issuer, client ID, dominio, URLs de retorno, `apiBaseUrl` y `apiScope`, nunca un secreto de cliente. CDK resuelve esos valores al publicar el assembly verificado, sin reconstruir React después del despliegue.
 
 Los tokens y la transacción OAuth se conservan en `sessionStorage`. La recarga puede recuperar la sesión de esa pestaña, pero debe validar la identidad con Cognito antes de mostrar la cuenta. Si el access token venció, se intenta renovarlo con un refresh token válido; si la sesión ya no sirve, se pide un nuevo ingreso. Una falla transitoria ofrece reintentar y no habilita acceso a partir de un perfil viejo.
 
 El cliente conserva las duraciones predeterminadas de Cognito: access token e ID token de una hora, refresh token de 30 días y ventana del desafío de autenticación (`AuthSessionValidity`) de tres minutos. Esta última no limita la duración de la sesión web. Los tokens emitidos confirman la duración de una hora; `DescribeUserPoolClient` informa las otras dos duraciones. La caducidad del access token permite renovar la sesión con un refresh válido; no obliga a volver a ingresar mientras esa renovación funcione. [Duraciones y unidades de Cognito](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_CreateUserPoolClient.html).
 
 Cerrar sesión elimina el estado local, revoca el refresh token y navega al endpoint `/logout` de Cognito para cerrar también su cookie. Una falla remota no vuelve a abrir la cuenta local y se informa al usuario. No se promete cerrar sesiones de otros dispositivos. Al abrir otra pestaña o navegador sin estado local, la persona vuelve por Managed Login y mantiene su misma cuenta e identificador.
+
+## Acceso a la configuración del robot
+
+El cliente solicita `openid email prompt-runner/robot`. El resource server Cognito y el scope se administran con CDK dentro del mismo pool/cliente. Una sesión emitida antes de incorporar ese scope debe volver por Managed Login; renovar un token no se usa para conceder permisos nuevos. La cuenta y su sub se conservan.
+
+Las solicitudes a la API envían el access token en Authorization, no el ID token, cookies ni parámetros de URL. CORS permite sólo el origen HTTPS de CloudFront y el origen local de desarrollo, con GET/PUT/OPTIONS y Authorization/Content-Type. Las respuestas del borrador no se cachean. El acceso a UserInfo desde Lambda conserva la exigencia de email verificado también cuando se llama a la API fuera de React; sus errores transitorios no autorizan una lectura o escritura por defecto.
+
+El editor conserva sus cambios pendientes en memoria mientras renueva la misma identidad y pausa las escrituras hasta validar la sesión. Cerrar sesión o cambiar de cuenta invalida las operaciones del editor anterior, incluidas respuestas tardías. No hay una copia persistente del borrador en el navegador. [Concurrencia y recuperación del guardado](datos.md#borrador-disponible).
 
 ## Fase posterior: correo propio con SES
 
@@ -72,7 +80,7 @@ El circuito de entrega es:
 
 ## Ambiente operativo
 
-La [URL pública del frontend](https://d1ilpq1n58tzqo.cloudfront.net) ofrece acceso y cuenta. La configuración del robot y las partidas se incorporan en entregas posteriores. El ambiente está en la cuenta `387483252302`, región `us-east-1`:
+La [URL pública del frontend](https://d1ilpq1n58tzqo.cloudfront.net) ofrece acceso, cuenta y preparación persistida del robot. La ejecución de partidas todavía no está implementada. El ambiente está en la cuenta `387483252302`, región `us-east-1`:
 
 | Recurso                 | Identificador                                              |
 | ----------------------- | ---------------------------------------------------------- |
@@ -100,9 +108,11 @@ STS debe devolver la cuenta `387483252302`. Revisar un bootstrap existente antes
 
 La confianza de este repositorio usa audiencia `sts.amazonaws.com` y subject exacto `repo:guilleojeda@18320860/prompt-runner-game@1373331195:ref:refs/heads/main`. Los identificadores inmutables provienen de la configuración real de GitHub. El job de una PR no recibe permiso `id-token: write` ni puede asumir ese rol.
 
-El acceso inicial se prepara una vez, por separado del stack de hosting; sus políticas se actualizan con el mismo comando de CloudFormation cuando cambian los permisos declarados. Su template crea el rol de GitHub, el rol fijo del publicador de assets y la política de ejecución de CloudFormation para hosting e identidad. Se conserva el nombre físico `prompt-runner-game-phase0-cfn-execution` para mantener su ARN y la asociación con el bootstrap. El bootstrap debe usar esa política explícita; no se utiliza su default `AdministratorAccess`. El stack del hosting importa el rol fijo y no administra los permisos de su propio pipeline.
+El acceso inicial se prepara una vez, por separado del stack de hosting; sus políticas se actualizan con el mismo comando de CloudFormation cuando cambian los permisos declarados. Su template crea el rol de GitHub, el rol fijo del publicador de assets y los permisos de ejecución de CloudFormation para hosting, identidad y borradores (HTTP API, Lambda y DynamoDB). Se conserva el nombre físico `prompt-runner-game-phase0-cfn-execution` para mantener su ARN y la asociación con el bootstrap. El bootstrap debe usar esa política explícita; no se utiliza su default `AdministratorAccess`. El stack del hosting importa el rol fijo y no administra los permisos de su propio pipeline.
 
 La descripción física de esa política también conserva el texto inicial: IAM no permite modificarla y CloudFormation intentaría reemplazar el recurso. Su documento de permisos sí se actualiza; la descripción histórica no limita los servicios declarados en ese documento.
+
+Los permisos nuevos de borradores se declaran en una política complementaria de `PromptRunnerAccess`, asociada al mismo rol de ejecución del bootstrap. La política original ya se aproxima al máximo de tamaño de IAM; separarlas evita reemplazar su ARN o recrear el bootstrap. La preparación de acceso actualiza ambas declaraciones y sus asociaciones antes de que main despliegue la aplicación.
 
 La cuenta AWS es exclusiva de este proyecto. La política permite etiquetar distribuciones de esta cuenta durante su creación, cuando aún no existe el tag `Application`; las operaciones restantes de distribución usan ese tag. OAC y cache policies usan IDs generados y permisos limitados a la cuenta. Estas condiciones asumen esa exclusividad y deben revisarse antes de alojar proyectos ajenos en la misma cuenta.
 

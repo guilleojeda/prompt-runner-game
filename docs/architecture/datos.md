@@ -1,6 +1,16 @@
 # Persistencia, historial y cuota
 
-**Almacenamiento físico y política diaria aprobados. Implementación pendiente.** El [contrato lógico del registro](registro-de-ejecucion.md) y la [presentación](animacion.md) están aprobados. Complementa [ejecución](ejecucion.md) y respeta los requisitos de [intentos](../intent/intentos.md), [consumo](../intent/consumo-y-puntaje.md) y [plataforma](../intent/plataforma.md).
+**Borrador persistido implementado; almacenamiento del juego y política diaria aprobados, todavía pendientes.** El [contrato lógico del registro](registro-de-ejecucion.md) y la [presentación](animacion.md) están aprobados. Complementa [ejecución](ejecucion.md) y respeta los requisitos de [intentos](../intent/intentos.md), [consumo](../intent/consumo-y-puntaje.md) y [plataforma](../intent/plataforma.md).
+
+## Borrador disponible
+
+La API expone GET y PUT `/draft` para la cuenta verificada. El `sub` del access token validado es el único selector de propietario; el cliente no elige otro usuario. La tabla on-demand usa `PK=USER#<sub>`, `SK=DRAFT` y conserva `version`, fecha del servidor y borrador. No tiene TTL ni índices; CDK retiene la tabla ante eliminación o reemplazo. No se guarda un historial por cada pulsación: las versiones de edición controlan concurrencia, mientras los snapshots inmutables pertenecen a los futuros intentos.
+
+GET lee con consistencia fuerte. Si todavía no existe un registro, devuelve el default y versión cero sin escribir. PUT recibe `{expectedVersion, draft}`; crear exige ausencia del ítem, y actualizar exige que coincida la versión. La condición y el incremento son una sola escritura atómica. Un conflicto devuelve HTTP 409 y la versión actual de la misma cuenta. Elegir reemplazarla desde el editor vuelve a usar una condición; no existe escritura forzada.
+
+Una respuesta de PUT perdida puede corresponder a una escritura confirmada. El cliente consulta el servidor: si encuentra el snapshot enviado adopta su versión, si sigue en la versión base permite repetir la escritura, y si encuentra una versión posterior diferente muestra conflicto. Mientras no puede comprobarlo, no afirma Guardado. Los cambios escritos después del envío se conservan por separado del snapshot en vuelo.
+
+El contrato compartido valida forma y catálogo; reconstruye IDs/schemas desde definiciones del proyecto y mide 65.536 bytes máximos de JSON UTF-8 expandido, sin metadatos de transporte o propietario. Un rechazo por forma o tamaño conserva el registro anterior. No se recortan textos, no se corrigen instrucciones y cero habilidades es guardable. Una versión de formato/catálogo desconocida produce error y no reinicializa los datos.
 
 ## DynamoDB y S3
 
@@ -34,7 +44,7 @@ Un intento entero no cabe necesariamente en un ítem DynamoDB de 400 KiB. Separa
 
 Los cuerpos completos de requests y responses se guardan en objetos S3 privados y DynamoDB conserva referencias y metadatos acotados. Así el tamaño del body no obliga a fragmentar o truncar el registro estructurado. Los ítems de DynamoDB deben respetar el límite del servicio; cualquier validación de tamaño de una configuración o metadato es una decisión de implementación y no introduce un límite de producto en este documento. No se presume una equivalencia entre caracteres, tokens y bytes.
 
-Default de implementación propuesto para la configuración aplicada: **64 KiB de JSON UTF-8 serializado**, medidos antes de guardarla y antes de admitir el intento. El editor informa el límite y rechaza sin truncar ni corregir textos. El catálogo y mapas los produce el proyecto; sus snapshots y los ítems generados se validan con margen por debajo de 400 KiB. Los cuerpos del proveedor permanecen fuera de esos ítems; la metadata normalizada conserva campos acotados.
+Default de implementación adoptado para el borrador y previsto para la configuración aplicada: **64 KiB de JSON UTF-8 serializado**, medidos antes de guardarla y antes de admitir el intento. El editor informa el límite y rechaza sin truncar ni corregir textos. El catálogo y mapas los produce el proyecto; sus snapshots y los ítems generados se validan con margen por debajo de 400 KiB. Los cuerpos del proveedor permanecen fuera de esos ítems; la metadata normalizada conserva campos acotados.
 
 ## Escritura y cierre
 
