@@ -4,6 +4,11 @@ import { describe, expect, it } from 'vitest';
 import { APPLICATION_ACCOUNT, APPLICATION_REGION, PromptRunnerHostingStack } from './stack.js';
 import { DRAFT_LAMBDA_NAME, DRAFT_LAMBDA_ROLE_NAME, DRAFT_LOG_GROUP_NAME } from './robot.js';
 
+// CDK's first template synthesis pays one-time construct startup cost; this
+// timeout gives infrastructure assertions room for that cost without changing
+// the repository-wide test timeout or implying a deployment SLA.
+const CDK_SYNTH_STARTUP_TIMEOUT_MS = 15_000;
+
 function template() {
   const app = new cdk.App();
   const stack = new PromptRunnerHostingStack(app, 'TestHosting', {
@@ -15,7 +20,7 @@ function template() {
   return Template.fromStack(stack);
 }
 
-describe('PromptRunnerHostingStack', () => {
+describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, () => {
   it('keeps the website bucket private and grants only the OAC read path', () => {
     const synthesized = template();
 

@@ -4,6 +4,11 @@ import { describe, expect, it } from 'vitest';
 import { PromptRunnerAccessStack } from './access-stack.js';
 import { APPLICATION_ACCOUNT, APPLICATION_REGION } from './stack.js';
 
+// CDK's first template synthesis pays one-time construct startup cost; this
+// timeout gives infrastructure assertions room for that cost without changing
+// the repository-wide test timeout or implying a deployment SLA.
+const CDK_SYNTH_STARTUP_TIMEOUT_MS = 15_000;
+
 function resolvePolicyTokens(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(resolvePolicyTokens);
   if (value !== null && typeof value === 'object') {
@@ -22,7 +27,7 @@ function resolvePolicyTokens(value: unknown): unknown {
   return value;
 }
 
-describe('PromptRunnerAccessStack', () => {
+describe('PromptRunnerAccessStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, () => {
   it('restricts GitHub OIDC to the approved audience and main branch subject', () => {
     const app = new cdk.App();
     const stack = new PromptRunnerAccessStack(app, 'TestAccess', {
