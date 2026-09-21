@@ -49,7 +49,7 @@ function client(overrides: Partial<AuthClient> = {}): AuthClient {
   return {
     initialize: vi.fn().mockResolvedValue(null),
     beginLogin: vi.fn().mockResolvedValue(undefined),
-    logout: vi.fn().mockResolvedValue({ remoteRevocationFailed: false }),
+    logout: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }

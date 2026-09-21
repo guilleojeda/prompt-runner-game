@@ -41,7 +41,7 @@ export class AuthFailure extends Error {
 export interface AuthClient {
   initialize(url?: string): Promise<AuthSession | null>;
   beginLogin(): Promise<void>;
-  logout(): Promise<{ remoteRevocationFailed: boolean }>;
+  logout(): Promise<void>;
 }
 
 export interface AuthClientOptions {
@@ -333,7 +333,7 @@ export class CognitoAuthClient implements AuthClient {
     }
   }
 
-  public async logout(): Promise<{ remoteRevocationFailed: boolean }> {
+  public async logout(): Promise<void> {
     const user = await this.manager.getUser();
     let remoteRevocationFailed = false;
     if (user?.refresh_token) {
@@ -355,7 +355,6 @@ export class CognitoAuthClient implements AuthClient {
     }
 
     this.navigateToCognitoLogout();
-    return { remoteRevocationFailed: false };
   }
 
   private async consumeCallback(url: string): Promise<AuthSession> {

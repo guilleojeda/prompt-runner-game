@@ -95,7 +95,10 @@ function unsignedJwt(payload: Record<string, unknown>): string {
   return `${encode({ alg: 'none', typ: 'JWT' })}.${encode(payload)}.`;
 }
 
-function productionClientHarness(nonce: 'correct' | 'wrong' = 'correct') {
+function productionClientHarness(
+  nonce: 'correct' | 'wrong' = 'correct',
+  tokenResponse: 'success' | 'invalid-grant' = 'success',
+) {
   let authorizationUrl = '';
   const redirectNavigator = testNavigator((url) => {
     authorizationUrl = url;
@@ -116,6 +119,12 @@ function productionClientHarness(nonce: 'correct' | 'wrong' = 'correct') {
       );
     }
     if (url === `${config.domain}/oauth2/token`) {
+      if (tokenResponse === 'invalid-grant') {
+        return new Response(JSON.stringify({ error: 'invalid_grant' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
       const requestedNonce = new URL(authorizationUrl).searchParams.get('nonce');
       return new Response(
         JSON.stringify({
@@ -272,6 +281,78 @@ describe('auth configuration and Cognito boundaries', () => {
     ]);
   });
 
+  it('rejects a token exchange failure without creating a user or calling userInfo', async () => {
+    const harness = productionClientHarness('correct', 'invalid-grant');
+
+    await harness.client.beginLogin();
+    const request = new URL(harness.getAuthorizationUrl());
+    await expect(
+      harness.client.initialize(
+        `${config.redirectUri}?code=callback-code&state=${encodeURIComponent(request.searchParams.get('state') ?? '')}`,
+      ),
+    ).rejects.toMatchObject({ code: 'callback' });
+    expect(
+      harness.providerFetch.mock.calls.filter(
+        ([url]) => String(url) === `${config.domain}/oauth2/token`,
+      ),
+    ).toHaveLength(1);
+    expect(
+      harness.providerFetch.mock.calls.some(
+        ([url]) => String(url) === `${config.domain}/oauth2/userInfo`,
+      ),
+    ).toBe(false);
+    expect(
+      Array.from({ length: window.sessionStorage.length }, (_, index) =>
+        window.sessionStorage.key(index),
+      ).some((key) => key?.startsWith('oidc.user:')),
+    ).toBe(false);
+    const reloadedClient = new CognitoAuthClient(config, {
+      storage: window.sessionStorage,
+      location: testLocation(),
+      redirectNavigator: testNavigator(() => undefined),
+    });
+    await expect(reloadedClient.initialize()).resolves.toBeNull();
+    expect(
+      harness.providerFetch.mock.calls.filter(
+        ([url]) => String(url) === `${config.domain}/oauth2/userInfo`,
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('rejects a consumed callback after the prior local session has ended', async () => {
+    const harness = productionClientHarness();
+
+    await harness.client.beginLogin();
+    const request = new URL(harness.getAuthorizationUrl());
+    const callbackUrl = `${config.redirectUri}?code=callback-code&state=${encodeURIComponent(request.searchParams.get('state') ?? '')}`;
+    await expect(harness.client.initialize(callbackUrl)).resolves.toMatchObject({
+      identity: { sub: 'subject-a' },
+    });
+    const storedSession = userManagerForTest();
+    await storedSession.removeUser();
+    await expect(storedSession.getUser()).resolves.toBeNull();
+
+    const reloadedClient = new CognitoAuthClient(config, {
+      storage: window.sessionStorage,
+      location: testLocation(),
+      redirectNavigator: testNavigator(() => undefined),
+    });
+    await expect(reloadedClient.initialize(callbackUrl)).rejects.toMatchObject({
+      code: 'callback',
+    });
+    await expect(reloadedClient.initialize()).resolves.toBeNull();
+    expect(
+      harness.providerFetch.mock.calls.filter(
+        ([url]) => String(url) === `${config.domain}/oauth2/token`,
+      ),
+    ).toHaveLength(1);
+    expect(
+      harness.providerFetch.mock.calls.filter(
+        ([url]) => String(url) === `${config.domain}/oauth2/userInfo`,
+      ),
+    ).toHaveLength(1);
+  });
+
   it('single-flights a callback under StrictMode-style duplicate effects', async () => {
     const manager = userManagerForTest();
     window.sessionStorage.setItem('prompt-runner.auth.nonce', 'nonce-once');
@@ -325,24 +406,31 @@ describe('auth configuration and Cognito boundaries', () => {
     });
   });
 
-  it('does not create a session from an unverified userInfo response', async () => {
-    const manager = userManagerForTest();
-    await manager.storeUser(user({ profile: { sub: 'subject-a', email: 'a@example.com' } }));
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(
-        JSON.stringify({ sub: 'subject-a', email: 'a@example.com', email_verified: 'false' }),
-        {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        },
-      ),
-    );
-    const client = new CognitoAuthClient(config, { userManager: manager, fetch: fetchImpl });
+  it.each([false, 'false', undefined] as const)(
+    'does not create a session when userInfo is unverified: %s',
+    async (verified) => {
+      const manager = userManagerForTest();
+      await manager.storeUser(user({ profile: { sub: 'subject-a', email: 'a@example.com' } }));
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            sub: 'subject-a',
+            email: 'a@example.com',
+            ...(verified === undefined ? {} : { email_verified: verified }),
+          }),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          },
+        ),
+      );
+      const client = new CognitoAuthClient(config, { userManager: manager, fetch: fetchImpl });
 
-    await expect(client.initialize()).resolves.toBeNull();
-    await expect(manager.getUser()).resolves.toBeNull();
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-  });
+      await expect(client.initialize()).resolves.toBeNull();
+      await expect(manager.getUser()).resolves.toBeNull();
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it.each([true, 'true'] as const)(
     'accepts only the documented verified values: %s',
@@ -403,6 +491,20 @@ describe('auth configuration and Cognito boundaries', () => {
 
     await expect(client.initialize()).resolves.toMatchObject({ identity: { sub: 'subject-a' } });
     expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('removes an expired user without refresh and does not attempt silent sign-in', async () => {
+    const manager = userManagerForTest();
+    await manager.storeUser(
+      user({ expires_at: Math.floor(Date.now() / 1000) - 1, refresh_token: undefined }),
+    );
+    const refresh = vi.spyOn(manager, 'signinSilent');
+    const client = new CognitoAuthClient(config, { userManager: manager, fetch: vi.fn() });
+
+    await expect(client.initialize()).resolves.toBeNull();
+    await expect(manager.getUser()).resolves.toBeNull();
+    expect(refresh).not.toHaveBeenCalled();
+    expect(window.sessionStorage.length).toBe(0);
   });
 
   it('keeps a session pending when the refresh endpoint returns a transient 503', async () => {
