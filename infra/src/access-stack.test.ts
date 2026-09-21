@@ -476,6 +476,18 @@ describe('PromptRunnerAccessStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, (
         },
       }),
     );
+    expect(bySid('CreateAgentRuntimeEndpointForApplication')).toEqual(
+      expect.objectContaining({
+        Action: 'bedrock-agentcore:CreateAgentRuntimeEndpoint',
+        Resource: 'arn:aws:bedrock-agentcore:us-east-1:387483252302:runtime/*',
+        Condition: {
+          StringEquals: {
+            'aws:RequestTag/Application': 'prompt-runner-game',
+            'aws:RequestedRegion': 'us-east-1',
+          },
+        },
+      }),
+    );
     expect(bySid('TagAgentRuntimeOnCreate')).toEqual(
       expect.objectContaining({
         Action: 'bedrock-agentcore:TagResource',
@@ -504,7 +516,6 @@ describe('PromptRunnerAccessStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, (
     expect(bySid('ProvisionAgentRuntimeDependencies')).toEqual(
       expect.objectContaining({
         Action: expect.arrayContaining([
-          'bedrock-agentcore:CreateAgentRuntimeEndpoint',
           'bedrock-agentcore:GetAgentRuntimeEndpoint',
           'bedrock-agentcore:CreateWorkloadIdentity',
         ]),

@@ -513,6 +513,7 @@ export class PromptRunnerAccessStack extends cdk.Stack {
     const starterLogGroupArn = `arn:${cdk.Aws.PARTITION}:logs:${region}:${account}:log-group:${STARTER_LOG_GROUP_NAME}`;
     const runtimeRoleArn = `arn:${cdk.Aws.PARTITION}:iam::${account}:role/${AGENT_RUNTIME_ROLE_NAME}`;
     const runtimeArn = `arn:${cdk.Aws.PARTITION}:bedrock-agentcore:${region}:${account}:runtime/${AGENT_RUNTIME_NAME}-*`;
+    const runtimeAnyArn = `arn:${cdk.Aws.PARTITION}:bedrock-agentcore:${region}:${account}:runtime/*`;
     const runtimeEndpointArn = `${runtimeArn}/runtime-endpoint/*`;
     const workloadIdentityDirectoryArn = `arn:${cdk.Aws.PARTITION}:bedrock-agentcore:${region}:${account}:workload-identity-directory/default`;
     const workloadIdentityArn = `${workloadIdentityDirectoryArn}/workload-identity/${AGENT_RUNTIME_NAME}-*`;
@@ -672,9 +673,22 @@ export class PromptRunnerAccessStack extends cdk.Stack {
           },
         }),
         new iam.PolicyStatement({
+          sid: 'CreateAgentRuntimeEndpointForApplication',
+          actions: ['bedrock-agentcore:CreateAgentRuntimeEndpoint'],
+          // The provider's create request authorizes the parent runtime as
+          // runtime/* before its generated suffix is known. Keep that broad
+          // resource bounded by the deployment tag and region.
+          resources: [runtimeAnyArn],
+          conditions: {
+            StringEquals: {
+              'aws:RequestTag/Application': 'prompt-runner-game',
+              'aws:RequestedRegion': region,
+            },
+          },
+        }),
+        new iam.PolicyStatement({
           sid: 'ProvisionAgentRuntimeDependencies',
           actions: [
-            'bedrock-agentcore:CreateAgentRuntimeEndpoint',
             'bedrock-agentcore:GetAgentRuntime',
             'bedrock-agentcore:GetAgentRuntimeEndpoint',
             'bedrock-agentcore:CreateWorkloadIdentity',

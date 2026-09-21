@@ -612,7 +612,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
       )}
       {locked && !paused && (
         <p className="editor-paused" role="status">
-          El intento está en curso. Conservamos esta configuración hasta que termine.
+          Conservamos esta configuración mientras comprobamos el estado o ejecutamos el intento.
         </p>
       )}
       {message && status !== 'clean' && (
