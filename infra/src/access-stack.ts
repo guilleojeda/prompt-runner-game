@@ -703,8 +703,9 @@ export class PromptRunnerAccessStack extends cdk.Stack {
         new iam.PolicyStatement({
           sid: 'TagAgentRuntimeOnCreate',
           actions: ['bedrock-agentcore:TagResource'],
-          // CreateAgentRuntime authorizes tags before assigning its runtime ID.
-          resources: [runtimeAnyArn],
+          // Runtime and its generated workload identity authorize tags before
+          // assigning their IDs; both requests carry the application tag.
+          resources: [runtimeAnyArn, `${workloadIdentityDirectoryArn}/workload-identity/*`],
           conditions: {
             StringEquals: {
               'aws:RequestTag/Application': 'prompt-runner-game',
