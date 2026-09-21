@@ -638,7 +638,7 @@ export function App({
                 ref={editorRef}
                 api={editorApi}
                 session={session}
-                paused={renewing || phase !== 'account'}
+                paused={renewing || phase !== 'account' || apiAuthError}
                 locked={attemptBusy}
                 onTry={runnerApi ? () => attemptWorkspaceRef.current?.start() : undefined}
                 onAuthRequired={handleApiAuthRequired}
@@ -653,7 +653,7 @@ export function App({
                   api={runnerApi}
                   editor={editorRef}
                   session={session}
-                  authPaused={renewing || phase !== 'account'}
+                  authPaused={renewing || phase !== 'account' || apiAuthError}
                   onBusyChange={handleAttemptBusyChange}
                   onAuthRequired={handleApiAuthRequired}
                 />
@@ -673,8 +673,7 @@ export function App({
             {apiAuthError && (
               <section className="notice error-notice" role="alert">
                 <p>
-                  La sesión dejó de tener acceso a la configuración. Volvé a ingresar para
-                  continuar.
+                  La sesión dejó de tener acceso a esta cuenta. Volvé a ingresar para continuar.
                 </p>
                 <button
                   className="secondary-button"
@@ -752,9 +751,11 @@ export function App({
       )}
 
       <p className="status" role="status">
-        {phase === 'account'
-          ? 'Tu cuenta está confirmada y la sesión es válida.'
-          : 'El acceso, la confirmación y la recuperación se realizan en una página segura.'}
+        {apiAuthError
+          ? 'La sesión necesita volver a validarse antes de continuar.'
+          : phase === 'account'
+            ? 'Tu cuenta está confirmada y la sesión es válida.'
+            : 'El acceso, la confirmación y la recuperación se realizan en una página segura.'}
       </p>
     </main>
   );

@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
 import { AuthFailure, type AuthClient, type AuthConfig, type AuthSession } from './auth.js';
 import { DraftApiClient, type DraftApi } from './draft-api.js';
-import type { AttemptApi } from './attempt-api.js';
+import { AttemptApiFailure, type AttemptApi, type AttemptSummary } from './attempt-api.js';
 import type { PendingConfirmationClient } from './pending-confirmation.js';
 import { createDefaultDraft, type DraftSnapshot } from '../../../shared/robot.js';
 
@@ -478,5 +478,77 @@ describe('access screen', () => {
     expect((screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement).disabled).toBe(
       false,
     );
+  });
+
+  it('pauses the authenticated workspace after an API auth failure and preserves identity for re-entry', async () => {
+    window.sessionStorage.clear();
+    const authClient = client({ initialize: vi.fn().mockResolvedValue(session()) });
+    const draftApi: DraftApi = {
+      getDraft: vi.fn().mockResolvedValue({ version: 0, draft: createDefaultDraft() }),
+      putDraft: vi.fn().mockResolvedValue({ version: 1, draft: createDefaultDraft() }),
+    };
+    const historicalAttempt: AttemptSummary = {
+      id: 'attempt-history-auth-error',
+      createdAt: '2026-09-21T12:00:00.000Z',
+      updatedAt: '2026-09-21T12:01:00.000Z',
+      status: 'victory',
+      cancelRequested: false,
+      levelId: 'principal-estatico-v1',
+      turnsUsed: 5,
+      maxTurns: 12,
+      calls: 5,
+      inputTokens: null,
+      outputTokens: null,
+      gameTokens: null,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+      score: null,
+      progress: 1,
+      finalSupport: 5,
+      animationEnabled: false,
+      presentationComplete: true,
+      recordComplete: true,
+    };
+    const attemptApi: AttemptApi = {
+      ...emptyAttemptApi(),
+      listAttempts: vi.fn().mockResolvedValue({ attempts: [historicalAttempt] }),
+      getAttempt: vi
+        .fn()
+        .mockRejectedValue(
+          new AttemptApiFailure('authentication', 'La sesión ya no está autorizada.', 401),
+        ),
+    };
+    render(
+      <App
+        authClient={authClient}
+        draftApi={draftApi}
+        attemptApi={attemptApi}
+        configLoader={async () => config}
+      />,
+    );
+
+    await screen.findByText('a@example.com');
+    fireEvent.click(await screen.findByRole('button', { name: 'Ver resultado' }));
+    expect(await screen.findByText('La sesión ya no está autorizada.')).toBeTruthy();
+    expect(screen.getByText(/La sesión dejó de tener acceso a esta cuenta/)).toBeTruthy();
+    expect(
+      (
+        screen
+          .getByLabelText('Qué debe tener en cuenta el robot')
+          .closest('fieldset') as HTMLFieldSetElement
+      ).disabled,
+    ).toBe(true);
+    expect((screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    expect(
+      (screen.getByRole('button', { name: 'Cerrar sesión' }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+    expect(screen.getByText('a@example.com')).toBeTruthy();
+    expect(
+      screen.getByText('La sesión necesita volver a validarse antes de continuar.'),
+    ).toBeTruthy();
+    expect(screen.queryByText('Tu cuenta está confirmada y la sesión es válida.')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Volver a ingresar' })).toBeTruthy();
   });
 });
