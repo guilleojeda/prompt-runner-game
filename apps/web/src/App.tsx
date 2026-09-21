@@ -247,7 +247,6 @@ export function App({
   const [confirmationOperation, setConfirmationOperation] = useState<ConfirmationOperation>(null);
   const clientRef = useRef<AuthClient | null>(authClient ?? null);
   const confirmationRef = useRef<PendingConfirmationClient | null>(confirmationClient ?? null);
-  const configRef = useRef<AuthConfig | null>(null);
   const initializationRef = useRef<Promise<AuthSession | null> | null>(null);
 
   useEffect(() => {
@@ -256,12 +255,14 @@ export function App({
       initializationRef.current = (async (): Promise<AuthSession | null> => {
         let client = clientRef.current;
         if (!client) {
-          const config = configRef.current ?? (await configLoader());
-          configRef.current = config;
-          client = clientFactory(config);
-          confirmationRef.current ??= confirmationClientFactory(config);
+          const config = await configLoader();
+          const nextClient = clientFactory(config);
+          const nextConfirmationClient =
+            confirmationRef.current ?? confirmationClientFactory(config);
+          clientRef.current = nextClient;
+          confirmationRef.current = nextConfirmationClient;
+          client = nextClient;
         }
-        clientRef.current = client;
         setHasClient(true);
         return client.initialize();
       })();
@@ -353,10 +354,10 @@ export function App({
       return confirmationRef.current;
     }
     try {
-      const config = configRef.current ?? (await configLoader());
-      configRef.current = config;
-      confirmationRef.current = confirmationClientFactory(config);
-      return confirmationRef.current;
+      const config = await configLoader();
+      const nextClient = confirmationClientFactory(config);
+      confirmationRef.current = nextClient;
+      return nextClient;
     } catch (configurationError) {
       setConfirmationError(errorMessage(configurationError));
       return null;

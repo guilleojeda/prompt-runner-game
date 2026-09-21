@@ -41,8 +41,8 @@ describe('pending Cognito confirmation', () => {
     });
   });
 
-  it('binds an injected native-style fetch to globalThis', async () => {
-    const fetchImpl = vi.fn(function (this: unknown) {
+  it('resends through the public API without including a confirmation code', async () => {
+    const fetchImpl = vi.fn<typeof fetch>(function (this: unknown) {
       if (this !== globalThis) {
         throw new TypeError('Illegal invocation');
       }
@@ -51,6 +51,18 @@ describe('pending Cognito confirmation', () => {
     const client = new CognitoPendingConfirmationClient(config, { fetch: fetchImpl });
 
     await expect(client.resend('pending@example.com')).resolves.toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    const [url, request] = fetchImpl.mock.calls[0] ?? [];
+    expect(url).toBe('https://cognito-idp.us-east-1.amazonaws.com/');
+    expect(request?.method).toBe('POST');
+    expect(request?.headers).toEqual({
+      'Content-Type': 'application/x-amz-json-1.1',
+      'X-Amz-Target': 'AWSCognitoIdentityProviderService.ResendConfirmationCode',
+    });
+    expect(JSON.parse(String(request?.body))).toEqual({
+      ClientId: 'client-public',
+      Username: 'pending@example.com',
+    });
   });
 
   it('surfaces an invalid code without claiming confirmation succeeded', async () => {

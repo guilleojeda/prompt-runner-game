@@ -16,6 +16,11 @@ const config: AuthConfig = {
   logoutUri: 'https://d1ilpq1n58tzqo.cloudfront.net/',
 };
 
+const invalidConfirmationConfig: AuthConfig = {
+  ...config,
+  issuer: 'https://invalid.example/us-east-1_test',
+};
+
 function session(
   email = 'a@example.com',
   expiresAt = Math.floor(Date.now() / 1000) + 600,
@@ -44,7 +49,7 @@ function client(overrides: Partial<AuthClient> = {}): AuthClient {
   return {
     initialize: vi.fn().mockResolvedValue(null),
     beginLogin: vi.fn().mockResolvedValue(undefined),
-    logout: vi.fn().mockResolvedValue({ remoteRevocationFailed: false }),
+    logout: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
@@ -187,6 +192,30 @@ describe('access screen', () => {
     expect(await screen.findByRole('button', { name: 'Entrar o crear una cuenta' })).toBeTruthy();
     expect(configLoader).toHaveBeenCalledTimes(2);
     expect(clientFactory).toHaveBeenCalledOnce();
+  });
+
+  it('reloads config when a default confirmation client factory rejects', async () => {
+    const authClient = client();
+    const configLoader = vi
+      .fn<() => Promise<AuthConfig>>()
+      .mockResolvedValueOnce(invalidConfirmationConfig)
+      .mockResolvedValue(config);
+    const clientFactory = vi.fn().mockReturnValue(authClient);
+
+    render(
+      <StrictMode>
+        <App configLoader={configLoader} clientFactory={clientFactory} />
+      </StrictMode>,
+    );
+
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Reintentar' }));
+
+    expect(await screen.findByRole('button', { name: 'Entrar o crear una cuenta' })).toBeTruthy();
+    expect(configLoader).toHaveBeenCalledTimes(2);
+    expect(clientFactory).toHaveBeenNthCalledWith(1, invalidConfirmationConfig);
+    expect(clientFactory).toHaveBeenNthCalledWith(2, config);
+    expect(authClient.initialize).toHaveBeenCalledOnce();
   });
 
   it('revalidates an existing session after a transient restore error', async () => {
