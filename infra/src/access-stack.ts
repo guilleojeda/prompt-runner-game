@@ -8,11 +8,18 @@ import {
   GITHUB_DEPLOY_ROLE_NAME,
   websiteBucketNameFor,
 } from './stack.js';
+import {
+  DRAFT_LAMBDA_NAME,
+  DRAFT_LAMBDA_ROLE_NAME,
+  DRAFT_LOG_GROUP_NAME,
+  DRAFT_TABLE_NAME,
+} from './robot.js';
 
 export const GITHUB_OIDC_URL = 'https://token.actions.githubusercontent.com';
 export const GITHUB_OIDC_AUDIENCE = 'sts.amazonaws.com';
 export const GITHUB_MAIN_SUBJECT =
   'repo:guilleojeda@18320860/prompt-runner-game@1373331195:ref:refs/heads/main';
+export const BOOTSTRAP_CFN_EXECUTION_ROLE_NAME = 'cdk-hnb659fds-cfn-exec-role';
 
 export interface PromptRunnerAccessStackProps extends cdk.StackProps {
   /** ARN of the provider already registered in the account, when one exists. */
@@ -310,6 +317,170 @@ export class PromptRunnerAccessStack extends cdk.Stack {
             `arn:${cdk.Aws.PARTITION}:lambda:${region}:${account}:layer:WebsiteAssetsDeploymentAwsCliLayer*`,
             `arn:${cdk.Aws.PARTITION}:lambda:${region}:${account}:layer:WebsiteEntryDeploymentAwsCliLayer*`,
           ],
+        }),
+      ],
+    });
+
+    // The deployed phase 0 policy is already close to IAM's 6,144-character
+    // document limit. Keep its physical ARN and historical description intact;
+    // phase 2 CloudFormation permissions live in a separately attached policy
+    // on the same bootstrap execution role.
+    const bootstrapExecutionRole = iam.Role.fromRoleName(
+      this,
+      'BootstrapCfnExecutionRole',
+      `${BOOTSTRAP_CFN_EXECUTION_ROLE_NAME}-${account}-${region}`,
+      { mutable: false },
+    );
+    const apiGatewayArn = `arn:${cdk.Aws.PARTITION}:apigateway:${region}::/apis`;
+    const apiGatewayApiArn = `${apiGatewayArn}/*`;
+    const apiGatewayStagesCollectionArn = `${apiGatewayArn}/*/stages`;
+    const apiGatewayStageArn = `${apiGatewayArn}/*/stages/*`;
+    const apiGatewayRoutesCollectionArn = `${apiGatewayArn}/*/routes`;
+    const apiGatewayRouteArn = `${apiGatewayArn}/*/routes/*`;
+    const apiGatewayIntegrationsCollectionArn = `${apiGatewayArn}/*/integrations`;
+    const apiGatewayIntegrationArn = `${apiGatewayArn}/*/integrations/*`;
+    const apiGatewayAuthorizersCollectionArn = `${apiGatewayArn}/*/authorizers`;
+    const apiGatewayAuthorizerArn = `${apiGatewayArn}/*/authorizers/*`;
+    const draftTableArn = `arn:${cdk.Aws.PARTITION}:dynamodb:${region}:${account}:table/${DRAFT_TABLE_NAME}`;
+    const draftFunctionArn = `arn:${cdk.Aws.PARTITION}:lambda:${region}:${account}:function:${DRAFT_LAMBDA_NAME}`;
+    const draftFunctionVersionArn = `${draftFunctionArn}:*`;
+    const draftRoleArn = `arn:${cdk.Aws.PARTITION}:iam::${account}:role/${DRAFT_LAMBDA_ROLE_NAME}`;
+    const draftLogGroupArn = `arn:${cdk.Aws.PARTITION}:logs:${region}:${account}:log-group:${DRAFT_LOG_GROUP_NAME}`;
+    const draftLogGroupWithStreamsArn = `${draftLogGroupArn}:*`;
+
+    new iam.ManagedPolicy(this, 'RobotCfnExecutionPolicy', {
+      managedPolicyName: 'prompt-runner-game-robot-cfn-execution',
+      description: 'CloudFormation permissions for the prompt-runner-game robot API.',
+      roles: [bootstrapExecutionRole],
+      statements: [
+        new iam.PolicyStatement({
+          sid: 'DraftTableLifecycle',
+          actions: [
+            'dynamodb:CreateTable',
+            'dynamodb:DeleteTable',
+            'dynamodb:DescribeContinuousBackups',
+            'dynamodb:DescribeContributorInsights',
+            'dynamodb:DescribeKinesisStreamingDestination',
+            'dynamodb:DescribeTable',
+            'dynamodb:DescribeTimeToLive',
+            'dynamodb:GetResourcePolicy',
+            'dynamodb:ListTagsOfResource',
+            'dynamodb:TagResource',
+            'dynamodb:UntagResource',
+            'dynamodb:UpdateTable',
+          ],
+          resources: [draftTableArn],
+        }),
+        new iam.PolicyStatement({
+          sid: 'DraftFunctionLifecycle',
+          actions: [
+            'lambda:AddPermission',
+            'lambda:CreateFunction',
+            'lambda:DeleteFunction',
+            // The CloudFormation Lambda read handler inspects optional runtime,
+            // recursion, code-signing, and concurrency settings as well.
+            'lambda:Get*',
+            'lambda:ListTags',
+            'lambda:RemovePermission',
+            'lambda:TagResource',
+            'lambda:UntagResource',
+            'lambda:UpdateFunctionCode',
+            'lambda:UpdateFunctionConfiguration',
+          ],
+          resources: [draftFunctionArn, draftFunctionVersionArn],
+        }),
+        new iam.PolicyStatement({
+          sid: 'DraftLambdaRoleLifecycle',
+          actions: [
+            'iam:CreateRole',
+            'iam:DeleteRole',
+            'iam:GetRole',
+            'iam:GetRolePolicy',
+            'iam:ListRolePolicies',
+            'iam:PutRolePolicy',
+            'iam:DeleteRolePolicy',
+            'iam:TagRole',
+            'iam:UntagRole',
+            'iam:UpdateAssumeRolePolicy',
+          ],
+          resources: [draftRoleArn],
+        }),
+        new iam.PolicyStatement({
+          sid: 'PassDraftLambdaRole',
+          actions: ['iam:PassRole'],
+          resources: [draftRoleArn],
+          conditions: { StringEquals: { 'iam:PassedToService': 'lambda.amazonaws.com' } },
+        }),
+        new iam.PolicyStatement({
+          sid: 'DraftApiLogs',
+          actions: [
+            'logs:CreateLogGroup',
+            'logs:DeleteLogGroup',
+            'logs:DeleteRetentionPolicy',
+            'logs:PutRetentionPolicy',
+          ],
+          resources: [draftLogGroupWithStreamsArn],
+        }),
+        new iam.PolicyStatement({
+          sid: 'TagDraftApiLogGroup',
+          actions: ['logs:TagResource', 'logs:UntagResource'],
+          resources: [draftLogGroupArn],
+        }),
+        new iam.PolicyStatement({
+          // These CloudWatch Logs reads do not support a resource ARN.
+          // Keep them account-level but limited to the deployment region.
+          sid: 'ReadDraftApiLogGroups',
+          actions: [
+            'logs:DescribeLogGroups',
+            'logs:DescribeIndexPolicies',
+            'logs:DescribeResourcePolicies',
+          ],
+          resources: ['*'],
+          conditions: { StringEquals: { 'aws:RequestedRegion': region } },
+        }),
+        new iam.PolicyStatement({
+          sid: 'ReadDraftApiLogGroupDetails',
+          actions: ['logs:GetDataProtectionPolicy'],
+          resources: [draftLogGroupWithStreamsArn],
+        }),
+        new iam.PolicyStatement({
+          sid: 'ListDraftApiLogGroupTags',
+          actions: ['logs:ListTagsForResource'],
+          resources: [draftLogGroupArn],
+        }),
+        new iam.PolicyStatement({
+          sid: 'DraftHttpApi',
+          actions: [
+            'apigateway:DELETE',
+            'apigateway:GET',
+            'apigateway:PATCH',
+            'apigateway:POST',
+            'apigateway:PUT',
+          ],
+          resources: [
+            apiGatewayArn,
+            apiGatewayApiArn,
+            apiGatewayStagesCollectionArn,
+            apiGatewayStageArn,
+            apiGatewayRoutesCollectionArn,
+            apiGatewayRouteArn,
+            apiGatewayIntegrationsCollectionArn,
+            apiGatewayIntegrationArn,
+            apiGatewayAuthorizersCollectionArn,
+            apiGatewayAuthorizerArn,
+          ],
+        }),
+        new iam.PolicyStatement({
+          sid: 'CognitoRobotResourceServer',
+          actions: [
+            'cognito-idp:CreateResourceServer',
+            'cognito-idp:DeleteResourceServer',
+            'cognito-idp:DescribeResourceServer',
+            'cognito-idp:ListResourceServers',
+            'cognito-idp:UpdateResourceServer',
+          ],
+          resources: [cognitoUserPoolArn],
+          conditions: { StringEquals: { 'aws:ResourceTag/Application': 'prompt-runner-game' } },
         }),
       ],
     });

@@ -2,9 +2,10 @@
   "name": "prompt-runner-game",
   "private": true,
   "version": "0.1.0",
-  "description": "Juego web educativo para enseñar a jugar a un robot virtual.",
+  "description": "Juego web educativo para ense\u00f1ar a jugar a un robot virtual.",
   "workspaces": [
     "apps/web",
+    "apps/api",
     "infra"
   ],
   "engines": {
@@ -12,13 +13,13 @@
     "npm": ">=10 <12"
   },
   "scripts": {
-    "build": "npm run build --workspace @prompt-runner/web",
+    "build": "npm run build --workspace @prompt-runner/web && npm run build --workspace @prompt-runner/api",
     "check": "npm run format && npm run lint && npm run typecheck && npm run build && npm test && npm run synth:infra",
     "dev": "npm run dev --workspace @prompt-runner/web",
     "deploy": "npm run deploy --workspace @prompt-runner/infra",
-    "format": "prettier --check package.json package-lock.json tsconfig.json eslint.config.mjs .prettierrc.json 'apps/**/*.{ts,tsx,css,html,json}' 'infra/**/*.{ts,json}' '.github/workflows/**/*.yml' --ignore-path .gitignore",
-    "format:write": "prettier --write package.json package-lock.json tsconfig.json eslint.config.mjs .prettierrc.json 'apps/**/*.{ts,tsx,css,html,json}' 'infra/**/*.{ts,json}' '.github/workflows/**/*.yml' --ignore-path .gitignore",
-    "lint": "eslint apps infra eslint.config.mjs",
+    "format": "prettier --check package.json package-lock.json tsconfig.json eslint.config.mjs .prettierrc.json 'apps/**/*.{ts,tsx,css,html,json}' 'infra/**/*.{ts,json}' 'shared/**/*.ts' '.github/workflows/**/*.yml' --ignore-path .gitignore",
+    "format:write": "prettier --write package.json package-lock.json tsconfig.json eslint.config.mjs .prettierrc.json 'apps/**/*.{ts,tsx,css,html,json}' 'infra/**/*.{ts,json}' 'shared/**/*.ts' '.github/workflows/**/*.yml' --ignore-path .gitignore",
+    "lint": "eslint apps shared infra eslint.config.mjs",
     "synth": "npm run build && npm run synth:infra",
     "synth:infra": "npm run synth --workspace @prompt-runner/infra",
     "test": "vitest run",

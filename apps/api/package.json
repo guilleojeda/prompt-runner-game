@@ -1,0 +1,19 @@
+{
+  "name": "@prompt-runner/api",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node22 --format=cjs --outfile=dist/index.js --sourcemap=external",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "3.1136.0",
+    "@aws-sdk/util-dynamodb": "3.996.9"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "8.10.163",
+    "esbuild": "0.28.2"
+  }
+}

@@ -9,6 +9,8 @@ const config = {
   domain: 'https://prompt-runner.auth.us-east-1.amazoncognito.com',
   redirectUri: 'https://d1ilpq1n58tzqo.cloudfront.net/',
   logoutUri: 'https://d1ilpq1n58tzqo.cloudfront.net/',
+  apiBaseUrl: 'https://api.example.test/',
+  apiScope: 'prompt-runner/robot',
 };
 
 describe('pending Cognito confirmation', () => {

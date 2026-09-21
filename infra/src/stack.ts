@@ -9,7 +9,8 @@ import {
   aws_s3_deployment as s3deploy,
 } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
-import { createAuthenticationResources } from './auth.js';
+import { createAuthenticationResources, ROBOT_SCOPE } from './auth.js';
+import { createRobotResources } from './robot.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -92,6 +93,15 @@ export class PromptRunnerHostingStack extends cdk.Stack {
       region: props.env?.region ?? APPLICATION_REGION,
       productionWebOrigin: `https://${this.distribution.domainName}/`,
     });
+    const robot = createRobotResources(this, {
+      authentication,
+      productionWebOrigin: `https://${this.distribution.domainName}`,
+    });
+    const publicAuthConfig = {
+      ...authentication.config,
+      apiBaseUrl: robot.apiBaseUrl,
+      apiScope: ROBOT_SCOPE,
+    };
 
     const assetDeploymentRole = iam.Role.fromRoleArn(
       this,
@@ -119,7 +129,7 @@ export class PromptRunnerHostingStack extends cdk.Stack {
     const entryDeployment = new s3deploy.BucketDeployment(this, 'WebsiteEntryDeployment', {
       sources: [
         s3deploy.Source.asset(webDistPath, { exclude: ['assets/**'] }),
-        s3deploy.Source.jsonData('auth-config.json', authentication.config),
+        s3deploy.Source.jsonData('auth-config.json', publicAuthConfig),
       ],
       destinationBucket: this.websiteBucket,
       prune: false,
@@ -158,6 +168,18 @@ export class PromptRunnerHostingStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'AssetDeploymentRoleArn', {
       description: 'Fixed role required by the CDK website asset deployment custom resource.',
       value: deploymentRoleArn,
+    });
+    new cdk.CfnOutput(this, 'ApiBaseUrl', {
+      description: 'HTTPS endpoint for the authenticated robot draft API.',
+      value: robot.apiBaseUrl,
+    });
+    new cdk.CfnOutput(this, 'DraftTableName', {
+      description: 'Retained DynamoDB table storing one draft per user.',
+      value: robot.draftTable.tableName,
+    });
+    new cdk.CfnOutput(this, 'DraftFunctionName', {
+      description: 'Lambda function serving the robot draft API.',
+      value: robot.draftFunction.functionName,
     });
   }
 }

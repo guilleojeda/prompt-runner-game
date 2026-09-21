@@ -236,4 +236,107 @@ describe('PromptRunnerAccessStack', () => {
       ]),
     );
   });
+
+  it('keeps the phase 0 policy within IAM limits and attaches robot permissions to bootstrap', () => {
+    const app = new cdk.App();
+    const stack = new PromptRunnerAccessStack(app, 'TestAccessPhase2', {
+      env: { account: APPLICATION_ACCOUNT, region: APPLICATION_REGION },
+      githubOidcProviderArn: `arn:aws:iam::${APPLICATION_ACCOUNT}:oidc-provider/token.actions.githubusercontent.com`,
+    });
+    const synthesized = Template.fromStack(stack);
+    const policies = synthesized.findResources('AWS::IAM::ManagedPolicy');
+    const phase0 = Object.values(policies).find(
+      (resource) =>
+        resource.Properties.ManagedPolicyName === 'prompt-runner-game-phase0-cfn-execution',
+    );
+    const phase2 = Object.values(policies).find(
+      (resource) =>
+        resource.Properties.ManagedPolicyName === 'prompt-runner-game-robot-cfn-execution',
+    );
+
+    expect(phase0).toBeDefined();
+    expect(phase2).toBeDefined();
+    expect(
+      JSON.stringify(resolvePolicyTokens(phase0?.Properties.PolicyDocument)).length,
+    ).toBeLessThanOrEqual(6144);
+    expect(phase2?.Properties.Roles).toEqual([
+      'cdk-hnb659fds-cfn-exec-role-387483252302-us-east-1',
+    ]);
+    const resolvedPhase2Document = resolvePolicyTokens(phase2?.Properties.PolicyDocument) as {
+      Statement: Array<{
+        Sid?: string;
+        Action?: string | string[];
+        Resource?: unknown;
+      }>;
+    };
+    const statements = resolvedPhase2Document.Statement;
+    const bySid = (sid: string) => statements.find((statement) => statement.Sid === sid);
+    expect(bySid('DraftTableLifecycle')).toEqual(
+      expect.objectContaining({
+        Action: expect.arrayContaining([
+          'dynamodb:CreateTable',
+          'dynamodb:UpdateTable',
+          'dynamodb:DescribeContinuousBackups',
+          'dynamodb:DescribeContributorInsights',
+          'dynamodb:DescribeKinesisStreamingDestination',
+          'dynamodb:DescribeTimeToLive',
+          'dynamodb:GetResourcePolicy',
+        ]),
+        Resource: 'arn:aws:dynamodb:us-east-1:387483252302:table/prompt-runner-game-drafts',
+      }),
+    );
+    expect(bySid('DraftFunctionLifecycle')).toEqual(
+      expect.objectContaining({
+        Action: expect.arrayContaining(['lambda:Get*', 'lambda:UpdateFunctionCode']),
+        Resource: expect.arrayContaining([
+          'arn:aws:lambda:us-east-1:387483252302:function:prompt-runner-game-draft-api',
+          'arn:aws:lambda:us-east-1:387483252302:function:prompt-runner-game-draft-api:*',
+        ]),
+      }),
+    );
+    expect(bySid('DraftHttpApi')).toEqual(
+      expect.objectContaining({
+        Action: expect.arrayContaining([
+          'apigateway:GET',
+          'apigateway:POST',
+          'apigateway:PATCH',
+          'apigateway:DELETE',
+        ]),
+      }),
+    );
+    expect(bySid('ReadDraftApiLogGroups')).toEqual(
+      expect.objectContaining({
+        Action: expect.arrayContaining([
+          'logs:DescribeLogGroups',
+          'logs:DescribeIndexPolicies',
+          'logs:DescribeResourcePolicies',
+        ]),
+        Resource: '*',
+        Condition: { StringEquals: { 'aws:RequestedRegion': 'us-east-1' } },
+      }),
+    );
+    expect(bySid('ReadDraftApiLogGroupDetails')).toEqual(
+      expect.objectContaining({
+        Action: 'logs:GetDataProtectionPolicy',
+        Resource:
+          'arn:aws:logs:us-east-1:387483252302:log-group:/aws/lambda/prompt-runner-game-draft-api:*',
+      }),
+    );
+    expect(bySid('ListDraftApiLogGroupTags')).toEqual(
+      expect.objectContaining({
+        Action: 'logs:ListTagsForResource',
+        Resource:
+          'arn:aws:logs:us-east-1:387483252302:log-group:/aws/lambda/prompt-runner-game-draft-api',
+      }),
+    );
+    expect(JSON.stringify(phase2?.Properties.PolicyDocument)).not.toContain(
+      'apigateway:TagResource',
+    );
+    expect(bySid('CognitoRobotResourceServer')).toEqual(
+      expect.objectContaining({
+        Action: expect.arrayContaining(['cognito-idp:CreateResourceServer']),
+        Resource: 'arn:aws:cognito-idp:us-east-1:387483252302:userpool/*',
+      }),
+    );
+  });
 });

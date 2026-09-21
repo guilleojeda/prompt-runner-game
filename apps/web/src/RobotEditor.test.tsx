@@ -1,0 +1,283 @@
+// @vitest-environment jsdom
+
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { User } from 'oidc-client-ts';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createDefaultDraft, type DraftSnapshot, type RobotDraft } from '../../../shared/robot.js';
+import type { AuthSession } from './auth.js';
+import { DraftApiFailure, type DraftApi } from './draft-api.js';
+import { RobotEditor } from './RobotEditor.js';
+
+function session(
+  email = 'a@example.com',
+  _expiresAt = Math.floor(Date.now() / 1000) + 600,
+  accessToken = 'access-token',
+  sub = 'subject-a',
+): AuthSession {
+  return {
+    identity: { sub, email },
+    user: new User({
+      access_token: accessToken,
+      token_type: 'Bearer',
+      scope: 'openid email prompt-runner/robot',
+      profile: {
+        iss: 'https://issuer.example.test',
+        aud: 'client-public',
+        iat: 1,
+        exp: 9999999999,
+        sub,
+        email,
+      },
+      expires_at: _expiresAt,
+    }),
+  };
+}
+
+function snapshot(version = 0, draft: RobotDraft = createDefaultDraft()): DraftSnapshot {
+  return { version, draft };
+}
+
+function api(overrides: Partial<DraftApi> = {}): DraftApi {
+  return {
+    getDraft: vi.fn().mockResolvedValue(snapshot()),
+    putDraft: vi.fn().mockResolvedValue(snapshot(1)),
+    ...overrides,
+  };
+}
+
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
+
+describe('RobotEditor', () => {
+  it('loads the server draft and keeps the literal initial instructions visible', async () => {
+    render(<RobotEditor api={api()} session={session()} />);
+
+    expect(
+      await screen.findByDisplayValue(
+        'Siempre preferí ir a la derecha, a menos que tengas un buen motivo para no hacerlo',
+      ),
+    ).toBeTruthy();
+    expect((screen.getByRole('checkbox', { name: 'Avanzar' }) as HTMLInputElement).checked).toBe(
+      true,
+    );
+    expect((screen.getByRole('checkbox', { name: 'Retroceder' }) as HTMLInputElement).checked).toBe(
+      false,
+    );
+    expect(screen.getByText('Guardado')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Probar/i })).toBeNull();
+  });
+
+  it('debounces edits, allows one write in flight, and sends later text over the confirmed version', async () => {
+    vi.useFakeTimers();
+    let resolveFirst!: (value: DraftSnapshot) => void;
+    const first = new Promise<DraftSnapshot>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const putDraft = vi.fn().mockReturnValueOnce(first).mockResolvedValue(snapshot(2));
+    const draftApi = api({ putDraft });
+    render(<RobotEditor api={draftApi} session={session()} />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const instructions = screen.getByLabelText('Qué debe tener en cuenta el robot');
+    fireEvent.change(instructions, { target: { value: 'A' } });
+    await act(async () => {
+      vi.advanceTimersByTime(600);
+    });
+    expect(putDraft.mock.calls[0]?.[0]).toBe(0);
+    expect(putDraft.mock.calls[0]?.[1]).toMatchObject({ instructions: 'A' });
+
+    fireEvent.change(instructions, { target: { value: 'B' } });
+    await act(async () => {
+      vi.advanceTimersByTime(1_000);
+    });
+    expect(putDraft).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveFirst(snapshot(1, { ...createDefaultDraft(), instructions: 'A' }));
+      await first;
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(600);
+    });
+    expect(putDraft).toHaveBeenCalledTimes(2);
+    expect(putDraft.mock.calls[1]?.[0]).toBe(1);
+    expect(putDraft.mock.calls[1]?.[1]).toMatchObject({ instructions: 'B' });
+  });
+
+  it('stops on a conflict and offers both explicit resolution actions', async () => {
+    const remoteBase = createDefaultDraft();
+    const remote = {
+      ...remoteBase,
+      instructions: 'Versión de la otra pestaña',
+      skills: remoteBase.skills.map((skill) =>
+        skill.id === 'retreat' ? { ...skill, enabled: true, description: 'Volvé' } : skill,
+      ),
+    };
+    const draftApi = api({
+      putDraft: vi
+        .fn()
+        .mockRejectedValue(new DraftApiFailure('conflict', 'conflict', 409, snapshot(1, remote))),
+    });
+    render(<RobotEditor api={draftApi} session={session()} />);
+    await screen.findByDisplayValue(
+      'Siempre preferí ir a la derecha, a menos que tengas un buen motivo para no hacerlo',
+    );
+    fireEvent.change(screen.getByLabelText('Qué debe tener en cuenta el robot'), {
+      target: { value: 'Mi versión' },
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 650));
+    });
+    expect(
+      await screen.findByRole('heading', { name: 'Hay una versión guardada en otra pestaña' }),
+    ).toBeTruthy();
+    expect(
+      screen
+        .getAllByRole('listitem')
+        .some(
+          (item) => item.textContent?.includes('Retroceder') && item.textContent?.includes('Volvé'),
+        ),
+    ).toBe(true);
+    expect(screen.getByRole('button', { name: 'Usar la versión guardada' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Guardar mis cambios' })).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Qué debe tener en cuenta el robot'), {
+      target: { value: 'Otra edición local antes de resolver' },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    expect(draftApi.putDraft).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole('button', { name: 'Usar la versión guardada' }));
+    expect(screen.getByDisplayValue('Versión de la otra pestaña')).toBeTruthy();
+  });
+
+  it('reconciles a successful PUT whose response was lost without overwriting newer edits', async () => {
+    const sent = {
+      ...createDefaultDraft(),
+      instructions: 'Guardado aunque se perdió la respuesta',
+    };
+    const draftApi = api({
+      putDraft: vi
+        .fn()
+        .mockRejectedValue(new DraftApiFailure('network', 'timeout', undefined, undefined, true)),
+      getDraft: vi.fn().mockResolvedValueOnce(snapshot()).mockResolvedValueOnce(snapshot(1, sent)),
+    });
+    render(<RobotEditor api={draftApi} session={session()} />);
+    await waitFor(() => expect(draftApi.getDraft).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(
+        (screen.getByLabelText('Qué debe tener en cuenta el robot') as HTMLTextAreaElement).value,
+      ).toBe('Siempre preferí ir a la derecha, a menos que tengas un buen motivo para no hacerlo'),
+    );
+    fireEvent.change(screen.getByLabelText('Qué debe tener en cuenta el robot'), {
+      target: { value: sent.instructions },
+    });
+    await waitFor(() => expect(draftApi.putDraft).toHaveBeenCalledOnce(), { timeout: 2_000 });
+    await waitFor(() => expect(draftApi.getDraft).toHaveBeenCalledTimes(2), { timeout: 2_000 });
+    await waitFor(() => expect(screen.getByText('Guardado')).toBeTruthy(), { timeout: 2_000 });
+    expect(draftApi.getDraft).toHaveBeenCalledTimes(2);
+    expect(screen.getByDisplayValue(sent.instructions)).toBeTruthy();
+  });
+
+  it('shows a retry for an initial load failure without exposing editable defaults', async () => {
+    const getDraft = vi
+      .fn()
+      .mockRejectedValueOnce(new DraftApiFailure('network', 'offline'))
+      .mockResolvedValueOnce(snapshot());
+    const draftApi = api({ getDraft });
+    render(<RobotEditor api={draftApi} session={session()} />);
+
+    expect((await screen.findByRole('alert')).textContent).toContain('offline');
+    expect(screen.queryByLabelText('Qué debe tener en cuenta el robot')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Reintentar carga' }));
+    expect(await screen.findByLabelText('Qué debe tener en cuenta el robot')).toBeTruthy();
+    expect(getDraft).toHaveBeenCalledTimes(2);
+  });
+
+  it('warns before leaving while edits are unconfirmed and clears the warning after save', async () => {
+    const saved = { ...createDefaultDraft(), instructions: 'Texto pendiente' };
+    const draftApi = api({ putDraft: vi.fn().mockResolvedValue(snapshot(1, saved)) });
+    render(<RobotEditor api={draftApi} session={session()} />);
+    await screen.findByDisplayValue(
+      'Siempre preferí ir a la derecha, a menos que tengas un buen motivo para no hacerlo',
+    );
+    fireEvent.change(screen.getByLabelText('Qué debe tener en cuenta el robot'), {
+      target: { value: 'Texto pendiente' },
+    });
+    const pendingEvent = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(pendingEvent);
+    expect(pendingEvent.defaultPrevented).toBe(true);
+    await waitFor(() => expect(screen.getByText('Guardado')).toBeTruthy(), { timeout: 2_000 });
+    const savedEvent = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(savedEvent);
+    expect(savedEvent.defaultPrevented).toBe(false);
+  });
+
+  it('ignores a late GET from the previous identity after switching sessions', async () => {
+    let resolveA!: (value: DraftSnapshot) => void;
+    const draftA = { ...createDefaultDraft(), instructions: 'Cuenta A' };
+    const draftB = { ...createDefaultDraft(), instructions: 'Cuenta B' };
+    const getDraft = vi
+      .fn()
+      .mockReturnValueOnce(
+        new Promise<DraftSnapshot>((resolve) => {
+          resolveA = resolve;
+        }),
+      )
+      .mockResolvedValueOnce(snapshot(4, draftB));
+    const draftApi = api({ getDraft });
+    const first = session();
+    const second = session(
+      'b@example.com',
+      Math.floor(Date.now() / 1000) + 600,
+      'b-token',
+      'subject-b',
+    );
+    const view = render(<RobotEditor api={draftApi} session={first} />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    view.rerender(<RobotEditor api={draftApi} session={second} />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(await screen.findByDisplayValue('Cuenta B')).toBeTruthy();
+    await act(async () => {
+      resolveA(snapshot(3, draftA));
+      await Promise.resolve();
+    });
+    expect(screen.getByDisplayValue('Cuenta B')).toBeTruthy();
+    expect(draftApi.putDraft).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
+  it('drops queued work when the editor unmounts during an in-flight PUT', async () => {
+    let resolvePut!: (value: DraftSnapshot) => void;
+    const putDraft = vi.fn().mockReturnValue(
+      new Promise<DraftSnapshot>((resolve) => {
+        resolvePut = resolve;
+      }),
+    );
+    const draftApi = api({ putDraft });
+    const view = render(<RobotEditor api={draftApi} session={session()} />);
+    await screen.findByDisplayValue(
+      'Siempre preferí ir a la derecha, a menos que tengas un buen motivo para no hacerlo',
+    );
+    fireEvent.change(screen.getByLabelText('Qué debe tener en cuenta el robot'), {
+      target: { value: 'Enviada' },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 650));
+    expect(putDraft).toHaveBeenCalledOnce();
+    view.unmount();
+    resolvePut(snapshot(1, { ...createDefaultDraft(), instructions: 'Enviada' }));
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    expect(putDraft).toHaveBeenCalledOnce();
+  });
+});

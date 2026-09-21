@@ -1,6 +1,6 @@
 # Plataforma y operación
 
-Especificación acordada del producto. El código disponible implementa el acceso con Cognito y el circuito de publicación S3/CloudFront por CDK y GitHub Actions; la URL pública está en [README](../../README.md). Backend de datos, persistencia y ejecución del juego siguen pendientes; las secciones correspondientes describen el objetivo aprobado, no capacidades ya disponibles. [Índice de documentación](../../README.md).
+Especificación acordada del producto. El código disponible implementa el acceso con Cognito, el editor con API Lambda y borrador en DynamoDB, y la publicación S3/CloudFront por CDK y GitHub Actions; la URL pública está en [README](../../README.md). La persistencia de intentos y la ejecución del juego siguen pendientes; las secciones correspondientes describen el objetivo aprobado, no capacidades ya disponibles. [Índice de documentación](../../README.md).
 
 ## Tecnologías y restricciones confirmadas
 
@@ -70,7 +70,7 @@ Las capacidades publicadas y sus límites se conservan en referencias técnicas.
 | Bedrock | [APIs, métricas y tarifas](../reference/bedrock.md) | Habilitar acceso/cuotas y verificar Sonnet 5 mediante la integración nativa. API y modelo inicial están elegidos. |
 | Acceso por email | [Identidad y correo](../reference/identidad.md) | Cognito Managed Login Essentials con correo predeterminado, confirmación y recuperación. SES propio queda para una fase posterior sobre el mismo pool. |
 | Cálculo independiente del navegador | [Tareas y sesiones](../reference/agentcore.md#continuidad-sesión-y-almacenamiento) | Verificar la tarea de background y la recuperación del intento y su presentación al recargar. |
-| DynamoDB y registros | [Contrato de registro](../architecture/registro-de-ejecucion.md) y [datos](../architecture/datos.md) | Almacenamiento on-demand y S3 privado decididos; faltan implementación, accesos y verificación operativa. |
+| DynamoDB y registros | [Contrato de registro](../architecture/registro-de-ejecucion.md) y [datos](../architecture/datos.md) | Borrador on-demand disponible; el registro de intentos y cuerpos S3 conserva su implementación y verificación pendientes. |
 | Despliegue | [CDK y GitHub Actions](../reference/datos-y-entrega.md) | Hosting y workflow operativos mediante OIDC; [URL pública](../../README.md) y preparación AWS documentadas. El ambiente inicial es único. |
 
 El estado observado mediante lecturas de la cuenta se documenta por separado en [cuenta AWS](../reference/cuenta-aws.md). Una consulta de cuota o disponibilidad no prueba la capacidad de la aplicación ni una inferencia exitosa.
