@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { User } from 'oidc-client-ts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createDefaultDraft, type DraftSnapshot } from '../../../shared/robot.js';
@@ -316,5 +316,99 @@ describe('AttemptWorkspace', () => {
 
     resolveHistory(summary('victory'));
     expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
+  });
+
+  it('syncs the history row when polling changes a pending attempt to terminal', async () => {
+    const pending = { ...summary('pending'), id: 'attempt-terminal-sync' };
+    const terminal = {
+      ...pending,
+      status: 'error' as const,
+      updatedAt: '2026-09-21T12:05:00.000Z',
+      reason: 'provider_error',
+    };
+    const getAttempt = vi.fn().mockResolvedValue(terminal);
+    const listAttempts = vi
+      .fn()
+      .mockResolvedValueOnce({ attempts: [pending] })
+      .mockResolvedValueOnce({ attempts: [pending] });
+    const attemptApi = api({ getAttempt, listAttempts });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+
+    expect(await screen.findByRole('button', { name: 'Cancelar' })).toBeTruthy();
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 2_100));
+    });
+    expect(await screen.findByRole('heading', { name: 'Error de ejecución' })).toBeTruthy();
+    const historySection = screen.getByRole('heading', { name: 'Historial' }).closest('section');
+    expect(historySection).not.toBeNull();
+    expect(within(historySection as HTMLElement).getByText('Error de ejecución')).toBeTruthy();
+    expect(
+      within(historySection as HTMLElement).queryByText('Admitido, esperando inicio'),
+    ).toBeNull();
+
+    fireEvent.click(
+      within(historySection as HTMLElement).getByRole('button', { name: 'Ver resultado' }),
+    );
+    expect(
+      await screen.findByText(
+        'Causa registrada: El proveedor del agente no pudo completar la llamada.',
+      ),
+    ).toBeTruthy();
+    expect(
+      within(historySection as HTMLElement).queryByText('Admitido, esperando inicio'),
+    ).toBeNull();
+  });
+
+  it('does not let a deferred old history page overwrite a polled terminal summary', async () => {
+    const pending = { ...summary('pending'), id: 'attempt-deferred-history' };
+    const terminal = {
+      ...pending,
+      status: 'error' as const,
+      updatedAt: '2026-09-21T12:05:00.000Z',
+      reason: 'provider_error',
+    };
+    let resolveHistory!: (page: { attempts: readonly AttemptSummary[] }) => void;
+    const oldHistoryPage = new Promise<{ attempts: readonly AttemptSummary[] }>((resolve) => {
+      resolveHistory = resolve;
+    });
+    const listAttempts = vi
+      .fn()
+      .mockResolvedValueOnce({ attempts: [] })
+      .mockResolvedValueOnce({ attempts: [] })
+      .mockReturnValueOnce(oldHistoryPage);
+    const attemptApi = api({
+      createAttempt: vi.fn().mockResolvedValue({ attempt: pending, dispatchConfirmed: true }),
+      getAttempt: vi.fn().mockResolvedValue(terminal),
+      listAttempts,
+    });
+    const editor = {
+      current: {
+        captureSnapshot: vi.fn().mockResolvedValue({ version: 1, draft: createDefaultDraft() }),
+      },
+    } as unknown as { current: RobotEditorHandle | null };
+    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
+    render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+    await screen.findByText('Historial');
+
+    await act(async () => {
+      (ref.current as AttemptWorkspaceHandle).start();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(await screen.findByRole('button', { name: 'Cancelar' })).toBeTruthy();
+    await new Promise((resolve) => setTimeout(resolve, 2_100));
+    expect(await screen.findByRole('heading', { name: 'Error de ejecución' })).toBeTruthy();
+
+    resolveHistory({ attempts: [pending] });
+    const historySection = screen.getByRole('heading', { name: 'Historial' }).closest('section');
+    expect(historySection).not.toBeNull();
+    await waitFor(() => {
+      expect(within(historySection as HTMLElement).getByText('Error de ejecución')).toBeTruthy();
+    });
+    expect(
+      within(historySection as HTMLElement).queryByText('Admitido, esperando inicio'),
+    ).toBeNull();
   });
 });

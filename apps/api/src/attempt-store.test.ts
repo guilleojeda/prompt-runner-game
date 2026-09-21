@@ -354,4 +354,69 @@ describe('attempt lifecycle store', () => {
     const values = updateInput?.ExpressionAttributeValues as Record<string, { BOOL?: boolean }>;
     expect(values[':false']).toEqual({ BOOL: false });
   });
+
+  it('omits unused optional call aliases from the Dynamo finish command', async () => {
+    const draft = savedDraft().draft;
+    const memory = new MemoryAttemptStore({ draft: savedDraft() });
+    const admitted = await memory.admit({
+      owner: 'a',
+      requestKey: 'finish-call-aliases',
+      expectedVersion: 1,
+      draft,
+    });
+    const claimed = await memory.claim('a', admitted.attempt.id, 'executor');
+    if (!claimed) throw new Error('test setup did not claim record');
+    const started = {
+      attemptId: admitted.attempt.id,
+      seq: 1,
+      decisionId: 'decision-1',
+      requestKey: 'request-1',
+      responseKey: 'response-1',
+      requestSha256: 'request-hash',
+      requestBytes: 10,
+      status: 'started' as const,
+      usage: {
+        inputTokens: null,
+        outputTokens: null,
+        gameTokens: null,
+        cacheReadTokens: null,
+        cacheWriteTokens: null,
+      },
+      createdAt: '2026-09-21T15:00:01.000Z',
+      updatedAt: '2026-09-21T15:00:01.000Z',
+    };
+    await memory.beginCall('a', admitted.attempt.id, 'executor', started);
+    const persisted = { ...started, status: 'error' as const };
+    const currentItem = marshall(claimed, { removeUndefinedValues: true });
+    const callItem = marshall(persisted, { removeUndefinedValues: true });
+    let transactionInput: Record<string, unknown> | undefined;
+    const client = {
+      send: async (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
+        const name = command.constructor.name;
+        if (name === 'GetItemCommand') return { Item: currentItem };
+        if (name === 'QueryCommand') return { Items: [callItem] };
+        if (name === 'TransactWriteItemsCommand') {
+          transactionInput = command.input;
+          throw new TransactionCanceledException({ message: 'condition', $metadata: {} });
+        }
+        throw new Error(`unexpected command ${name}`);
+      },
+    };
+    const store = new DynamoAttemptStore({
+      client: client as unknown as DynamoDBClient,
+      tableName: 'attempts',
+    });
+    await store.finishCall('a', admitted.attempt.id, 'executor', {
+      ...persisted,
+      responseSha256: 'response-hash',
+      responseBytes: 20,
+      updatedAt: '2026-09-21T15:00:02.000Z',
+    });
+    const update = ((transactionInput?.TransactItems as Array<{
+      Update?: { ExpressionAttributeNames?: Record<string, string> };
+    }>) ?? [])[0]?.Update;
+    expect(update?.ExpressionAttributeNames).not.toHaveProperty('#requestId');
+    expect(update?.ExpressionAttributeNames).not.toHaveProperty('#responseStatus');
+    expect(update?.ExpressionAttributeNames).not.toHaveProperty('#errorCode');
+  });
 });

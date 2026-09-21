@@ -775,9 +775,6 @@ export class DynamoAttemptStore implements AttemptStore {
       '#usage': 'usage',
       '#responseSha256': 'responseSha256',
       '#responseBytes': 'responseBytes',
-      '#requestId': 'requestId',
-      '#responseStatus': 'responseStatus',
-      '#errorCode': 'errorCode',
     };
     const sets = [
       '#status = :status',
@@ -795,7 +792,10 @@ export class DynamoAttemptStore implements AttemptStore {
       ['responseStatus', call.responseStatus],
       ['errorCode', call.errorCode],
     ] as const)
-      if (value !== undefined) sets.push(`#${name} = :${name}`);
+      if (value !== undefined) {
+        sets.push(`#${name} = :${name}`);
+        names[`#${name}`] = name;
+      }
     const allCalls = (await this.getCalls(owner, attemptId)).map((item) =>
       item.seq === call.seq ? call : item,
     );
