@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AuthFailure,
   type AuthClient,
@@ -10,6 +10,8 @@ import {
 } from './auth.js';
 import { createDraftApiClient, type DraftApi } from './draft-api.js';
 import { RobotEditor, type RobotEditorHandle } from './RobotEditor.js';
+import { createAttemptApiClient, type AttemptApi } from './attempt-api.js';
+import { AttemptWorkspace, type AttemptWorkspaceHandle } from './AttemptWorkspace.js';
 import {
   CognitoPendingConfirmationClient,
   ConfirmationFailure,
@@ -30,10 +32,12 @@ type ConfirmationOperation = 'confirm' | 'resend' | null;
 export interface AppProps {
   authClient?: AuthClient;
   draftApi?: DraftApi;
+  attemptApi?: AttemptApi;
   confirmationClient?: PendingConfirmationClient;
   configLoader?: () => Promise<AuthConfig>;
   clientFactory?: (config: AuthConfig) => AuthClient;
   draftApiFactory?: (config: AuthConfig, tokenProvider: () => string) => DraftApi;
+  attemptApiFactory?: (config: AuthConfig, tokenProvider: () => string) => AttemptApi;
   confirmationClientFactory?: (config: AuthConfig) => PendingConfirmationClient;
 }
 
@@ -203,7 +207,13 @@ function AccountCard({
         <p>
           Sesión activa para <strong>{identity.email}</strong>.
         </p>
-        <button className="secondary-button" type="button" onClick={onLogout} disabled={busy}>
+        <button
+          className="secondary-button"
+          type="button"
+          onClick={onLogout}
+          disabled={busy}
+          aria-label="Cerrar sesión"
+        >
           {busy ? 'Cerrando sesión…' : 'Cerrar sesión'}
         </button>
       </div>
@@ -235,10 +245,12 @@ function ErrorNotice({
 export function App({
   authClient,
   draftApi,
+  attemptApi,
   confirmationClient,
   configLoader = loadAuthConfig,
   clientFactory = createAuthClient,
   draftApiFactory = (config, tokenProvider) => createDraftApiClient(config, tokenProvider),
+  attemptApiFactory = (config, tokenProvider) => createAttemptApiClient(config, tokenProvider),
   confirmationClientFactory = createDefaultConfirmationClient,
 }: AppProps) {
   const [phase, setPhase] = useState<AppPhase>('loading');
@@ -256,14 +268,19 @@ export function App({
   const [logoutChoiceBusy, setLogoutChoiceBusy] = useState(false);
   const [apiAuthError, setApiAuthError] = useState(false);
   const [editorApi, setEditorApi] = useState<DraftApi | null>(draftApi ?? null);
+  const [runnerApi, setRunnerApi] = useState<AttemptApi | null>(attemptApi ?? null);
   const [editorConfig, setEditorConfig] = useState<AuthConfig | null>(null);
+  const [attemptBusy, setAttemptBusy] = useState(false);
   const clientRef = useRef<AuthClient | null>(authClient ?? null);
   const configRef = useRef<AuthConfig | null>(null);
   const draftApiRef = useRef<DraftApi | null>(draftApi ?? null);
+  const runnerApiRef = useRef<AttemptApi | null>(attemptApi ?? null);
   const currentSessionRef = useRef<AuthSession | null>(null);
   const editorRef = useRef<RobotEditorHandle | null>(null);
+  const attemptWorkspaceRef = useRef<AttemptWorkspaceHandle | null>(null);
   const logoutAttemptRef = useRef(0);
   const draftApiFactoryRef = useRef(draftApiFactory);
+  const attemptApiFactoryRef = useRef(attemptApiFactory);
   const confirmationRef = useRef<PendingConfirmationClient | null>(confirmationClient ?? null);
   const initializationRef = useRef<Promise<AuthSession | null> | null>(null);
 
@@ -287,10 +304,20 @@ export function App({
             () => currentSessionRef.current?.user.access_token ?? '',
           );
           setEditorApi(draftApiRef.current);
+          runnerApiRef.current ??= attemptApiFactoryRef.current(
+            config,
+            () => currentSessionRef.current?.user.access_token ?? '',
+          );
+          setRunnerApi(runnerApiRef.current);
         } else if (draftApiRef.current && !configRef.current) {
           const config = await configLoader();
           configRef.current = config;
           setEditorConfig(config);
+          runnerApiRef.current ??= attemptApiFactoryRef.current(
+            config,
+            () => currentSessionRef.current?.user.access_token ?? '',
+          );
+          setRunnerApi(runnerApiRef.current);
         }
         setHasClient(true);
         return client.initialize();
@@ -474,6 +501,9 @@ export function App({
   };
 
   const logout = () => {
+    if (attemptBusy) {
+      return;
+    }
     if (editorRef.current?.hasUnconfirmedChanges()) {
       setLogoutPrompt(true);
       return;
@@ -534,6 +564,13 @@ export function App({
     }
   };
 
+  const handleAttemptBusyChange = useCallback((busy: boolean): void => {
+    setAttemptBusy(busy);
+    if (!busy) {
+      editorRef.current?.releaseAttemptLock();
+    }
+  }, []);
+
   return (
     <main className="shell">
       <header>
@@ -584,7 +621,7 @@ export function App({
         />
       )}
       {phase === 'account' && session && (
-        <AccountCard identity={session.identity} onLogout={logout} busy={false} />
+        <AccountCard identity={session.identity} onLogout={logout} busy={attemptBusy || renewing} />
       )}
       {session &&
         (phase === 'account' ||
@@ -598,9 +635,25 @@ export function App({
                 api={editorApi}
                 session={session}
                 paused={renewing || phase !== 'account'}
+                locked={attemptBusy}
+                onTry={runnerApi ? () => attemptWorkspaceRef.current?.start() : undefined}
                 onAuthRequired={() => setApiAuthError(true)}
               />
             )}
+            {runnerApi &&
+              editorApi &&
+              editorConfig &&
+              session.user.scopes.includes(editorConfig.apiScope) && (
+                <AttemptWorkspace
+                  ref={attemptWorkspaceRef}
+                  api={runnerApi}
+                  editor={editorRef}
+                  session={session}
+                  authPaused={renewing || phase !== 'account'}
+                  onBusyChange={handleAttemptBusyChange}
+                  onAuthRequired={() => setApiAuthError(true)}
+                />
+              )}
             {editorApi && editorConfig && !session.user.scopes.includes(editorConfig.apiScope) && (
               <section className="notice error-notice" role="alert">
                 <p>Para guardar tu robot, necesitás volver a ingresar con tu cuenta.</p>

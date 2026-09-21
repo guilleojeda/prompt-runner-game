@@ -1,6 +1,6 @@
 # Acceso, publicación y entrega
 
-**Acceso con Cognito y publicación de React estático en S3 privado, servido por CloudFront con Origin Access Control (OAC), mediante CDK en TypeScript y GitHub Actions.** La aplicación ofrece una cuenta verificada; el juego y su renderer siguen pendientes. Se usa correo predeterminado y un único ambiente; SES se incorporará después. El renderer y el flujo de animación se definen en [animación](animacion.md). Las restricciones elegidas por el usuario se mantienen en [plataforma](../intent/plataforma.md); las referencias técnicas están en [identidad](../reference/identidad.md), [datos y entrega](../reference/datos-y-entrega.md) y [cuenta AWS](../reference/cuenta-aws.md).
+**Acceso con Cognito y publicación de React estático en S3 privado, servido por CloudFront con Origin Access Control (OAC), mediante CDK en TypeScript y GitHub Actions.** La fase 3 incorpora el acceso verificado, la configuración persistida, las rutas de intentos y la infraestructura declarada de starter/Runtime/S3; no se afirma todavía que esa ampliación esté desplegada o verificada en vivo. El juego estático y su consulta de resultados forman parte del código; el renderer, la animación, el replay y las mecánicas posteriores siguen pendientes. Se usa correo predeterminado y un único ambiente; SES se incorporará después. El diseño futuro de animación está en [animación](animacion.md). Las restricciones elegidas por el usuario se mantienen en [plataforma](../intent/plataforma.md); las referencias técnicas están en [identidad](../reference/identidad.md), [datos y entrega](../reference/datos-y-entrega.md) y [cuenta AWS](../reference/cuenta-aws.md).
 
 ## Primera versión: Cognito con correo predeterminado
 
@@ -19,7 +19,7 @@ La cuenta actual obtiene su identidad desde `userInfo` de Cognito con los scopes
 
 Esta pantalla cubre una limitación de Managed Login: Cognito no ofrece una entrada directa soportada para volver a confirmar una cuenta pendiente después de abandonar su flujo. `/confirm` y `/resendcode` son rutas de redirección internas, por lo que no se construyen enlaces basados en sus parámetros internos. [Endpoints administrados de Cognito](https://docs.aws.amazon.com/cognito/latest/developerguide/managed-login-endpoints.html).
 
-El backend de borradores usa el authorizer JWT de HTTP API, con issuer/cliente y scope `prompt-runner/robot` en GET y PUT `/draft`. Lambda exige un access token del cliente esperado y valida UserInfo con email verificado y sub coincidente antes de acceder a datos. El sub validado determina la clave del borrador; no se acepta otro propietario como selector. La pertenencia de intentos se incorporará con su API. La guarda de la pantalla no sustituye esa autorización de servidor; un JWT tampoco autoriza leer cualquier identificador.
+El backend usa el authorizer JWT de HTTP API, con issuer/cliente y scope `prompt-runner/robot` en `/draft` y en las rutas de intentos. Lambda exige un access token del cliente esperado y valida UserInfo con email verificado y sub coincidente antes de acceder a datos. El sub validado determina las claves de borrador, solicitud, intento y cuota; no se acepta otro propietario como selector. La guarda de la pantalla no sustituye esa autorización de servidor; un JWT tampoco autoriza leer cualquier identificador.
 
 ### Sesión del navegador
 
@@ -41,6 +41,10 @@ El editor conserva sus cambios pendientes en memoria mientras renueva la misma i
 
 La API registra un resultado estructurado por solicitud en su log de Lambda: `requestId`, método, estado HTTP y código de resultado. Ese identificador permite correlacionar el error sin registrar el bearer, el borrador ni los detalles privados de las excepciones de dependencias.
 
+### Rutas de ejecución de fase 3
+
+Con la misma autenticación se declaran `POST /attempts`, `GET /attempt-requests/{requestKey}`, `GET /attempts/{attemptId}`, `GET /attempts?cursor=...`, `POST /attempts/{attemptId}/start`, `POST /attempts/{attemptId}/cancel` y `GET /quota`. La interfaz usa `requestKey` para recuperar una admisión ambigua; no usa el navegador como autoridad del intento. La ejecución captura `animationEnabled=false` y no agrega una ruta pública para Runtime, bodies, diagnóstico, replay o ranking.
+
 ## Fase posterior: correo propio con SES
 
 Después de contar con la versión funcional con Cognito, se incorporará **SES como mecanismo de envío del mismo user pool**. Esa fase comprende verificar un emisor, habilitar producción para destinatarios arbitrarios, configurar permisos y `EmailSendingAccount=DEVELOPER`, y definir mensajes de confirmación y recuperación en español. Se comprobarán envío real, reenvío, recuperación y cuotas aplicables.
@@ -57,9 +61,9 @@ Cognito con Resend también evita solicitar producción SES, pero añade una Lam
 
 El hosting usa **React estático en un bucket S3 privado, servido por CloudFront mediante Origin Access Control (OAC)**. El build y la publicación de assets y configuración se ejecutan con GitHub Actions y CDK en TypeScript. Se utiliza la URL AWS, sin dominio propio. La única ruta de la entrada inicial es `/`; se puede recargar y no existe una redirección general de errores a HTML. Al agregar rutas de la SPA se incorporará su recarga sin convertir errores de assets o API en una respuesta HTML exitosa.
 
-El renderer aprobado utiliza React y sprites dentro de SVG, a partir de registros cerrados y un único reloj de reproducción. El [diseño de animación](animacion.md) define clips, trayectorias, fases, carga y compatibilidad, con avance continuo a velocidad fija y sin controles del usuario; CSS se usa para estilos y no como un reloj independiente. No requiere motor de física del navegador, SSR ni video prerenderizado. El diagnóstico técnico se abre aparte; no se requiere editar JSON para jugar.
+El renderer aprobado para fase 4 utilizará React y sprites dentro de SVG, a partir de registros cerrados y un único reloj de reproducción. El [diseño de animación](animacion.md) define clips, trayectorias, fases, carga y compatibilidad, con avance continuo a velocidad fija y sin controles del usuario; CSS se usa para estilos y no como un reloj independiente. Ese renderer, replay y diagnóstico técnico no están disponibles en fase 3. El juego actual muestra estado, resultado e historial básico sin ejecutar física en el navegador.
 
-La interfaz tiene una única acción Probar: guarda el borrador actual y bloquea los controles de configuración y nuevos intentos. La opción Animación se fija en ese clic. Al terminar el cálculo, la UI anima y luego muestra el resultado si estaba encendida; si estaba apagada pasa directamente al resultado. No se muestran métricas o historial del intento nuevo durante su animación. El resultado libera el editor. Ambas rutas mantienen guardado e inspección completos, según [experiencia](../intent/experiencia.md).
+La interfaz de fase 3 tiene una única acción Probar: guarda el borrador actual, admite el intento y bloquea los controles de configuración y nuevos intentos mientras calcula. No hay opción Animación en esta fase; el resultado se muestra directamente cuando el registro cierra. El editor e historial no reproducen el intento. El diseño de fase 4 añadirá la opción, bloqueo durante replay y marca de presentación, según [experiencia](../intent/experiencia.md).
 
 Amplify Hosting también podría definirse con CDK y recibir publicaciones desde GitHub Actions mediante su API. Ofrece hosting y previews administrados, pero esas capacidades no están pedidas y añadirían un circuito de publicación diferente al backend CDK. S3/CloudFront mantiene una forma uniforme de entregar esta SPA y es la decisión aprobada. No se extrapola un costo mensual sin uso.
 
@@ -82,7 +86,7 @@ El circuito de entrega es:
 
 ## Ambiente operativo
 
-La [URL pública del frontend](https://d1ilpq1n58tzqo.cloudfront.net) ofrece acceso, cuenta y preparación persistida del robot. La ejecución de partidas todavía no está implementada. El ambiente está en la cuenta `387483252302`, región `us-east-1`:
+La [URL pública del frontend](https://d1ilpq1n58tzqo.cloudfront.net) ofrece el ambiente público conocido para acceso, cuenta y preparación persistida del robot. La ejecución de fase 3 está implementada en el código y declarada en CDK, pero su despliegue y verificación en vivo todavía no se afirma aquí. El ambiente está en la cuenta `387483252302`, región `us-east-1`:
 
 | Recurso                 | Identificador                                              |
 | ----------------------- | ---------------------------------------------------------- |
@@ -134,7 +138,7 @@ gh variable set AWS_DEPLOY_ROLE_ARN \
   --body arn:aws:iam::387483252302:role/prompt-runner-game-github-actions-deploy-us-east-1
 ```
 
-`PromptRunnerAccess` se sintetiza sin depender del bootstrap ni de assets. Desplegarlo directamente con CloudFormation evita que la preparación dependa del rol que todavía debe crear. La variable de GitHub contiene solo un ARN público. La aplicación `PromptRunnerHosting` se publica posteriormente desde `main`, nunca mediante este procedimiento manual. Una ampliación futura de servicios requiere actualizar declarativamente la política de preparación antes de usar esos permisos desde CI.
+`PromptRunnerAccess` se sintetiza sin assets y se actualiza directamente con CloudFormation, no con `cdk deploy`. El stack existente tiene asociado el rol de servicio `cdk-hnb659fds-cfn-exec-role-387483252302-us-east-1`; CloudFormation conserva esa asociación incluso si la operación la inicia un operador. Para modificar las políticas de Access, el operador habilita temporalmente sólo las acciones IAM y los ARN que requiere el change set revisado, con vencimiento explícito, y retira esa habilitación tras verificar el estado terminal. Las lecturas de los roles existentes necesarias para resolver outputs también deben estar autorizadas. No se agrega administración permanente de Access al pipeline. La variable de GitHub contiene solo un ARN público, y su rol continúa limitado al stack de hosting. `PromptRunnerHosting` se publica desde `main`, nunca mediante este procedimiento manual. Una ampliación de servicios requiere preparar sus permisos declarativos antes de usarlos desde CI.
 
 ## Verificación y diagnóstico de publicación
 
@@ -157,6 +161,6 @@ Si falla una actualización, conservar el log completo y el estado de CloudForma
 
 ## Comprobaciones de aceptación relevantes
 
-En la primera versión se verifica registro real con correo predeterminado recibido, confirmación, login, recuperación, interfaz en español y manejo del límite de correo sin omitir la verificación; pertenencia con dos usuarios; cuota concurrente y su horario; frontend desplegado que sobrevive recarga; cierre del navegador durante un intento; y recuperación de su replay sin modelo. Las pruebas del motor cubren todas las reglas acordadas, incluidos últimos turnos, fases y ambos sentidos de movimiento. La evidencia debe incluir inferencia real del endpoint elegido y ejecución hasta el pico acordado con un patrón de carga explícito, sin asumir que las cuotas actuales lo permiten.
+Para fase 3, la aceptación local cubre correo predeterminado, confirmación, login, recuperación, pertenencia, rutas de admisión/consulta/cancelación, cuota, motor estático, snapshots, cuerpos privados y cierre al cancelar/error. La verificación en vivo de Runtime/Bedrock, continuidad y despliegue debe documentarse aparte antes de afirmar que el circuito funciona en el ambiente. Replay sin modelo, animación y carga amplia quedan para fases posteriores. Las pruebas del motor cubren los últimos turnos y ambos sentidos de movimiento del nivel estático.
 
 Las lecturas de Lambda y Bedrock identifican preparación pendiente. La primera versión verifica la entrega real con Cognito y sus límites aceptados; la habilitación de SES y el emisor propio pertenecen a la fase posterior. No se condiciona la versión inicial a tener SES en producción.

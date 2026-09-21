@@ -1,12 +1,12 @@
 # Agente, herramientas y observación
 
-Este documento es canónico para el contrato de decisión del agente, sus herramientas, la información que recibe y la captura de configuraciones. El editor y la persistencia del borrador están implementados; la ejecución del agente y sus snapshots siguen pendientes. Se relaciona con [experiencia](experiencia.md), [intentos](intentos.md), [juego](juego.md), [consumo y puntaje](consumo-y-puntaje.md) y [plataforma](plataforma.md).
+Este documento es canónico para el contrato de decisión del agente, sus herramientas, la información que recibe y la captura de configuraciones. El editor, los snapshots y la ejecución independiente por decisión están implementados para el recorrido estático. La inspección detallada en la interfaz sigue pendiente; sus datos se conservan desde la ejecución. Se relaciona con [experiencia](experiencia.md), [intentos](intentos.md), [juego](juego.md), [consumo y puntaje](consumo-y-puntaje.md) y [plataforma](plataforma.md).
 
 ## Configuración disponible
 
-El catálogo inicial permite preparar Avanzar, Retroceder, Saltar, Agacharse y avanzar, y Nadar. Sólo Avanzar comienza habilitado; las descripciones empiezan vacías y las instrucciones muestran la frase de orientación acordada. La ayuda sobre el efecto de una habilidad se presenta separada del campo editable y no completa el texto del usuario. Esperar y Agarrar objeto se incorporarán junto con las mecánicas que los utilizan. El editor no ejecuta todavía estas acciones.
+El catálogo inicial permite preparar Avanzar, Retroceder, Saltar, Agacharse y avanzar, y Nadar. Sólo Avanzar comienza habilitado; las descripciones empiezan vacías y las instrucciones muestran la frase de orientación acordada. La ayuda sobre el efecto de una habilidad se presenta separada del campo editable y no completa el texto del usuario. Esperar y Agarrar objeto se incorporarán junto con las mecánicas que los utilizan. Probar ejecuta estas acciones en el recorrido estático.
 
-Las referencias internas, IDs opacos y schemas pertenecen al catálogo versionado. Deshabilitar/reactivar no cambia el ID ni borra la descripción. El servidor rechaza referencias o versiones desconocidas e intentos de editar los contratos fijos. El borrador conserva textos literales y puede tener cero habilidades; las reglas de admisión siguientes aplican cuando se implemente Probar. [Guardado y concurrencia](../architecture/datos.md#borrador-disponible).
+Las referencias internas, IDs opacos y schemas pertenecen al catálogo versionado. Deshabilitar/reactivar no cambia el ID ni borra la descripción. El servidor rechaza referencias o versiones desconocidas e intentos de editar los contratos fijos. El borrador conserva textos literales y puede tener cero habilidades; Probar exige al menos una habilidad conforme a las reglas siguientes. [Guardado y concurrencia](../architecture/datos.md#borrador-disponible).
 
 ## Independencia estricta entre turnos
 

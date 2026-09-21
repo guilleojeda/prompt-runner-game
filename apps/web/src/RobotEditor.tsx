@@ -27,12 +27,16 @@ export interface RobotEditorHandle {
   hasUnconfirmedChanges(): boolean;
   discardPending(): void;
   flushPending(): Promise<boolean>;
+  captureSnapshot(): Promise<DraftSnapshot | null>;
+  releaseAttemptLock(): void;
 }
 
 export interface RobotEditorProps {
   api: DraftApi;
   session: AuthSession;
   paused?: boolean;
+  locked?: boolean;
+  onTry?: () => void;
   onAuthRequired?: () => void;
 }
 
@@ -46,6 +50,11 @@ interface ReconciliationTarget {
   generation: number;
   expectedVersion: number;
   draft: RobotDraft;
+}
+
+interface SaveOptions {
+  readonly draft?: RobotDraft;
+  readonly force?: boolean;
 }
 
 function cloneDraft(draft: RobotDraft): RobotDraft {
@@ -91,7 +100,7 @@ function isCurrent(
 }
 
 export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(function RobotEditor(
-  { api, session, paused = false, onAuthRequired },
+  { api, session, paused = false, locked = false, onTry, onAuthRequired },
   ref,
 ) {
   const [draft, setDraft] = useState<RobotDraft | null>(null);
@@ -99,6 +108,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
   const [message, setMessage] = useState<string | null>(null);
   const [conflict, setConflict] = useState<DraftSnapshot | null>(null);
   const [retryMode, setRetryMode] = useState<RetryMode>(null);
+  const [attemptClickLocked, setAttemptClickLocked] = useState(false);
   const [loadAttempt, setLoadAttempt] = useState(0);
   const generationRef = useRef(0);
   const draftRef = useRef<RobotDraft | null>(null);
@@ -106,16 +116,21 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
   const inFlightRef = useRef<InFlightSave | null>(null);
   const reconciliationRef = useRef<ReconciliationTarget | null>(null);
   const pausedRef = useRef(paused);
+  const lockedRef = useRef(locked);
   const sessionRef = useRef(session);
   const onAuthRequiredRef = useRef(onAuthRequired);
   const sendSaveRef = useRef<() => Promise<boolean>>(() => Promise.resolve(false));
   const setLoadedSnapshotRef = useRef<(snapshot: DraftSnapshot) => void>(() => undefined);
 
   pausedRef.current = paused;
+  lockedRef.current = locked;
   sessionRef.current = session;
   onAuthRequiredRef.current = onAuthRequired;
 
   const updateDraft = (next: RobotDraft): void => {
+    if (pausedRef.current || lockedRef.current) {
+      return;
+    }
     const copy = cloneDraft(next);
     draftRef.current = copy;
     setDraft(copy);
@@ -245,12 +260,12 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     return promise;
   };
 
-  const sendSave = (): Promise<boolean> => {
+  const sendSave = (options: SaveOptions = {}): Promise<boolean> => {
     const existing = inFlightRef.current;
     if (existing) {
       return existing.promise;
     }
-    const current = draftRef.current;
+    const current = options.draft ?? draftRef.current;
     const currentConfirmed = confirmedRef.current;
     const generation = generationRef.current;
     if (
@@ -258,7 +273,8 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
       !currentConfirmed ||
       pausedRef.current ||
       (draftsEqual(current, currentConfirmed.draft) &&
-        !(reconciliationRef.current !== null && retryMode === 'save'))
+        !(reconciliationRef.current !== null && retryMode === 'save') &&
+        !options.force)
     ) {
       return Promise.resolve(true);
     }
@@ -385,6 +401,45 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     return false;
   };
 
+  const captureSnapshot = async (): Promise<DraftSnapshot | null> => {
+    const visible = draftRef.current;
+    const confirmed = confirmedRef.current;
+    if (!visible || !confirmed || pausedRef.current || conflict !== null) {
+      return null;
+    }
+    const frozen = cloneDraft(visible);
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const inFlight = inFlightRef.current;
+      if (inFlight && !(await inFlight.promise)) {
+        return null;
+      }
+      const reconciliation = reconciliationRef.current;
+      if (reconciliation && retryMode === 'reconcile') {
+        if (!(await reconcile(reconciliation))) {
+          return null;
+        }
+        continue;
+      }
+      const current = draftRef.current;
+      const currentConfirmed = confirmedRef.current;
+      if (!current || !currentConfirmed || !draftsEqual(current, frozen)) {
+        return null;
+      }
+      if (draftsEqual(frozen, currentConfirmed.draft) && currentConfirmed.version > 0) {
+        return { ...currentConfirmed, draft: cloneDraft(frozen) };
+      }
+      const saved = await sendSave({ draft: frozen, force: true });
+      if (!saved) {
+        return null;
+      }
+      const afterSave = confirmedRef.current;
+      if (afterSave && draftsEqual(afterSave.draft, frozen)) {
+        return { ...afterSave, draft: cloneDraft(frozen) };
+      }
+    }
+    return null;
+  };
+
   const retry = (): void => {
     const target = reconciliationRef.current;
     if (target && retryMode === 'reconcile') {
@@ -417,6 +472,8 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
       }
     },
     flushPending,
+    captureSnapshot,
+    releaseAttemptLock: () => setAttemptClickLocked(false),
   }));
 
   useEffect(() => {
@@ -525,14 +582,14 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     retry();
   };
 
-  const disabled = paused || status === 'loading';
+  const disabled = paused || locked || attemptClickLocked || status === 'loading';
   const byteCount = draft ? draftByteLength(draft) : 0;
 
   return (
     <section
       className="robot-editor"
       aria-labelledby="robot-editor-title"
-      aria-busy={paused || status === 'loading'}
+      aria-busy={paused || locked || attemptClickLocked || status === 'loading'}
     >
       <div className="editor-heading">
         <div>
@@ -540,8 +597,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
           <h2 id="robot-editor-title">Prepará tu robot</h2>
           <p className="editor-intro">
             Elegí sus habilidades y escribí las instrucciones que recibirá. Los cambios se guardan
-            automáticamente. Por ahora podés preparar y guardar tu robot; ejecutar el recorrido
-            todavía no está disponible.
+            automáticamente. Al probarlo, se fija exactamente lo que estás viendo.
           </p>
         </div>
         <span className={`save-state save-state-${status}`} role="status" aria-live="polite">
@@ -552,6 +608,11 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
       {paused && (
         <p className="editor-paused" role="status">
           Verificando tu sesión… Conservamos tus cambios en esta pestaña.
+        </p>
+      )}
+      {locked && !paused && (
+        <p className="editor-paused" role="status">
+          El intento está en curso. Conservamos esta configuración hasta que termine.
         </p>
       )}
       {message && status !== 'clean' && (
@@ -633,6 +694,24 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
                   Reintentar guardado
                 </button>
               )}
+            </div>
+          )}
+          {onTry && (
+            <div className="editor-actions attempt-action">
+              <button
+                className="primary-button"
+                type="button"
+                onClick={() => {
+                  setAttemptClickLocked(true);
+                  onTry();
+                }}
+                disabled={disabled || status === 'conflict'}
+              >
+                Probar
+              </button>
+              <span className="field-help">
+                Guarda y prueba esta configuración en el recorrido estático.
+              </span>
             </div>
           )}
         </form>

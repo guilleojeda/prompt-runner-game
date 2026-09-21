@@ -3,6 +3,14 @@ import { Template } from 'aws-cdk-lib/assertions';
 import { describe, expect, it } from 'vitest';
 import { PromptRunnerAccessStack } from './access-stack.js';
 import { APPLICATION_ACCOUNT, APPLICATION_REGION } from './stack.js';
+import {
+  AGENT_RUNTIME_NAME,
+  AGENT_RUNTIME_ROLE_NAME,
+  STARTER_LAMBDA_ROLE_NAME,
+  STARTER_LOG_GROUP_NAME,
+  attemptBodiesBucketNameFor,
+} from './execution.js';
+import { STARTER_LAMBDA_NAME } from './robot.js';
 
 // CDK's first template synthesis pays one-time construct startup cost; this
 // timeout gives infrastructure assertions room for that cost without changing
@@ -347,6 +355,202 @@ describe('PromptRunnerAccessStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, (
       expect.objectContaining({
         Action: expect.arrayContaining(['cognito-idp:CreateResourceServer']),
         Resource: 'arn:aws:cognito-idp:us-east-1:387483252302:userpool/*',
+      }),
+    );
+  });
+
+  it('keeps phase 3 CloudFormation access complementary and scoped by resource', () => {
+    const app = new cdk.App();
+    const stack = new PromptRunnerAccessStack(app, 'TestAccessPhase3', {
+      env: { account: APPLICATION_ACCOUNT, region: APPLICATION_REGION },
+      githubOidcProviderArn: `arn:aws:iam::${APPLICATION_ACCOUNT}:oidc-provider/token.actions.githubusercontent.com`,
+    });
+    const synthesized = Template.fromStack(stack);
+    const policies = synthesized.findResources('AWS::IAM::ManagedPolicy');
+    const phase0 = Object.values(policies).find(
+      (resource) =>
+        resource.Properties.ManagedPolicyName === 'prompt-runner-game-phase0-cfn-execution',
+    );
+    const phase3 = Object.values(policies).find(
+      (resource) =>
+        resource.Properties.ManagedPolicyName === 'prompt-runner-game-phase3-cfn-execution',
+    );
+    const phase3Provider = Object.values(policies).find(
+      (resource) =>
+        resource.Properties.ManagedPolicyName ===
+        'prompt-runner-game-phase3-agentcore-cfn-execution',
+    );
+    expect(phase0?.Properties.Description).toBe(
+      'Phase 0 CloudFormation execution permissions for hosting only.',
+    );
+    expect(phase3).toBeDefined();
+    expect(
+      JSON.stringify(resolvePolicyTokens(phase3?.Properties.PolicyDocument)).length,
+    ).toBeLessThanOrEqual(6144);
+    expect(phase3Provider).toBeDefined();
+    expect(
+      JSON.stringify(resolvePolicyTokens(phase3Provider?.Properties.PolicyDocument)).length,
+    ).toBeLessThanOrEqual(6144);
+    expect(phase3?.Properties.Roles).toEqual([
+      'cdk-hnb659fds-cfn-exec-role-387483252302-us-east-1',
+    ]);
+    const phase3Document = resolvePolicyTokens(phase3?.Properties.PolicyDocument) as {
+      Statement: Array<{
+        Sid?: string;
+        Action?: string | string[];
+        Resource?: unknown;
+        Condition?: unknown;
+      }>;
+    };
+    const providerDocument = resolvePolicyTokens(phase3Provider?.Properties.PolicyDocument) as {
+      Statement: Array<{
+        Sid?: string;
+        Action?: string | string[];
+        Resource?: unknown;
+        Condition?: unknown;
+      }>;
+    };
+    const statements = [...phase3Document.Statement, ...providerDocument.Statement];
+    const bySid = (sid: string) => statements.find((statement) => statement.Sid === sid);
+    expect(bySid('AttemptBodiesBucketLifecycle')).toEqual(
+      expect.objectContaining({
+        Action: expect.arrayContaining(['s3:CreateBucket', 's3:PutBucketPolicy']),
+        Resource: `arn:aws:s3:::${attemptBodiesBucketNameFor(APPLICATION_ACCOUNT, APPLICATION_REGION)}`,
+      }),
+    );
+    expect(bySid('StarterFunctionLifecycle')).toEqual(
+      expect.objectContaining({
+        Action: expect.arrayContaining([
+          'lambda:CreateFunction',
+          'lambda:UpdateFunctionCode',
+          'lambda:PutFunctionEventInvokeConfig',
+        ]),
+        Resource: expect.arrayContaining([
+          `arn:aws:lambda:us-east-1:387483252302:function:${STARTER_LAMBDA_NAME}`,
+          `arn:aws:lambda:us-east-1:387483252302:function:${STARTER_LAMBDA_NAME}:*`,
+        ]),
+      }),
+    );
+    expect(bySid('PassStarterLambdaRole')).toEqual(
+      expect.objectContaining({
+        Resource: `arn:aws:iam::387483252302:role/${STARTER_LAMBDA_ROLE_NAME}`,
+        Condition: { StringEquals: { 'iam:PassedToService': 'lambda.amazonaws.com' } },
+      }),
+    );
+    expect(bySid('StarterLogs')).toEqual(
+      expect.objectContaining({
+        Resource: expect.arrayContaining([
+          `arn:aws:logs:us-east-1:387483252302:log-group:${STARTER_LOG_GROUP_NAME}`,
+        ]),
+      }),
+    );
+    expect(bySid('ReadStarterLogGroupDetails')).toEqual(
+      expect.objectContaining({
+        Action: 'logs:GetDataProtectionPolicy',
+        Resource: `arn:aws:logs:us-east-1:387483252302:log-group:${STARTER_LOG_GROUP_NAME}:*`,
+      }),
+    );
+    expect(bySid('ListStarterLogGroupTags')).toEqual(
+      expect.objectContaining({
+        Action: 'logs:ListTagsForResource',
+        Resource: `arn:aws:logs:us-east-1:387483252302:log-group:${STARTER_LOG_GROUP_NAME}`,
+      }),
+    );
+    expect(bySid('PassRuntimeRole')).toEqual(
+      expect.objectContaining({
+        Resource: `arn:aws:iam::387483252302:role/${AGENT_RUNTIME_ROLE_NAME}`,
+        Condition: {
+          StringEquals: { 'iam:PassedToService': 'bedrock-agentcore.amazonaws.com' },
+        },
+      }),
+    );
+    expect(bySid('CreateAgentRuntime')).toEqual(
+      expect.objectContaining({
+        Action: 'bedrock-agentcore:CreateAgentRuntime',
+        Resource: '*',
+        Condition: {
+          StringEquals: {
+            'aws:RequestTag/Application': 'prompt-runner-game',
+            'aws:RequestedRegion': 'us-east-1',
+          },
+        },
+      }),
+    );
+    expect(bySid('TagAgentRuntimeOnCreate')).toEqual(
+      expect.objectContaining({
+        Action: 'bedrock-agentcore:TagResource',
+        Resource: `arn:aws:bedrock-agentcore:us-east-1:387483252302:runtime/${AGENT_RUNTIME_NAME}-*`,
+        Condition: { StringEquals: { 'aws:RequestTag/Application': 'prompt-runner-game' } },
+      }),
+    );
+    expect(bySid('TagAgentRuntimeDependencies')).toEqual(
+      expect.objectContaining({
+        Action: 'bedrock-agentcore:TagResource',
+        Resource: expect.arrayContaining([
+          `arn:aws:bedrock-agentcore:us-east-1:387483252302:runtime/${AGENT_RUNTIME_NAME}-*/runtime-endpoint/*`,
+          `arn:aws:bedrock-agentcore:us-east-1:387483252302:workload-identity-directory/default/workload-identity/${AGENT_RUNTIME_NAME}-*`,
+        ]),
+      }),
+    );
+    expect(bySid('AgentRuntimeLifecycle')).toEqual(
+      expect.objectContaining({
+        Action: expect.arrayContaining([
+          'bedrock-agentcore:GetAgentRuntime',
+          'bedrock-agentcore:UpdateAgentRuntime',
+        ]),
+        Resource: `arn:aws:bedrock-agentcore:us-east-1:387483252302:runtime/${AGENT_RUNTIME_NAME}-*`,
+      }),
+    );
+    expect(bySid('ProvisionAgentRuntimeDependencies')).toEqual(
+      expect.objectContaining({
+        Action: expect.arrayContaining([
+          'bedrock-agentcore:CreateAgentRuntimeEndpoint',
+          'bedrock-agentcore:GetAgentRuntimeEndpoint',
+          'bedrock-agentcore:CreateWorkloadIdentity',
+        ]),
+        Resource: expect.arrayContaining([
+          'arn:aws:bedrock-agentcore:us-east-1:387483252302:workload-identity-directory/default',
+          `arn:aws:bedrock-agentcore:us-east-1:387483252302:workload-identity-directory/default/workload-identity/${AGENT_RUNTIME_NAME}-*`,
+        ]),
+      }),
+    );
+    expect(bySid('AgentRuntimeEndpointLifecycle')).toEqual(
+      expect.objectContaining({
+        Action: expect.arrayContaining([
+          'bedrock-agentcore:DeleteAgentRuntimeEndpoint',
+          'bedrock-agentcore:UpdateAgentRuntimeEndpoint',
+        ]),
+        Resource: expect.arrayContaining([
+          `arn:aws:bedrock-agentcore:us-east-1:387483252302:runtime/${AGENT_RUNTIME_NAME}-*`,
+          `arn:aws:bedrock-agentcore:us-east-1:387483252302:runtime/${AGENT_RUNTIME_NAME}-*/runtime-endpoint/*`,
+        ]),
+      }),
+    );
+    expect(bySid('AgentRuntimeWorkloadIdentityLifecycle')).toEqual(
+      expect.objectContaining({
+        Action: 'bedrock-agentcore:DeleteWorkloadIdentity',
+        Resource: expect.arrayContaining([
+          'arn:aws:bedrock-agentcore:us-east-1:387483252302:workload-identity-directory/default',
+          `arn:aws:bedrock-agentcore:us-east-1:387483252302:workload-identity-directory/default/workload-identity/${AGENT_RUNTIME_NAME}-*`,
+        ]),
+      }),
+    );
+    expect(bySid('CreateAgentCoreServiceLinkedRole')).toEqual(
+      expect.objectContaining({
+        Action: 'iam:CreateServiceLinkedRole',
+        Resource:
+          'arn:aws:iam::387483252302:role/aws-service-role/runtime-identity.bedrock-agentcore.amazonaws.com/AWSServiceRoleForBedrockAgentCoreRuntimeIdentity',
+        Condition: {
+          StringEquals: {
+            'iam:AWSServiceName': 'runtime-identity.bedrock-agentcore.amazonaws.com',
+          },
+        },
+      }),
+    );
+    expect(bySid('ReadAgentRuntimeCodeAsset')).toEqual(
+      expect.objectContaining({
+        Action: ['s3:GetObject', 's3:GetObjectVersion'],
+        Resource: 'arn:aws:s3:::cdk-hnb659fds-assets-387483252302-us-east-1/*',
       }),
     );
   });

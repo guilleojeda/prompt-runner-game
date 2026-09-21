@@ -4,7 +4,7 @@ Juego educativo de AWS User Group AI Argentina. El participante configura las ha
 
 **Web publicada:** [Abrir la aplicación](https://d1ilpq1n58tzqo.cloudfront.net).
 
-**Estado del proyecto:** acceso mediante Cognito, editor del robot con guardado en servidor y publicación automática. La aplicación permite crear una cuenta, confirmar el email, iniciar/cerrar sesión, recuperar la contraseña y preparar instrucciones y habilidades. La ejecución de partidas descrita a continuación sigue siendo la especificación objetivo. El nombre del juego es provisional.
+**Estado del proyecto:** acceso Cognito, configuración persistida y ejecución real de un recorrido estático mediante AgentCore Runtime, Strands y Bedrock. Probar guarda la configuración visible, fija el intento y muestra su resultado, consumo e historial propio. La animación, los obstáculos periódicos, los objetos, la comparación y el segundo recorrido siguen siendo capacidades pendientes del diseño objetivo. El nombre del juego es provisional.
 
 ## Desarrollo local
 
@@ -27,7 +27,7 @@ El servidor de desarrollo obtiene la configuración pública y adapta los retorn
 npm run check
 ```
 
-El comando verifica formato, lint, tipos, pruebas de autenticación, editor, contrato del robot, API e infraestructura, builds de web/API y síntesis CDK. No llama a modelos ni necesita credenciales AWS o enviar correo. `apps/web/` contiene la web, `apps/api/` la Lambda de borradores, `shared/` el contrato y catálogo comunes, e `infra/` la infraestructura. El lockfile fija las versiones instaladas; `.work/` conserva evidencia local y está excluido de Git.
+El comando verifica formato, lint, tipos, pruebas del motor, agente, persistencia, API, interfaz e infraestructura, los builds y la síntesis CDK. Usa un transporte de prueba explícito para el modelo: no llama a Bedrock ni necesita credenciales AWS o enviar correo. `apps/web/` contiene la web, `apps/api/` la API y el arranque, `apps/runner/` el ejecutor en Runtime, `shared/` los contratos y el motor, e `infra/` la infraestructura. El lockfile fija las versiones instaladas; `.work/` conserva evidencia local y está excluido de Git.
 
 ## Acceso
 
@@ -43,7 +43,17 @@ Si otra pestaña guardó antes, el editor conserva tus cambios y muestra un conf
 
 El límite de configuración es 65.536 bytes de JSON UTF-8, incluidos los contratos fijos de las habilidades. El editor lo informa y no trunca textos. Las copias pendientes permanecen sólo en memoria: un cierre abrupto puede perder cambios que el servidor no confirmó. No se guarda una segunda copia del borrador en el almacenamiento del navegador.
 
-Por ahora se prepara la configuración; ejecutar el recorrido todavía no está disponible. Los detalles de guardado y concurrencia están en [datos](docs/architecture/datos.md).
+**Probar** confirma el guardado del contenido visible y fija una copia inmutable para ese intento. No hace falta esperar el autosave ni aplicar cambios por separado. Si hay conflicto, configuración inválida o ninguna habilidad habilitada, se informa la causa y no se admite un intento. Los detalles están en [datos](docs/architecture/datos.md).
+
+## Probar y consultar resultados
+
+El recorrido inicial tiene cinco tramos: suelo, pozo, suelo, rama baja y suelo, con la salida al final y hasta doce acciones. Avanzar y Retroceder caminan; Saltar y Agacharse y avanzar reciben dirección; Nadar consume un turno sin mover al robot. Las descripciones explican las habilidades al agente, pero no cambian la física.
+
+Desde Probar hasta el resultado se bloquean edición, nuevos intentos, historial y cierre de sesión. Durante el cálculo podés cancelar; si una llamada ya estaba en vuelo, su consumo se conserva aunque no se publique otra acción. Cerrar el navegador no cancela el trabajo del servidor. Al volver, recuperás el estado o el resultado guardado; el historial permite consultar los intentos propios sin nueva inferencia.
+
+La cuota inicial es de cien intentos por día y cuenta al admitir, con reinicio a medianoche de Argentina. Un duplicado o rechazo previo no consume otra unidad; un error o cancelación posterior no devuelve la consumida. El resultado distingue victoria, derrota, límite, cancelación y error técnico, con turnos, llamadas y tokens reales. Un uso desconocido se muestra como tal y no produce un puntaje aparentemente exacto. Sólo las victorias con uso completo tienen puntos.
+
+Esta versión presenta el resultado directamente. Conserva estados, acciones y cuerpos de inferencia para reproducción e inspección posteriores; todavía no ofrece animación ni diagnóstico detallado.
 
 ## Publicación
 
@@ -80,7 +90,7 @@ Las consultas de servicios se conservan por tema, con fecha, fuentes y límites 
 
 ## Arquitectura
 
-**Decisión final de ejecución:** AgentCore Runtime con Strands TypeScript y el proveedor nativo de Amazon Bedrock, inicialmente Sonnet 5 global mediante Converse sin streaming. No se usa Mantle. El registro conserva snapshots y resoluciones, y React/SVG compone la animación a partir de esos datos. El flujo acordado es Probar → cálculo con controles bloqueados → animación opcional a velocidad fija, hacia adelante y sin controles → resultado. La implementación está pendiente.
+**Decisión final de ejecución:** AgentCore Runtime con Strands TypeScript y el proveedor nativo de Amazon Bedrock, inicialmente Sonnet 5 global mediante Converse sin streaming. No se usa Mantle. El registro conserva snapshots y resoluciones, y React/SVG compone la animación a partir de esos datos. El flujo acordado es Probar → cálculo con controles bloqueados → animación opcional a velocidad fija, hacia adelante y sin controles → resultado. La ejecución estática y su registro están implementados; el renderer y las mecánicas posteriores siguen pendientes.
 
 Están aprobados el contrato de registro, el reproductor, DynamoDB on-demand con S3 privado para cuerpos de inferencia, un único ambiente, la política diaria de cuota y Cognito Essentials con Managed Login. La primera versión usa el correo predeterminado de Cognito, aceptando sus 50 emails diarios y mensajes estándar; SES se incorporará en una fase posterior sobre el mismo user pool. El frontend React estático está publicado en S3 privado mediante CloudFront con Origin Access Control, usando CDK y GitHub Actions.
 

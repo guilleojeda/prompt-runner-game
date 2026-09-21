@@ -1,23 +1,23 @@
 # Registro de ejecución para reproducción
 
-**Diseño aprobado. Implementación pendiente.** Concreta los requisitos acordados de [intentos](../intent/intentos.md), sin cambiar las [reglas del juego](../intent/juego.md). El reproductor y el catálogo de sprites se definen en [animación](animacion.md); la persistencia física aprobada se define en [datos](datos.md).
+**Contrato de fase 3 implementado en el código local; verificación desplegada y reproductor todavía pendientes.** El registro conserva snapshots, acciones, llamadas, uso y cierre del intento estático. Concreta los requisitos acordados de [intentos](../intent/intentos.md), sin cambiar las [reglas del juego](../intent/juego.md). El reproductor y el catálogo de sprites se definen como diseño futuro en [animación](animacion.md); la persistencia física actual y sus claves se definen en [datos](datos.md).
 
 ## Separación de responsabilidades
 
 El motor determina qué ocurrió. El registro conserva esa resolución y sus estados. El reproductor decide cómo dibujarla. Posición y acción no bastan: caminar desde el mismo apoyo puede terminar en desplazamiento, caída o choque; recoger puede habilitar la salida; esperar puede cambiar una barrera sin mover al robot.
 
-El registro completo contiene también observaciones, prompts, herramientas, respuestas, validaciones, reintentos y consumo. Esos datos siguen siendo obligatorios para auditoría, pero no hace falta descargarlos para animar. La API entrega una **vista de reproducción del mismo registro**, sin crear otra simulación ni otro historial autoritativo. La consulta exige el mismo propietario que la del intento.
+El registro completo contiene observaciones, prompts, herramientas, respuestas, validaciones, llamadas y consumo junto con las acciones publicadas. Esos datos quedan en la autoridad de servidor y los bodies completos en S3 privado. En fase 3 la API entrega resumen, historial y estado; no hay todavía una vista de replay ni endpoint público de diagnóstico. Una fase posterior podrá proyectar una vista de reproducción del mismo registro sin crear otra simulación. Toda consulta exige el mismo propietario que la del intento.
 
 ## Datos que necesita el reproductor
 
-| Dato | Contenido y propósito |
-|---|---|
-| Identidad y versiones | Intento, versión del formato, nivel y reglas. Permiten interpretar registros retenidos. |
-| Escenario fijo | Tramos ordenados y sus tipos, apoyos, objetos con identidad/tipo/ubicación y salida. Referencia inmutable al nivel utilizado, nunca al nivel actual. |
-| Estado inicial | Posición lógica, fases efectivas, objetos, inventario, salida, contadores y estado de juego antes de cualquier acción. |
-| Acciones ordenadas | Acción interna normalizada, dirección/parámetros, estados anterior y posterior, resultado y causa. |
-| Interacción | Tramo cruzado y apoyo objetivo, o identidad del objeto recogido. El objetivo de movimiento puede no haberse alcanzado. |
-| Cierre | Número de acciones publicadas, referencia al último estado, resultado terminal y causa, incluidos cancelación y error. |
+| Dato                  | Contenido y propósito                                                                                                                                                         |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Identidad y versiones | Intento, versión del formato, nivel y reglas. Permiten interpretar registros retenidos.                                                                                       |
+| Escenario fijo        | Referencia inmutable a `principal-estatico-v1`: cinco tramos `ground`, `pit`, `ground`, `branch`, `ground`, seis apoyos y salida en el apoyo 5. La fase 3 no tiene objetos.   |
+| Estado inicial        | Posición lógica, fases efectivas, objetos, inventario, salida, contadores y estado de juego antes de cualquier acción.                                                        |
+| Acciones ordenadas    | Acción interna normalizada, dirección/parámetros, estados anterior y posterior, resultado y causa.                                                                            |
+| Interacción           | Tramo cruzado, apoyo objetivo y resultado `moved`, `fall`, `collision` o `no_op`; el objetivo puede no haberse alcanzado. Recogida de objetos pertenece a una fase posterior. |
+| Cierre                | Número de acciones publicadas, referencia al último estado, resultado terminal y causa, incluidos cancelación y error.                                                        |
 
 Los índices de apoyos, el mapa completo y las causas internas son para motor, registro y UI. **No se agregan al contexto del agente.** Se conserva la observación local permitida y la separación entre herramienta opaca e identidad semántica interna.
 
@@ -30,20 +30,21 @@ El snapshot contiene todos los datos dinámicos del motor. Para la reproducción
 ```ts
 type ReplayState = {
   id: string;
-  support: number;              // Último apoyo lógico; no posición del sprite.
-  turnsUsed: number;            // Acciones ejecutadas, incluso la fatal.
-  phaseTurn: number;            // Turno cuya fase está representada.
-  terrain: TerrainState[];      // Estado efectivo de TODOS los tramos, por orden.
-  remainingObjects: string[];   // Identidades; ubicación/tipo en el nivel fijo.
+  support: number; // Último apoyo lógico; no posición del sprite.
+  turnsUsed: number; // Acciones ejecutadas, incluso la fatal.
+  phaseTurn: number; // Turno cuya fase está representada.
+  terrain: TerrainState[]; // Estado efectivo de TODOS los tramos, por orden.
+  remainingObjects: string[]; // Identidades; ubicación/tipo en el nivel fijo.
   inventory: string[];
   exitEnabled: boolean;
-  status: "running" | "victory" | "defeat" | "incomplete";
+  status: 'running' | 'victory' | 'defeat' | 'incomplete';
+  maxSupportReached: number; // Avance informativo del intento.
 };
 ```
 
-Los nombres expresan el contrato lógico aprobado; la librería de tipos todavía no está implementada. Los estados efectivos iniciales incluyen suelo, pozo, obstáculo superior, barrera baja y barrera alta. El tipo de tramo en el nivel distingue una plataforma periódica de un pozo permanente aunque ambos presenten `pit` en ese turno.
+Estos campos corresponden al snapshot compartido de fase 3. El motor actual sólo materializa `ground`, `pit` y `branch`; no implementa todavía barreras periódicas, objetos, inventario ni fases cambiantes. El `maxSupportReached` permite mostrar avance aunque el robot retroceda. Los tipos de barrera, objetos y estados periódicos permanecen en el contrato aprobado para fases posteriores.
 
-**Se materializan las fases efectivas en cada snapshot.** El motor las calcula; el navegador las lee. Así una versión nueva del motor o de la fórmula de periodicidad no cambia una reproducción anterior. El reproductor no necesita importar reglas ni aplicar el módulo del período.
+El snapshot inicial es `state-0`; cada acción publicada agrega una sola fila `STATE#<afterStateId>` y conserva el snapshot previo por referencia. En el nivel estático la lista `terrain` es la misma en cada fase, pero `phaseTurn` sigue el contrato: avanza sólo si el juego continúa y queda congelado en el turno evaluado cuando hay fatalidad o victoria. El reproductor futuro leerá estas fases sin importar reglas ni recalcularlas.
 
 Después de una acción que continúa, ambos contadores avanzan: `turnsUsed` cuenta la acción y `phaseTurn` identifica el nuevo estado. Si esa acción termina el juego, solo avanza `turnsUsed`; se conserva la fase evaluada. Por ejemplo, una caída en el turno 4 deja `turnsUsed: 5` y `phaseTurn: 4`.
 
@@ -55,17 +56,17 @@ La alternativa de guardar estado inicial más deltas reduce bytes, pero exige re
 
 Cada acción publicada referencia una decisión auditada y sus estados anterior y posterior. La selección opaca y argumentos originales permanecen en la auditoría; la reproducción usa la acción normalizada, sin traducir descripciones humanas ni interpretar texto del LLM.
 
-| Campo | Significado |
-|---|---|
-| `seq`, `decisionId` | Orden consecutivo de acciones y vínculo a la decisión. Los reintentos de inferencia no agregan acciones. |
-| `beforeStateId`, `afterStateId` | Estados exactos relacionados con esta acción. |
-| `action` | Tipo interno —caminar, saltar, agacharse y avanzar, esperar, recoger o distractor—, dirección si corresponde y parámetros normalizados. |
-| `resolution.outcome` | `moved`, `picked_up`, `no_op`, `fall` o `collision`. |
-| `resolution.reason` | Código estable de la causa, no explicación libre ni razonamiento supuesto del modelo. |
-| `resolution.segment`, `targetSupport` | Tramo del movimiento y apoyo al que se intentó llegar; presentes solo cuando existen. El destino alcanzado está en el estado posterior. |
-| `resolution.objectId` | Identidad del objeto recogido, cuando el resultado fue `picked_up`. |
+| Campo                                 | Significado                                                                                                                                                                      |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `seq`, `decisionId`                   | Orden consecutivo de acciones y vínculo a la decisión. Los reintentos de inferencia no agregan acciones.                                                                         |
+| `beforeStateId`, `afterStateId`       | Estados exactos relacionados con esta acción.                                                                                                                                    |
+| `action`                              | Tipo normalizado de fase 3 (`advance`, `retreat`, `jump`, `crouch` o `swim`), dirección si corresponde y parámetros validados. `wait` y recogida pertenecen a fases posteriores. |
+| `resolution.outcome`                  | `moved`, `no_op`, `fall` o `collision` en fase 3. `picked_up` se incorpora con objetos en una fase posterior.                                                                    |
+| `resolution.reason`                   | Código estable de la causa, no explicación libre ni razonamiento supuesto del modelo.                                                                                            |
+| `resolution.segment`, `targetSupport` | Tramo del movimiento y apoyo al que se intentó llegar; presentes solo cuando existen. El destino alcanzado está en el estado posterior.                                          |
+| `resolution.objectId`                 | Campo reservado para la fase de objetos; no aparece en acciones de fase 3.                                                                                                       |
 
-Las resoluciones son variantes tipadas: una caída requiere tramo, objetivo y causa; una recogida requiere objeto; un no-op identifica su motivo. Esperar, intentar salir del mapa, recoger sin objeto y una habilidad sin efecto tienen causas distintas. No se emite un tramo inexistente para un intento de salir del nivel.
+Las resoluciones son variantes tipadas: una caída o choque requiere tramo, objetivo y causa; un no-op identifica su motivo. En fase 3 se distinguen límites izquierdo/derecho y Nadar sin efecto. Esperar, recoger sin objeto y otros no-op se incorporan con sus mecánicas respectivas. No se emite un tramo inexistente para un intento de salir del nivel.
 
 El resultado de la interacción y el resultado del juego son conceptos distintos. Una acción `moved` puede llegar a una salida bloqueada y continuar, o a una habilitada y ganar. `picked_up` puede ganar si habilita la salida desde ese apoyo. Un no-op puede terminar por límite. Los snapshots y el cierre contienen el resultado del juego; el reproductor no vuelve a aplicar su precedencia.
 
@@ -73,27 +74,37 @@ El resultado de la interacción y el resultado del juego son conceptos distintos
 
 ## Ejemplo de una caída
 
-Fragmento ficticio de un registro, expandido para leer los estados sin seguir referencias. El nivel contiene un pozo en el tramo 1 y una barrera periódica en el tramo 2. No es una respuesta real del modelo ni un formato de almacenamiento adicional.
+Fragmento ficticio de un registro, expandido para leer los estados sin seguir referencias. El ejemplo conserva una barrera periódica de una fase futura; no es una respuesta real del modelo ni un formato de almacenamiento adicional de fase 3.
 
 ```json
 {
   "seq": 4,
   "action": { "kind": "walk", "direction": "right" },
   "before": {
-    "support": 1, "turnsUsed": 4, "phaseTurn": 4,
+    "support": 1,
+    "turnsUsed": 4,
+    "phaseTurn": 4,
     "terrain": ["ground", "pit", "barrier_low"],
-    "remainingObjects": ["key"], "inventory": [],
-    "exitEnabled": false, "status": "running"
+    "remainingObjects": ["key"],
+    "inventory": [],
+    "exitEnabled": false,
+    "status": "running"
   },
   "resolution": {
-    "outcome": "fall", "reason": "walk_into_pit",
-    "segment": 1, "targetSupport": 2
+    "outcome": "fall",
+    "reason": "walk_into_pit",
+    "segment": 1,
+    "targetSupport": 2
   },
   "after": {
-    "support": 1, "turnsUsed": 5, "phaseTurn": 4,
+    "support": 1,
+    "turnsUsed": 5,
+    "phaseTurn": 4,
     "terrain": ["ground", "pit", "barrier_low"],
-    "remainingObjects": ["key"], "inventory": [],
-    "exitEnabled": false, "status": "defeat"
+    "remainingObjects": ["key"],
+    "inventory": [],
+    "exitEnabled": false,
+    "status": "defeat"
   }
 }
 ```
@@ -102,19 +113,19 @@ La animación camina hasta el borde de entrada del pozo y cae. El robot no llega
 
 Otros casos que el mismo contrato resuelve:
 
-| Caso | Registro distintivo | Presentación |
-|---|---|---|
-| Saltar a la izquierda desde 2 hasta 1 | `jump/left`, tramo 1, `moved`, apoyo posterior 1 | Arco invertido; cruza exactamente un tramo. |
-| Esperar ante barrera baja | `wait`, `no_op/wait`, mismo apoyo, siguiente fase alta | Robot quieto; la barrera cambia después de la espera. |
-| Recoger llave en la salida | `picked_up`, ID de llave, salida habilitada y estado posterior victoria | Recoger, retirar llave, habilitar salida y celebrar, sin movimiento inventado. |
-| Alcanzar salida sin llave | `moved`, salida bloqueada, estado posterior no victorioso | Llegar y permanecer; sin celebración. |
-| Fallo técnico tras tres acciones | Tres acciones publicadas y cierre `error` sobre el último estado | Reproducir esas tres; informar error, sin caída ni cuarta acción. |
+| Caso                                  | Registro distintivo                                                     | Presentación                                                                   |
+| ------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| Saltar a la izquierda desde 2 hasta 1 | `jump/left`, tramo 1, `moved`, apoyo posterior 1                        | Arco invertido; cruza exactamente un tramo.                                    |
+| Esperar ante barrera baja             | `wait`, `no_op/wait`, mismo apoyo, siguiente fase alta                  | Robot quieto; la barrera cambia después de la espera.                          |
+| Recoger llave en la salida            | `picked_up`, ID de llave, salida habilitada y estado posterior victoria | Recoger, retirar llave, habilitar salida y celebrar, sin movimiento inventado. |
+| Alcanzar salida sin llave             | `moved`, salida bloqueada, estado posterior no victorioso               | Llegar y permanecer; sin celebración.                                          |
+| Fallo técnico tras tres acciones      | Tres acciones publicadas y cierre `error` sobre el último estado        | Reproducir esas tres; informar error, sin caída ni cuarta acción.              |
 
 ## Persistencia, lectura y consistencia
 
-El ejecutor publica juntos la resolución, el nuevo snapshot y la secuencia de la cabecera mediante la transacción definida en [datos](datos.md). El estado anterior ya existe y es inmutable. No se confirma una acción sin estado posterior ni se vuelve a inferir por repetir su escritura.
+El ejecutor publica juntos la resolución, el nuevo snapshot y la secuencia de la cabecera mediante la transacción definida en [datos](datos.md). El estado anterior ya existe y es inmutable. No se confirma una acción sin estado posterior ni se vuelve a inferir por repetir su escritura. La implementación actual conserva la acción en `ACTION#<seq>` y el snapshot en `STATE#<afterStateId>`; la cabecera sólo referencia el estado actual.
 
-El cierre fija el número de acciones y el último estado. La API puede entregar las acciones y sus estados posteriores juntos y paginados, conservando sus identidades; el primer bloque incluye el inicial y la referencia al nivel. El navegador completa y valida el registro **antes de empezar a animar**. Una página ausente o una referencia rota es un error de carga, no una secuencia más corta exitosa. Los cuerpos de inferencia se consultan aparte cuando se abre el diagnóstico.
+El cierre fija el número de acciones y el último estado. Las superficies de fase 3 devuelven el resumen y el estado del intento; la entrega paginada de acciones/snapshots como vista de replay, la validación previa a animar y la consulta de bodies para diagnóstico son extensiones posteriores. Una acción o snapshot faltante sigue siendo un defecto de registro, no una secuencia más corta exitosa.
 
 Invariantes que verifican motor y registro: secuencia sin huecos; primer `before` igual al inicial; cada `before` igual al `after` anterior; una acción incrementa `turnsUsed` exactamente una vez; ningún evento después de un terminal; objetos únicos y salida coherentes; cierre sobre el último estado publicado. La implementación del reproductor valida estructura, referencias y compatibilidad para evitar una representación engañosa; no incorpora un segundo motor para revisar la física.
 

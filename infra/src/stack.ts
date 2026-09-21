@@ -10,6 +10,7 @@ import {
 } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import { createAuthenticationResources, ROBOT_SCOPE } from './auth.js';
+import { createExecutionResources } from './execution.js';
 import { createRobotResources } from './robot.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -97,6 +98,14 @@ export class PromptRunnerHostingStack extends cdk.Stack {
       authentication,
       productionWebOrigin: `https://${this.distribution.domainName}`,
     });
+    const execution = createExecutionResources(this, {
+      account,
+      region: props.env?.region ?? APPLICATION_REGION,
+      buildRevision,
+      draftTable: robot.draftTable,
+      apiFunction: robot.draftFunction,
+      apiExecutionRole: robot.draftExecutionRole,
+    });
     const publicAuthConfig = {
       ...authentication.config,
       apiBaseUrl: robot.apiBaseUrl,
@@ -180,6 +189,18 @@ export class PromptRunnerHostingStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'DraftFunctionName', {
       description: 'Lambda function serving the robot draft API.',
       value: robot.draftFunction.functionName,
+    });
+    new cdk.CfnOutput(this, 'AgentRuntimeArn', {
+      description: 'IAM-authenticated AgentCore Runtime used for attempts.',
+      value: execution.runnerRuntime.attrAgentRuntimeArn,
+    });
+    new cdk.CfnOutput(this, 'AttemptBodiesBucketName', {
+      description: 'Private retained S3 bucket containing inference bodies.',
+      value: execution.attemptBodiesBucket.bucketName,
+    });
+    new cdk.CfnOutput(this, 'StarterRevision', {
+      description: 'Build revision of the asynchronous attempt starter bundle.',
+      value: buildRevision,
     });
   }
 }

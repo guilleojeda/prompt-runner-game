@@ -6,6 +6,7 @@
   "workspaces": [
     "apps/web",
     "apps/api",
+    "apps/runner",
     "infra"
   ],
   "engines": {
@@ -13,12 +14,12 @@
     "npm": ">=10 <12"
   },
   "scripts": {
-    "build": "npm run build --workspace @prompt-runner/web && npm run build --workspace @prompt-runner/api",
+    "build": "npm run build --workspace @prompt-runner/web && npm run build --workspace @prompt-runner/api && npm run build --workspace @prompt-runner/runner",
     "check": "npm run format && npm run lint && npm run typecheck && npm run build && npm test && npm run synth:infra",
     "dev": "npm run dev --workspace @prompt-runner/web",
     "deploy": "npm run deploy --workspace @prompt-runner/infra",
-    "format": "prettier --check package.json package-lock.json tsconfig.json eslint.config.mjs .prettierrc.json 'apps/**/*.{ts,tsx,css,html,json}' 'infra/**/*.{ts,json}' 'shared/**/*.ts' '.github/workflows/**/*.yml' --ignore-path .gitignore",
-    "format:write": "prettier --write package.json package-lock.json tsconfig.json eslint.config.mjs .prettierrc.json 'apps/**/*.{ts,tsx,css,html,json}' 'infra/**/*.{ts,json}' 'shared/**/*.ts' '.github/workflows/**/*.yml' --ignore-path .gitignore",
+    "format": "prettier --check package.json package-lock.json tsconfig.json eslint.config.mjs .prettierrc.json 'apps/**/*.{ts,tsx,css,html,json,mjs}' 'infra/**/*.{ts,json}' 'shared/**/*.ts' '.github/workflows/**/*.yml' --ignore-path .gitignore",
+    "format:write": "prettier --write package.json package-lock.json tsconfig.json eslint.config.mjs .prettierrc.json 'apps/**/*.{ts,tsx,css,html,json,mjs}' 'infra/**/*.{ts,json}' 'shared/**/*.ts' '.github/workflows/**/*.yml' --ignore-path .gitignore",
     "lint": "eslint apps shared infra eslint.config.mjs",
     "synth": "npm run build && npm run synth:infra",
     "synth:infra": "npm run synth --workspace @prompt-runner/infra",

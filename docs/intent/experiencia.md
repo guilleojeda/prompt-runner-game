@@ -1,6 +1,6 @@
 # Experiencia y alcance
 
-Especificación vigente de la experiencia. El acceso y la preparación persistida del robot están implementados. El circuito de partidas y animación sigue pendiente. Se relaciona con [intentos](intentos.md), [agente](agente.md), [reglas del juego](juego.md), [consumo y puntaje](consumo-y-puntaje.md) y [plataforma](plataforma.md).
+Especificación vigente de la experiencia. El acceso, la preparación persistida y los intentos reales del recorrido estático están implementados, con resultado directo, cancelación e historial. La animación y las demás capacidades posteriores siguen pendientes. Se relaciona con [intentos](intentos.md), [agente](agente.md), [reglas del juego](juego.md), [consumo y puntaje](consumo-y-puntaje.md) y [plataforma](plataforma.md).
 
 ## Propósito y participantes
 
@@ -23,7 +23,9 @@ La vista privada muestra las habilidades, sus descripciones e instrucciones y gu
 
 Un conflicto conserva el texto local y permite revisar la versión guardada antes de elegir cuál conservar. La resolución vuelve a comprobar la versión para no pisar una tercera edición. La renovación de la misma sesión pausa las escrituras y bloquea los controles del editor sin descartar cambios pendientes; otra identidad nunca hereda esos cambios. Al cerrar sesión con cambios sin confirmar se ofrece esperar/reintentar o descartar explícitamente los cambios locales pendientes. Una escritura ya enviada puede haber quedado guardada; salir no promete revertirla y no espera indefinidamente a la red. La cola local se detiene. La advertencia nativa al salir no garantiza guardar después de un cierre abrupto.
 
-La pantalla está en español y se opera con teclado. No ofrece Probar, selector de nivel, historial o Animación hasta que esas capacidades estén disponibles. El circuito objetivo se mantiene a continuación.
+La pantalla está en español y se opera con teclado. Probar congela lo visible, confirma su guardado y admite un intento con control de versión. Se bloquean los controles, incluido cerrar sesión, hasta presentar el resultado; durante cálculo sólo Cancelar es operativo. Los errores de acceso o red permiten recuperar la sesión o consulta sin crear otro intento. El historial propio es paginado y abre resultados conservados. Si hay varios intentos activos desde otras sesiones, se elige cuál retomar antes de entrar en su cálculo; no se impone una exclusión global por usuario.
+
+Por ahora no hay selector de nivel ni Animación: el recorrido estático presenta el resultado directamente y conserva `animation_enabled=false`, sin cambiar una preferencia personal. Las referencias de recuperación de la pestaña no sustituyen el registro del servidor. El circuito objetivo completo se mantiene a continuación; sus estados de animación y comparación siguen pendientes.
 
 ## Circuito de una partida
 

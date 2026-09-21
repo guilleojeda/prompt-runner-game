@@ -70,6 +70,32 @@ describe('RobotEditor', () => {
     expect(screen.queryByRole('button', { name: /Probar/i })).toBeNull();
   });
 
+  it('captures the visible default and persists version zero before returning the attempt snapshot', async () => {
+    const putDraft = vi.fn().mockResolvedValue(snapshot(1));
+    const editorRef = createRef<RobotEditorHandle>();
+    render(<RobotEditor ref={editorRef} api={api({ putDraft })} session={session()} locked />);
+
+    const instructions = await screen.findByDisplayValue(
+      'Siempre preferí ir a la derecha, a menos que tengas un buen motivo para no hacerlo',
+    );
+    expect((instructions.closest('fieldset') as HTMLFieldSetElement).disabled).toBe(true);
+
+    let captured: DraftSnapshot | null = null;
+    await act(async () => {
+      captured = (await editorRef.current?.captureSnapshot()) ?? null;
+    });
+
+    expect(putDraft).toHaveBeenCalledOnce();
+    expect(putDraft.mock.calls[0]?.[0]).toBe(0);
+    expect(putDraft.mock.calls[0]?.[1].instructions).toBe(
+      'Siempre preferí ir a la derecha, a menos que tengas un buen motivo para no hacerlo',
+    );
+    expect(captured).not.toBeNull();
+    const result = captured as unknown as DraftSnapshot;
+    expect(result.version).toBe(1);
+    expect(result.draft.instructions).toBe(putDraft.mock.calls[0]?.[1].instructions);
+  });
+
   it('debounces edits, allows one write in flight, and sends later text over the confirmed version', async () => {
     vi.useFakeTimers();
     let resolveFirst!: (value: DraftSnapshot) => void;
