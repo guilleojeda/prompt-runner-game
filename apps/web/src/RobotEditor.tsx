@@ -710,7 +710,8 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
                 Probar
               </button>
               <span className="field-help">
-                Guarda y prueba esta configuración en el recorrido estático.
+                Cada prueba admitida consume un intento de tu cuota diaria, aunque la canceles o
+                termine con un error.
               </span>
             </div>
           )}

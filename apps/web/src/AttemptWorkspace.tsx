@@ -66,6 +66,48 @@ function isTerminal(status: AttemptStatus): boolean {
   return !isActive(status);
 }
 
+function preferFreshHistorySummary(
+  incoming: AttemptSummary,
+  existing: AttemptSummary | undefined,
+  currentAttempt: AttemptSummary | null,
+): AttemptSummary {
+  let freshest = incoming;
+  for (const known of [existing, currentAttempt]) {
+    if (!known || known.id !== incoming.id) continue;
+    const knownIsTerminal = isTerminal(known.status);
+    const freshestIsTerminal = isTerminal(freshest.status);
+    if (knownIsTerminal !== freshestIsTerminal) {
+      if (knownIsTerminal) freshest = known;
+      continue;
+    }
+    if (known.updatedAt > freshest.updatedAt) freshest = known;
+  }
+  return freshest;
+}
+
+function mergeHistoryPage(
+  current: readonly AttemptSummary[],
+  incoming: readonly AttemptSummary[],
+  currentAttempt: AttemptSummary | null,
+  append: boolean,
+): readonly AttemptSummary[] {
+  const known = new Map(current.map((item) => [item.id, item]));
+  const merged = append ? [...current] : [];
+  const positions = new Map(merged.map((item, index) => [item.id, index]));
+  for (const item of incoming) {
+    const position = positions.get(item.id);
+    const previous = position === undefined ? known.get(item.id) : merged[position];
+    const next = preferFreshHistorySummary(item, previous, currentAttempt);
+    if (position === undefined) {
+      positions.set(item.id, merged.length);
+      merged.push(next);
+    } else {
+      merged[position] = next;
+    }
+  }
+  return merged;
+}
+
 function reasonLabel(reason: string): string {
   if (reason.startsWith('cancelled_'))
     return 'El intento se cerró por tu solicitud de cancelación.';
@@ -328,6 +370,15 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       (next: AttemptSummary, options: { clearRequest?: boolean } = {}): void => {
         attemptRef.current = next;
         setAttempt(next);
+        setHistory((current) => {
+          let changed = false;
+          const updated = current.map((item) => {
+            if (item.id !== next.id) return item;
+            changed = true;
+            return next;
+          });
+          return changed ? updated : current;
+        });
         if (options.clearRequest ?? true) {
           clearAttemptRecovery(sessionSub);
         } else {
@@ -371,7 +422,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         try {
           const page: AttemptsPage = await api.listAttempts(undefined, signal);
           if (signal?.aborted || generationRef.current !== operationGeneration) return;
-          setHistory(page.attempts);
+          setHistory((current) =>
+            mergeHistoryPage(current, page.attempts, attemptRef.current, false),
+          );
           setHistoryCursor(page.nextCursor);
         } catch (historyError) {
           if (!signal?.aborted && generationRef.current === operationGeneration) {
@@ -783,7 +836,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       try {
         const page = await api.listAttempts(historyCursor);
         if (generationRef.current !== operationGeneration) return;
-        setHistory((current) => [...current, ...page.attempts]);
+        setHistory((current) => mergeHistoryPage(current, page.attempts, attemptRef.current, true));
         setHistoryCursor(page.nextCursor);
       } catch (historyError) {
         if (generationRef.current !== operationGeneration) return;

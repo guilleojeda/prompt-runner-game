@@ -47,6 +47,8 @@ El límite de configuración es 65.536 bytes de JSON UTF-8, incluidos los contra
 
 ## Probar y consultar resultados
 
+La ejecución está publicada, pero la aceptación con el modelo real sigue pendiente: AWS todavía deniega Sonnet 5 para esta cuenta. Los intentos llegan a Bedrock y terminan con error; no se ha acreditado una victoria real ni la carga simultánea acordada. El acceso al modelo debe habilitarse antes de considerar esta capacidad lista para participantes.
+
 El recorrido inicial tiene cinco tramos: suelo, pozo, suelo, rama baja y suelo, con la salida al final y hasta doce acciones. Avanzar y Retroceder caminan; Saltar y Agacharse y avanzar reciben dirección; Nadar consume un turno sin mover al robot. Las descripciones explican las habilidades al agente, pero no cambian la física.
 
 Desde Probar hasta el resultado se bloquean edición, nuevos intentos, historial y cierre de sesión. Durante el cálculo podés cancelar; si una llamada ya estaba en vuelo, su consumo se conserva aunque no se publique otra acción. Cerrar el navegador no cancela el trabajo del servidor. Al volver, recuperás el estado o el resultado guardado; el historial permite consultar los intentos propios sin nueva inferencia.
