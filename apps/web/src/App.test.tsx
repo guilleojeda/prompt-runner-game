@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
 import { AuthFailure, type AuthClient, type AuthConfig, type AuthSession } from './auth.js';
 import { DraftApiClient, type DraftApi } from './draft-api.js';
+import type { AttemptApi } from './attempt-api.js';
 import type { PendingConfirmationClient } from './pending-confirmation.js';
 import { createDefaultDraft, type DraftSnapshot } from '../../../shared/robot.js';
 
@@ -58,6 +59,24 @@ function client(overrides: Partial<AuthClient> = {}): AuthClient {
     beginLogin: vi.fn().mockResolvedValue(undefined),
     logout: vi.fn().mockResolvedValue(undefined),
     ...overrides,
+  };
+}
+
+function emptyAttemptApi(): AttemptApi {
+  return {
+    createAttempt: vi.fn(),
+    getAttemptRequest: vi.fn(),
+    getAttempt: vi.fn(),
+    listAttempts: vi.fn().mockResolvedValue({ attempts: [] }),
+    startAttempt: vi.fn(),
+    cancelAttempt: vi.fn(),
+    getQuota: vi.fn().mockResolvedValue({
+      day: '2026-09-21',
+      used: 0,
+      limit: 100,
+      remaining: 100,
+      resetsAt: '2026-09-22T03:00:00.000Z',
+    }),
   };
 }
 
@@ -297,7 +316,14 @@ describe('access screen', () => {
       tokenProvider: () => currentSession.user.access_token,
       fetch: fetchImpl,
     });
-    render(<App authClient={authClient} draftApi={draftApi} configLoader={async () => config} />);
+    render(
+      <App
+        authClient={authClient}
+        draftApi={draftApi}
+        attemptApi={emptyAttemptApi()}
+        configLoader={async () => config}
+      />,
+    );
     await act(async () => {
       await Promise.resolve();
       await Promise.resolve();
@@ -351,7 +377,14 @@ describe('access screen', () => {
       getDraft: vi.fn().mockResolvedValue({ version: 0, draft: createDefaultDraft() }),
       putDraft,
     };
-    render(<App authClient={authClient} draftApi={draftApi} configLoader={async () => config} />);
+    render(
+      <App
+        authClient={authClient}
+        draftApi={draftApi}
+        attemptApi={emptyAttemptApi()}
+        configLoader={async () => config}
+      />,
+    );
     await act(async () => {
       await Promise.resolve();
       await Promise.resolve();
@@ -385,5 +418,39 @@ describe('access screen', () => {
       await Promise.resolve();
     });
     expect(logout).toHaveBeenCalledOnce();
+  });
+
+  it('locks editor fields and logout in the same click that starts admission', async () => {
+    const authClient = client({ initialize: vi.fn().mockResolvedValue(session()) });
+    const draftApi: DraftApi = {
+      getDraft: vi.fn().mockResolvedValue({ version: 0, draft: createDefaultDraft() }),
+      putDraft: vi.fn().mockResolvedValue({ version: 1, draft: createDefaultDraft() }),
+    };
+    const createAttempt = vi.fn(() => new Promise<never>(() => undefined));
+    const attemptApi = { ...emptyAttemptApi(), createAttempt };
+    render(
+      <App
+        authClient={authClient}
+        draftApi={draftApi}
+        attemptApi={attemptApi}
+        configLoader={async () => config}
+      />,
+    );
+
+    await screen.findByLabelText('Qué debe tener en cuenta el robot');
+    const tryButton = await screen.findByRole('button', { name: 'Probar' });
+    await waitFor(() => expect((tryButton as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(tryButton);
+
+    expect(
+      (
+        screen
+          .getByLabelText('Qué debe tener en cuenta el robot')
+          .closest('fieldset') as HTMLFieldSetElement
+      ).disabled,
+    ).toBe(true);
+    expect(
+      (screen.getByRole('button', { name: 'Cerrar sesión' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
   });
 });

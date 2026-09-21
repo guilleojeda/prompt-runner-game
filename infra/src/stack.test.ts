@@ -2,7 +2,18 @@ import * as cdk from 'aws-cdk-lib';
 import { Match, Template } from 'aws-cdk-lib/assertions';
 import { describe, expect, it } from 'vitest';
 import { APPLICATION_ACCOUNT, APPLICATION_REGION, PromptRunnerHostingStack } from './stack.js';
-import { DRAFT_LAMBDA_NAME, DRAFT_LAMBDA_ROLE_NAME, DRAFT_LOG_GROUP_NAME } from './robot.js';
+import {
+  DRAFT_LAMBDA_NAME,
+  DRAFT_LAMBDA_ROLE_NAME,
+  DRAFT_LOG_GROUP_NAME,
+  STARTER_LAMBDA_NAME,
+} from './robot.js';
+import {
+  AGENT_RUNTIME_NAME,
+  AGENT_RUNTIME_ROLE_NAME,
+  ATTEMPT_BODIES_BUCKET_PREFIX,
+  STARTER_LAMBDA_ROLE_NAME,
+} from './execution.js';
 
 // CDK's first template synthesis pays one-time construct startup cost; this
 // timeout gives infrastructure assertions room for that cost without changing
@@ -24,7 +35,7 @@ describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, 
   it('keeps the website bucket private and grants only the OAC read path', () => {
     const synthesized = template();
 
-    synthesized.resourceCountIs('AWS::S3::Bucket', 1);
+    synthesized.resourceCountIs('AWS::S3::Bucket', 2);
     synthesized.hasResourceProperties('AWS::S3::Bucket', {
       PublicAccessBlockConfiguration: {
         BlockPublicAcls: true,
@@ -196,7 +207,7 @@ describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, 
   it('uses the pre-created deployment role and publishes entry after assets', () => {
     const synthesized = template();
 
-    synthesized.resourceCountIs('AWS::IAM::Role', 1);
+    synthesized.resourceCountIs('AWS::IAM::Role', 3);
     synthesized.resourceCountIs('Custom::CDKBucketDeployment', 2);
     const deployments = synthesized.findResources('Custom::CDKBucketDeployment');
     const deploymentProperties = Object.values(deployments).map((resource) => resource.Properties);
@@ -235,7 +246,7 @@ describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, 
       'ClientSecret',
     );
     const functions = synthesized.findResources('AWS::Lambda::Function');
-    expect(Object.values(functions)).toHaveLength(2);
+    expect(Object.values(functions)).toHaveLength(3);
     const deploymentFunction = Object.values(functions).find(
       (resource) =>
         resource.Properties.Role ===
@@ -278,7 +289,7 @@ describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, 
       CorsConfiguration: {
         AllowCredentials: false,
         AllowHeaders: ['Authorization', 'Content-Type'],
-        AllowMethods: ['GET', 'PUT', 'OPTIONS'],
+        AllowMethods: ['GET', 'PUT', 'POST', 'OPTIONS'],
         AllowOrigins: [
           { 'Fn::Join': ['', ['https://', { 'Fn::GetAtt': [expect.any(String), 'DomainName'] }]] },
           'http://localhost:5173',
@@ -286,14 +297,24 @@ describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, 
       },
     });
     const routes = Object.values(synthesized.findResources('AWS::ApiGatewayV2::Route'));
-    expect(routes).toHaveLength(2);
+    expect(routes).toHaveLength(9);
     for (const route of routes) {
       expect(route.Properties).toMatchObject({
         AuthorizationType: 'JWT',
         AuthorizationScopes: ['prompt-runner/robot'],
         Target: { 'Fn::Join': expect.any(Array) },
       });
-      expect(['GET /draft', 'PUT /draft']).toContain(route.Properties.RouteKey);
+      expect([
+        'GET /draft',
+        'PUT /draft',
+        'GET /attempts',
+        'POST /attempts',
+        'GET /attempts/{attemptId}',
+        'POST /attempts/{attemptId}/start',
+        'POST /attempts/{attemptId}/cancel',
+        'GET /attempt-requests/{requestKey}',
+        'GET /quota',
+      ]).toContain(route.Properties.RouteKey);
     }
   });
 
@@ -322,13 +343,158 @@ describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, 
     expect(statements).toContainEqual(
       expect.objectContaining({
         Sid: 'DraftTableReadWrite',
-        Action: ['dynamodb:GetItem', 'dynamodb:PutItem'],
+        Action: expect.arrayContaining([
+          'dynamodb:GetItem',
+          'dynamodb:PutItem',
+          'dynamodb:UpdateItem',
+          'dynamodb:Query',
+          'dynamodb:TransactWriteItems',
+        ]),
       }),
     );
     expect(JSON.stringify(statements)).not.toContain('dynamodb:Scan');
     expect(JSON.stringify(statements)).not.toContain('dynamodb:DeleteItem');
-    expect(JSON.stringify(runtimePolicies[0].Properties.PolicyDocument)).not.toMatch(
-      /s3:|bedrock:|cognito-idp:|iam:/,
+    const apiPolicyJson = JSON.stringify(runtimePolicies[0].Properties.PolicyDocument);
+    expect(apiPolicyJson).toContain('s3:GetObject');
+    expect(apiPolicyJson).not.toContain('s3:PutObject');
+    expect(apiPolicyJson).not.toMatch(/bedrock:|cognito-idp:|iam:/);
+  });
+
+  it('keeps attempt bodies private and wires the phase 3 execution assets', () => {
+    const synthesized = template();
+    const buckets = synthesized.findResources('AWS::S3::Bucket');
+    const bodiesBucket = Object.values(buckets).find((resource) =>
+      resource.Properties.BucketName?.startsWith(ATTEMPT_BODIES_BUCKET_PREFIX),
     );
+    expect(bodiesBucket).toBeDefined();
+    expect(bodiesBucket).toMatchObject({
+      DeletionPolicy: 'Retain',
+      UpdateReplacePolicy: 'Retain',
+      Properties: {
+        PublicAccessBlockConfiguration: {
+          BlockPublicAcls: true,
+          BlockPublicPolicy: true,
+          IgnorePublicAcls: true,
+          RestrictPublicBuckets: true,
+        },
+        BucketEncryption: {
+          ServerSideEncryptionConfiguration: [
+            { ServerSideEncryptionByDefault: { SSEAlgorithm: 'AES256' } },
+          ],
+        },
+      },
+    });
+    const bodyPolicies = Object.values(synthesized.findResources('AWS::S3::BucketPolicy')).filter(
+      (resource) =>
+        resource.Properties.Bucket?.Ref ===
+        Object.keys(buckets).find((key) => buckets[key] === bodiesBucket),
+    );
+    expect(bodyPolicies).toHaveLength(1);
+    expect(JSON.stringify(bodyPolicies[0])).toContain('aws:SecureTransport');
+
+    const runtimes = synthesized.findResources('AWS::BedrockAgentCore::Runtime');
+    expect(Object.values(runtimes)).toHaveLength(1);
+    const runtime = Object.values(runtimes)[0];
+    expect(runtime.Properties.AgentRuntimeName).toMatch(/^[A-Za-z][A-Za-z0-9_]{0,47}$/u);
+    expect(runtime.Properties).toMatchObject({
+      AgentRuntimeName: AGENT_RUNTIME_NAME,
+      AgentRuntimeArtifact: {
+        CodeConfiguration: {
+          Runtime: 'NODE_22',
+          EntryPoint: ['index.js'],
+          Code: { S3: { Bucket: expect.anything(), Prefix: expect.anything() } },
+        },
+      },
+      LifecycleConfiguration: { MaxLifetime: 1800 },
+      NetworkConfiguration: { NetworkMode: 'PUBLIC' },
+      RoleArn: { 'Fn::GetAtt': [expect.any(String), 'Arn'] },
+    });
+    expect(runtime.Properties.AuthorizerConfiguration).toBeUndefined();
+
+    const functions = Object.values(synthesized.findResources('AWS::Lambda::Function'));
+    const starter = functions.find(
+      (resource) => resource.Properties.FunctionName === STARTER_LAMBDA_NAME,
+    );
+    expect(starter?.Properties).toMatchObject({
+      Runtime: 'nodejs22.x',
+      Handler: 'index.handler',
+      Timeout: 120,
+      Environment: {
+        Variables: {
+          AGENT_RUNTIME_ARN: { 'Fn::GetAtt': [expect.any(String), 'AgentRuntimeArn'] },
+          DRAFT_TABLE_NAME: { Ref: expect.any(String) },
+        },
+      },
+    });
+    const invokeConfig = Object.values(synthesized.findResources('AWS::Lambda::EventInvokeConfig'));
+    expect(invokeConfig).toHaveLength(1);
+    expect(invokeConfig[0].Properties.MaximumEventAgeInSeconds).toBe(300);
+
+    const roles = Object.values(synthesized.findResources('AWS::IAM::Role'));
+    expect(roles.some((resource) => resource.Properties.RoleName === AGENT_RUNTIME_ROLE_NAME)).toBe(
+      true,
+    );
+    expect(
+      roles.some((resource) => resource.Properties.RoleName === STARTER_LAMBDA_ROLE_NAME),
+    ).toBe(true);
+    const starterRoleEntry = Object.entries(synthesized.findResources('AWS::IAM::Role')).find(
+      ([, resource]) => resource.Properties.RoleName === STARTER_LAMBDA_ROLE_NAME,
+    );
+    const runnerRoleEntry = Object.entries(synthesized.findResources('AWS::IAM::Role')).find(
+      ([, resource]) => resource.Properties.RoleName === AGENT_RUNTIME_ROLE_NAME,
+    );
+    const rolePolicies = Object.values(synthesized.findResources('AWS::IAM::Policy'));
+    const starterPolicy = rolePolicies.find((resource) =>
+      resource.Properties.Roles.some(
+        (role: { Ref?: string }) => role.Ref === starterRoleEntry?.[0],
+      ),
+    );
+    const runnerPolicy = rolePolicies.find((resource) =>
+      resource.Properties.Roles.some((role: { Ref?: string }) => role.Ref === runnerRoleEntry?.[0]),
+    );
+    const starterPolicyJson = JSON.stringify(starterPolicy?.Properties.PolicyDocument);
+    expect(starterPolicyJson).toContain('bedrock-agentcore:InvokeAgentRuntime');
+    expect(starterPolicyJson).toContain(
+      'runtime/prompt_runner_game_agent_runtime-*/runtime-endpoint/*',
+    );
+    expect(JSON.stringify(runnerPolicy?.Properties.PolicyDocument)).toContain(
+      'bedrock:InvokeModel',
+    );
+    const runtimeLogPolicyJson = JSON.stringify(runnerPolicy?.Properties.PolicyDocument);
+    expect(runtimeLogPolicyJson).toContain('logs:DescribeLogStreams');
+    expect(runtimeLogPolicyJson).toContain('logs:DescribeLogGroups');
+    expect(runtimeLogPolicyJson).toContain('logs:PutResourcePolicy');
+    expect(runtimeLogPolicyJson).toContain(
+      '/aws/bedrock-agentcore/runtimes/prompt_runner_game_agent_runtime-*',
+    );
+    const runtimeLogStatements = (
+      runnerPolicy?.Properties.PolicyDocument as {
+        Statement: Array<{ Sid?: string; Resource?: unknown; Condition?: unknown }>;
+      }
+    ).Statement;
+    expect(
+      runtimeLogStatements.find((statement) => statement.Sid === 'RuntimeLogResourcePolicy'),
+    ).toEqual(
+      expect.objectContaining({
+        Resource: '*',
+        Condition: { StringEquals: { 'aws:RequestedRegion': 'us-east-1' } },
+      }),
+    );
+    expect(JSON.stringify(runnerPolicy?.Properties.PolicyDocument)).toContain(
+      'inference-profile/global.anthropic.claude-sonnet-5',
+    );
+    const runnerPolicyJson = JSON.stringify(runnerPolicy?.Properties.PolicyDocument);
+    expect(runnerPolicyJson.match(/foundation-model\/anthropic\.claude-sonnet-5/g)).toHaveLength(2);
+    expect(runnerPolicyJson).not.toContain('claude-sonnet-5-v1');
+    expect(JSON.stringify(runnerPolicy?.Properties.PolicyDocument)).not.toContain(
+      'bedrock-agentcore:InvokeAgentRuntime',
+    );
+    const api = functions.find(
+      (resource) => resource.Properties.FunctionName === DRAFT_LAMBDA_NAME,
+    );
+    expect(api?.Properties.Environment.Variables).toMatchObject({
+      ATTEMPT_BODIES_BUCKET: { Ref: expect.any(String) },
+      STARTER_FUNCTION_NAME: { Ref: expect.any(String) },
+    });
   });
 });

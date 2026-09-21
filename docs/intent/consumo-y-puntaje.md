@@ -1,6 +1,6 @@
 # Consumo y puntaje
 
-Estado: especificación de producto. La implementación y la calibración educativa todavía están pendientes.
+Estado: consumo por llamada y puntaje de victorias implementados para el recorrido estático, con parámetros guardados. La clasificación entre soluciones y la calibración educativa siguen pendientes.
 
 Esta página define qué uso se mide, cómo se diferencia el volumen de tokens del costo monetario y cómo se calcula y compara el puntaje. Se relaciona con [la experiencia](experiencia.md), [las reglas del juego](juego.md), [el agente](agente.md) y [la plataforma](plataforma.md). El ciclo y el registro de cada intento están en [intentos](intentos.md).
 
@@ -82,6 +82,12 @@ Si el uso informado no permite determinar `tokens_juego` con exactitud, no se in
 No hay valores numéricos fijados para base, pesos, valores de objetos, redondeo o admisión de puntajes negativos. La unidad de tokens puede ser 1.000 para mantener legibles los coeficientes; el valor elegido y los demás parámetros se conservan como configuración efectiva del intento. No crear una penalización adicional por cantidad de habilidades.
 
 El valor de un objeto debe calibrarse para que una recompensa pueda compensar los turnos y tokens adicionales que cuesta recogerla. La escala no debe favorecer sistemáticamente ignorar todos los objetos.
+
+## Parámetros disponibles
+
+El recorrido estático usa base 1000, peso de turno 10, peso de tokens 1 y unidad de tokens 1000. Redondea el resultado final a dos decimales y permite puntajes negativos. El aporte de objetos es cero porque ese contenido todavía no está publicado. Estos parámetros se guardan con el intento y son defaults técnicos ajustables, no una calibración educativa acreditada.
+
+La interfaz muestra turnos, llamadas y uso reportado, con desconocidos explícitos. No ofrece ranking ni costo monetario por ahora. Sólo una victoria con el total de tokens conocido obtiene puntaje; ninguna falla técnica se presenta como derrota para asignarle puntos.
 
 ## Calibración inicial
 

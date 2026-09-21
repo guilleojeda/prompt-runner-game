@@ -1,6 +1,6 @@
 # Plataforma y operación
 
-Especificación acordada del producto. El código disponible implementa el acceso con Cognito, el editor con API Lambda y borrador en DynamoDB, y la publicación S3/CloudFront por CDK y GitHub Actions; la URL pública está en [README](../../README.md). La persistencia de intentos y la ejecución del juego siguen pendientes; las secciones correspondientes describen el objetivo aprobado, no capacidades ya disponibles. [Índice de documentación](../../README.md).
+Especificación acordada del producto. El código disponible implementa acceso Cognito, editor y API Lambda, ejecución estática con Runtime/Strands/Bedrock, intentos en DynamoDB y cuerpos privados en S3, más publicación mediante CDK y GitHub Actions. La URL pública está en [README](../../README.md). El objetivo completo incluye animación, mecánicas y capacidad de cien usuarios cuya implementación o comprobación siguen pendientes. [Índice de documentación](../../README.md).
 
 ## Tecnologías y restricciones confirmadas
 

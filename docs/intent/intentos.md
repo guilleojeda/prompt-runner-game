@@ -4,7 +4,7 @@ Estado: especificación de producto. La implementación todavía está pendiente
 
 Esta página define el ciclo de un intento desde que se fija la configuración hasta que se muestra su reproducción. Se relaciona con [la experiencia](experiencia.md), [las reglas del juego](juego.md), [el agente](agente.md) y [la plataforma](plataforma.md).
 
-El diseño técnico aprobado está en [registro de ejecución](../architecture/registro-de-ejecucion.md) y [animación](../architecture/animacion.md). Su implementación sigue pendiente; las decisiones de almacenamiento físico se identifican por separado en [datos](../architecture/datos.md).
+El diseño técnico aprobado está en [registro de ejecución](../architecture/registro-de-ejecucion.md) y [animación](../architecture/animacion.md). El cálculo y el registro están implementados para el recorrido estático; la animación sigue pendiente. El almacenamiento físico se documenta en [datos](../architecture/datos.md).
 
 ## Alcance y reglas que no cambian
 

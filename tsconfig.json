@@ -19,6 +19,7 @@
     "infra/bin",
     "infra/src",
     "apps/api/src",
-    "shared"
+    "shared",
+    "apps/runner/src"
   ]
 }

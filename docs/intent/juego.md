@@ -1,12 +1,18 @@
 # Juego y niveles
 
-Este documento es canónico para las reglas del mundo, el reloj, las acciones, los objetos, la salida y el contenido de niveles del juego. Documenta el comportamiento acordado; todavía no hay una implementación. La especificación vigente se distribuye en esta carpeta y se indexa desde [README.md](../../README.md). La especificación histórica [idea-inicial.md](../../idea-inicial.md) queda como antecedente.
+Este documento es canónico para las reglas del mundo, el reloj, las acciones, los objetos, la salida y el contenido de niveles del juego. Documenta el comportamiento acordado. El motor disponible resuelve el recorrido estático con suelo, pozo, rama, movimientos, límites y Nadar como no-op. Terreno periódico, recogida, llave y segundo recorrido siguen pendientes. La especificación vigente se distribuye en esta carpeta y se indexa desde [README.md](../../README.md). La especificación histórica [idea-inicial.md](../../idea-inicial.md) queda como antecedente.
 
 Las etiquetas siguientes distinguen el grado de decisión:
 
 - **Acordado:** comportamiento que la implementación debe conservar.
 - **Default permitido:** elección inicial que puede adoptarse o cambiarse sin alterar las mecánicas.
 - **Pendiente:** parámetro o contenido que se concreta durante la implementación y queda documentado al hacerlo.
+
+## Recorrido estático disponible
+
+`principal-estatico-v1` fija cinco tramos —suelo, pozo, suelo, rama baja y suelo—, seis apoyos, salida sin requisitos y un máximo de doce acciones. No contiene objetos ni ciclos. Una política basada sólo en el terreno inmediato puede resolverlo en cinco movimientos: caminar, saltar, caminar, pasar agachado y caminar, todos hacia la derecha. Esa solución sirve para verificar el contenido y no se añade al protocolo del modelo.
+
+El nivel, las reglas y sus límites se fijan en cada intento. Publicar contenido posterior no cambia sus registros. Las reglas de objetos, ciclos y transferencia descritas abajo siguen siendo el contrato de los incrementos que los incorporen.
 
 ## Alcance del juego
 

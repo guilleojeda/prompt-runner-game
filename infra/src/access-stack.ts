@@ -13,7 +13,15 @@ import {
   DRAFT_LAMBDA_ROLE_NAME,
   DRAFT_LOG_GROUP_NAME,
   DRAFT_TABLE_NAME,
+  STARTER_LAMBDA_NAME,
 } from './robot.js';
+import {
+  AGENT_RUNTIME_NAME,
+  AGENT_RUNTIME_ROLE_NAME,
+  STARTER_LAMBDA_ROLE_NAME,
+  STARTER_LOG_GROUP_NAME,
+  attemptBodiesBucketNameFor,
+} from './execution.js';
 
 export const GITHUB_OIDC_URL = 'https://token.actions.githubusercontent.com';
 export const GITHUB_OIDC_AUDIENCE = 'sts.amazonaws.com';
@@ -489,6 +497,243 @@ export class PromptRunnerAccessStack extends cdk.Stack {
           ],
           resources: [cognitoUserPoolArn],
           conditions: { StringEquals: { 'aws:ResourceTag/Application': 'prompt-runner-game' } },
+        }),
+      ],
+    });
+
+    // Keep phase 0's physical policy (and its historical description) stable:
+    // it is already attached to the bootstrap role and close to IAM's inline
+    // document limit. Phase 3 resources use a separate policy so adding the
+    // Runtime, starter, and retained body bucket cannot force that policy to
+    // be replaced.
+    const attemptBodiesBucketArn = `arn:${cdk.Aws.PARTITION}:s3:::${attemptBodiesBucketNameFor(account, region)}`;
+    const starterFunctionArn = `arn:${cdk.Aws.PARTITION}:lambda:${region}:${account}:function:${STARTER_LAMBDA_NAME}`;
+    const starterFunctionVersionArn = `${starterFunctionArn}:*`;
+    const starterRoleArn = `arn:${cdk.Aws.PARTITION}:iam::${account}:role/${STARTER_LAMBDA_ROLE_NAME}`;
+    const starterLogGroupArn = `arn:${cdk.Aws.PARTITION}:logs:${region}:${account}:log-group:${STARTER_LOG_GROUP_NAME}`;
+    const runtimeRoleArn = `arn:${cdk.Aws.PARTITION}:iam::${account}:role/${AGENT_RUNTIME_ROLE_NAME}`;
+    const runtimeArn = `arn:${cdk.Aws.PARTITION}:bedrock-agentcore:${region}:${account}:runtime/${AGENT_RUNTIME_NAME}-*`;
+    const runtimeEndpointArn = `${runtimeArn}/runtime-endpoint/*`;
+    const workloadIdentityDirectoryArn = `arn:${cdk.Aws.PARTITION}:bedrock-agentcore:${region}:${account}:workload-identity-directory/default`;
+    const workloadIdentityArn = `${workloadIdentityDirectoryArn}/workload-identity/${AGENT_RUNTIME_NAME}-*`;
+    const runtimeAssetBucketArn = `arn:${cdk.Aws.PARTITION}:s3:::cdk-hnb659fds-assets-${account}-${region}`;
+    const runtimeIdentityServiceLinkedRoleArn = `arn:${cdk.Aws.PARTITION}:iam::${account}:role/aws-service-role/runtime-identity.bedrock-agentcore.amazonaws.com/AWSServiceRoleForBedrockAgentCoreRuntimeIdentity`;
+
+    new iam.ManagedPolicy(this, 'Phase3CfnExecutionPolicy', {
+      managedPolicyName: 'prompt-runner-game-phase3-cfn-execution',
+      description: 'CloudFormation permissions for phase 3 attempt execution resources.',
+      roles: [bootstrapExecutionRole],
+      statements: [
+        new iam.PolicyStatement({
+          sid: 'AttemptBodiesBucketLifecycle',
+          actions: [
+            's3:CreateBucket',
+            's3:DeleteBucket',
+            's3:Get*',
+            's3:ListBucket',
+            's3:ListTagsForResource',
+            's3:TagResource',
+            's3:UntagResource',
+            's3:DeleteBucketPolicy',
+            's3:PutBucketPolicy',
+            's3:PutBucketPublicAccessBlock',
+            's3:PutBucketTagging',
+            's3:DeleteBucketTagging',
+            's3:PutBucketOwnershipControls',
+            's3:PutEncryptionConfiguration',
+            's3:PutBucketVersioning',
+          ],
+          resources: [attemptBodiesBucketArn],
+        }),
+        new iam.PolicyStatement({
+          sid: 'StarterFunctionLifecycle',
+          actions: [
+            'lambda:AddPermission',
+            'lambda:CreateFunction',
+            'lambda:DeleteFunction',
+            'lambda:Get*',
+            'lambda:ListTags',
+            'lambda:DeleteFunctionEventInvokeConfig',
+            'lambda:PublishVersion',
+            'lambda:PutFunctionEventInvokeConfig',
+            'lambda:RemovePermission',
+            'lambda:TagResource',
+            'lambda:UntagResource',
+            'lambda:UpdateFunctionEventInvokeConfig',
+            'lambda:UpdateFunctionCode',
+            'lambda:UpdateFunctionConfiguration',
+          ],
+          resources: [starterFunctionArn, starterFunctionVersionArn],
+        }),
+        new iam.PolicyStatement({
+          sid: 'StarterLambdaRoleLifecycle',
+          actions: [
+            'iam:CreateRole',
+            'iam:DeleteRole',
+            'iam:GetRole',
+            'iam:GetRolePolicy',
+            'iam:ListRolePolicies',
+            'iam:PutRolePolicy',
+            'iam:DeleteRolePolicy',
+            'iam:TagRole',
+            'iam:UntagRole',
+            'iam:UpdateAssumeRolePolicy',
+          ],
+          resources: [starterRoleArn],
+        }),
+        new iam.PolicyStatement({
+          sid: 'PassStarterLambdaRole',
+          actions: ['iam:PassRole'],
+          resources: [starterRoleArn],
+          conditions: { StringEquals: { 'iam:PassedToService': 'lambda.amazonaws.com' } },
+        }),
+        new iam.PolicyStatement({
+          sid: 'StarterLogs',
+          actions: [
+            'logs:CreateLogGroup',
+            'logs:DeleteLogGroup',
+            'logs:DeleteRetentionPolicy',
+            'logs:PutRetentionPolicy',
+            'logs:TagResource',
+            'logs:UntagResource',
+          ],
+          resources: [starterLogGroupArn, `${starterLogGroupArn}:*`],
+        }),
+        new iam.PolicyStatement({
+          sid: 'ReadStarterLogGroupDetails',
+          actions: ['logs:GetDataProtectionPolicy'],
+          resources: [`${starterLogGroupArn}:*`],
+        }),
+        new iam.PolicyStatement({
+          sid: 'ListStarterLogGroupTags',
+          actions: ['logs:ListTagsForResource'],
+          resources: [starterLogGroupArn],
+        }),
+        new iam.PolicyStatement({
+          sid: 'RuntimeRoleLifecycle',
+          actions: [
+            'iam:CreateRole',
+            'iam:DeleteRole',
+            'iam:GetRole',
+            'iam:GetRolePolicy',
+            'iam:ListRolePolicies',
+            'iam:PutRolePolicy',
+            'iam:DeleteRolePolicy',
+            'iam:TagRole',
+            'iam:UntagRole',
+            'iam:UpdateAssumeRolePolicy',
+          ],
+          resources: [runtimeRoleArn],
+        }),
+        new iam.PolicyStatement({
+          sid: 'PassRuntimeRole',
+          actions: ['iam:PassRole'],
+          resources: [runtimeRoleArn],
+          conditions: {
+            StringEquals: { 'iam:PassedToService': 'bedrock-agentcore.amazonaws.com' },
+          },
+        }),
+      ],
+    });
+
+    // AgentCore's native CloudFormation provider also creates the default
+    // endpoint and workload identity. Keep those provider permissions in a
+    // separate policy so each customer-managed policy remains below IAM's
+    // 6,144-character limit.
+    new iam.ManagedPolicy(this, 'Phase3AgentCoreProviderPolicy', {
+      managedPolicyName: 'prompt-runner-game-phase3-agentcore-cfn-execution',
+      description: 'CloudFormation provider permissions for the phase 3 AgentCore Runtime.',
+      roles: [bootstrapExecutionRole],
+      statements: [
+        new iam.PolicyStatement({
+          sid: 'CreateAgentCoreServiceLinkedRole',
+          actions: ['iam:CreateServiceLinkedRole'],
+          resources: [runtimeIdentityServiceLinkedRoleArn],
+          conditions: {
+            StringEquals: {
+              'iam:AWSServiceName': 'runtime-identity.bedrock-agentcore.amazonaws.com',
+            },
+          },
+        }),
+        new iam.PolicyStatement({
+          sid: 'ReadAgentRuntimeCodeAsset',
+          actions: ['s3:GetObject', 's3:GetObjectVersion'],
+          resources: [`${runtimeAssetBucketArn}/*`],
+        }),
+        new iam.PolicyStatement({
+          sid: 'CreateAgentRuntime',
+          actions: ['bedrock-agentcore:CreateAgentRuntime'],
+          resources: ['*'],
+          conditions: {
+            StringEquals: {
+              'aws:RequestTag/Application': 'prompt-runner-game',
+              'aws:RequestedRegion': region,
+            },
+          },
+        }),
+        new iam.PolicyStatement({
+          sid: 'ProvisionAgentRuntimeDependencies',
+          actions: [
+            'bedrock-agentcore:CreateAgentRuntimeEndpoint',
+            'bedrock-agentcore:GetAgentRuntime',
+            'bedrock-agentcore:GetAgentRuntimeEndpoint',
+            'bedrock-agentcore:CreateWorkloadIdentity',
+          ],
+          resources: [
+            runtimeArn,
+            runtimeEndpointArn,
+            workloadIdentityArn,
+            workloadIdentityDirectoryArn,
+          ],
+        }),
+        new iam.PolicyStatement({
+          sid: 'TagAgentRuntimeOnCreate',
+          actions: ['bedrock-agentcore:TagResource'],
+          resources: [runtimeArn],
+          conditions: { StringEquals: { 'aws:RequestTag/Application': 'prompt-runner-game' } },
+        }),
+        new iam.PolicyStatement({
+          sid: 'TagAgentRuntimeDependencies',
+          actions: ['bedrock-agentcore:TagResource'],
+          // Endpoint and workload-identity tags are created by the Runtime
+          // provider, so their request may not repeat the Runtime tag set.
+          resources: [runtimeEndpointArn, workloadIdentityArn],
+        }),
+        new iam.PolicyStatement({
+          sid: 'ListAgentRuntimeResources',
+          actions: [
+            'bedrock-agentcore:ListAgentRuntimes',
+            'bedrock-agentcore:ListAgentRuntimeEndpoints',
+          ],
+          resources: ['*'],
+          conditions: { StringEquals: { 'aws:RequestedRegion': region } },
+        }),
+        new iam.PolicyStatement({
+          sid: 'AgentRuntimeLifecycle',
+          actions: [
+            'bedrock-agentcore:DeleteAgentRuntime',
+            'bedrock-agentcore:GetAgentRuntime',
+            'bedrock-agentcore:ListTagsForResource',
+            'bedrock-agentcore:TagResource',
+            'bedrock-agentcore:UntagResource',
+            'bedrock-agentcore:UpdateAgentRuntime',
+          ],
+          resources: [runtimeArn],
+          conditions: { StringEquals: { 'aws:ResourceTag/Application': 'prompt-runner-game' } },
+        }),
+        new iam.PolicyStatement({
+          sid: 'AgentRuntimeEndpointLifecycle',
+          actions: [
+            'bedrock-agentcore:DeleteAgentRuntimeEndpoint',
+            'bedrock-agentcore:GetAgentRuntimeEndpoint',
+            'bedrock-agentcore:UpdateAgentRuntimeEndpoint',
+          ],
+          resources: [runtimeArn, runtimeEndpointArn],
+        }),
+        new iam.PolicyStatement({
+          sid: 'AgentRuntimeWorkloadIdentityLifecycle',
+          actions: ['bedrock-agentcore:DeleteWorkloadIdentity'],
+          resources: [workloadIdentityArn, workloadIdentityDirectoryArn],
         }),
       ],
     });

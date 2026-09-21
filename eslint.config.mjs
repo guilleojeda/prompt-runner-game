@@ -6,7 +6,13 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   {
-    ignores: ['**/dist/**', '**/cdk.out/**', '**/coverage/**', '**/node_modules/**'],
+    ignores: [
+      '**/dist/**',
+      '**/dist-start/**',
+      '**/cdk.out/**',
+      '**/coverage/**',
+      '**/node_modules/**',
+    ],
   },
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
@@ -25,7 +31,13 @@ export default tseslint.config(
     },
   },
   {
-    files: ['apps/api/**/*.ts', 'shared/**/*.ts', 'infra/**/*.ts', '*.config.mjs'],
+    files: [
+      'apps/api/**/*.ts',
+      'apps/runner/**/*.{ts,mjs}',
+      'shared/**/*.ts',
+      'infra/**/*.ts',
+      '*.config.mjs',
+    ],
     languageOptions: {
       globals: { ...globals.node },
     },

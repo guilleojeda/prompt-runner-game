@@ -20,6 +20,7 @@ export const DRAFT_TABLE_NAME = 'prompt-runner-game-drafts';
 export const DRAFT_LAMBDA_NAME = 'prompt-runner-game-draft-api';
 export const DRAFT_LAMBDA_ROLE_NAME = 'prompt-runner-game-draft-api-execution-us-east-1';
 export const DRAFT_LOG_GROUP_NAME = `/aws/lambda/${DRAFT_LAMBDA_NAME}`;
+export const STARTER_LAMBDA_NAME = 'prompt-runner-game-attempt-starter';
 export const LOCAL_API_ORIGIN = LOCAL_CALLBACK_ORIGIN.slice(0, -1);
 
 export interface RobotResourcesProps {
@@ -31,6 +32,7 @@ export interface RobotResourcesProps {
 export interface RobotResources {
   readonly draftTable: dynamodb.Table;
   readonly draftFunction: lambda.Function;
+  readonly draftExecutionRole: iam.Role;
   readonly api: apigatewayv2.HttpApi;
   readonly apiBaseUrl: string;
 }
@@ -57,7 +59,13 @@ export function createRobotResources(scope: Construct, props: RobotResourcesProp
   executionRole.addToPolicy(
     new iam.PolicyStatement({
       sid: 'DraftTableReadWrite',
-      actions: ['dynamodb:GetItem', 'dynamodb:PutItem'],
+      actions: [
+        'dynamodb:GetItem',
+        'dynamodb:PutItem',
+        'dynamodb:UpdateItem',
+        'dynamodb:Query',
+        'dynamodb:TransactWriteItems',
+      ],
       resources: [draftTable.tableArn],
     }),
   );
@@ -83,6 +91,7 @@ export function createRobotResources(scope: Construct, props: RobotResourcesProp
       DRAFT_TABLE_NAME: draftTable.tableName,
       COGNITO_CLIENT_ID: props.authentication.userPoolClient.ref,
       COGNITO_USERINFO_URL: `${props.authentication.config.domain}/oauth2/userInfo`,
+      STARTER_FUNCTION_NAME: STARTER_LAMBDA_NAME,
     },
     timeout: cdk.Duration.seconds(15),
     logGroup,
@@ -96,6 +105,7 @@ export function createRobotResources(scope: Construct, props: RobotResourcesProp
       allowMethods: [
         apigatewayv2.CorsHttpMethod.GET,
         apigatewayv2.CorsHttpMethod.PUT,
+        apigatewayv2.CorsHttpMethod.POST,
         apigatewayv2.CorsHttpMethod.OPTIONS,
       ],
       allowHeaders: ['Authorization', 'Content-Type'],
@@ -119,9 +129,35 @@ export function createRobotResources(scope: Construct, props: RobotResourcesProp
     authorizationScopes: [ROBOT_SCOPE],
   });
 
+  // Attempt admission, status/history, cancellation, and quota are all
+  // handled by this same identity-checked Lambda. Keeping every route behind
+  // the same JWT authorizer prevents an accidental unauthenticated recovery
+  // or cancellation endpoint as the API grows.
+  const authenticatedRoutes: Array<{
+    readonly path: string;
+    readonly methods: apigatewayv2.HttpMethod[];
+  }> = [
+    { path: '/attempts', methods: [apigatewayv2.HttpMethod.GET, apigatewayv2.HttpMethod.POST] },
+    { path: '/attempts/{attemptId}', methods: [apigatewayv2.HttpMethod.GET] },
+    { path: '/attempts/{attemptId}/start', methods: [apigatewayv2.HttpMethod.POST] },
+    { path: '/attempts/{attemptId}/cancel', methods: [apigatewayv2.HttpMethod.POST] },
+    { path: '/attempt-requests/{requestKey}', methods: [apigatewayv2.HttpMethod.GET] },
+    { path: '/quota', methods: [apigatewayv2.HttpMethod.GET] },
+  ];
+  for (const route of authenticatedRoutes) {
+    api.addRoutes({
+      path: route.path,
+      methods: route.methods,
+      integration,
+      authorizer,
+      authorizationScopes: [ROBOT_SCOPE],
+    });
+  }
+
   return {
     draftTable,
     draftFunction,
+    draftExecutionRole: executionRole,
     api,
     apiBaseUrl: api.apiEndpoint,
   };
