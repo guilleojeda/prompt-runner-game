@@ -39,6 +39,8 @@ Las solicitudes a la API envían el access token en Authorization, no el ID toke
 
 El editor conserva sus cambios pendientes en memoria mientras renueva la misma identidad y pausa las escrituras hasta validar la sesión. Cerrar sesión o cambiar de cuenta invalida las operaciones del editor anterior, incluidas respuestas tardías. No hay una copia persistente del borrador en el navegador. [Concurrencia y recuperación del guardado](datos.md#borrador-disponible).
 
+La API registra un resultado estructurado por solicitud en su log de Lambda: `requestId`, método, estado HTTP y código de resultado. Ese identificador permite correlacionar el error sin registrar el bearer, el borrador ni los detalles privados de las excepciones de dependencias.
+
 ## Fase posterior: correo propio con SES
 
 Después de contar con la versión funcional con Cognito, se incorporará **SES como mecanismo de envío del mismo user pool**. Esa fase comprende verificar un emisor, habilitar producción para destinatarios arbitrarios, configurar permisos y `EmailSendingAccount=DEVELOPER`, y definir mensajes de confirmación y recuperación en español. Se comprobarán envío real, reenvío, recuperación y cuotas aplicables.

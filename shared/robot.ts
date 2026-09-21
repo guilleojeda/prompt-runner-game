@@ -139,27 +139,6 @@ const invalid = (message: string): never => {
 
 const catalogEntryById = new Map(ROBOT_CATALOG.map((entry) => [entry.id, entry]));
 
-const cloneInputSchema = (
-  schema: Readonly<Record<string, unknown>>,
-): Readonly<Record<string, unknown>> => {
-  const properties = schema.properties;
-  if (isRecord(properties)) {
-    return {
-      ...schema,
-      properties: Object.fromEntries(
-        Object.entries(properties).map(([key, value]) => [
-          key,
-          isRecord(value)
-            ? { ...value, ...(Array.isArray(value.enum) ? { enum: [...value.enum] } : {}) }
-            : value,
-        ]),
-      ),
-      ...(Array.isArray(schema.required) ? { required: [...schema.required] } : {}),
-    };
-  }
-  return { ...schema };
-};
-
 const cloneSkill = (skill: RobotDraftSkill): RobotDraftSkill =>
   hasOwn(skill, 'description')
     ? { ...skill, description: skill.description }
@@ -183,7 +162,7 @@ const canonicalDraftForSerialization = (draft: RobotDraft): Record<string, unkno
     name: entry.name,
     opaqueId: entry.opaqueId,
     description: entry.description,
-    inputSchema: cloneInputSchema(entry.inputSchema),
+    inputSchema: entry.inputSchema,
   })),
 });
 

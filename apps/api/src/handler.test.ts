@@ -1,7 +1,14 @@
+import { type DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { marshall } from '@aws-sdk/util-dynamodb';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { describe, expect, it, vi } from 'vitest';
 import { createDefaultDraft, type DraftSnapshot } from '../../../shared/robot';
-import { DraftConflictError, type DraftStore } from './draft';
+import {
+  DraftConflictError,
+  DraftStorageError,
+  createDynamoDraftStore,
+  type DraftStore,
+} from './draft';
 import { handleRequest } from './handler';
 
 const identity = {
@@ -193,5 +200,101 @@ describe('draft API handler', () => {
     expect(store.get).not.toHaveBeenCalled();
     const normal = await handleRequest(eventFor('GET'), dependencies(store));
     expect(normal.headers?.['cache-control']).toBe('no-store');
+  });
+
+  it.each(['schemaVersion', 'catalogVersion'] as const)(
+    'returns a specific stored %s error without attempting a PUT',
+    async (versionKey) => {
+      const draft = { ...createDefaultDraft(), [versionKey]: 99 };
+      const send = vi.fn().mockResolvedValue({
+        Item: marshall({
+          PK: 'USER#user-a',
+          SK: 'DRAFT',
+          version: 1,
+          updatedAt: '2026-09-21T00:00:00.000Z',
+          draft,
+        }),
+      });
+      const persisted = createDynamoDraftStore({
+        client: { send } as unknown as DynamoDBClient,
+        tableName: 'Drafts',
+      });
+      const store: DraftStore = {
+        get: persisted.get,
+        put: vi.fn(),
+      };
+
+      const response = await handleRequest(eventFor('GET'), dependencies(store));
+
+      expect(response.statusCode).toBe(500);
+      expect(responseBody(response)).toEqual({
+        code: 'stored_draft_incompatible',
+        message: 'El borrador guardado no es compatible con la versión actual.',
+      });
+      expect(store.put).not.toHaveBeenCalled();
+      expect(send).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('logs only safe result metadata for success, conflict, dependency, and internal outcomes', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      const success: DraftStore = {
+        get: vi.fn().mockResolvedValue({ version: 0, draft: createDefaultDraft() }),
+        put: vi.fn(),
+      };
+      await handleRequest(eventFor('GET'), dependencies(success));
+
+      const conflict: DraftStore = {
+        get: vi.fn(),
+        put: vi
+          .fn()
+          .mockRejectedValue(new DraftConflictError({ version: 1, draft: createDefaultDraft() })),
+      };
+      const privateDraft = { ...createDefaultDraft(), instructions: 'private prompt body' };
+      await handleRequest(
+        eventFor('PUT', {
+          body: JSON.stringify({ expectedVersion: 0, draft: privateDraft }),
+        }),
+        dependencies(conflict),
+      );
+
+      const userInfoFailure: DraftStore = { get: vi.fn(), put: vi.fn() };
+      await handleRequest(
+        eventFor('GET'),
+        dependencies(
+          userInfoFailure,
+          vi.fn(async () => new Response('', { status: 503 })),
+        ),
+      );
+
+      const dependency: DraftStore = {
+        get: vi.fn().mockRejectedValue(new DraftStorageError('provider secret body')),
+        put: vi.fn(),
+      };
+      await handleRequest(eventFor('GET'), dependencies(dependency));
+
+      const internal: DraftStore = {
+        get: vi.fn().mockRejectedValue(new Error('private prompt body')),
+        put: vi.fn(),
+      };
+      await handleRequest(eventFor('GET'), dependencies(internal));
+
+      const records = log.mock.calls.map(
+        ([line]) => JSON.parse(String(line)) as Record<string, unknown>,
+      );
+      expect(records.slice(-5)).toEqual([
+        { requestId: 'request', method: 'GET', status: 200, code: 'ok' },
+        { requestId: 'request', method: 'PUT', status: 409, code: 'conflict' },
+        { requestId: 'request', method: 'GET', status: 503, code: 'dependency_unavailable' },
+        { requestId: 'request', method: 'GET', status: 503, code: 'dependency_unavailable' },
+        { requestId: 'request', method: 'GET', status: 500, code: 'internal' },
+      ]);
+      expect(JSON.stringify(records)).not.toContain('access-token');
+      expect(JSON.stringify(records)).not.toContain('provider secret body');
+      expect(JSON.stringify(records)).not.toContain('private prompt body');
+    } finally {
+      log.mockRestore();
+    }
   });
 });

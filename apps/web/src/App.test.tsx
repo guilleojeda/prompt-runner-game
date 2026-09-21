@@ -6,9 +6,9 @@ import { User } from 'oidc-client-ts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
 import { AuthFailure, type AuthClient, type AuthConfig, type AuthSession } from './auth.js';
-import { DraftApiClient } from './draft-api.js';
+import { DraftApiClient, type DraftApi } from './draft-api.js';
 import type { PendingConfirmationClient } from './pending-confirmation.js';
-import { createDefaultDraft } from '../../../shared/robot.js';
+import { createDefaultDraft, type DraftSnapshot } from '../../../shared/robot.js';
 
 const config: AuthConfig = {
   issuer: 'https://cognito-idp.us-east-1.amazonaws.com/us-east-1_test',
@@ -333,5 +333,57 @@ describe('access screen', () => {
       headers: expect.objectContaining({ Authorization: 'Bearer new-token' }),
     });
     expect(screen.getByDisplayValue('Texto pendiente durante la renovación')).toBeTruthy();
+  });
+
+  it('keeps local discard and logout available while waiting for a never-resolving save', async () => {
+    vi.useFakeTimers();
+    const current = session('a@example.com', (Date.now() + 600_000) / 1000);
+    const initialize = vi.fn().mockResolvedValue(current);
+    const logout = vi.fn().mockResolvedValue(undefined);
+    const authClient = client({ initialize, logout });
+    let resolvePut!: (value: DraftSnapshot) => void;
+    const putDraft = vi.fn<DraftApi['putDraft']>().mockReturnValue(
+      new Promise<DraftSnapshot>((resolve) => {
+        resolvePut = resolve;
+      }),
+    );
+    const draftApi: DraftApi = {
+      getDraft: vi.fn().mockResolvedValue({ version: 0, draft: createDefaultDraft() }),
+      putDraft,
+    };
+    render(<App authClient={authClient} draftApi={draftApi} configLoader={async () => config} />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    fireEvent.change(screen.getByLabelText('Qué debe tener en cuenta el robot'), {
+      target: { value: 'Guardado que no responde' },
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(600);
+    });
+    expect(putDraft).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole('button', { name: 'Cerrar sesión' }));
+    expect(screen.getByRole('heading', { name: 'Tenés cambios sin confirmar' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Esperar guardado' }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const discard = screen.getByRole('button', { name: 'Descartar cambios locales y salir' });
+    expect((discard as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(discard);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(logout).toHaveBeenCalledOnce();
+    expect(screen.getByRole('button', { name: 'Entrar o crear una cuenta' })).toBeTruthy();
+    resolvePut({ version: 1, draft: createDefaultDraft() });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(logout).toHaveBeenCalledOnce();
   });
 });

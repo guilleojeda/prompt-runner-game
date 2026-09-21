@@ -165,8 +165,12 @@ export class DraftApiClient implements DraftApi {
       if (!snapshot) {
         throw new DraftApiFailure(
           'server',
-          'La API devolvió una configuración inválida.',
+          method === 'PUT'
+            ? 'No se confirmó la respuesta del guardado. Comprobando la configuración guardada…'
+            : 'La API devolvió una configuración inválida.',
           response.status,
+          undefined,
+          method === 'PUT',
         );
       }
       return snapshot;
@@ -206,9 +210,12 @@ export class DraftApiClient implements DraftApi {
     }
     throw new DraftApiFailure(
       'server',
-      method === 'PUT'
-        ? 'No se confirmó el guardado. Podés reintentar sin perder tus cambios.'
-        : 'No se pudo cargar la configuración. Podés reintentar.',
+      errorMessage(
+        parsed,
+        method === 'PUT'
+          ? 'No se confirmó el guardado. Podés reintentar sin perder tus cambios.'
+          : 'No se pudo cargar la configuración. Podés reintentar.',
+      ),
       response.status,
       undefined,
       method === 'PUT',

@@ -10,7 +10,7 @@ GET lee con consistencia fuerte. Si todavía no existe un registro, devuelve el 
 
 Una respuesta de PUT perdida puede corresponder a una escritura confirmada. El cliente consulta el servidor: si encuentra el snapshot enviado adopta su versión, si sigue en la versión base permite repetir la escritura, y si encuentra una versión posterior diferente muestra conflicto. Mientras no puede comprobarlo, no afirma Guardado. Los cambios escritos después del envío se conservan por separado del snapshot en vuelo.
 
-El contrato compartido valida forma y catálogo; reconstruye IDs/schemas desde definiciones del proyecto y mide 65.536 bytes máximos de JSON UTF-8 expandido, sin metadatos de transporte o propietario. Un rechazo por forma o tamaño conserva el registro anterior. No se recortan textos, no se corrigen instrucciones y cero habilidades es guardable. Una versión de formato/catálogo desconocida produce error y no reinicializa los datos.
+El contrato compartido valida forma y catálogo; reconstruye IDs/schemas desde definiciones del proyecto y mide 65.536 bytes máximos de JSON UTF-8 expandido, sin metadatos de transporte o propietario. Un rechazo por forma o tamaño conserva el registro anterior. No se recortan textos, no se corrigen instrucciones y cero habilidades es guardable. Si el registro guardado tiene un formato o catálogo incompatible, la API devuelve `stored_draft_incompatible` y el editor informa el problema sin mostrar defaults editables ni reinicializar los datos. Este error se distingue de una dependencia temporalmente inaccesible.
 
 ## DynamoDB y S3
 
