@@ -491,8 +491,13 @@ describe('PromptRunnerAccessStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, (
     expect(bySid('TagAgentRuntimeOnCreate')).toEqual(
       expect.objectContaining({
         Action: 'bedrock-agentcore:TagResource',
-        Resource: `arn:aws:bedrock-agentcore:us-east-1:387483252302:runtime/${AGENT_RUNTIME_NAME}-*`,
-        Condition: { StringEquals: { 'aws:RequestTag/Application': 'prompt-runner-game' } },
+        Resource: 'arn:aws:bedrock-agentcore:us-east-1:387483252302:runtime/*',
+        Condition: {
+          StringEquals: {
+            'aws:RequestTag/Application': 'prompt-runner-game',
+            'aws:RequestedRegion': 'us-east-1',
+          },
+        },
       }),
     );
     expect(bySid('TagAgentRuntimeDependencies')).toEqual(
