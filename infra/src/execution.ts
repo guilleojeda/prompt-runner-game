@@ -302,6 +302,13 @@ export function createExecutionResources(
       resources: [attemptBodiesBucket.arnForObjects('*')],
     }),
   );
+  props.apiExecutionRole.addToPolicy(
+    new iam.PolicyStatement({
+      sid: 'LocateInferenceBodies',
+      actions: ['s3:ListBucket'],
+      resources: [attemptBodiesBucket.bucketArn],
+    }),
+  );
   props.apiFunction.addEnvironment('ATTEMPT_BODIES_BUCKET', attemptBodiesBucket.bucketName);
   props.apiFunction.addEnvironment('STARTER_FUNCTION_NAME', starterFunction.functionName);
 

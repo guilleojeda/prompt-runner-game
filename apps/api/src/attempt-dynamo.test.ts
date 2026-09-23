@@ -4,6 +4,7 @@ import {
   type AttributeValue,
   type DynamoDBClient,
 } from '@aws-sdk/client-dynamodb';
+import type { S3Client } from '@aws-sdk/client-s3';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -23,6 +24,7 @@ import {
   AdmissionConflictError,
   AttemptStoreError,
   createDynamoAttemptStore,
+  S3BodyStore,
 } from './attempt-store.js';
 
 const commandClient = (send: ReturnType<typeof vi.fn>) => ({ send }) as unknown as DynamoDBClient;
@@ -730,6 +732,75 @@ describe('Dynamo call finalization and recovery', () => {
     expect(header.calls).toBe(0);
     expect(header.recordComplete).toBe(true);
     expect(harness.read(`ATTEMPT#${attemptId}`, 'CALL#00000001')?.status).toBe('started');
+  });
+
+  it('does not fail a running read when the active response object is not visible yet', async () => {
+    const harness = new DynamoHarness();
+    const { attemptId } = seedAttempt(harness, { status: 'running', executorId: 'executor-a' });
+    seedCall(harness, attemptId);
+    const bodyStore: BodyStore = {
+      put: vi.fn(),
+      get: vi.fn(async () => {
+        throw new AttemptStoreError('private body is not visible yet');
+      }),
+    };
+
+    await expect(
+      storeFor(harness, bodyStore).recoverBodies('owner', attemptId),
+    ).resolves.toBeUndefined();
+
+    const header = harness.read('USER#owner', `ATTEMPT#${attemptId}`)!;
+    expect(header.status).toBe('running');
+    expect(header.calls).toBe(0);
+    expect(header.recordComplete).toBe(true);
+    expect(bodyStore.get).not.toHaveBeenCalled();
+    expect(harness.read(`ATTEMPT#${attemptId}`, 'CALL#00000001')?.status).toBe('started');
+  });
+
+  it.each([
+    ['NoSuchKey', false],
+    ['NotFound', false],
+    ['AccessDenied', true],
+  ])('maps S3 %s according to private-body availability', async (name, rejects) => {
+    const error = Object.assign(new Error(name), {
+      name,
+      $metadata: { httpStatusCode: name === 'AccessDenied' ? 403 : 404 },
+    });
+    const client = { send: vi.fn().mockRejectedValue(error) } as unknown as S3Client;
+    const bodyStore = new S3BodyStore({ client, bucket: 'attempt-bodies' });
+    const result = bodyStore.get('attempt/1/response.json');
+
+    if (rejects) await expect(result).rejects.toMatchObject({ name: 'AttemptStoreError' });
+    else await expect(result).resolves.toBeUndefined();
+  });
+
+  it('recovers a missing active body after the runtime deadline as incomplete', async () => {
+    const harness = new DynamoHarness();
+    const { attemptId } = seedAttempt(harness, {
+      status: 'running',
+      executorId: 'executor-a',
+      runtimeDeadline: '2026-09-21T14:59:00.000Z',
+    });
+    seedCall(harness, attemptId);
+    const bodyStore: BodyStore = { put: vi.fn(), get: vi.fn(async () => undefined) };
+
+    const recovered = await storeFor(harness, bodyStore).closeExpired(
+      'owner',
+      attemptId,
+      '2026-09-21T15:00:00.000Z',
+    );
+
+    expect(recovered).toMatchObject({
+      status: 'error',
+      reason: 'runtime_deadline_expired',
+      calls: 1,
+      inputTokens: null,
+      outputTokens: null,
+      reasoningTokens: null,
+      gameTokens: null,
+      recordComplete: false,
+    });
+    expect(bodyStore.get).toHaveBeenCalledTimes(1);
   });
 
   it('counts an unresolved started call after terminal recovery and keeps all metrics unknown', async () => {
