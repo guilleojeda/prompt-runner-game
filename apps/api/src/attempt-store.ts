@@ -1356,7 +1356,10 @@ export class DynamoAttemptStore implements AttemptStore {
   }
 
   public async recoverBodies(owner: string, attemptId: string): Promise<void> {
-    if (!this.bodyStore || !(await this.get(owner, attemptId))) return;
+    const bodyStore = this.bodyStore;
+    if (!bodyStore) return;
+    const initial = await this.get(owner, attemptId);
+    if (!initial) return;
     const calls = await this.getCalls(owner, attemptId);
     for (const call of calls) {
       if (
@@ -1367,7 +1370,13 @@ export class DynamoAttemptStore implements AttemptStore {
       )
         continue;
       if (!call.responseKey) continue;
-      const body = await this.bodyStore.get(call.responseKey);
+      // A running call publishes its response key before the provider body
+      // exists. Wait for finishCall instead of probing an active object; if the
+      // run reaches its deadline, closeExpired calls recovery again after
+      // closing it, and terminal recovery surfaces any real body dependency
+      // failure.
+      if (initial.status === 'running' && call.status === 'started') continue;
+      const body = await bodyStore.get(call.responseKey);
       if (!body) continue;
       const digest = sha256(body);
       let status = call.status;

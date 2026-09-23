@@ -362,6 +362,17 @@ describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, 
     expect(JSON.stringify(statements)).not.toContain('dynamodb:DeleteItem');
     const apiPolicyJson = JSON.stringify(runtimePolicies[0].Properties.PolicyDocument);
     expect(apiPolicyJson).toContain('s3:GetObject');
+    const bodyBucketEntry = Object.entries(synthesized.findResources('AWS::S3::Bucket')).find(
+      ([, resource]) => resource.Properties.BucketName?.startsWith(ATTEMPT_BODIES_BUCKET_PREFIX),
+    );
+    expect(bodyBucketEntry).toBeDefined();
+    const locateBodies = statements.find(
+      (statement: { Sid?: string; Action?: unknown; Resource?: unknown }) =>
+        statement.Sid === 'LocateInferenceBodies',
+    );
+    expect(locateBodies).toBeDefined();
+    expect(locateBodies?.Action).toBe('s3:ListBucket');
+    expect(JSON.stringify(locateBodies?.Resource)).toContain(bodyBucketEntry?.[0]);
     expect(apiPolicyJson).not.toContain('s3:PutObject');
     expect(apiPolicyJson).not.toMatch(/bedrock:|cognito-idp:|iam:/);
   });
