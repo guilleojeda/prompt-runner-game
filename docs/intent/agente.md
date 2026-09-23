@@ -87,9 +87,11 @@ Si no hay herramientas habilitadas, la interfaz debe pedir que se agregue al men
 
 ## Capturar configuraciones y snapshots
 
+El jugador elige un modelo del catálogo Bedrock admitido desde el editor. La elección se guarda junto con instrucciones y habilidades, y usa parámetros propios del perfil; no permite introducir endpoints o parámetros arbitrarios. Los fallos de acceso o cuota se informan sin sustituir el modelo.
+
 El clic en **Probar** valida y guarda directamente el borrador. Cada intento admitido toma una copia fija de esa configuración y del nivel seleccionado antes de su primer turno. La copia incluye, como mínimo, instrucciones, herramientas habilitadas, identificadores opacos, descripciones, esquemas aplicables y la configuración de inferencia elegida. El valor de `animation_enabled` se guarda en el intento como preferencia de presentación y no se incluye en el payload del modelo.
 
-Mientras un intento calcula o reproduce automáticamente su registro, la interfaz bloquea la edición. Después de mostrar el resultado y cerrar esa presentación, editar el borrador sólo afecta el próximo clic en **Probar**. No modifica retrospectivamente observaciones, llamadas, estados, resultados ni métricas. Repetir la animación de un intento usa el snapshot cerrado, no vuelve a llamar al modelo ni toma decisiones nuevas. Cambiar textos no requiere redesplegar infraestructura ni crear un recurso de agente nuevo por edición.
+Mientras un intento calcula o reproduce automáticamente su registro, la interfaz bloquea la edición, incluido el selector de modelos. Después de mostrar el resultado y cerrar esa presentación, editar el borrador sólo afecta el próximo clic en **Probar**. No modifica retrospectivamente observaciones, llamadas, estados, resultados ni métricas. Repetir la animación de un intento usa el snapshot cerrado, no vuelve a llamar al modelo ni toma decisiones nuevas. Cambiar textos no requiere redesplegar infraestructura ni crear un recurso de agente nuevo por edición.
 
 El prompt efectivo de cada decisión debe poder inspeccionarse para comprobar el protocolo, las instrucciones, las herramientas, sus descripciones y la observación enviada. La vista de diagnóstico es evidencia del contenido aplicado; no debe presentar como texto del usuario una regla que el sistema haya añadido en secreto.
 

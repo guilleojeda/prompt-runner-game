@@ -24,6 +24,7 @@ Los campos normalizados son:
 | --- | --- |
 | Entrada total | Tokens de entrada del contenido realmente enviado, con la semántica del proveedor resuelta por el adaptador |
 | Salida total | Tokens generados realmente por el modelo |
+| Razonamiento | Desglose incluido en salida, cuando la API lo informa; nunca se suma otra vez |
 | Entrada sin caché | Parte de la entrada que no fue leída ni escrita mediante caché, si la API la distingue |
 | Lectura de caché | Tokens de entrada servidos desde caché, si la API los informa |
 | Escritura de caché | Tokens de entrada materializados en caché, si la API los informa |
@@ -32,6 +33,8 @@ Los campos normalizados son:
 | Tiempo de inferencia | Duración de la llamada o decisión, sólo si el proveedor o el adaptador la informa |
 
 `Entrada total` es un agregado y, por definición, puede solaparse con sus componentes de caché. Si la API ya incluye la lectura o escritura de caché dentro de ese agregado, se conserva cada categoría como detalle, pero nunca se suma el agregado con sus componentes. Para derivar el total a partir de componentes separados, sólo se suman componentes que la documentación del proveedor confirma como partes disjuntas del contenido. El adaptador debe documentar la interpretación elegida para el proveedor activo.
+
+`reasoningTokens` se conserva por llamada y en el intento. Si falta en alguna llamada, su agregado es desconocido; eso no impide calcular el puntaje cuando el total de entrada/salida sí es inequívoco. La UI lo identifica como incluido en salida. Cada intento conserva su modelo: agregar modelos no cambia la fórmula ni presupone equivalencia entre tokenizadores.
 
 Si la API no permite determinar de forma inequívoca un total, se conserva el uso original y se indica que la métrica normalizada o el costo exacto no están disponibles. Un costo parcial no se presenta como consumo exacto.
 

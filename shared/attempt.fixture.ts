@@ -87,6 +87,7 @@ export const createClosedAttemptRecordFixture = (): AttemptRecord => {
     calls: referenceActions.length,
     inputTokens: 500,
     outputTokens: 100,
+    reasoningTokens: 0,
     gameTokens: 600,
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
@@ -145,6 +146,7 @@ export const representativeAttemptItems = (
     calls: record.metrics.calls,
     inputTokens: record.metrics.inputTokens,
     outputTokens: record.metrics.outputTokens,
+    reasoningTokens: record.metrics.reasoningTokens,
     gameTokens: record.metrics.gameTokens,
     cacheReadTokens: record.metrics.cacheReadTokens,
     cacheWriteTokens: record.metrics.cacheWriteTokens,
@@ -198,7 +200,12 @@ export const representativeAttemptItems = (
         responseSha256: '1'.repeat(64),
         responseBytes: 2048,
         status: 'received',
-        usage: { inputTokens: 100, outputTokens: 20, gameTokens: 120 },
+        usage: {
+          inputTokens: 100,
+          outputTokens: 20,
+          reasoningTokens: null,
+          gameTokens: 120,
+        },
       },
     });
   }

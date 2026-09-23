@@ -11,11 +11,15 @@ const summary = {
   status: 'victory',
   cancelRequested: false,
   levelId: 'principal-estatico-v1',
+  modelKey: 'claude-sonnet-5',
+  modelLabel: 'Claude Sonnet 5',
+  modelId: 'global.anthropic.claude-sonnet-5',
   turnsUsed: 5,
   maxTurns: 12,
   calls: 5,
   inputTokens: null,
   outputTokens: null,
+  reasoningTokens: null,
   gameTokens: null,
   cacheReadTokens: null,
   cacheWriteTokens: null,
@@ -45,6 +49,9 @@ describe('AttemptApiClient', () => {
     const result = await client.createAttempt('request-key', 0, draft);
 
     expect(result.attempt.id).toBe('attempt-1');
+    expect(result.attempt.modelKey).toBe('claude-sonnet-5');
+    expect(result.attempt.modelLabel).toBe('Claude Sonnet 5');
+    expect(result.attempt.reasoningTokens).toBeNull();
     expect(result.dispatchConfirmed).toBe(false);
     expect(fetchImpl).toHaveBeenCalledWith(
       'https://api.example.test/attempts',
@@ -54,6 +61,48 @@ describe('AttemptApiClient', () => {
         body: JSON.stringify({ requestKey: 'request-key', expectedVersion: 0, draft }),
       }),
     );
+  });
+
+  it('keeps the attempt model identity returned by the server', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          attempt: {
+            ...summary,
+            modelKey: 'claude-opus-5',
+            modelLabel: 'Claude Opus 5',
+            modelId: 'global.anthropic.claude-opus-5',
+            reasoningTokens: 17,
+          },
+        }),
+        { status: 200 },
+      ),
+    );
+    const client = new AttemptApiClient(config, {
+      tokenProvider: () => 'token',
+      fetch: fetchImpl,
+    });
+
+    const result = await client.getAttempt('attempt-1');
+
+    expect(result.modelKey).toBe('claude-opus-5');
+    expect(result.modelLabel).toBe('Claude Opus 5');
+    expect(result.modelId).toBe('global.anthropic.claude-opus-5');
+    expect(result.reasoningTokens).toBe(17);
+  });
+
+  it('rejects an attempt response without the server-normalized model identity', async () => {
+    const legacy = Object.fromEntries(
+      Object.entries(summary).filter(
+        ([key]) => key !== 'modelKey' && key !== 'modelLabel' && key !== 'modelId',
+      ),
+    );
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(JSON.stringify({ attempt: legacy }), { status: 200 }));
+    const client = new AttemptApiClient(config, { tokenProvider: () => 'token', fetch: fetchImpl });
+
+    await expect(client.getAttempt('attempt-1')).rejects.toMatchObject({ code: 'server' });
   });
 
   it('keeps unknown usage as null and reports quota errors without pretending the attempt ended', async () => {

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { DEFAULT_MODEL_KEY, modelByKey } from '../../../shared/models.js';
 import { createDefaultDraft } from '../../../shared/robot';
 import { MemoryAttemptStore, MemoryBodyStore } from '../../api/src/attempt-store';
 import { executeAttempt, createGameEngine, type InferenceAdapter } from './execute';
@@ -70,6 +71,16 @@ describe('Runtime attempt coordinator', () => {
     expect(record?.gameTokens).toBe(10);
     expect(record?.score).toBe(949.99);
     expect(await store.getCalls('a', admitted.attempt.id)).toHaveLength(5);
+    expect(await store.getCalls('a', admitted.attempt.id)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          modelKey: DEFAULT_MODEL_KEY,
+          modelId: modelByKey(DEFAULT_MODEL_KEY)?.modelId,
+          region: modelByKey(DEFAULT_MODEL_KEY)?.region,
+          profileVersion: modelByKey(DEFAULT_MODEL_KEY)?.profileVersion,
+        }),
+      ]),
+    );
     expect(
       await bodies.get(
         `attempt/${admitted.attempt.id}/decision/${admitted.attempt.id}-decision-1/call/1/request.json`,
@@ -216,6 +227,7 @@ describe('Runtime attempt coordinator', () => {
             inputTokens: 7,
             outputTokens: 3,
             gameTokens: 10,
+            reasoningTokens: 2,
             cacheReadTokens: 1,
             cacheWriteTokens: 2,
           },
@@ -237,9 +249,11 @@ describe('Runtime attempt coordinator', () => {
     expect(record?.status).toBe('error');
     expect(record?.inputTokens).toBe(7);
     expect(record?.outputTokens).toBe(3);
+    expect(record?.reasoningTokens).toBe(2);
     expect(record?.gameTokens).toBe(10);
     expect(record?.recordComplete).toBe(true);
     expect(call.status).toBe('invalid');
+    expect(call.usage.reasoningTokens).toBe(2);
     expect(call.usage.gameTokens).toBe(10);
   });
 });

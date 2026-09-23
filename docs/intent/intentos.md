@@ -1,6 +1,6 @@
 # Intentos: ejecución, registro y reproducción
 
-Estado: especificación de producto. La implementación todavía está pendiente.
+Estado: cálculo estático, registro, selección de modelo y consultas implementados; animación y reproducción visibles todavía pendientes.
 
 Esta página define el ciclo de un intento desde que se fija la configuración hasta que se muestra su reproducción. Se relaciona con [la experiencia](experiencia.md), [las reglas del juego](juego.md), [el agente](agente.md) y [la plataforma](plataforma.md).
 
@@ -8,7 +8,7 @@ El diseño técnico aprobado está en [registro de ejecución](../architecture/r
 
 ## Alcance y reglas que no cambian
 
-Un intento es una ejecución independiente. El agente no recibe memoria, resultados ni conversaciones de otros intentos. El aprendizaje entre intentos consiste en editar las habilidades, sus descripciones o las instrucciones y crear otro snapshot con **Probar**; no consiste en entrenar ni adaptar el modelo.
+Un intento es una ejecución independiente. Su modelo y perfil quedan fijados al admitir; resultado e historial muestran esa identidad aunque cambie después el selector o el catálogo. Los registros históricos válidos de Sonnet 5 siguen siendo recuperables. El agente no recibe memoria, resultados ni conversaciones de otros intentos. El aprendizaje entre intentos consiste en editar las habilidades, sus descripciones o las instrucciones y crear otro snapshot con **Probar**; no consiste en entrenar ni adaptar el modelo.
 
 El intento separa el cálculo de la presentación:
 

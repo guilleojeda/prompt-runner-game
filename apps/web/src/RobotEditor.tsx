@@ -17,6 +17,7 @@ import {
   type RobotDraft,
   type RobotSkillId,
 } from '../../../shared/robot.js';
+import { MODEL_CATALOG, isModelKey } from '../../../shared/models.js';
 import type { AuthSession } from './auth.js';
 import { DraftApiFailure, type DraftApi } from './draft-api.js';
 
@@ -61,6 +62,7 @@ function cloneDraft(draft: RobotDraft): RobotDraft {
   return {
     schemaVersion: draft.schemaVersion,
     catalogVersion: draft.catalogVersion,
+    modelKey: draft.modelKey,
     instructions: draft.instructions,
     skills: draft.skills.map((skill) =>
       Object.prototype.hasOwnProperty.call(skill, 'description')
@@ -559,6 +561,11 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     updateDraft({ ...draft, instructions: event.target.value });
   };
 
+  const onModelChange = (event: ChangeEvent<HTMLSelectElement>): void => {
+    if (!draft || !isModelKey(event.target.value)) return;
+    updateDraft({ ...draft, modelKey: event.target.value });
+  };
+
   const onSkillDescriptionChange = (id: RobotSkillId, value: string): void => {
     if (!draft) return;
     updateDraft({
@@ -627,6 +634,25 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
 
       {draft && (
         <form className="editor-form" onSubmit={submitRetry}>
+          <fieldset className="model-selector" disabled={disabled}>
+            <legend>Modelo del agente</legend>
+            <label htmlFor="robot-model">Modelo para el próximo intento</label>
+            <select
+              id="robot-model"
+              value={draft.modelKey}
+              onChange={onModelChange}
+              disabled={disabled}
+            >
+              {MODEL_CATALOG.map((model) => (
+                <option key={model.key} value={model.key}>
+                  {model.label}
+                </option>
+              ))}
+            </select>
+            <p className="field-help">
+              Esta elección se guarda con la configuración y queda fija al pulsar «Probar».
+            </p>
+          </fieldset>
           <fieldset disabled={disabled}>
             <legend>Instrucciones generales</legend>
             <label htmlFor="robot-instructions">Qué debe tener en cuenta el robot</label>

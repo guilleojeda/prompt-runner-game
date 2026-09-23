@@ -14,9 +14,17 @@ import {
   createDefaultDraft,
   draftsEqual,
   ROBOT_CATALOG,
+  validateDraft,
   type DraftSnapshot,
+  type LegacyRobotDraft,
   type RobotDraft,
 } from '../../../shared/robot.js';
+import {
+  LEGACY_MODEL_KEY,
+  readModelProfile,
+  resolveModelProfile,
+  type ModelProfile,
+} from '../../../shared/models.js';
 import { createInitialState, LEVEL, scoreAttempt } from '../../../shared/game.js';
 import { usageFromBedrockResponseBytes } from '../../runner/src/usage.js';
 import { ATTEMPT_RECORD_VERSION } from '../../../shared/attempt.js';
@@ -57,6 +65,13 @@ export class AdmissionConflictError extends Error {
   }
 }
 
+export class ModelUnavailableError extends Error {
+  public constructor() {
+    super('El modelo seleccionado no está disponible para nuevos intentos.');
+    this.name = 'ModelUnavailableError';
+  }
+}
+
 export class QuotaExceededError extends Error {
   public readonly day: string;
   public readonly limit: number;
@@ -77,10 +92,11 @@ const sha256 = (bytes: Uint8Array): string => createHash('sha256').update(bytes)
 const utf8 = (value: unknown): Uint8Array => new TextEncoder().encode(JSON.stringify(value));
 
 /** Stable JSON for the request fingerprint. Object key order is fixed by the draft validator. */
-export const canonicalDraft = (draft: RobotDraft): string =>
+export const canonicalDraft = (draft: RobotDraft | LegacyRobotDraft): string =>
   JSON.stringify({
-    schemaVersion: draft.schemaVersion,
+    schemaVersion: 2,
     catalogVersion: draft.catalogVersion,
+    modelKey: 'modelKey' in draft ? draft.modelKey : LEGACY_MODEL_KEY,
     instructions: draft.instructions,
     skills: draft.skills.map((skill) => ({
       id: skill.id,
@@ -89,7 +105,8 @@ export const canonicalDraft = (draft: RobotDraft): string =>
     })),
   });
 
-export const fingerprintOf = (draft: RobotDraft): string => sha256(utf8(canonicalDraft(draft)));
+export const fingerprintOf = (draft: RobotDraft | LegacyRobotDraft): string =>
+  sha256(utf8(canonicalDraft(draft)));
 
 export const calendarDay = (date: Date): string =>
   new Intl.DateTimeFormat('en-CA', {
@@ -125,14 +142,125 @@ const skillsFor = (draft: RobotDraft): AttemptSkill[] =>
       };
     });
 
-const mergeConfig = (config: Partial<AttemptConfig> | undefined): AttemptConfig => ({
-  ...DEFAULT_ATTEMPT_CONFIG,
-  ...(config ?? {}),
-  scoreParameters: {
-    ...DEFAULT_ATTEMPT_CONFIG.scoreParameters,
-    ...(config?.scoreParameters ?? {}),
-  },
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const isFiniteNumber = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value);
+
+const freezeDeep = <T>(value: T): T => {
+  if (typeof value === 'object' && value !== null && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value as Record<string, unknown>)) freezeDeep(child);
+  }
+  return value;
+};
+
+/**
+ * The phase-2 record shape had no model profile fields. Keep this explicit
+ * historical identity separate from MODEL_CATALOG so changing today's
+ * catalog cannot rewrite an already admitted attempt during readback.
+ */
+const LEGACY_SONNET5_PROFILE: Readonly<ModelProfile> = Object.freeze({
+  key: 'claude-sonnet-5',
+  label: 'Claude Sonnet 5',
+  provider: 'anthropic',
+  modelId: 'global.anthropic.claude-sonnet-5',
+  region: 'us-east-1',
+  api: 'converse',
+  profileVersion: 'sonnet5-global-v1',
+  maxTokens: 512,
+  protocol: Object.freeze({ stream: false, thinking: 'disabled', toolChoice: 'any' }),
 });
+
+const storedConfig = (value: unknown): AttemptConfig => {
+  if (!isRecord(value) || !isRecord(value.model))
+    throw new AttemptStoreError('El intento guardado tiene una configuración incompatible.');
+
+  const rawModel = value.model;
+  if (Object.prototype.hasOwnProperty.call(rawModel, 'key')) {
+    let model: Readonly<ModelProfile>;
+    try {
+      model = readModelProfile(rawModel);
+    } catch (error) {
+      throw new AttemptStoreError('El intento guardado tiene un perfil de modelo incompatible.', {
+        cause: error,
+      });
+    }
+    if (
+      value.protocol &&
+      isRecord(value.protocol) &&
+      value.protocol.api === 'converse' &&
+      value.protocol.stream === false
+    ) {
+      return freezeDeep({
+        ...(value as unknown as Omit<AttemptConfig, 'model'>),
+        model,
+      });
+    }
+    throw new AttemptStoreError('El intento guardado tiene un protocolo incompatible.');
+  }
+
+  // Records written before model selection have one known effective profile.
+  // Convert only this explicit format; never merge current defaults into a
+  // historical snapshot, because that would change its recorded parameters.
+  if (
+    rawModel.modelId === 'global.anthropic.claude-sonnet-5' &&
+    typeof rawModel.region === 'string' &&
+    isFiniteNumber(rawModel.maxTokens)
+  ) {
+    const legacyProtocol: ModelProfile['protocol'] = isRecord(value.protocol)
+      ? {
+          stream: false as const,
+          thinking:
+            value.protocol.thinking === 'disabled' || value.protocol.thinking === 'adaptive'
+              ? value.protocol.thinking
+              : 'omitted',
+          toolChoice: value.protocol.toolChoice === 'auto' ? ('auto' as const) : ('any' as const),
+        }
+      : LEGACY_SONNET5_PROFILE.protocol;
+    return freezeDeep({
+      ...(value as unknown as Omit<AttemptConfig, 'model' | 'protocol'>),
+      protocol: { api: 'converse', stream: false },
+      model: {
+        ...LEGACY_SONNET5_PROFILE,
+        modelId: rawModel.modelId,
+        region: rawModel.region,
+        maxTokens: rawModel.maxTokens,
+        profileVersion:
+          typeof value.inferenceVersion === 'string'
+            ? value.inferenceVersion
+            : LEGACY_SONNET5_PROFILE.profileVersion,
+        protocol: legacyProtocol,
+      },
+    });
+  }
+  throw new AttemptStoreError('El intento guardado tiene una configuración incompatible.');
+};
+
+const configForAdmission = (
+  draft: RobotDraft,
+  overrides: Partial<AttemptConfig> | undefined,
+): AttemptConfig => {
+  let model: Readonly<ModelProfile>;
+  try {
+    model = resolveModelProfile(draft.modelKey);
+  } catch {
+    throw new ModelUnavailableError();
+  }
+  const config: AttemptConfig = {
+    ...DEFAULT_ATTEMPT_CONFIG,
+    ...(overrides ?? {}),
+    protocol: { api: 'converse', stream: false },
+    inferenceVersion: model.profileVersion,
+    model,
+    scoreParameters: {
+      ...DEFAULT_ATTEMPT_CONFIG.scoreParameters,
+      ...(overrides?.scoreParameters ?? {}),
+    },
+  };
+  return freezeDeep(config);
+};
 
 const clone = <T>(value: T): T => structuredClone(value);
 const stableJson = (value: unknown): string => {
@@ -175,17 +303,22 @@ const delay = (milliseconds: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 const toRecord = (item: Record<string, unknown>): PersistedAttempt => {
-  const config = item.config as AttemptConfig;
+  const config = storedConfig(item.config);
   const record = item as unknown as PersistedAttempt;
+  const draft = validateDraft(item.draft);
+  if (draft.modelKey !== config.model.key) {
+    throw new AttemptStoreError('El intento guardado tiene un modelo inconsistente.');
+  }
   return {
     ...record,
-    config: mergeConfig(config),
-    draft: item.draft as RobotDraft,
+    config,
+    draft,
     skills: item.skills as AttemptSkill[],
     initialSnapshot: item.initialSnapshot,
     currentSnapshot: item.currentSnapshot,
     inputTokens: typeof item.inputTokens === 'number' ? item.inputTokens : null,
     outputTokens: typeof item.outputTokens === 'number' ? item.outputTokens : null,
+    reasoningTokens: typeof item.reasoningTokens === 'number' ? item.reasoningTokens : null,
     gameTokens: typeof item.gameTokens === 'number' ? item.gameTokens : null,
     cacheReadTokens: typeof item.cacheReadTokens === 'number' ? item.cacheReadTokens : null,
     cacheWriteTokens: typeof item.cacheWriteTokens === 'number' ? item.cacheWriteTokens : null,
@@ -255,19 +388,25 @@ export class DynamoAttemptStore implements AttemptStore {
     );
     if (!draftResponse.Item)
       throw new AdmissionConflictError('Guardá la configuración antes de probar.');
-    const current = unmarshall(draftResponse.Item) as { version?: unknown; draft?: unknown };
-    if (
-      current.version !== input.expectedVersion ||
-      !draftsEqual(input.draft, current.draft as RobotDraft)
-    )
+    const current = unmarshall(draftResponse.Item) as {
+      version?: unknown;
+      draft?: unknown;
+    };
+    let currentDraft: RobotDraft;
+    try {
+      currentDraft = validateDraft(current.draft);
+    } catch {
+      throw new AdmissionConflictError('La configuración guardada no es compatible.');
+    }
+    if (current.version !== input.expectedVersion || !draftsEqual(input.draft, currentDraft))
       throw new AdmissionConflictError();
     if (input.draft.skills.every((skill) => !skill.enabled))
       throw new AdmissionConflictError('Seleccioná al menos una habilidad.');
 
+    const config = configForAdmission(input.draft, input.config);
     const nowDate = input.now ? new Date(input.now) : this.now();
     const now = nowDate.toISOString();
     const day = calendarDay(nowDate);
-    const config = mergeConfig(input.config);
     const id = `${now.replace(/[-:.TZ]/gu, '').slice(0, 14)}-${randomUUID()}`;
     const initial = initialSnapshot();
     const record: PersistedAttempt = {
@@ -278,11 +417,15 @@ export class DynamoAttemptStore implements AttemptStore {
       status: 'pending',
       cancelRequested: false,
       levelId: config.levelId,
+      modelKey: config.model.key,
+      modelLabel: config.model.label,
+      modelId: config.model.modelId,
       turnsUsed: 0,
       maxTurns: config.maxTurns,
       calls: 0,
       inputTokens: 0,
       outputTokens: 0,
+      reasoningTokens: 0,
       gameTokens: 0,
       cacheReadTokens: 0,
       cacheWriteTokens: 0,
@@ -343,7 +486,10 @@ export class DynamoAttemptStore implements AttemptStore {
                 ExpressionAttributeNames: { '#version': 'version', '#draft': 'draft' },
                 ExpressionAttributeValues: marshall({
                   ':version': input.expectedVersion,
-                  ':draft': input.draft,
+                  // Compare the exact value read from DynamoDB. A v1 draft is
+                  // normalized only for semantic validation above; writing its
+                  // v2 projection here would make an unchanged draft conflict.
+                  ':draft': current.draft,
                 }),
               },
             },
@@ -424,10 +570,17 @@ export class DynamoAttemptStore implements AttemptStore {
           }),
         );
         const currentAfter = draftAfter.Item ? unmarshall(draftAfter.Item) : undefined;
+        let currentAfterDraft: RobotDraft | undefined;
+        try {
+          currentAfterDraft = currentAfter ? validateDraft(currentAfter.draft) : undefined;
+        } catch {
+          currentAfterDraft = undefined;
+        }
         if (
           !currentAfter ||
+          !currentAfterDraft ||
           currentAfter.version !== input.expectedVersion ||
-          !draftsEqual(input.draft, currentAfter.draft as RobotDraft)
+          !draftsEqual(input.draft, currentAfterDraft)
         )
           throw new AdmissionConflictError();
         const quotaAfter = await this.quota(input.owner);
@@ -692,11 +845,18 @@ export class DynamoAttemptStore implements AttemptStore {
       call.seq !== current.nextCall
     )
       return undefined;
+    const auditedCall: CallRecord = {
+      ...call,
+      modelKey: current.config.model.key,
+      modelId: current.config.model.modelId,
+      region: current.config.model.region,
+      profileVersion: current.config.model.profileVersion,
+    };
     const callItem = itemOf({
       PK: `ATTEMPT#${attemptId}`,
       SK: `CALL#${String(call.seq).padStart(8, '0')}`,
       entity: 'call',
-      ...call,
+      ...auditedCall,
     });
     try {
       await this.client.send(
@@ -717,12 +877,12 @@ export class DynamoAttemptStore implements AttemptStore {
                   '#cancelRequested': 'cancelRequested',
                 },
                 ExpressionAttributeValues: marshall({
-                  ':next': call.seq + 1,
-                  ':now': call.createdAt,
+                  ':next': auditedCall.seq + 1,
+                  ':now': auditedCall.createdAt,
                   ':executor': executorId,
                   ':running': 'running',
                   ':false': false,
-                  ':seq': call.seq,
+                  ':seq': auditedCall.seq,
                 }),
               },
             },
@@ -736,10 +896,10 @@ export class DynamoAttemptStore implements AttemptStore {
           ],
         }),
       );
-      return clone(call);
+      return clone(auditedCall);
     } catch (error) {
       const calls = await this.getCalls(owner, attemptId);
-      const found = calls.find((item) => item.seq === call.seq);
+      const found = calls.find((item) => item.seq === auditedCall.seq);
       if (found) return found;
       if (isConditional(error) || isTransactionCancellation(error)) return undefined;
       throw new AttemptStoreError('No se pudo registrar la llamada.', { cause: error });
@@ -804,12 +964,13 @@ export class DynamoAttemptStore implements AttemptStore {
     const total = (field: keyof Usage): number | null =>
       allCallsComplete &&
       completedCalls.length > 0 &&
-      completedCalls.every((item) => item.usage[field] !== null)
+      completedCalls.every((item) => typeof item.usage[field] === 'number')
         ? completedCalls.reduce((sum, item) => sum + (item.usage[field] as number), 0)
         : null;
     const completeCalls = allCalls.length;
     const inputTokens = total('inputTokens');
     const outputTokens = total('outputTokens');
+    const reasoningTokens = total('reasoningTokens');
     const gameTokens = total('gameTokens');
     try {
       await this.client.send(
@@ -844,11 +1005,12 @@ export class DynamoAttemptStore implements AttemptStore {
                 TableName: this.tableName,
                 Key: key(`USER#${owner}`, `ATTEMPT#${attemptId}`),
                 UpdateExpression:
-                  'SET #calls = :calls, #inputTokens = :input, #outputTokens = :output, #gameTokens = :game, #cacheReadTokens = :cacheRead, #cacheWriteTokens = :cacheWrite, #recordComplete = :complete',
+                  'SET #calls = :calls, #inputTokens = :input, #outputTokens = :output, #reasoningTokens = :reasoning, #gameTokens = :game, #cacheReadTokens = :cacheRead, #cacheWriteTokens = :cacheWrite, #recordComplete = :complete',
                 ExpressionAttributeNames: {
                   '#calls': 'calls',
                   '#inputTokens': 'inputTokens',
                   '#outputTokens': 'outputTokens',
+                  '#reasoningTokens': 'reasoningTokens',
                   '#gameTokens': 'gameTokens',
                   '#cacheReadTokens': 'cacheReadTokens',
                   '#cacheWriteTokens': 'cacheWriteTokens',
@@ -862,6 +1024,7 @@ export class DynamoAttemptStore implements AttemptStore {
                   ':calls': completeCalls,
                   ':input': inputTokens,
                   ':output': outputTokens,
+                  ':reasoning': reasoningTokens,
                   ':game': gameTokens,
                   ':cacheRead': completedCalls.every((item) => item.usage.cacheReadTokens !== null)
                     ? total('cacheReadTokens')
@@ -880,6 +1043,7 @@ export class DynamoAttemptStore implements AttemptStore {
                   ':previousCalls': current.calls,
                   ':previousInput': current.inputTokens,
                   ':previousOutput': current.outputTokens,
+                  ':previousReasoning': current.reasoningTokens,
                   ':previousGame': current.gameTokens,
                   ':previousCacheRead': current.cacheReadTokens,
                   ':previousCacheWrite': current.cacheWriteTokens,
@@ -894,7 +1058,7 @@ export class DynamoAttemptStore implements AttemptStore {
                       : 'state-0',
                 }),
                 ConditionExpression:
-                  '#executorId = :executor AND #calls = :previousCalls AND #inputTokens = :previousInput AND #outputTokens = :previousOutput AND #gameTokens = :previousGame AND #cacheReadTokens = :previousCacheRead AND #cacheWriteTokens = :previousCacheWrite AND #recordComplete = :previousComplete AND #nextCall = :previousNextCall AND #sequence = :previousSequence AND #currentStateId = :previousState',
+                  '#executorId = :executor AND #calls = :previousCalls AND #inputTokens = :previousInput AND #outputTokens = :previousOutput AND (attribute_not_exists(#reasoningTokens) OR #reasoningTokens = :previousReasoning) AND #gameTokens = :previousGame AND #cacheReadTokens = :previousCacheRead AND #cacheWriteTokens = :previousCacheWrite AND #recordComplete = :previousComplete AND #nextCall = :previousNextCall AND #sequence = :previousSequence AND #currentStateId = :previousState',
               },
             },
           ],
@@ -1073,7 +1237,7 @@ export class DynamoAttemptStore implements AttemptStore {
           TableName: this.tableName,
           Key: key(`USER#${owner}`, `ATTEMPT#${attemptId}`),
           UpdateExpression:
-            'SET #status = :status, #reason = :reason, #calls = :calls, #inputTokens = :input, #outputTokens = :output, #gameTokens = :game, #cacheReadTokens = :cacheRead, #cacheWriteTokens = :cacheWrite, #presentationComplete = :presented, #recordComplete = :complete, #updatedAt = :now',
+            'SET #status = :status, #reason = :reason, #calls = :calls, #inputTokens = :input, #outputTokens = :output, #reasoningTokens = :reasoning, #gameTokens = :game, #cacheReadTokens = :cacheRead, #cacheWriteTokens = :cacheWrite, #presentationComplete = :presented, #recordComplete = :complete, #updatedAt = :now',
           ConditionExpression: executorId
             ? '#status = :running AND #executorId = :executor'
             : '(#status = :pending OR #status = :running)',
@@ -1083,6 +1247,7 @@ export class DynamoAttemptStore implements AttemptStore {
             '#calls': 'calls',
             '#inputTokens': 'inputTokens',
             '#outputTokens': 'outputTokens',
+            '#reasoningTokens': 'reasoningTokens',
             '#gameTokens': 'gameTokens',
             '#cacheReadTokens': 'cacheReadTokens',
             '#cacheWriteTokens': 'cacheWriteTokens',
@@ -1097,6 +1262,7 @@ export class DynamoAttemptStore implements AttemptStore {
             ':calls': Math.max(current.calls, durableCalls.length),
             ':input': durableComplete ? current.inputTokens : null,
             ':output': durableComplete ? current.outputTokens : null,
+            ':reasoning': durableComplete ? current.reasoningTokens : null,
             ':game': durableComplete ? current.gameTokens : null,
             ':cacheRead': durableComplete ? current.cacheReadTokens : null,
             ':cacheWrite': durableComplete ? current.cacheWriteTokens : null,
@@ -1176,7 +1342,17 @@ export class DynamoAttemptStore implements AttemptStore {
         ConsistentRead: true,
       }),
     );
-    return (response.Items ?? []).map((item) => unmarshall(item) as unknown as CallRecord);
+    return (response.Items ?? []).map((item) => {
+      const call = unmarshall(item) as unknown as CallRecord;
+      return {
+        ...call,
+        usage: {
+          ...call.usage,
+          reasoningTokens:
+            typeof call.usage.reasoningTokens === 'number' ? call.usage.reasoningTokens : null,
+        },
+      };
+    });
   }
 
   public async recoverBodies(owner: string, attemptId: string): Promise<void> {
@@ -1202,6 +1378,7 @@ export class DynamoAttemptStore implements AttemptStore {
         usage = {
           inputTokens: normalized.inputTokens,
           outputTokens: normalized.outputTokens,
+          reasoningTokens: normalized.reasoningTokens,
           gameTokens: normalized.gameTokens,
           cacheReadTokens: normalized.cacheReadTokens,
           cacheWriteTokens: normalized.cacheWriteTokens,
@@ -1252,7 +1429,9 @@ export class DynamoAttemptStore implements AttemptStore {
       finished.length === recoveredCalls.length &&
       finished.every((item) => item.status !== 'unknown' && item.responseSha256 !== undefined);
     const sum = (field: keyof Usage): number | null =>
-      known && finished.length > 0 && finished.every((item) => item.usage[field] !== null)
+      known &&
+      finished.length > 0 &&
+      finished.every((item) => typeof item.usage[field] === 'number')
         ? finished.reduce((total, item) => total + (item.usage[field] as number), 0)
         : null;
     const currentStateId =
@@ -1267,11 +1446,12 @@ export class DynamoAttemptStore implements AttemptStore {
           TableName: this.tableName,
           Key: key(`USER#${owner}`, `ATTEMPT#${attemptId}`),
           UpdateExpression:
-            'SET #calls = :calls, #input = :input, #output = :output, #game = :game, #cacheRead = :cacheRead, #cacheWrite = :cacheWrite, #complete = :complete, #updatedAt = :updatedAt',
+            'SET #calls = :calls, #input = :input, #output = :output, #reasoning = :reasoning, #game = :game, #cacheRead = :cacheRead, #cacheWrite = :cacheWrite, #complete = :complete, #updatedAt = :updatedAt',
           ExpressionAttributeNames: {
             '#calls': 'calls',
             '#input': 'inputTokens',
             '#output': 'outputTokens',
+            '#reasoning': 'reasoningTokens',
             '#game': 'gameTokens',
             '#cacheRead': 'cacheReadTokens',
             '#cacheWrite': 'cacheWriteTokens',
@@ -1282,11 +1462,12 @@ export class DynamoAttemptStore implements AttemptStore {
             '#currentStateId': 'currentStateId',
           },
           ConditionExpression:
-            '#nextCall = :nextCall AND #sequence = :sequence AND #currentStateId = :currentStateId AND #calls = :callsBefore AND #input = :inputBefore AND #output = :outputBefore AND #game = :gameBefore AND #cacheRead = :cacheReadBefore AND #cacheWrite = :cacheWriteBefore AND #complete = :completeBefore',
+            '#nextCall = :nextCall AND #sequence = :sequence AND #currentStateId = :currentStateId AND #calls = :callsBefore AND #input = :inputBefore AND #output = :outputBefore AND (attribute_not_exists(#reasoning) OR #reasoning = :reasoningBefore) AND #game = :gameBefore AND #cacheRead = :cacheReadBefore AND #cacheWrite = :cacheWriteBefore AND #complete = :completeBefore',
           ExpressionAttributeValues: marshall({
             ':calls': recoveredCalls.length,
             ':input': sum('inputTokens'),
             ':output': sum('outputTokens'),
+            ':reasoning': sum('reasoningTokens'),
             ':game': sum('gameTokens'),
             ':cacheRead': sum('cacheReadTokens'),
             ':cacheWrite': sum('cacheWriteTokens'),
@@ -1298,6 +1479,7 @@ export class DynamoAttemptStore implements AttemptStore {
             ':callsBefore': current.calls,
             ':inputBefore': current.inputTokens,
             ':outputBefore': current.outputTokens,
+            ':reasoningBefore': current.reasoningTokens,
             ':gameBefore': current.gameTokens,
             ':cacheReadBefore': current.cacheReadTokens,
             ':cacheWriteBefore': current.cacheWriteTokens,
@@ -1485,13 +1667,13 @@ export class MemoryAttemptStore implements AttemptStore {
     if (enabled.length === 0)
       throw new AdmissionConflictError('Seleccioná al menos una habilidad.');
 
+    const config = configForAdmission(input.draft, input.config);
     const nowDate = input.now ? new Date(input.now) : this.now();
     const now = nowDate.toISOString();
     const day = calendarDay(nowDate);
     const used = this.quotaUsed.get(`${input.owner}\u0000${day}`) ?? 0;
     if (used >= this.quotaLimit) throw new QuotaExceededError(day, used, this.quotaLimit);
 
-    const config = mergeConfig(input.config);
     const id = `${now.replace(/[-:.TZ]/gu, '').slice(0, 14)}-${randomUUID()}`;
     const initial = initialSnapshot();
     const record: PersistedAttempt = {
@@ -1504,11 +1686,15 @@ export class MemoryAttemptStore implements AttemptStore {
         status: 'pending',
         cancelRequested: false,
         levelId: config.levelId,
+        modelKey: config.model.key,
+        modelLabel: config.model.label,
+        modelId: config.model.modelId,
         turnsUsed: 0,
         maxTurns: config.maxTurns,
         calls: 0,
         inputTokens: 0,
         outputTokens: 0,
+        reasoningTokens: 0,
         gameTokens: 0,
         cacheReadTokens: 0,
         cacheWriteTokens: 0,
@@ -1674,9 +1860,16 @@ export class MemoryAttemptStore implements AttemptStore {
       return undefined;
     const existing = this.calls.get(attemptId)?.find((item) => item.seq === call.seq);
     if (existing) return clone(existing);
-    this.calls.set(attemptId, [...(this.calls.get(attemptId) ?? []), clone(call)]);
-    this.replace(record, { nextCall: record.nextCall + 1, updatedAt: call.createdAt });
-    return clone(call);
+    const auditedCall: CallRecord = {
+      ...call,
+      modelKey: record.config.model.key,
+      modelId: record.config.model.modelId,
+      region: record.config.model.region,
+      profileVersion: record.config.model.profileVersion,
+    };
+    this.calls.set(attemptId, [...(this.calls.get(attemptId) ?? []), clone(auditedCall)]);
+    this.replace(record, { nextCall: record.nextCall + 1, updatedAt: auditedCall.createdAt });
+    return clone(auditedCall);
   }
 
   public async finishCall(
@@ -1697,19 +1890,27 @@ export class MemoryAttemptStore implements AttemptStore {
       (existing.responseSha256 !== undefined && existing.responseSha256 !== call.responseSha256)
     )
       return undefined;
+    const effectiveCall: CallRecord = {
+      ...call,
+      modelKey: record.config.model.key,
+      modelId: record.config.model.modelId,
+      region: record.config.model.region,
+      profileVersion: record.config.model.profileVersion,
+    };
     const legalStatus =
       existing.status === 'started' ||
-      existing.status === call.status ||
-      (existing.status === 'received' && (call.status === 'invalid' || call.status === 'error'));
+      existing.status === effectiveCall.status ||
+      (existing.status === 'received' &&
+        (effectiveCall.status === 'invalid' || effectiveCall.status === 'error'));
     if (!legalStatus) return clone(existing);
-    items[index] = clone(call);
+    items[index] = clone(effectiveCall);
     this.calls.set(attemptId, items);
     const completed = items.filter((item) => item.status !== 'started');
     const allCallsComplete = completed.length === items.length;
     const sum = (field: keyof Usage): number | null =>
       allCallsComplete &&
       completed.length > 0 &&
-      completed.every((item) => item.usage[field] !== null)
+      completed.every((item) => typeof item.usage[field] === 'number')
         ? completed.reduce((total, item) => total + (item.usage[field] as number), 0)
         : null;
     const previous = this.records.get(attemptId)!;
@@ -1717,19 +1918,20 @@ export class MemoryAttemptStore implements AttemptStore {
       calls: Math.max(previous.calls, items.length),
       inputTokens: sum('inputTokens'),
       outputTokens: sum('outputTokens'),
+      reasoningTokens: sum('reasoningTokens'),
       gameTokens: sum('gameTokens'),
-      cacheReadTokens: completed.every((item) => item.usage.cacheReadTokens !== null)
+      cacheReadTokens: completed.every((item) => typeof item.usage.cacheReadTokens === 'number')
         ? sum('cacheReadTokens')
         : null,
-      cacheWriteTokens: completed.every((item) => item.usage.cacheWriteTokens !== null)
+      cacheWriteTokens: completed.every((item) => typeof item.usage.cacheWriteTokens === 'number')
         ? sum('cacheWriteTokens')
         : null,
       recordComplete:
         allCallsComplete &&
         completed.every((item) => item.status !== 'unknown' && item.responseSha256 !== undefined),
-      updatedAt: call.updatedAt,
+      updatedAt: effectiveCall.updatedAt,
     });
-    return clone(call);
+    return clone(effectiveCall);
   }
 
   public async publishAction(
@@ -1812,6 +2014,7 @@ export class MemoryAttemptStore implements AttemptStore {
       calls: Math.max(record.calls, durableCalls.length),
       inputTokens: durableComplete ? record.inputTokens : null,
       outputTokens: durableComplete ? record.outputTokens : null,
+      reasoningTokens: durableComplete ? record.reasoningTokens : null,
       gameTokens: durableComplete ? record.gameTokens : null,
       cacheReadTokens: durableComplete ? record.cacheReadTokens : null,
       cacheWriteTokens: durableComplete ? record.cacheWriteTokens : null,

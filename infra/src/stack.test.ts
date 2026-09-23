@@ -12,8 +12,10 @@ import {
   AGENT_RUNTIME_NAME,
   AGENT_RUNTIME_ROLE_NAME,
   ATTEMPT_BODIES_BUCKET_PREFIX,
+  foundationModelIdFor,
   STARTER_LAMBDA_ROLE_NAME,
 } from './execution.js';
+import { MODEL_CATALOG } from '../../shared/models.js';
 
 // CDK's first template synthesis pays one-time construct startup cost; this
 // timeout gives infrastructure assertions room for that cost without changing
@@ -258,6 +260,10 @@ describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, 
     const draftFunction = Object.values(functions).find(
       (resource) => resource.Properties.FunctionName === DRAFT_LAMBDA_NAME,
     );
+    const draftFunctionEntry = Object.entries(functions).find(
+      ([, resource]) => resource.Properties.FunctionName === DRAFT_LAMBDA_NAME,
+    );
+    expect(websiteEntry?.[1].DependsOn).toEqual(expect.arrayContaining([draftFunctionEntry?.[0]]));
     expect(draftFunction?.Properties).toMatchObject({
       Handler: 'index.handler',
       Runtime: 'nodejs22.x',
@@ -394,7 +400,8 @@ describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, 
 
     const runtimes = synthesized.findResources('AWS::BedrockAgentCore::Runtime');
     expect(Object.values(runtimes)).toHaveLength(1);
-    const runtime = Object.values(runtimes)[0];
+    const runtimeEntry = Object.entries(runtimes)[0];
+    const runtime = runtimeEntry[1];
     expect(runtime.Properties.AgentRuntimeName).toMatch(/^[A-Za-z][A-Za-z0-9_]{0,47}$/u);
     expect(runtime.Properties).toMatchObject({
       AgentRuntimeName: AGENT_RUNTIME_NAME,
@@ -503,7 +510,16 @@ describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, 
       'inference-profile/global.anthropic.claude-sonnet-5',
     );
     const runnerPolicyJson = JSON.stringify(runnerPolicy?.Properties.PolicyDocument);
-    expect(runnerPolicyJson.match(/foundation-model\/anthropic\.claude-sonnet-5/g)).toHaveLength(2);
+    for (const profile of MODEL_CATALOG) {
+      expect(runnerPolicyJson).toContain(`inference-profile/${profile.modelId}`);
+      expect(
+        runnerPolicyJson.match(
+          new RegExp(`foundation-model/${foundationModelIdFor(profile)}(?=")`, 'gu'),
+        ),
+      ).toHaveLength(2);
+    }
+    expect(runnerPolicyJson).not.toContain('inference-profile/*');
+    expect(runnerPolicyJson).not.toContain('gpt-6');
     expect(runnerPolicyJson).not.toContain('claude-sonnet-5-v1');
     expect(JSON.stringify(runnerPolicy?.Properties.PolicyDocument)).not.toContain(
       'bedrock-agentcore:InvokeAgentRuntime',
@@ -515,5 +531,15 @@ describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, 
       ATTEMPT_BODIES_BUCKET: { Ref: expect.any(String) },
       STARTER_FUNCTION_NAME: { Ref: expect.any(String) },
     });
+    expect(api?.DependsOn).toEqual(expect.arrayContaining([runtimeEntry[0]]));
+    const runnerPolicyEntry = Object.entries(synthesized.findResources('AWS::IAM::Policy')).find(
+      ([, resource]) =>
+        resource.Properties.Roles.some(
+          (role: { Ref?: string }) => role.Ref === runnerRoleEntry?.[0],
+        ),
+    );
+    expect(runtime.DependsOn).toEqual(
+      expect.arrayContaining([runnerRoleEntry?.[0], runnerPolicyEntry?.[0]]),
+    );
   });
 });
