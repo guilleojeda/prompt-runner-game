@@ -41,7 +41,7 @@ Después de ingresar, podés habilitar habilidades del catálogo, escribir sus d
 
 Si otra pestaña guardó antes, el editor conserva tus cambios y muestra un conflicto. Podés usar la versión guardada o decidir reemplazarla con tus cambios después de revisarla. Una nueva edición concurrente vuelve a producir un conflicto. Un error de red permite reintentar; si se perdió una respuesta de guardado, se consulta el servidor antes de decidir qué repetir.
 
-El límite de configuración es 65.536 bytes de JSON UTF-8, incluidos los contratos fijos de las habilidades. El editor lo informa y no trunca textos. Las copias pendientes permanecen sólo en memoria: un cierre abrupto puede perder cambios que el servidor no confirmó. No se guarda una segunda copia del borrador en el almacenamiento del navegador.
+El límite de configuración es 65.536 bytes de JSON UTF-8, incluidos los contratos fijos de las habilidades. El editor lo informa y no trunca textos. Las copias pendientes del editor permanecen sólo en memoria: un cierre abrupto puede perder cambios que el servidor no confirmó. Como excepción transitoria, después de **Probar** se guarda en `sessionStorage` el snapshot exacto del intento junto con su clave y versión para poder repetir la misma admisión si la respuesta se pierde; no es una preferencia ni un borrador alternativo y se elimina al resolver el intento, cerrar sesión o cambiar de cuenta.
 
 **Probar** confirma el guardado del contenido visible y fija una copia inmutable para ese intento. No hace falta esperar el autosave ni aplicar cambios por separado. Si hay conflicto, configuración inválida o ninguna habilidad habilitada, se informa la causa y no se admite un intento. Los detalles están en [datos](docs/architecture/datos.md).
 

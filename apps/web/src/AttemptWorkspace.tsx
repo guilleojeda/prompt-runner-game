@@ -43,6 +43,19 @@ interface FrozenAdmission {
   readonly draft: RobotDraft;
 }
 
+function frozenAdmissionFromRecovery(
+  reference: ReturnType<typeof readAttemptRecovery>,
+): FrozenAdmission | null {
+  if (!reference?.requestKey || reference.expectedVersion === undefined || !reference.draft) {
+    return null;
+  }
+  return {
+    requestKey: reference.requestKey,
+    expectedVersion: reference.expectedVersion,
+    draft: reference.draft,
+  };
+}
+
 interface AttemptWorkspaceProps {
   readonly api: AttemptApi;
   readonly editor: RefObject<RobotEditorHandle | null>;
@@ -193,6 +206,10 @@ function attemptErrorMessage(error: unknown): string {
 
 function isAuthenticationFailure(error: unknown): boolean {
   return error instanceof AttemptApiFailure && error.code === 'authentication';
+}
+
+function isTransientAdmissionFailure(error: unknown): boolean {
+  return error instanceof AttemptApiFailure && (error.ambiguous || error.code === 'authentication');
 }
 
 function ResultCard({ attempt }: { attempt: AttemptSummary }) {
@@ -347,7 +364,24 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     const modeRef = useRef(mode);
     const startLockRef = useRef(false);
     const operationEpochRef = useRef(0);
+    const startServerAttemptRef = useRef<
+      (
+        admission: AttemptAdmission,
+        operationGeneration: number,
+        operationEpoch: number,
+      ) => Promise<void>
+    >(async () => undefined);
     const sessionSub = session.identity.sub;
+    const sessionSubRef = useRef(sessionSub);
+
+    useEffect(() => {
+      const previousSub = sessionSubRef.current;
+      if (previousSub !== sessionSub) {
+        frozenRef.current = null;
+        clearAttemptRecovery(previousSub);
+        sessionSubRef.current = sessionSub;
+      }
+    }, [sessionSub]);
 
     useEffect(() => {
       attemptRef.current = attempt;
@@ -384,10 +418,16 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           });
           return changed ? updated : current;
         });
-        if (options.clearRequest ?? true) {
+        if ((options.clearRequest ?? true) || isTerminal(next.status)) {
+          frozenRef.current = null;
           clearAttemptRecovery(sessionSub);
         } else {
-          writeAttemptRecovery({ sub: sessionSub, attemptId: next.id });
+          const frozen = frozenRef.current;
+          writeAttemptRecovery({
+            sub: sessionSub,
+            attemptId: next.id,
+            ...(frozen ?? {}),
+          });
         }
         setError(null);
         setMode(
@@ -463,10 +503,72 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       [api, onAuthRequired],
     );
 
+    const retryFrozenAdmission = useCallback(
+      async (
+        frozen: FrozenAdmission,
+        options: {
+          readonly signal?: AbortSignal;
+          readonly operationGeneration: number;
+          readonly operationEpoch: number;
+        },
+      ): Promise<boolean> => {
+        setMode('admitting');
+        try {
+          const admission = await api.createAttempt(
+            frozen.requestKey,
+            frozen.expectedVersion,
+            frozen.draft,
+            options.signal,
+          );
+          if (
+            options.signal?.aborted ||
+            generationRef.current !== options.operationGeneration ||
+            operationEpochRef.current !== options.operationEpoch
+          ) {
+            return false;
+          }
+          frozenRef.current = null;
+          await startServerAttemptRef.current(
+            admission,
+            options.operationGeneration,
+            options.operationEpoch,
+          );
+          return true;
+        } catch (retryError) {
+          if (
+            options.signal?.aborted ||
+            generationRef.current !== options.operationGeneration ||
+            operationEpochRef.current !== options.operationEpoch
+          ) {
+            return false;
+          }
+          if (isTransientAdmissionFailure(retryError)) {
+            setError(
+              retryError instanceof AttemptApiFailure && retryError.ambiguous
+                ? 'No se confirmó la admisión. Podés comprobarla con la misma clave.'
+                : attemptErrorMessage(retryError),
+            );
+            setMode('unknown');
+            if (isAuthenticationFailure(retryError)) onAuthRequired?.();
+            return true;
+          }
+          clearAttemptRecovery(sessionSub);
+          frozenRef.current = null;
+          startLockRef.current = false;
+          setMode('idle');
+          setError(attemptErrorMessage(retryError));
+          return true;
+        }
+      },
+      [api, onAuthRequired, sessionSub],
+    );
+
     const recoverKnownAttempt = useCallback(
       async (signal?: AbortSignal): Promise<boolean> => {
         const reference = readAttemptRecovery(sessionSub);
         if (!reference) return false;
+        const storedFrozen = frozenAdmissionFromRecovery(reference);
+        if (storedFrozen) frozenRef.current = storedFrozen;
         try {
           const next = reference.attemptId
             ? await api.getAttempt(reference.attemptId, signal)
@@ -474,15 +576,24 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
               ? await api.getAttemptRequest(reference.requestKey, signal)
               : null;
           if (!next || signal?.aborted) return false;
-          applyAttempt(next);
+          frozenRef.current = null;
+          applyAttempt(next, { clearRequest: isTerminal(next.status) });
           return true;
         } catch (recoveryError) {
           if (signal?.aborted) return false;
           if (isAuthenticationFailure(recoveryError)) onAuthRequired?.();
           if (recoveryError instanceof AttemptApiFailure && recoveryError.code === 'not_found') {
+            const frozen = frozenRef.current;
+            if (reference.requestKey && !reference.attemptId && frozen) {
+              return retryFrozenAdmission(frozen, {
+                signal,
+                operationGeneration: generationRef.current,
+                operationEpoch: operationEpochRef.current,
+              });
+            }
             if (reference.requestKey && !reference.attemptId) {
               setError(
-                'No se confirmó la admisión para esta clave. Podés volver a comprobar el estado.',
+                'No se confirmó la admisión. Conservamos la clave, pero falta el snapshot exacto para reintentar.',
               );
               setMode('unknown');
               return true;
@@ -494,7 +605,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           return true;
         }
       },
-      [api, applyAttempt, onAuthRequired, sessionSub],
+      [api, applyAttempt, onAuthRequired, retryFrozenAdmission, sessionSub],
     );
 
     useEffect(() => {
@@ -555,6 +666,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           return;
         }
         let next = admission.attempt;
+        frozenRef.current = null;
         applyAttempt(next, { clearRequest: false });
         if (!admission.dispatchConfirmed && next.status === 'pending') {
           try {
@@ -594,6 +706,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       },
       [api, applyAttempt, onAuthRequired, refreshHistory, refreshQuota, sessionSub],
     );
+    useEffect(() => {
+      startServerAttemptRef.current = startServerAttempt;
+    }, [startServerAttempt]);
 
     const start = useCallback(async (): Promise<void> => {
       if (
@@ -641,6 +756,12 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         expectedVersion: snapshot.version,
         draft: snapshot.draft,
       };
+      writeAttemptRecovery({
+        sub: sessionSub,
+        requestKey,
+        expectedVersion: snapshot.version,
+        draft: snapshot.draft,
+      });
       try {
         const admission = await api.createAttempt(requestKey, snapshot.version, snapshot.draft);
         if (
@@ -662,7 +783,17 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           setMode('unknown');
           return;
         }
+        if (
+          admissionError instanceof AttemptApiFailure &&
+          admissionError.code === 'authentication'
+        ) {
+          setError(admissionError.message);
+          setMode('unknown');
+          onAuthRequired?.();
+          return;
+        }
         clearAttemptRecovery(sessionSub);
+        frozenRef.current = null;
         setMode('idle');
         startLockRef.current = false;
         setError(attemptErrorMessage(admissionError));
@@ -686,6 +817,8 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       const operationEpoch = operationEpochRef.current;
       setError(null);
       const storedReference = readAttemptRecovery(sessionSub);
+      const storedFrozen = frozenAdmissionFromRecovery(storedReference);
+      if (storedFrozen) frozenRef.current = storedFrozen;
       const frozen = frozenRef.current;
       const reference = {
         sub: sessionSub,
@@ -713,7 +846,8 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           ) {
             return;
           }
-          applyAttempt(found, { clearRequest: false });
+          frozenRef.current = null;
+          applyAttempt(found, { clearRequest: isTerminal(found.status) });
           return;
         }
       } catch (lookupError) {
@@ -733,36 +867,11 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         setError('Todavía no se puede confirmar este intento. Volvé a consultar más tarde.');
         return;
       }
-      setMode('admitting');
-      try {
-        const admission = await api.createAttempt(
-          frozen.requestKey,
-          frozen.expectedVersion,
-          frozen.draft,
-        );
-        if (
-          generationRef.current !== operationGeneration ||
-          operationEpochRef.current !== operationEpoch
-        ) {
-          return;
-        }
-        await startServerAttempt(admission, operationGeneration, operationEpoch);
-      } catch (retryError) {
-        if (
-          generationRef.current !== operationGeneration ||
-          operationEpochRef.current !== operationEpoch
-        ) {
-          return;
-        }
-        if (isAuthenticationFailure(retryError)) onAuthRequired?.();
-        setMode('unknown');
-        setError(
-          retryError instanceof AttemptApiFailure && retryError.ambiguous
-            ? 'La admisión sigue sin confirmarse. Conservamos la misma clave para volver a comprobarla.'
-            : attemptErrorMessage(retryError),
-        );
-      }
-    }, [api, applyAttempt, onAuthRequired, sessionSub, startServerAttempt]);
+      await retryFrozenAdmission(frozen, {
+        operationGeneration,
+        operationEpoch,
+      });
+    }, [api, applyAttempt, onAuthRequired, retryFrozenAdmission, sessionSub]);
 
     const cancel = useCallback(async (): Promise<void> => {
       const operationGeneration = generationRef.current;

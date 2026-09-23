@@ -2,6 +2,7 @@
 
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { User } from 'oidc-client-ts';
+import { StrictMode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createDefaultDraft, type DraftSnapshot } from '../../../shared/robot.js';
 import type { AuthSession } from './auth.js';
@@ -285,10 +286,47 @@ describe('AttemptWorkspace', () => {
     expect(getAttemptRequest).toHaveBeenCalledOnce();
   });
 
-  it('keeps a persisted request key uncertain after a reload and a 404 lookup', async () => {
+  it('retries a persisted frozen admission after reload and a 404 lookup', async () => {
+    const draft = { ...createDefaultDraft(), instructions: 'Snapshot exacto' };
     window.sessionStorage.setItem(
       'prompt-runner:attempt-recovery',
-      JSON.stringify({ sub: 'subject-a', requestKey: 'persisted-key' }),
+      JSON.stringify({
+        sub: 'subject-a',
+        requestKey: 'persisted-key',
+        expectedVersion: 7,
+        draft,
+      }),
+    );
+    const createAttempt = vi.fn().mockResolvedValue({
+      attempt: summary('victory'),
+      dispatchConfirmed: true,
+    });
+    const getAttemptRequest = vi
+      .fn()
+      .mockRejectedValue(new AttemptApiFailure('not_found', 'not found', 404));
+    const attemptApi = api({ createAttempt, getAttemptRequest });
+    const captureSnapshot = vi.fn();
+    const editor = {
+      current: { captureSnapshot },
+    } as unknown as { current: RobotEditorHandle | null };
+    render(
+      <StrictMode>
+        <AttemptWorkspace api={attemptApi} editor={editor} session={session()} />
+      </StrictMode>,
+    );
+
+    expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
+    expect(getAttemptRequest).toHaveBeenCalledWith('persisted-key', expect.anything());
+    expect(createAttempt).toHaveBeenCalledOnce();
+    expect(createAttempt).toHaveBeenCalledWith('persisted-key', 7, draft, expect.anything());
+    expect(captureSnapshot).not.toHaveBeenCalled();
+    expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toBeNull();
+  });
+
+  it('keeps a key-only recovery marker without inventing a draft to retry', async () => {
+    window.sessionStorage.setItem(
+      'prompt-runner:attempt-recovery',
+      JSON.stringify({ sub: 'subject-a', requestKey: 'marker-only-key' }),
     );
     const createAttempt = vi.fn();
     const getAttemptRequest = vi
@@ -299,13 +337,198 @@ describe('AttemptWorkspace', () => {
     render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
 
     const checkButton = await screen.findByRole('button', { name: 'Comprobar estado' });
-    expect(createAttempt).not.toHaveBeenCalled();
-    expect(getAttemptRequest).toHaveBeenCalledWith('persisted-key', expect.anything());
-
     fireEvent.click(checkButton);
     await waitFor(() => expect(getAttemptRequest).toHaveBeenCalledTimes(2));
     expect(screen.getByRole('button', { name: 'Comprobar estado' })).toBeTruthy();
     expect(createAttempt).not.toHaveBeenCalled();
+  });
+
+  it('does not re-admit when the lookup finds the attempt after reload', async () => {
+    const draft = createDefaultDraft();
+    window.sessionStorage.setItem(
+      'prompt-runner:attempt-recovery',
+      JSON.stringify({ sub: 'subject-a', requestKey: 'found-key', expectedVersion: 3, draft }),
+    );
+    const createAttempt = vi.fn();
+    const getAttemptRequest = vi.fn().mockResolvedValue(summary('running'));
+    const attemptApi = api({ createAttempt, getAttemptRequest });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+
+    expect(await screen.findByRole('heading', { name: 'Preparando intento' })).toBeTruthy();
+    expect(createAttempt).not.toHaveBeenCalled();
+    expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toContain('attempt-1');
+    expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).not.toContain(
+      'expectedVersion',
+    );
+  });
+
+  it.each([
+    [
+      'foreign snapshot',
+      {
+        sub: 'subject-b',
+        requestKey: 'foreign-key',
+        expectedVersion: 4,
+        draft: createDefaultDraft(),
+      },
+    ],
+    [
+      'corrupt snapshot',
+      {
+        sub: 'subject-a',
+        requestKey: 'corrupt-key',
+        expectedVersion: 'four',
+        draft: createDefaultDraft(),
+      },
+    ],
+    [
+      'invalid-schema snapshot',
+      {
+        sub: 'subject-a',
+        requestKey: 'schema-key',
+        expectedVersion: 4,
+        draft: { ...createDefaultDraft(), schemaVersion: 1 },
+      },
+    ],
+    [
+      'oversized snapshot',
+      {
+        sub: 'subject-a',
+        requestKey: 'large-key',
+        expectedVersion: 4,
+        draft: { ...createDefaultDraft(), instructions: 'x'.repeat(70_000) },
+      },
+    ],
+  ])('does not re-admit a %s from session storage', async (_label, stored) => {
+    window.sessionStorage.setItem('prompt-runner:attempt-recovery', JSON.stringify(stored));
+    const createAttempt = vi.fn();
+    const getAttemptRequest = vi.fn();
+    const attemptApi = api({ createAttempt, getAttemptRequest });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+
+    await screen.findByText('Historial');
+    expect(createAttempt).not.toHaveBeenCalled();
+    expect(getAttemptRequest).not.toHaveBeenCalled();
+    if (_label === 'foreign snapshot') {
+      expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toBeNull();
+    }
+  });
+
+  it('retries a lost POST with the same request key, version, and frozen draft', async () => {
+    const first = new AttemptApiFailure('network', 'timeout', undefined, true);
+    const createAttempt = vi
+      .fn()
+      .mockRejectedValueOnce(first)
+      .mockResolvedValueOnce({ attempt: summary('victory'), dispatchConfirmed: true });
+    const getAttemptRequest = vi
+      .fn()
+      .mockRejectedValue(new AttemptApiFailure('not_found', 'not found', 404));
+    const attemptApi = api({ createAttempt, getAttemptRequest });
+    const editor = {
+      current: {
+        captureSnapshot: vi.fn().mockResolvedValue({ version: 9, draft: createDefaultDraft() }),
+      },
+    } as unknown as { current: RobotEditorHandle | null };
+    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
+    render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+    await screen.findByText('Historial');
+
+    await act(async () => {
+      (ref.current as AttemptWorkspaceHandle).start();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Comprobar estado' }));
+    expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
+    expect(createAttempt).toHaveBeenCalledTimes(2);
+    expect(createAttempt.mock.calls[1]?.slice(0, 3)).toEqual(createAttempt.mock.calls[0]);
+  });
+
+  it('clears a frozen admission after a definitive retry rejection and unlocks a new start', async () => {
+    const createAttempt = vi
+      .fn()
+      .mockRejectedValueOnce(new AttemptApiFailure('network', 'timeout', undefined, true))
+      .mockRejectedValueOnce(new AttemptApiFailure('quota_exceeded', 'quota', 429))
+      .mockResolvedValueOnce({ attempt: summary('running'), dispatchConfirmed: true });
+    const getAttemptRequest = vi
+      .fn()
+      .mockRejectedValue(new AttemptApiFailure('not_found', 'not found', 404));
+    const attemptApi = api({ createAttempt, getAttemptRequest });
+    const editor = {
+      current: {
+        captureSnapshot: vi.fn().mockResolvedValue({ version: 9, draft: createDefaultDraft() }),
+      },
+    } as unknown as { current: RobotEditorHandle | null };
+    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
+    render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+    await screen.findByText('Historial');
+
+    await act(async () => {
+      (ref.current as AttemptWorkspaceHandle).start();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Comprobar estado' }));
+    expect(await screen.findByRole('button', { name: 'Reintentar consultas' })).toBeTruthy();
+    expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toBeNull();
+
+    await act(async () => {
+      (ref.current as AttemptWorkspaceHandle).start();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(createAttempt).toHaveBeenCalledTimes(3);
+  });
+
+  it('ignores a deferred retry rejection after the session generation changes', async () => {
+    let rejectRetry!: (error: AttemptApiFailure) => void;
+    const retryPending = new Promise<never>((_, reject) => {
+      rejectRetry = reject;
+    });
+    const createAttempt = vi
+      .fn()
+      .mockRejectedValueOnce(new AttemptApiFailure('network', 'timeout', undefined, true))
+      .mockReturnValueOnce(retryPending);
+    const getAttemptRequest = vi
+      .fn()
+      .mockRejectedValue(new AttemptApiFailure('not_found', 'not found', 404));
+    const attemptApi = api({ createAttempt, getAttemptRequest });
+    const editor = {
+      current: {
+        captureSnapshot: vi.fn().mockResolvedValue({ version: 9, draft: createDefaultDraft() }),
+      },
+    } as unknown as { current: RobotEditorHandle | null };
+    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
+    const view = render(
+      <AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />,
+    );
+    await screen.findByText('Historial');
+
+    await act(async () => {
+      (ref.current as AttemptWorkspaceHandle).start();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Comprobar estado' }));
+    await waitFor(() => expect(createAttempt).toHaveBeenCalledTimes(2));
+
+    const otherSession = {
+      ...session(),
+      identity: { sub: 'subject-b', email: 'b@example.com' },
+    };
+    view.rerender(
+      <AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={otherSession} />,
+    );
+    await act(async () => {
+      rejectRetry(new AttemptApiFailure('quota_exceeded', 'quota', 429));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText('quota')).toBeNull();
+    expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toBeNull();
   });
 
   it('discovers multiple active attempts through paginated history and asks which one to resume', async () => {
