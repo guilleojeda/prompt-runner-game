@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { DynamoDBClient, TransactionCanceledException } from '@aws-sdk/client-dynamodb';
 import { marshall } from '@aws-sdk/util-dynamodb';
 import { createDefaultDraft, type DraftSnapshot } from '../../../shared/robot';
@@ -7,8 +7,10 @@ import {
   MemoryAttemptStore,
   MemoryBodyStore,
   IdempotencyConflictError,
+  ModelUnavailableError,
   QuotaExceededError,
 } from './attempt-store';
+import * as models from '../../../shared/models';
 
 const savedDraft = (): DraftSnapshot => ({
   version: 1,
@@ -25,6 +27,11 @@ describe('attempt lifecycle store', () => {
     });
     const draft = savedDraft().draft;
     const first = await store.admit({ owner: 'a', requestKey: 'same', expectedVersion: 1, draft });
+    expect(first.attempt).toMatchObject({
+      modelKey: 'claude-sonnet-5',
+      modelLabel: 'Claude Sonnet 5',
+      modelId: 'global.anthropic.claude-sonnet-5',
+    });
     const duplicate = await store.admit({
       owner: 'a',
       requestKey: 'same',
@@ -42,6 +49,14 @@ describe('attempt lifecycle store', () => {
         requestKey: 'same',
         expectedVersion: 1,
         draft: { ...draft, instructions: 'otro' },
+      }),
+    ).rejects.toBeInstanceOf(IdempotencyConflictError);
+    await expect(
+      store.admit({
+        owner: 'a',
+        requestKey: 'same',
+        expectedVersion: 1,
+        draft: { ...draft, modelKey: 'gpt-5.6-sol' },
       }),
     ).rejects.toBeInstanceOf(IdempotencyConflictError);
   });
@@ -64,6 +79,44 @@ describe('attempt lifecycle store', () => {
     expect(claimed.filter(Boolean)).toHaveLength(1);
     expect((await store.quota('a')).used).toBe(2);
     expect(b.attempt.id).not.toBe(a.attempt.id);
+  });
+
+  it('recovers a duplicate before checking a temporarily inactive model', async () => {
+    const store = new MemoryAttemptStore({
+      quotaLimit: 1,
+      draft: savedDraft(),
+      now: () => new Date('2026-09-21T15:00:00.000Z'),
+    });
+    const draft = savedDraft().draft;
+    const first = await store.admit({
+      owner: 'a',
+      requestKey: 'inactive',
+      expectedVersion: 1,
+      draft,
+    });
+    const resolver = vi.spyOn(models, 'resolveModelProfile').mockImplementationOnce(() => {
+      throw new Error('temporarily unavailable');
+    });
+    try {
+      const duplicate = await store.admit({
+        owner: 'a',
+        requestKey: 'inactive',
+        expectedVersion: 999,
+        draft,
+      });
+      expect(duplicate.admitted).toBe(false);
+      expect(duplicate.attempt.id).toBe(first.attempt.id);
+      expect((await store.quota('a')).used).toBe(1);
+      resolver.mockImplementation(() => {
+        throw new Error('temporarily unavailable');
+      });
+      await expect(
+        store.admit({ owner: 'a', requestKey: 'new-inactive', expectedVersion: 1, draft }),
+      ).rejects.toBeInstanceOf(ModelUnavailableError);
+      expect((await store.quota('a')).used).toBe(1);
+    } finally {
+      resolver.mockRestore();
+    }
   });
 
   it('makes cancel/claim and cancel/publish races conditional', async () => {
@@ -102,6 +155,7 @@ describe('attempt lifecycle store', () => {
       usage: {
         inputTokens: 1,
         outputTokens: 1,
+        reasoningTokens: null,
         gameTokens: 2,
         cacheReadTokens: 0,
         cacheWriteTokens: 0,
@@ -150,6 +204,7 @@ describe('attempt lifecycle store', () => {
       usage: {
         inputTokens: null,
         outputTokens: null,
+        reasoningTokens: null,
         gameTokens: null,
         cacheReadTokens: null,
         cacheWriteTokens: null,
@@ -166,6 +221,7 @@ describe('attempt lifecycle store', () => {
       usage: {
         inputTokens: 7,
         outputTokens: null,
+        reasoningTokens: 12,
         gameTokens: 3,
         cacheReadTokens: null,
         cacheWriteTokens: 2,
@@ -177,6 +233,7 @@ describe('attempt lifecycle store', () => {
       calls: 1,
       inputTokens: 7,
       outputTokens: null,
+      reasoningTokens: 12,
       gameTokens: 3,
       cacheReadTokens: null,
       cacheWriteTokens: 2,
@@ -210,6 +267,7 @@ describe('attempt lifecycle store', () => {
       usage: {
         inputTokens: null,
         outputTokens: null,
+        reasoningTokens: null,
         gameTokens: null,
         cacheReadTokens: null,
         cacheWriteTokens: null,
@@ -378,6 +436,7 @@ describe('attempt lifecycle store', () => {
       usage: {
         inputTokens: null,
         outputTokens: null,
+        reasoningTokens: null,
         gameTokens: null,
         cacheReadTokens: null,
         cacheWriteTokens: null,

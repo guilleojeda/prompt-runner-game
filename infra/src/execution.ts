@@ -11,6 +11,7 @@ import {
   aws_s3_assets as s3assets,
 } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
+import { MODEL_CATALOG, type ModelProfile } from '../../shared/models.js';
 import { STARTER_LAMBDA_NAME } from './robot.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -25,8 +26,6 @@ export const STARTER_LAMBDA_ROLE_NAME = 'prompt-runner-game-attempt-starter-exec
 export const STARTER_LOG_GROUP_NAME = `/aws/lambda/${STARTER_LAMBDA_NAME}`;
 export const AGENT_RUNTIME_MAX_LIFETIME_SECONDS = 30 * 60;
 export const STARTER_MAX_EVENT_AGE_SECONDS = 5 * 60;
-export const AGENT_MODEL_PROFILE = 'global.anthropic.claude-sonnet-5';
-
 export const attemptBodiesBucketNameFor = (account: string, region: string): string =>
   `${ATTEMPT_BODIES_BUCKET_PREFIX}-${account}-${region}`;
 
@@ -60,6 +59,33 @@ const runtimeArnFor = (scope: Construct, runtimeName: string): string =>
 
 const runtimeEndpointArnFor = (scope: Construct, runtimeName: string): string =>
   `${runtimeArnFor(scope, runtimeName)}/runtime-endpoint/*`;
+
+/**
+ * Global inference profiles authorize both the profile ARN and their exact
+ * foundation-model destinations. The current catalog uses the profile's
+ * model identifier as the foundation-model identifier; keep this derivation
+ * finite and explicit so adding a catalog row cannot widen IAM to a family.
+ */
+export const foundationModelIdFor = (profile: ModelProfile): string =>
+  profile.modelId.replace(/^global\./u, '');
+
+export const approvedBedrockResourceArnsFor = (
+  scope: Construct,
+  profile: ModelProfile,
+): readonly string[] => {
+  const region = cdk.Stack.of(scope).region;
+  const profileArn = cdk.Stack.of(scope).formatArn({
+    service: 'bedrock',
+    resource: 'inference-profile',
+    resourceName: profile.modelId,
+  });
+  const foundationModelId = foundationModelIdFor(profile);
+  return [
+    profileArn,
+    `arn:${cdk.Aws.PARTITION}:bedrock:::foundation-model/${foundationModelId}`,
+    `arn:${cdk.Aws.PARTITION}:bedrock:${region}::foundation-model/${foundationModelId}`,
+  ];
+};
 
 const addLambdaLogPermissions = (role: iam.Role, logGroup: logs.ILogGroup, sid: string): void => {
   role.addToPolicy(
@@ -207,19 +233,14 @@ export function createExecutionResources(
     }),
   );
 
-  const globalProfileArn = `arn:${cdk.Aws.PARTITION}:bedrock:${props.region}:${props.account}:inference-profile/${AGENT_MODEL_PROFILE}`;
-  const destinationModelArns = [
-    // These are the two destinations returned by the approved global
-    // inference profile. Keep both exact ARNs so profile routing cannot grant
-    // access to another model family or region.
-    `arn:${cdk.Aws.PARTITION}:bedrock:::foundation-model/anthropic.claude-sonnet-5`,
-    `arn:${cdk.Aws.PARTITION}:bedrock:${props.region}::foundation-model/anthropic.claude-sonnet-5`,
-  ];
+  const approvedBedrockResources = MODEL_CATALOG.flatMap((profile) =>
+    approvedBedrockResourceArnsFor(scope, profile),
+  );
   runnerExecutionRole.addToPolicy(
     new iam.PolicyStatement({
       sid: 'InvokeApprovedBedrockModels',
       actions: ['bedrock:InvokeModel'],
-      resources: [globalProfileArn, ...destinationModelArns],
+      resources: approvedBedrockResources,
     }),
   );
 

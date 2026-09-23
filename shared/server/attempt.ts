@@ -1,4 +1,5 @@
 import type { RobotDraft } from '../robot.js';
+import { DEFAULT_MODEL_KEY, resolveModelProfile, type ModelProfile } from '../models.js';
 import type {
   AttemptStatus as SharedAttemptStatus,
   AttemptSummary as SharedAttemptSummary,
@@ -14,6 +15,7 @@ export type AttemptSummary = SharedAttemptSummary;
 export type Usage = {
   readonly inputTokens: number | null;
   readonly outputTokens: number | null;
+  readonly reasoningTokens: number | null;
   readonly gameTokens: number | null;
   readonly cacheReadTokens: number | null;
   readonly cacheWriteTokens: number | null;
@@ -54,9 +56,10 @@ export type AttemptConfig = {
   readonly levelDefinition: LevelDefinition;
   readonly engineVersion: string;
   readonly protocolVersion: string;
-  readonly protocol: Readonly<{ stream: false; thinking: 'disabled'; toolChoice: 'any' }>;
+  readonly protocol: Readonly<{ api: 'converse'; stream: false }>;
   readonly inferenceVersion: string;
-  readonly model: Readonly<{ modelId: string; region: string; maxTokens: number }>;
+  /** Complete effective profile copied into the attempt snapshot. */
+  readonly model: Readonly<ModelProfile>;
   readonly scoreVersion: string;
   readonly maxTurns: number;
   readonly startTimeoutMs: number;
@@ -99,6 +102,11 @@ export type CallRecord = {
   readonly requestId?: string;
   readonly responseStatus?: number;
   readonly errorCode?: string;
+  /** Effective identity copied at beginCall; omitted only on legacy records. */
+  readonly modelKey?: ModelProfile['key'];
+  readonly modelId?: string;
+  readonly region?: string;
+  readonly profileVersion?: string;
   readonly createdAt: string;
   readonly updatedAt: string;
 };
@@ -190,9 +198,9 @@ export const DEFAULT_ATTEMPT_CONFIG: AttemptConfig = {
   levelDefinition: LEVEL,
   engineVersion: 'static-engine-v1',
   protocolVersion: 'tool-protocol-v1',
-  protocol: { stream: false, thinking: 'disabled', toolChoice: 'any' },
+  protocol: { api: 'converse', stream: false },
   inferenceVersion: 'sonnet5-global-v1',
-  model: { modelId: 'global.anthropic.claude-sonnet-5', region: 'us-east-1', maxTokens: 512 },
+  model: resolveModelProfile(DEFAULT_MODEL_KEY),
   scoreVersion: 'score-v1',
   maxTurns: 12,
   startTimeoutMs: 5 * 60_000,
@@ -220,11 +228,15 @@ export const summaryOf = (record: PersistedAttempt): AttemptSummary => ({
   cancelRequested: record.cancelRequested,
   ...(record.reason === undefined ? {} : { reason: record.reason }),
   levelId: record.levelId,
+  modelKey: record.config.model.key,
+  modelLabel: record.config.model.label,
+  modelId: record.config.model.modelId,
   turnsUsed: record.turnsUsed,
   maxTurns: record.maxTurns,
   calls: record.calls,
   inputTokens: record.inputTokens,
   outputTokens: record.outputTokens,
+  reasoningTokens: record.reasoningTokens,
   gameTokens: record.gameTokens,
   cacheReadTokens: record.cacheReadTokens,
   cacheWriteTokens: record.cacheWriteTokens,

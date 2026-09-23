@@ -1,5 +1,6 @@
 import type { RobotDraft } from '../../../shared/robot.js';
 import type { AttemptStatus, AttemptSummary } from '../../../shared/attempt.js';
+import { isModelKey, type ModelKey } from '../../../shared/models.js';
 import type { AuthConfig } from './auth.js';
 
 export type { AttemptStatus, AttemptSummary } from '../../../shared/attempt.js';
@@ -132,6 +133,7 @@ function parseAttempt(value: unknown): AttemptSummary | null {
   const gameTokens = nullableNumber(value, 'gameTokens');
   const cacheReadTokens = nullableNumber(value, 'cacheReadTokens');
   const cacheWriteTokens = nullableNumber(value, 'cacheWriteTokens');
+  const reasoningTokens = nullableNumber(value, 'reasoningTokens');
   if (
     score === undefined ||
     inputTokens === undefined ||
@@ -142,6 +144,19 @@ function parseAttempt(value: unknown): AttemptSummary | null {
   ) {
     return null;
   }
+  if (
+    reasoningTokens === undefined &&
+    Object.prototype.hasOwnProperty.call(value, 'reasoningTokens')
+  ) {
+    return null;
+  }
+  if (!isModelKey(value.modelKey)) return null;
+  const modelLabel = requiredString(value, 'modelLabel');
+  const modelId = requiredString(value, 'modelId');
+  if (!modelLabel || !modelId) {
+    return null;
+  }
+  const modelKey: ModelKey = value.modelKey;
   return {
     id,
     createdAt,
@@ -158,6 +173,10 @@ function parseAttempt(value: unknown): AttemptSummary | null {
     gameTokens,
     cacheReadTokens,
     cacheWriteTokens,
+    reasoningTokens: reasoningTokens ?? null,
+    modelKey,
+    modelLabel,
+    modelId,
     score,
     progress,
     finalSupport,

@@ -2,7 +2,13 @@ import { type DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { marshall } from '@aws-sdk/util-dynamodb';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { describe, expect, it, vi } from 'vitest';
-import { createDefaultDraft, type DraftSnapshot } from '../../../shared/robot';
+import {
+  MAX_DRAFT_BYTES,
+  createDefaultDraft,
+  draftByteLength,
+  validateDraft,
+  type DraftSnapshot,
+} from '../../../shared/robot';
 import {
   DraftConflictError,
   DraftStorageError,
@@ -10,6 +16,8 @@ import {
   type DraftStore,
 } from './draft';
 import { handleRequest } from './handler';
+import { MemoryAttemptStore } from './attempt-store';
+import * as models from '../../../shared/models';
 
 const identity = {
   sub: 'user-a',
@@ -19,13 +27,19 @@ const identity = {
 };
 
 const eventFor = (
-  method: 'GET' | 'PUT',
-  options: { body?: string; claims?: Record<string, unknown>; query?: Record<string, string> } = {},
-): APIGatewayProxyEventV2 =>
-  ({
+  method: 'GET' | 'PUT' | 'POST',
+  options: {
+    body?: string;
+    claims?: Record<string, unknown>;
+    query?: Record<string, string>;
+    path?: string;
+  } = {},
+): APIGatewayProxyEventV2 => {
+  const path = options.path ?? '/draft';
+  return {
     version: '2.0',
-    routeKey: `${method} /draft`,
-    rawPath: '/draft',
+    routeKey: `${method} ${path}`,
+    rawPath: path,
     rawQueryString: '',
     headers: { authorization: 'Bearer access-token' },
     queryStringParameters: options.query,
@@ -34,9 +48,9 @@ const eventFor = (
       apiId: 'api',
       domainName: 'api.example.test',
       domainPrefix: 'api',
-      http: { method, path: '/draft', protocol: 'https', sourceIp: '127.0.0.1', userAgent: 'test' },
+      http: { method, path, protocol: 'https', sourceIp: '127.0.0.1', userAgent: 'test' },
       requestId: 'request',
-      routeKey: `${method} /draft`,
+      routeKey: `${method} ${path}`,
       stage: '$default',
       time: '21/Sep/2026:00:00:00 +0000',
       timeEpoch: 0,
@@ -44,7 +58,8 @@ const eventFor = (
     },
     body: options.body,
     isBase64Encoded: false,
-  }) as unknown as APIGatewayProxyEventV2;
+  } as unknown as APIGatewayProxyEventV2;
+};
 
 const responseBody = (response: { body?: string }): Record<string, unknown> =>
   JSON.parse(response.body ?? '{}') as Record<string, unknown>;
@@ -65,6 +80,88 @@ const dependencies = (store: DraftStore, fetch: typeof globalThis.fetch = verifi
 });
 
 describe('draft API handler', () => {
+  it('admits an unchanged v1-at-limit draft returned by GET without a migration PUT', async () => {
+    const current = createDefaultDraft();
+    const legacy = {
+      schemaVersion: 1 as const,
+      catalogVersion: current.catalogVersion,
+      instructions: '',
+      skills: current.skills,
+    };
+    const atLimit = {
+      ...legacy,
+      instructions: 'x'.repeat(MAX_DRAFT_BYTES - draftByteLength(legacy)),
+    };
+    const normalized = validateDraft(atLimit);
+    expect(draftByteLength(atLimit)).toBe(MAX_DRAFT_BYTES);
+    expect(draftByteLength(normalized)).toBeGreaterThan(MAX_DRAFT_BYTES);
+    const draftStore: DraftStore = {
+      get: vi.fn().mockResolvedValue({ version: 4, draft: normalized }),
+      put: vi.fn(),
+    };
+    const attemptStore = new MemoryAttemptStore({
+      draft: { version: 4, draft: atLimit as unknown as DraftSnapshot['draft'] },
+    });
+    const dispatch = vi.fn(async () => undefined);
+    const deps = {
+      ...dependencies(draftStore),
+      attemptStore,
+      dispatch,
+    };
+
+    const oversizedPut = await handleRequest(
+      eventFor('PUT', {
+        body: JSON.stringify({ expectedVersion: 4, draft: normalized }),
+      }),
+      deps,
+    );
+    expect(oversizedPut.statusCode).toBe(413);
+    expect(draftStore.put).not.toHaveBeenCalled();
+
+    const getResponse = await handleRequest(eventFor('GET'), deps);
+    const getDraft = responseBody(getResponse).draft;
+    const postResponse = await handleRequest(
+      eventFor('POST', {
+        path: '/attempts',
+        body: JSON.stringify({ requestKey: 'boundary', expectedVersion: 4, draft: getDraft }),
+      }),
+      deps,
+    );
+
+    expect(getResponse.statusCode).toBe(200);
+    expect(postResponse.statusCode).toBe(200);
+    expect((responseBody(postResponse).attempt as Record<string, unknown>).modelKey).toBe(
+      'claude-sonnet-5',
+    );
+    expect(draftStore.put).not.toHaveBeenCalled();
+    expect(dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns a 4xx and leaves quota untouched when a known model is inactive', async () => {
+    const draft = createDefaultDraft();
+    const attemptStore = new MemoryAttemptStore({
+      draft: { version: 1, draft },
+      quotaLimit: 1,
+    });
+    const draftStore: DraftStore = { get: vi.fn(), put: vi.fn() };
+    const resolver = vi.spyOn(models, 'resolveModelProfile').mockImplementation(() => {
+      throw new Error('temporarily unavailable');
+    });
+    try {
+      const response = await handleRequest(
+        eventFor('POST', {
+          path: '/attempts',
+          body: JSON.stringify({ requestKey: 'inactive', expectedVersion: 1, draft }),
+        }),
+        { ...dependencies(draftStore), attemptStore, dispatch: vi.fn() },
+      );
+      expect(response.statusCode).toBe(400);
+      expect((await attemptStore.quota('user-a')).used).toBe(0);
+    } finally {
+      resolver.mockRestore();
+    }
+  });
+
   it('gets the authenticated owner default and never asks the store for a request owner', async () => {
     const snapshot: DraftSnapshot = { version: 0, draft: createDefaultDraft() };
     const store: DraftStore = { get: vi.fn().mockResolvedValue(snapshot), put: vi.fn() };
@@ -175,7 +272,7 @@ describe('draft API handler', () => {
       { expectedVersion: 0, draft, owner: 'user-b' },
       { expectedVersion: 0, draft: { ...draft, owner: 'user-b' } },
       { expectedVersion: -1, draft },
-      { expectedVersion: 0, draft: { ...draft, schemaVersion: 2 } },
+      { expectedVersion: 0, draft: { ...draft, schemaVersion: 3 } },
     ]) {
       const invalidResponse = await handleRequest(
         eventFor('PUT', { body: JSON.stringify(body) }),

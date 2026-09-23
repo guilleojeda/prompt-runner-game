@@ -71,7 +71,12 @@ describe('Bedrock usage normalization', () => {
     const bytes = new TextEncoder().encode(
       JSON.stringify({
         output: { message: { role: 'assistant', content: [] } },
-        usage: { inputTokens: 9, outputTokens: 4, vendorDetail: { class: 'future' } },
+        usage: {
+          inputTokens: 9,
+          outputTokens: 4,
+          reasoningTokens: 3,
+          vendorDetail: { class: 'future' },
+        },
       }),
     );
 
@@ -79,6 +84,7 @@ describe('Bedrock usage normalization', () => {
       original: {
         inputTokens: 9,
         outputTokens: 4,
+        reasoningTokens: 3,
         vendorDetail: { class: 'future' },
       },
       normalized: {
@@ -87,7 +93,7 @@ describe('Bedrock usage normalization', () => {
         inputWithoutCacheTokens: 9,
         cacheReadTokens: null,
         cacheWriteTokens: null,
-        reasoningTokens: null,
+        reasoningTokens: 3,
         gameTokens: 13,
       },
     });

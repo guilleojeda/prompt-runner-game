@@ -16,6 +16,7 @@ import {
   AdmissionConflictError,
   AttemptStoreError,
   IdempotencyConflictError,
+  ModelUnavailableError,
   QuotaExceededError,
   createDynamoAttemptStore,
   S3BodyStore,
@@ -235,7 +236,7 @@ const attemptInput = (
     return {
       requestKey: object.requestKey,
       expectedVersion: object.expectedVersion,
-      draft: validateDraft(object.draft),
+      draft: validateDraft(object.draft, { allowLegacyMetadataOverflow: true }),
     };
   } catch (error) {
     if (error instanceof DraftValidationError)
@@ -476,6 +477,9 @@ export const handleRequest = async (
         code: 'idempotency_conflict',
         message: error.message,
       });
+    }
+    if (error instanceof ModelUnavailableError) {
+      return respond(event, 400, 'invalid', { code: 'invalid', message: error.message });
     }
     if (error instanceof QuotaExceededError) {
       return respond(event, 429, 'quota_exceeded', {

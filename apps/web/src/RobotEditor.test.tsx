@@ -66,8 +66,29 @@ describe('RobotEditor', () => {
     expect((screen.getByRole('checkbox', { name: 'Retroceder' }) as HTMLInputElement).checked).toBe(
       false,
     );
+    expect(
+      (screen.getByLabelText('Modelo para el próximo intento') as HTMLSelectElement).value,
+    ).toBe('claude-sonnet-5');
     expect(screen.getByText('Guardado')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /Probar/i })).toBeNull();
+  });
+
+  it('persists a changed model key and disables the selector as soon as an attempt starts', async () => {
+    const putDraft = vi.fn().mockResolvedValue(snapshot(1));
+    const editorRef = createRef<RobotEditorHandle>();
+    const onTry = vi.fn();
+    render(
+      <RobotEditor ref={editorRef} api={api({ putDraft })} session={session()} onTry={onTry} />,
+    );
+    const selector = await screen.findByLabelText('Modelo para el próximo intento');
+    fireEvent.change(selector, { target: { value: 'claude-opus-5' } });
+    await waitFor(() => expect(putDraft).toHaveBeenCalledOnce(), { timeout: 2_000 });
+    expect(putDraft).toHaveBeenCalledOnce();
+    expect(putDraft.mock.calls[0]?.[1]).toMatchObject({ modelKey: 'claude-opus-5' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Probar' }));
+    expect(onTry).toHaveBeenCalledOnce();
+    expect((selector as HTMLSelectElement).disabled).toBe(true);
   });
 
   it('captures the visible default and persists version zero before returning the attempt snapshot', async () => {

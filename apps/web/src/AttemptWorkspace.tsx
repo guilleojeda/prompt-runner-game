@@ -209,6 +209,7 @@ function ResultCard({ attempt }: { attempt: AttemptSummary }) {
       </div>
       <p>{statusDescription(attempt.status)}</p>
       <p className="attempt-level">Nivel: {attempt.levelId}</p>
+      <p className="attempt-model">Modelo: {attempt.modelLabel}</p>
       {attempt.reason && (
         <p className="attempt-reason">Causa registrada: {reasonLabel(attempt.reason)}</p>
       )}
@@ -234,6 +235,10 @@ function ResultCard({ attempt }: { attempt: AttemptSummary }) {
         <div>
           <dt>Salida</dt>
           <dd>{formatMetric(attempt.outputTokens)}</dd>
+        </div>
+        <div>
+          <dt>Razonamiento (incluido en salida)</dt>
+          <dd>{formatMetric(attempt.reasoningTokens)}</dd>
         </div>
         <div>
           <dt>Caché leída</dt>
@@ -291,7 +296,7 @@ function HistoryList({
               <div>
                 <strong>{statusLabel(item.status)}</strong>
                 <span>
-                  {item.turnsUsed} / {item.maxTurns} turnos · {item.createdAt}
+                  {item.turnsUsed} / {item.maxTurns} turnos · {item.modelLabel} · {item.createdAt}
                 </span>
               </div>
               <button

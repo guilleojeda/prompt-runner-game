@@ -7,7 +7,9 @@ import {
   draftByteLength,
   draftsEqual,
   validateDraft,
+  type LegacyRobotDraft,
 } from './robot';
+import { DEFAULT_MODEL_KEY, MODEL_CATALOG } from './models';
 
 const draftWithInstructionBytes = (bytes: number) => {
   const base = createDefaultDraft();
@@ -139,9 +141,56 @@ describe('robot draft contract', () => {
     const before = JSON.stringify(ROBOT_CATALOG);
     const bytes = draftByteLength(createDefaultDraft());
 
-    expect(bytes).toBe(1480);
+    expect(bytes).toBe(1509);
     expect(JSON.stringify(ROBOT_CATALOG)).toBe(before);
     expect(Object.isFrozen(ROBOT_CATALOG)).toBe(true);
     expect(Object.isFrozen(ROBOT_CATALOG[0].inputSchema)).toBe(true);
+  });
+
+  it('reads a v1 draft as Sonnet 5 without changing the stored shape', () => {
+    const current = createDefaultDraft();
+    const legacy = {
+      schemaVersion: 1 as const,
+      catalogVersion: current.catalogVersion,
+      instructions: current.instructions,
+      skills: current.skills,
+    };
+    const parsed = validateDraft(legacy);
+
+    expect(parsed.modelKey).toBe(DEFAULT_MODEL_KEY);
+    expect(legacy).not.toHaveProperty('modelKey');
+    expect(draftsEqual(legacy, parsed)).toBe(true);
+  });
+
+  it('keeps a v1 draft at the old byte limit readable after v2 metadata is added', () => {
+    const current = createDefaultDraft();
+    const withoutModel: LegacyRobotDraft = {
+      schemaVersion: 1,
+      catalogVersion: current.catalogVersion,
+      instructions: current.instructions,
+      skills: current.skills,
+    };
+    const empty = {
+      ...withoutModel,
+      schemaVersion: 1 as const,
+      instructions: '',
+    };
+    const legacy = {
+      ...empty,
+      instructions: 'x'.repeat(MAX_DRAFT_BYTES - draftByteLength(empty)),
+    };
+
+    expect(draftByteLength(legacy)).toBe(MAX_DRAFT_BYTES);
+    expect(validateDraft(legacy).instructions).toBe(legacy.instructions);
+  });
+
+  it('includes model identity in semantic draft equality and rejects unknown keys', () => {
+    const draft = createDefaultDraft();
+    const other = { ...draft, modelKey: MODEL_CATALOG[0].key };
+
+    expect(draftsEqual(draft, other)).toBe(false);
+    expect(() => validateDraft({ ...draft, modelKey: 'global.openai.arbitrary' })).toThrow(
+      DraftValidationError,
+    );
   });
 });

@@ -6,6 +6,7 @@ import type {
   ScoreRules,
 } from './game.js';
 import type { RobotSkillId } from './robot.js';
+import type { ModelKey } from './models.js';
 
 /** Version of the durable attempt record, independent of game rules versions. */
 export const ATTEMPT_RECORD_VERSION = 1 as const;
@@ -18,6 +19,7 @@ export interface AttemptMetrics {
   readonly calls: number;
   readonly inputTokens: number | null;
   readonly outputTokens: number | null;
+  readonly reasoningTokens: number | null;
   readonly gameTokens: number | null;
   readonly cacheReadTokens: number | null;
   readonly cacheWriteTokens: number | null;
@@ -31,6 +33,9 @@ export interface AttemptSummary extends AttemptMetrics {
   readonly cancelRequested: boolean;
   readonly reason?: string;
   readonly levelId: string;
+  readonly modelKey: ModelKey;
+  readonly modelLabel: string;
+  readonly modelId: string;
   readonly turnsUsed: number;
   readonly maxTurns: number;
   readonly score: number | null;

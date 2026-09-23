@@ -38,11 +38,15 @@ function summary(status: AttemptSummary['status'] = 'running'): AttemptSummary {
     status,
     cancelRequested: false,
     levelId: 'principal-estatico-v1',
+    modelKey: 'claude-sonnet-5',
+    modelLabel: 'Claude Sonnet 5',
+    modelId: 'global.anthropic.claude-sonnet-5',
     turnsUsed: 2,
     maxTurns: 12,
     calls: 2,
     inputTokens: null,
     outputTokens: null,
+    reasoningTokens: null,
     gameTokens: null,
     cacheReadTokens: null,
     cacheWriteTokens: null,
@@ -88,6 +92,45 @@ afterEach(() => {
 });
 
 describe('AttemptWorkspace', () => {
+  it('freezes the selected model in the admission payload and labels the returned result', async () => {
+    const selectedDraft = { ...createDefaultDraft(), modelKey: 'claude-opus-5' as const };
+    const completed = {
+      ...summary('victory'),
+      modelKey: 'claude-opus-5' as const,
+      modelLabel: 'Claude Opus 5',
+      modelId: 'global.anthropic.claude-opus-5',
+      reasoningTokens: 17,
+    };
+    const createAttempt = vi
+      .fn()
+      .mockResolvedValue({ attempt: completed, dispatchConfirmed: true });
+    const attemptApi = api({ createAttempt });
+    const editor = {
+      current: {
+        captureSnapshot: vi.fn().mockResolvedValue({ version: 4, draft: selectedDraft }),
+      },
+    } as unknown as { current: RobotEditorHandle | null };
+    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
+    render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+    await screen.findByText('Historial');
+
+    await act(async () => {
+      (ref.current as AttemptWorkspaceHandle).start();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(createAttempt).toHaveBeenCalledWith(
+      expect.any(String),
+      4,
+      expect.objectContaining({ modelKey: 'claude-opus-5' }),
+    );
+    expect(await screen.findByText('Modelo: Claude Opus 5')).toBeTruthy();
+    expect(
+      screen.getByText('Razonamiento (incluido en salida)').parentElement?.textContent,
+    ).toContain('17');
+  });
+
   it('keeps the captured key and draft through admission, then exposes cancel and terminal metrics', async () => {
     const attemptApi = api();
     const editor = {
@@ -110,7 +153,10 @@ describe('AttemptWorkspace', () => {
     expect(attemptApi.createAttempt).toHaveBeenCalledWith(
       expect.any(String),
       1,
-      expect.objectContaining({ instructions: expect.stringContaining('Siempre preferí') }),
+      expect.objectContaining({
+        instructions: expect.stringContaining('Siempre preferí'),
+        modelKey: 'claude-sonnet-5',
+      }),
     );
     expect(await screen.findByRole('button', { name: 'Cancelar' })).toBeTruthy();
 

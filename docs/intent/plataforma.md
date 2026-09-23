@@ -10,7 +10,7 @@ Especificación acordada del producto. El código disponible implementa acceso C
 | Backend web | TypeScript en AWS Lambda. |
 | Ejecución del agente | AgentCore Runtime con Strands en TypeScript. El ejecutor reúne coordinación del intento, motor y registro. |
 | Infraestructura como código | AWS CDK en TypeScript. |
-| Inferencia | Amazon Bedrock mediante el proveedor nativo `BedrockModel` de Strands y Converse sin streaming. Modelo inicial: Claude Sonnet 5, perfil `global.anthropic.claude-sonnet-5`. No se usa Mantle. |
+| Inferencia | Amazon Bedrock mediante el proveedor nativo `BedrockModel` de Strands y Converse sin streaming. Catálogo finito: GPT-5.6 Sol, Sonnet 4.6/5 y Opus 5/5.5; parámetros por perfil y Sonnet 5 como default. No se usa Mantle ni APIs directas. GPT-6 Luna/Sol se difieren hasta confirmar disponibilidad en Bedrock. |
 | Almacenamiento | DynamoDB en modo on-demand para datos estructurados y S3 privado para conservar completos los requests y responses de inferencia. |
 | Identidad y correo | Amazon Cognito User Pool con Managed Login Essentials en español, email y contraseña, confirmación por código y recuperación administrada. La primera versión usa el correo predeterminado de Cognito y mensajes estándar, con el límite publicado de 50 correos diarios; SES propio y `SourceArn` quedan para una fase posterior. |
 | Hosting | React estático en un bucket S3 privado, servido por CloudFront con Origin Access Control (OAC). El build y la publicación se integran con CDK en TypeScript y GitHub Actions. Puede comenzar con URLs AWS para web, identidad y API; no se exige dominio propio en esta fase. |
@@ -67,7 +67,7 @@ Las capacidades publicadas y sus límites se conservan en referencias técnicas.
 | Tema | Base factual | Elección o verificación todavía necesaria |
 |---|---|---|
 | Runtime + Strands | [AgentCore](../reference/agentcore.md) | Implementar y verificar decisiones independientes, herramientas, registro y continuidad. La arquitectura está elegida. |
-| Bedrock | [APIs, métricas y tarifas](../reference/bedrock.md) | Habilitar acceso/cuotas y verificar Sonnet 5 mediante la integración nativa. API y modelo inicial están elegidos. |
+| Bedrock | [APIs, métricas y tarifas](../reference/bedrock.md) | Verificar acceso, cuotas e inferencia nativa para cada modelo del catálogo. Parámetros y ruta están definidos en [ejecución](../architecture/ejecucion.md#inferencia). |
 | Acceso por email | [Identidad y correo](../reference/identidad.md) | Cognito Managed Login Essentials con correo predeterminado, confirmación y recuperación. SES propio queda para una fase posterior sobre el mismo pool. |
 | Cálculo independiente del navegador | [Tareas y sesiones](../reference/agentcore.md#continuidad-sesión-y-almacenamiento) | Verificar la tarea de background y la recuperación del intento y su presentación al recargar. |
 | DynamoDB y registros | [Contrato de registro](../architecture/registro-de-ejecucion.md) y [datos](../architecture/datos.md) | Borrador on-demand disponible; el registro de intentos y cuerpos S3 conserva su implementación y verificación pendientes. |

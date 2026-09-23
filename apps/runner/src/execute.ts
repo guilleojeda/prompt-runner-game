@@ -9,6 +9,7 @@ import {
   type GameSnapshot,
   type LevelDefinition,
 } from '../../../shared/game.js';
+import type { ModelProfile } from '../../../shared/models.js';
 import type {
   ActionPublication,
   PersistedAttempt,
@@ -77,11 +78,7 @@ export type InferenceAdapter = (input: {
   readonly instructions: string;
   readonly tools: readonly DecisionTool[];
   readonly observation: JsonValue;
-  readonly modelConfig: {
-    readonly modelId: string;
-    readonly region: string;
-    readonly maxTokens: number;
-  };
+  readonly modelConfig: Readonly<ModelProfile>;
   readonly audit: DecisionAudit;
   readonly timeoutMs?: number;
 }) => Promise<DecisionResult>;
@@ -165,6 +162,8 @@ const usageFrom = (value: DecisionResult['usage']): Usage => {
   return {
     inputTokens: typeof normalized?.inputTokens === 'number' ? normalized.inputTokens : null,
     outputTokens: typeof normalized?.outputTokens === 'number' ? normalized.outputTokens : null,
+    reasoningTokens:
+      typeof normalized?.reasoningTokens === 'number' ? normalized.reasoningTokens : null,
     gameTokens: typeof normalized?.gameTokens === 'number' ? normalized.gameTokens : null,
     cacheReadTokens:
       typeof normalized?.cacheReadTokens === 'number' ? normalized.cacheReadTokens : null,
@@ -262,6 +261,10 @@ export const executeAttempt = async (
             attemptId: activeRecord.id,
             seq,
             decisionId,
+            modelKey: activeRecord.config.model.key,
+            modelId: activeRecord.config.model.modelId,
+            region: activeRecord.config.model.region,
+            profileVersion: activeRecord.config.model.profileVersion,
             requestKey,
             responseKey,
             requestSha256: request.sha256,
@@ -270,6 +273,7 @@ export const executeAttempt = async (
             usage: {
               inputTokens: null,
               outputTokens: null,
+              reasoningTokens: null,
               gameTokens: null,
               cacheReadTokens: null,
               cacheWriteTokens: null,

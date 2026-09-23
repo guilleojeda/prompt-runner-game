@@ -15,6 +15,14 @@ import {
   type ToolStreamEvent,
   type ToolStreamGenerator,
 } from '@strands-agents/sdk';
+import {
+  DEFAULT_MODEL_KEY,
+  modelByKey,
+  readModelProfile,
+  type ModelProfile,
+  type ModelProtocol,
+  type ModelReasoningEffort,
+} from '../../../shared/models.js';
 import { usageFromBedrockResponseBytes, type ProviderUsage } from './usage.js';
 
 export const INFERENCE_PROTOCOL_VERSION = 1 as const;
@@ -22,17 +30,13 @@ export const STRANDS_SDK_VERSION = '1.18.0' as const;
 export const BEDROCK_RUNTIME_SDK_VERSION = '3.1136.0' as const;
 export const DEFAULT_RESPONSE_AUDIT_TIMEOUT_MS = 30_000;
 
-export const DEFAULT_DECISION_MODEL_CONFIG = Object.freeze({
-  modelId: 'global.anthropic.claude-sonnet-5',
-  region: 'us-east-1',
-  maxTokens: 512,
-});
+export const DEFAULT_DECISION_MODEL_CONFIG: Readonly<ModelProfile> = modelByKey(DEFAULT_MODEL_KEY)!;
 
 export const DECISION_INFERENCE_IMPLEMENTATION = Object.freeze({
   protocolVersion: INFERENCE_PROTOCOL_VERSION,
   provider: 'bedrock-converse',
   stream: false,
-  thinking: 'disabled',
+  thinking: 'profile-defined',
   explicitPromptCache: 'disabled',
   implicitPromptCache: 'provider-managed-if-eligible',
   clientMaxAttempts: 1,
@@ -41,12 +45,8 @@ export const DECISION_INFERENCE_IMPLEMENTATION = Object.freeze({
   bedrockRuntimeVersion: BEDROCK_RUNTIME_SDK_VERSION,
 });
 
-export interface DecisionModelConfig {
-  readonly modelId: string;
-  readonly region: string;
-  readonly maxTokens: number;
-  readonly temperature?: number;
-}
+/** The server-resolved, immutable profile for one admitted attempt. */
+export type DecisionModelConfig = Readonly<ModelProfile>;
 
 export interface DecisionTool {
   readonly name: string;
@@ -239,7 +239,20 @@ const matchesPublishedSchema = (
   });
 };
 
-const validateInput = (input: DecisionInput): { observation: JSONValue } => {
+const profileFromSnapshot = (value: unknown): Readonly<ModelProfile> | null => {
+  try {
+    return readModelProfile(value);
+  } catch {
+    return null;
+  }
+};
+
+const validateInput = (
+  input: DecisionInput,
+): {
+  observation: JSONValue;
+  model: Readonly<ModelProfile>;
+} => {
   if (typeof input.instructions !== 'string' || input.tools.length === 0) {
     throw new DecisionFailure(
       'invalid_input',
@@ -247,20 +260,11 @@ const validateInput = (input: DecisionInput): { observation: JSONValue } => {
       usageFromBedrockResponseBytes(null),
     );
   }
-  if (
-    input.modelConfig.modelId !== DEFAULT_DECISION_MODEL_CONFIG.modelId ||
-    input.modelConfig.region !== DEFAULT_DECISION_MODEL_CONFIG.region ||
-    !Number.isSafeInteger(input.modelConfig.maxTokens) ||
-    input.modelConfig.maxTokens < 1 ||
-    input.modelConfig.maxTokens > 4096 ||
-    (input.modelConfig.temperature !== undefined &&
-      (!Number.isFinite(input.modelConfig.temperature) ||
-        input.modelConfig.temperature < 0 ||
-        input.modelConfig.temperature > 1))
-  ) {
+  const model = profileFromSnapshot(input.modelConfig);
+  if (!model) {
     throw new DecisionFailure(
       'invalid_input',
-      'The decision model configuration is not supported.',
+      'The decision model profile snapshot is not valid or has been modified.',
       usageFromBedrockResponseBytes(null),
     );
   }
@@ -280,7 +284,7 @@ const validateInput = (input: DecisionInput): { observation: JSONValue } => {
     seen.add(tool.name);
     validatePublishedSchema(tool.inputSchema);
   }
-  return { observation: jsonClone(input.observation, 'The local observation') };
+  return { observation: jsonClone(input.observation, 'The local observation'), model };
 };
 
 /**
@@ -590,6 +594,50 @@ const systemPrompt = (instructions: string): string =>
 const observationMessage = (observation: JSONValue): string =>
   `Observación local presente:\n${JSON.stringify(observation)}`;
 
+type DisabledThinkingArgs = Readonly<{
+  readonly additionalModelRequestFields: Readonly<{
+    readonly thinking: Readonly<{ readonly type: 'disabled' }>;
+  }>;
+}>;
+
+type AdaptiveThinkingFields = Readonly<{
+  readonly thinking: Readonly<{ readonly type: 'adaptive' }>;
+  readonly output_config: Readonly<{ readonly effort: ModelReasoningEffort }>;
+}>;
+
+type BedrockRequestOverrides = Readonly<{
+  readonly additionalRequestFields?: AdaptiveThinkingFields;
+  readonly additionalArgs?: DisabledThinkingArgs;
+}>;
+
+/**
+ * Project the typed profile protocol into the small set of native Converse
+ * fields supported by this integration. There is intentionally no generic
+ * provider parameter bag: every emitted field is selected by the catalog row.
+ */
+const requestOverridesFor = (protocol: ModelProtocol): BedrockRequestOverrides => {
+  if (protocol.thinking === 'omitted') return {};
+  if (protocol.thinking === 'disabled') {
+    // Strands removes `thinking` from additionalRequestFields when toolChoice
+    // is forced. additionalArgs is the SDK-supported escape hatch for this
+    // exact Converse request shape.
+    return {
+      additionalArgs: {
+        additionalModelRequestFields: { thinking: { type: 'disabled' } },
+      },
+    };
+  }
+  if (!protocol.reasoningEffort) {
+    throw new Error('An adaptive model profile must declare reasoning effort.');
+  }
+  return {
+    additionalRequestFields: {
+      thinking: { type: 'adaptive' },
+      output_config: { effort: protocol.reasoningEffort },
+    },
+  };
+};
+
 const receiptUsage = (receipt: TransportReceipt | null): ProviderUsage =>
   usageFromBedrockResponseBytes(receipt?.bytes ?? null, 'separate');
 
@@ -679,9 +727,65 @@ const classifyProviderFailure = (
   );
 };
 
+/**
+ * Strands intentionally skips unknown Bedrock content keys while mapping a
+ * response. Inspect the captured native envelope first so a skipped block
+ * cannot turn an invalid response into an executable one.
+ */
+const validateNativeResponseContent = (
+  bytes: Uint8Array,
+  model: Readonly<ModelProfile>,
+  usage: ProviderUsage,
+  receipt: TransportReceipt,
+): void => {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+  } catch {
+    return;
+  }
+  if (!isRecord(payload) || !isRecord(payload.output) || !isRecord(payload.output.message)) {
+    return;
+  }
+  const content = payload.output.message.content;
+  if (!Array.isArray(content)) return;
+  const recognized = new Set(['toolUse', 'reasoningContent', 'text']);
+  const blocks = content.filter(isRecord);
+  if (
+    blocks.length !== content.length ||
+    blocks.some((block) => {
+      const keys = Object.keys(block);
+      return keys.length !== 1 || !recognized.has(keys[0] ?? '');
+    })
+  ) {
+    throw new DecisionFailure(
+      'invalid_response',
+      'The model response contained an unknown content block.',
+      usage,
+      receipt,
+    );
+  }
+  const toolCount = blocks.filter((block) => own(block, 'toolUse')).length;
+  const reasoningCount = blocks.filter((block) => own(block, 'reasoningContent')).length;
+  const textCount = blocks.filter((block) => own(block, 'text')).length;
+  if (
+    toolCount !== 1 ||
+    textCount > 0 ||
+    (reasoningCount > 0 && model.provider !== 'openai' && model.protocol.thinking !== 'adaptive')
+  ) {
+    throw new DecisionFailure(
+      'invalid_response',
+      'The model response must contain exactly one tool and only permitted reasoning blocks.',
+      usage,
+      receipt,
+    );
+  }
+};
+
 const validateResponse = (
   result: Awaited<ReturnType<Agent['invoke']>>,
   tools: readonly DecisionTool[],
+  model: Readonly<ModelProfile>,
   usage: ProviderUsage,
   receipt: TransportReceipt,
 ): DecisionAction => {
@@ -701,19 +805,34 @@ const validateResponse = (
       receipt,
     );
   }
-  if (result.lastMessage.content.length !== 1) {
+  const content = result.lastMessage.content;
+  const toolBlocks = content.filter((block) => block.type === 'toolUseBlock');
+  const nonToolBlocks = content.filter((block) => block.type !== 'toolUseBlock');
+  // GPT-5.6 has no explicit Converse thinking override in its approved
+  // profile, but its provider default may still emit native reasoning.
+  const reasoningAllowed = model.provider === 'openai' || model.protocol.thinking === 'adaptive';
+  if (
+    toolBlocks.length !== 1 ||
+    nonToolBlocks.some((block) => block.type !== 'reasoningBlock') ||
+    (!reasoningAllowed && nonToolBlocks.length > 0)
+  ) {
     throw new DecisionFailure(
       'invalid_response',
-      'The model returned text or multiple content blocks with its selection.',
+      'The model response must contain exactly one tool and only permitted reasoning blocks.',
       usage,
       receipt,
     );
   }
-  const block = result.lastMessage.content[0];
-  if (!block || block.type !== 'toolUseBlock') {
+  const block = toolBlocks[0];
+  if (
+    !block ||
+    block.type !== 'toolUseBlock' ||
+    typeof block.toolUseId !== 'string' ||
+    block.toolUseId === ''
+  ) {
     throw new DecisionFailure(
       'invalid_response',
-      'The model response did not contain one tool selection.',
+      'The model response did not contain one valid tool selection.',
       usage,
       receipt,
     );
@@ -747,7 +866,7 @@ export const executeDecision = async (
   audit: DecisionAudit,
   options: DecisionExecutionOptions = {},
 ): Promise<DecisionResult> => {
-  const { observation } = validateInput(input);
+  const { observation, model } = validateInput(input);
   const timeoutMs = options.timeoutMs ?? 60_000;
   const responseAuditTimeoutMs =
     options.responseAuditTimeoutMs ?? DEFAULT_RESPONSE_AUDIT_TIMEOUT_MS;
@@ -778,26 +897,20 @@ export const executeDecision = async (
   const transport = new AuditedRequestHandler(delegate, audit, responseAuditTimeoutMs);
 
   try {
-    const model = new BedrockModel({
-      modelId: input.modelConfig.modelId,
-      region: input.modelConfig.region,
-      maxTokens: input.modelConfig.maxTokens,
-      ...(input.modelConfig.temperature === undefined
-        ? {}
-        : { temperature: input.modelConfig.temperature }),
-      stream: false,
-      // `additionalArgs` is used deliberately: Strands 1.18 removes `thinking`
-      // from additionalRequestFields for forced tool choice, even when disabling it.
-      additionalArgs: {
-        additionalModelRequestFields: { thinking: { type: 'disabled' } },
-      },
+    const overrides = requestOverridesFor(model.protocol);
+    const bedrockModel = new BedrockModel({
+      modelId: model.modelId,
+      region: model.region,
+      maxTokens: model.maxTokens,
+      stream: model.protocol.stream,
+      ...overrides,
       clientConfig: {
         maxAttempts: 1,
         requestHandler: transport,
       },
     });
     const agent = new Agent({
-      model,
+      model: bedrockModel,
       tools: input.tools.map((tool) => new SelectionTool(tool)),
       systemPrompt: systemPrompt(input.instructions),
       printer: false,
@@ -808,7 +921,7 @@ export const executeDecision = async (
     });
     agent.addMiddleware(InvokeModelStage.Input, (context) => ({
       ...context,
-      toolChoice: { any: {} },
+      toolChoice: model.protocol.toolChoice === 'any' ? { any: {} } : { auto: {} },
     }));
 
     const result = await agent.invoke(observationMessage(observation), { cancelSignal: signal });
@@ -838,7 +951,8 @@ export const executeDecision = async (
       );
     }
     const usage = receiptUsage(receipt);
-    const action = validateResponse(result, input.tools, usage, receipt);
+    validateNativeResponseContent(receipt.bytes, model, usage, receipt);
+    const action = validateResponse(result, input.tools, model, usage, receipt);
     return {
       action,
       usage,

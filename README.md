@@ -47,7 +47,9 @@ El límite de configuración es 65.536 bytes de JSON UTF-8, incluidos los contra
 
 ## Probar y consultar resultados
 
-La ejecución está publicada, pero la aceptación con el modelo real sigue pendiente: AWS todavía deniega Sonnet 5 para esta cuenta. Los intentos llegan a Bedrock y terminan con error; no se ha acreditado una victoria real ni la carga simultánea acordada. El acceso al modelo debe habilitarse antes de considerar esta capacidad lista para participantes.
+El editor incluye un selector de GPT-5.6 (Sol), Claude Sonnet 4.6/5 y Opus 5/5.5, exclusivamente mediante Bedrock. Cada intento conserva el modelo y sus parámetros, también al recuperar el historial. GPT-6 Luna/Sol quedan diferidos hasta confirmar disponibilidad Bedrock.
+
+La aceptación de la ejecución real sigue pendiente. El acceso y las cuotas se comprueban por modelo; una opción en el selector o una suscripción no demuestra que la cuenta pueda inferir. Los errores conservan el intento y no cambian de modelo. Antes de considerar la capacidad lista para participantes se requieren las verificaciones nativas, victoria y carga simultánea acordadas.
 
 El recorrido inicial tiene cinco tramos: suelo, pozo, suelo, rama baja y suelo, con la salida al final y hasta doce acciones. Avanzar y Retroceder caminan; Saltar y Agacharse y avanzar reciben dirección; Nadar consume un turno sin mover al robot. Las descripciones explican las habilidades al agente, pero no cambian la física.
 
@@ -92,7 +94,7 @@ Las consultas de servicios se conservan por tema, con fecha, fuentes y límites 
 
 ## Arquitectura
 
-**Decisión final de ejecución:** AgentCore Runtime con Strands TypeScript y el proveedor nativo de Amazon Bedrock, inicialmente Sonnet 5 global mediante Converse sin streaming. No se usa Mantle. El registro conserva snapshots y resoluciones, y React/SVG compone la animación a partir de esos datos. El flujo acordado es Probar → cálculo con controles bloqueados → animación opcional a velocidad fija, hacia adelante y sin controles → resultado. La ejecución estática y su registro están implementados; el renderer y las mecánicas posteriores siguen pendientes.
+**Decisión final de ejecución:** AgentCore Runtime con Strands TypeScript y el proveedor nativo de Amazon Bedrock, con un catálogo finito de OpenAI y Claude mediante Converse sin streaming. Los perfiles y sus parámetros están en [ejecución](docs/architecture/ejecucion.md#inferencia). No se usa Mantle. El registro conserva snapshots y resoluciones, y React/SVG compone la animación a partir de esos datos. El flujo acordado es Probar → cálculo con controles bloqueados → animación opcional a velocidad fija, hacia adelante y sin controles → resultado. La ejecución estática y su registro están implementados; el renderer y las mecánicas posteriores siguen pendientes.
 
 Están aprobados el contrato de registro, el reproductor, DynamoDB on-demand con S3 privado para cuerpos de inferencia, un único ambiente, la política diaria de cuota y Cognito Essentials con Managed Login. La primera versión usa el correo predeterminado de Cognito, aceptando sus 50 emails diarios y mensajes estándar; SES se incorporará en una fase posterior sobre el mismo user pool. El frontend React estático está publicado en S3 privado mediante CloudFront con Origin Access Control, usando CDK y GitHub Actions.
 

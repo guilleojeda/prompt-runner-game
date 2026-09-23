@@ -18,8 +18,12 @@ import {
   type BodyStore,
   type CallRecord,
 } from '../../../shared/server/attempt.js';
-import { createDefaultDraft } from '../../../shared/robot.js';
-import { AttemptStoreError, createDynamoAttemptStore } from './attempt-store.js';
+import { createDefaultDraft, validateDraft } from '../../../shared/robot.js';
+import {
+  AdmissionConflictError,
+  AttemptStoreError,
+  createDynamoAttemptStore,
+} from './attempt-store.js';
 
 const commandClient = (send: ReturnType<typeof vi.fn>) => ({ send }) as unknown as DynamoDBClient;
 
@@ -209,6 +213,7 @@ const seedCall = (
     usage: {
       inputTokens: null,
       outputTokens: null,
+      reasoningTokens: null,
       gameTokens: null,
       cacheReadTokens: null,
       cacheWriteTokens: null,
@@ -235,6 +240,66 @@ const storeFor = (harness: DynamoHarness, bodyStore?: BodyStore) =>
   });
 
 describe('Dynamo attempt admission conditions', () => {
+  it('reads a legacy Sonnet 5 config without merging current defaults', async () => {
+    const harness = new DynamoHarness();
+    const { attemptId } = seedAttempt(harness, {
+      config: {
+        ...DEFAULT_ATTEMPT_CONFIG,
+        inferenceVersion: 'legacy-inference-v7',
+        protocol: { stream: false, thinking: 'disabled', toolChoice: 'any' },
+        model: {
+          modelId: 'global.anthropic.claude-sonnet-5',
+          region: 'us-east-1',
+          maxTokens: 777,
+        },
+        scoreParameters: { ...DEFAULT_ATTEMPT_CONFIG.scoreParameters, base: 321 },
+      },
+    });
+
+    const record = await storeFor(harness).get('owner', attemptId);
+
+    expect(record?.config).toMatchObject({
+      inferenceVersion: 'legacy-inference-v7',
+      protocol: { api: 'converse', stream: false },
+      model: {
+        key: 'claude-sonnet-5',
+        maxTokens: 777,
+        profileVersion: 'legacy-inference-v7',
+      },
+      scoreParameters: { base: 321 },
+    });
+  });
+
+  it('reads a v2 profile snapshot without resolving current catalog values', async () => {
+    const harness = new DynamoHarness();
+    const { attemptId } = seedAttempt(harness, {
+      config: {
+        ...DEFAULT_ATTEMPT_CONFIG,
+        inferenceVersion: 'historical-profile-v9',
+        model: {
+          ...DEFAULT_ATTEMPT_CONFIG.model,
+          label: 'Historical label',
+          modelId: 'us.anthropic.claude-sonnet-5',
+          region: 'eu-west-1',
+          profileVersion: 'historical-profile-v9',
+          maxTokens: 777,
+          protocol: { stream: false, thinking: 'disabled', toolChoice: 'any' },
+        },
+      },
+    });
+
+    const record = await storeFor(harness).get('owner', attemptId);
+
+    expect(record?.config.model).toMatchObject({
+      key: 'claude-sonnet-5',
+      label: 'Historical label',
+      modelId: 'us.anthropic.claude-sonnet-5',
+      region: 'eu-west-1',
+      profileVersion: 'historical-profile-v9',
+      maxTokens: 777,
+    });
+  });
+
   it('checks request identity before draft/version/quota and writes all admission records atomically', async () => {
     const draft = createDefaultDraft();
     const send = vi.fn().mockImplementation(async (command: { input: Record<string, unknown> }) => {
@@ -264,6 +329,68 @@ describe('Dynamo attempt admission conditions', () => {
     );
     expect(transaction.TransactItems[1].Put.ConditionExpression).toBe('attribute_not_exists(PK)');
     expect(transaction.TransactItems[4].Update.ConditionExpression).toContain('#used < :limit');
+  });
+
+  it('admits a legacy v1 draft without rewriting it in the condition check', async () => {
+    const harness = new DynamoHarness();
+    const current = createDefaultDraft();
+    const legacy = {
+      schemaVersion: 1 as const,
+      catalogVersion: current.catalogVersion,
+      instructions: current.instructions,
+      skills: current.skills,
+    };
+    harness.put({
+      PK: 'USER#owner',
+      SK: 'DRAFT',
+      version: 1,
+      updatedAt: '2026-09-21T15:00:00.000Z',
+      draft: legacy,
+    });
+    const result = await storeFor(harness).admit({
+      owner: 'owner',
+      requestKey: 'legacy',
+      expectedVersion: 1,
+      draft: validateDraft(legacy),
+    });
+    expect(result.admitted).toBe(true);
+    expect(result.attempt.modelKey).toBe('claude-sonnet-5');
+    const transaction = harness.send.mock.calls.find(
+      ([command]) => command.input.TransactItems,
+    )?.[0].input as { TransactItems: readonly Record<string, unknown>[] };
+    const condition = transaction.TransactItems[0].ConditionCheck as {
+      ExpressionAttributeValues: Record<string, AttributeValue>;
+    };
+    const conditionValues = unmarshall(condition.ExpressionAttributeValues);
+    expect(conditionValues[':draft']).toEqual(legacy);
+    expect(conditionValues[':draft']).not.toHaveProperty('modelKey');
+  });
+
+  it('rejects a concurrent change that only changes the selected model', async () => {
+    const harness = new DynamoHarness();
+    const original = createDefaultDraft();
+    harness.put({
+      PK: 'USER#owner',
+      SK: 'DRAFT',
+      version: 1,
+      updatedAt: '2026-09-21T15:00:00.000Z',
+      draft: original,
+    });
+    harness.transactionBehavior = () => {
+      harness.put({
+        ...harness.read('USER#owner', 'DRAFT'),
+        draft: { ...original, modelKey: 'gpt-5.6-sol' },
+      });
+      return 'throw';
+    };
+    await expect(
+      storeFor(harness).admit({
+        owner: 'owner',
+        requestKey: 'concurrent-model',
+        expectedVersion: 1,
+        draft: original,
+      }),
+    ).rejects.toBeInstanceOf(AdmissionConflictError);
   });
 
   it('resolves a transaction cancellation by rereading idempotency, draft and quota without re-admitting', async () => {
@@ -449,6 +576,43 @@ describe('Dynamo action publication ambiguity', () => {
 });
 
 describe('Dynamo call finalization and recovery', () => {
+  it('records the effective model identity on every new call', async () => {
+    const harness = new DynamoHarness();
+    const { attemptId } = seedAttempt(harness, {
+      status: 'running',
+      executorId: 'executor-a',
+    });
+    const call = await storeFor(harness).beginCall('owner', attemptId, 'executor-a', {
+      attemptId,
+      seq: 1,
+      decisionId: 'decision-1',
+      requestKey: 'request-key',
+      responseKey: 'response-key',
+      requestSha256: 'a'.repeat(64),
+      requestBytes: 1,
+      status: 'started',
+      usage: {
+        inputTokens: null,
+        outputTokens: null,
+        reasoningTokens: null,
+        gameTokens: null,
+        cacheReadTokens: null,
+        cacheWriteTokens: null,
+      },
+      createdAt: '2026-09-21T15:00:00.000Z',
+      updatedAt: '2026-09-21T15:00:00.000Z',
+    });
+    expect(call).toMatchObject({
+      modelKey: 'claude-sonnet-5',
+      modelId: 'global.anthropic.claude-sonnet-5',
+      region: 'us-east-1',
+      profileVersion: 'claude-sonnet-5-global-v1',
+    });
+    expect(harness.read(`ATTEMPT#${attemptId}`, 'CALL#00000001')).toMatchObject({
+      modelKey: 'claude-sonnet-5',
+    });
+  });
+
   it('requires immutable call identity and permits only legal status transitions', async () => {
     const harness = new DynamoHarness();
     const { attemptId } = seedAttempt(harness, {
@@ -464,6 +628,7 @@ describe('Dynamo call finalization and recovery', () => {
       usage: {
         inputTokens: 10,
         outputTokens: 5,
+        reasoningTokens: null,
         gameTokens: 15,
         cacheReadTokens: null,
         cacheWriteTokens: null,
@@ -526,6 +691,7 @@ describe('Dynamo call finalization and recovery', () => {
       usage: {
         inputTokens: 10,
         outputTokens: 5,
+        reasoningTokens: null,
         gameTokens: 15,
         cacheReadTokens: 2,
         cacheWriteTokens: 3,
@@ -537,6 +703,7 @@ describe('Dynamo call finalization and recovery', () => {
       usage: {
         inputTokens: null,
         outputTokens: null,
+        reasoningTokens: null,
         gameTokens: null,
         cacheReadTokens: null,
         cacheWriteTokens: null,
@@ -655,6 +822,7 @@ describe('Dynamo call finalization and recovery', () => {
       usage: {
         inputTokens: 10,
         outputTokens: 5,
+        reasoningTokens: null,
         gameTokens: 15,
         cacheReadTokens: null,
         cacheWriteTokens: null,
@@ -675,6 +843,7 @@ describe('Dynamo call finalization and recovery', () => {
       usage: {
         inputTokens: null,
         outputTokens: null,
+        reasoningTokens: null,
         gameTokens: null,
         cacheReadTokens: null,
         cacheWriteTokens: null,

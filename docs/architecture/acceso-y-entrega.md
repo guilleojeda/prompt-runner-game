@@ -124,6 +124,8 @@ AgentCore crea el endpoint predeterminado y una identidad interna junto al Runti
 
 Las transacciones DynamoDB se autorizan por sus operaciones internas: `GetItem`, `PutItem`, `UpdateItem` y `ConditionCheckItem` cuando se usan comprobaciones condicionales. `TransactWriteItems` es la operación de API, no un permiso IAM adicional. Los roles de API y ejecutor necesitan esos permisos sobre la tabla retenida; ver [IAM con transacciones DynamoDB](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis-iam.html).
 
+El rol Runtime autoriza únicamente los perfiles y foundation models del catálogo finito; API y starter no reciben permisos de inferencia. El grafo de despliegue ordena el Runtime y sus permisos antes de la Lambda API y la entrada web después de esa Lambda. Se pueden publicar assets estáticos antes sin activar la interfaz nueva.
+
 Un acuerdo de modelo disponible no prueba que la cuenta pueda inferir. Antes de aceptar la ejecución, verificar una llamada real al perfil acordado y la cuota aplicada; una denegación de habilitación de cuenta requiere resolver el acceso con AWS. No se sustituye el modelo para presentar esa verificación como exitosa.
 
 La cuenta AWS es exclusiva de este proyecto. La política permite etiquetar distribuciones de esta cuenta durante su creación, cuando aún no existe el tag `Application`; las operaciones restantes de distribución usan ese tag. OAC y cache policies usan IDs generados y permisos limitados a la cuenta. Estas condiciones asumen esa exclusividad y deben revisarse antes de alojar proyectos ajenos en la misma cuenta.

@@ -106,6 +106,9 @@ export class PromptRunnerHostingStack extends cdk.Stack {
       apiFunction: robot.draftFunction,
       apiExecutionRole: robot.draftExecutionRole,
     });
+    // Keep model admission behind the Runtime role/policy and Runtime update.
+    // CloudFormation applies this ordering to updates as well as creation.
+    robot.draftFunction.node.addDependency(execution.runnerRuntime);
     const publicAuthConfig = {
       ...authentication.config,
       apiBaseUrl: robot.apiBaseUrl,
@@ -157,6 +160,9 @@ export class PromptRunnerHostingStack extends cdk.Stack {
     });
     entryDeployment.node.addDependency(assetsDeployment);
     entryDeployment.node.addDependency(authentication.managedLoginBranding);
+    // Publish the entry point only after the API Lambda that accepts the
+    // catalog has been updated. Hashed assets may still upload first.
+    entryDeployment.node.addDependency(robot.draftFunction);
 
     new cdk.CfnOutput(this, 'WebsiteUrl', {
       description: 'HTTPS URL served by CloudFront.',

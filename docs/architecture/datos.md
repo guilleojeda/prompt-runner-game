@@ -12,6 +12,10 @@ Una respuesta de PUT perdida puede corresponder a una escritura confirmada. El c
 
 El contrato compartido valida forma y catálogo; reconstruye IDs/schemas desde definiciones del proyecto y mide 65.536 bytes máximos de JSON UTF-8 expandido, sin metadatos de transporte o propietario. Un rechazo por forma o tamaño conserva el registro anterior. No se recortan textos, no se corrigen instrucciones y cero habilidades es guardable. Si el registro guardado tiene un formato o catálogo incompatible, la API devuelve `stored_draft_incompatible` y el editor informa el problema sin mostrar defaults editables ni reinicializar los datos. Este error se distingue de una dependencia temporalmente inaccesible.
 
+El borrador v2 incluye `modelKey`; instrucciones, habilidades y selección se guardan con la misma versión de concurrencia. El lector acepta un v1 válido como Sonnet 5, sin escribir durante GET ni recortar sus textos por la metadata añadida. La próxima edición usa el formato nuevo. Un formato desconocido o corrupto sigue siendo incompatible.
+
+La admisión compara el contenido semántico, incluido modelo, y condiciona la transacción sobre la versión y representación raw realmente leídas de DynamoDB. Convertir un v1 en memoria no provoca un conflicto artificial. El intento guarda el perfil efectivo completo y su etiqueta; sus lectores conservan los parámetros históricos y no mezclan defaults vigentes. Las llamadas nuevas registran modelo, perfil y región además de sus cuerpos. No hay migración masiva ni otra tabla de preferencias.
+
 ## Intentos de fase 3 disponibles
 
 La API autenticada expone estas rutas actuales, todas con `no-store` y pertenencia basada en el `sub` validado:
