@@ -361,6 +361,94 @@ describe('access screen', () => {
     expect(screen.getByDisplayValue('Texto pendiente durante la renovación')).toBeTruthy();
   });
 
+  it('preserves an account recovery snapshot when renewal temporarily returns no session', async () => {
+    const first = session('a@example.com', (Date.now() + 50) / 1000, 'old-token', 'subject-a');
+    let resolveRenewal!: (value: AuthSession | null) => void;
+    const initialize = vi
+      .fn<() => Promise<AuthSession | null>>()
+      .mockResolvedValueOnce(first)
+      .mockImplementationOnce(
+        () =>
+          new Promise<AuthSession | null>((resolve) => {
+            resolveRenewal = resolve;
+          }),
+      );
+    const authClient = client({ initialize });
+    render(<App authClient={authClient} attemptApi={emptyAttemptApi()} />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    window.sessionStorage.setItem(
+      'prompt-runner:attempt-recovery',
+      JSON.stringify({
+        sub: 'subject-a',
+        requestKey: 'pending-key',
+        expectedVersion: 2,
+        draft: createDefaultDraft(),
+      }),
+    );
+
+    await waitFor(() => expect(initialize).toHaveBeenCalledTimes(2), { timeout: 2_000 });
+    await act(async () => {
+      resolveRenewal(null);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(await screen.findByRole('button', { name: 'Entrar o crear una cuenta' })).toBeTruthy();
+    expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toContain(
+      'pending-key',
+    );
+  });
+
+  it('clears the previous account recovery snapshot when renewal changes identity', async () => {
+    const first = session('a@example.com', (Date.now() + 50) / 1000, 'old-token', 'subject-a');
+    const renewed = session(
+      'b@example.com',
+      (Date.now() + 600_000) / 1000,
+      'new-token',
+      'subject-b',
+    );
+    let resolveRenewal!: (value: AuthSession) => void;
+    const initialize = vi
+      .fn<() => Promise<AuthSession | null>>()
+      .mockResolvedValueOnce(first)
+      .mockImplementationOnce(
+        () =>
+          new Promise<AuthSession>((resolve) => {
+            resolveRenewal = resolve;
+          }),
+      );
+    const authClient = client({ initialize });
+    render(<App authClient={authClient} attemptApi={emptyAttemptApi()} />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    window.sessionStorage.setItem(
+      'prompt-runner:attempt-recovery',
+      JSON.stringify({
+        sub: 'subject-a',
+        requestKey: 'old-key',
+        expectedVersion: 2,
+        draft: createDefaultDraft(),
+      }),
+    );
+
+    await waitFor(() => expect(initialize).toHaveBeenCalledTimes(2), { timeout: 2_000 });
+    await act(async () => {
+      resolveRenewal(renewed);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(await screen.findByRole('button', { name: 'Entrar o crear una cuenta' })).toBeTruthy();
+    expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toBeNull();
+  });
+
   it('keeps local discard and logout available while waiting for a never-resolving save', async () => {
     vi.useFakeTimers();
     const current = session('a@example.com', (Date.now() + 600_000) / 1000);

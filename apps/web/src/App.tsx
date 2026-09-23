@@ -12,6 +12,7 @@ import { createDraftApiClient, type DraftApi } from './draft-api.js';
 import { RobotEditor, type RobotEditorHandle } from './RobotEditor.js';
 import { createAttemptApiClient, type AttemptApi } from './attempt-api.js';
 import { AttemptWorkspace, type AttemptWorkspaceHandle } from './AttemptWorkspace.js';
+import { clearAttemptRecovery } from './attempt-recovery.js';
 import {
   CognitoPendingConfirmationClient,
   ConfirmationFailure,
@@ -284,6 +285,19 @@ export function App({
   const confirmationRef = useRef<PendingConfirmationClient | null>(confirmationClient ?? null);
   const initializationRef = useRef<Promise<AuthSession | null> | null>(null);
 
+  const applySessionState = useCallback((nextSession: AuthSession | null): void => {
+    const previousSession = currentSessionRef.current;
+    if (
+      previousSession &&
+      nextSession &&
+      previousSession.identity.sub !== nextSession.identity.sub
+    ) {
+      clearAttemptRecovery(previousSession.identity.sub);
+    }
+    currentSessionRef.current = nextSession;
+    setSession(nextSession);
+  }, []);
+
   useEffect(() => {
     let active = true;
     if (!initializationRef.current) {
@@ -328,7 +342,12 @@ export function App({
         if (!active) {
           return;
         }
-        applySession(initializedSession);
+        applySessionState(initializedSession);
+        setRenewing(false);
+        setApiAuthError(false);
+        setPhase(initializedSession ? 'account' : 'visitor');
+        setError(null);
+        setRetryAction(null);
       })
       .catch((initializationError: unknown) => {
         if (!active) {
@@ -341,17 +360,13 @@ export function App({
     return () => {
       active = false;
     };
-
-    function applySession(session: AuthSession | null): void {
-      currentSessionRef.current = session;
-      setSession(session);
-      setRenewing(false);
-      setApiAuthError(false);
-      setPhase(session ? 'account' : 'visitor');
-      setError(null);
-      setRetryAction(null);
-    }
-  }, [clientFactory, configLoader, confirmationClientFactory, initializationAttempt]);
+  }, [
+    applySessionState,
+    clientFactory,
+    configLoader,
+    confirmationClientFactory,
+    initializationAttempt,
+  ]);
 
   useEffect(() => {
     const expiresAt = session?.user.expires_at;
@@ -370,9 +385,12 @@ export function App({
         .then((renewedSession) => {
           const sameIdentity =
             renewedSession !== null && renewedSession.identity.sub === session.identity.sub;
-          currentSessionRef.current = sameIdentity ? renewedSession : null;
+          if (renewedSession && !sameIdentity) {
+            clearAttemptRecovery(session.identity.sub);
+          }
+          const nextSession = sameIdentity ? renewedSession : null;
+          applySessionState(nextSession);
           setRenewing(false);
-          setSession(sameIdentity ? renewedSession : null);
           setPhase(sameIdentity ? 'account' : 'visitor');
           setRetryAction(null);
         })
@@ -385,7 +403,7 @@ export function App({
     }, delay);
 
     return () => window.clearTimeout(timer);
-  }, [phase, session?.identity.sub, session?.user.expires_at]);
+  }, [applySessionState, phase, session?.identity.sub, session?.user.expires_at]);
 
   const beginLogin = async () => {
     const client = clientRef.current;
@@ -477,6 +495,9 @@ export function App({
 
   const performLogout = async () => {
     logoutAttemptRef.current += 1;
+    if (session) {
+      clearAttemptRecovery(session.identity.sub);
+    }
     const client = clientRef.current;
     currentSessionRef.current = null;
     setSession(null);
