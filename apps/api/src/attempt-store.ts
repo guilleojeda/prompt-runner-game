@@ -286,6 +286,7 @@ const isTransactionCancellation = (error: unknown): boolean =>
   (error.name === 'TransactionCanceledException' ||
     error.name === 'TransactionInProgressException');
 const isTransactionConflict = (error: unknown): boolean => {
+  if (error instanceof Error && error.name === 'TransactionConflictException') return true;
   if (!isTransactionCancellation(error)) return false;
   const reasons = (error as { CancellationReasons?: unknown }).CancellationReasons;
   return (
@@ -1359,7 +1360,7 @@ export class DynamoAttemptStore implements AttemptStore {
     const bodyStore = this.bodyStore;
     if (!bodyStore) return;
     const initial = await this.get(owner, attemptId);
-    if (!initial) return;
+    if (!initial || initial.status === 'pending' || initial.status === 'running') return;
     const calls = await this.getCalls(owner, attemptId);
     for (const call of calls) {
       if (
@@ -1370,12 +1371,6 @@ export class DynamoAttemptStore implements AttemptStore {
       )
         continue;
       if (!call.responseKey) continue;
-      // A running call publishes its response key before the provider body
-      // exists. Wait for finishCall instead of probing an active object; if the
-      // run reaches its deadline, closeExpired calls recovery again after
-      // closing it, and terminal recovery surfaces any real body dependency
-      // failure.
-      if (initial.status === 'running' && call.status === 'started') continue;
       const body = await bodyStore.get(call.responseKey);
       if (!body) continue;
       const digest = sha256(body);
@@ -1403,7 +1398,8 @@ export class DynamoAttemptStore implements AttemptStore {
             Key: key(`ATTEMPT#${attemptId}`, `CALL#${String(call.seq).padStart(8, '0')}`),
             UpdateExpression:
               'SET #status = :status, #responseSha256 = :sha, #responseBytes = :bytes, #usage = :usage, #updatedAt = :updatedAt',
-            ConditionExpression: 'attribute_not_exists(#responseSha256) OR #responseSha256 = :sha',
+            ConditionExpression:
+              '#status = :statusBefore AND (attribute_not_exists(#responseSha256) OR #responseSha256 = :sha)',
             ExpressionAttributeNames: {
               '#status': 'status',
               '#responseSha256': 'responseSha256',
@@ -1413,6 +1409,7 @@ export class DynamoAttemptStore implements AttemptStore {
             },
             ExpressionAttributeValues: marshall({
               ':status': status,
+              ':statusBefore': call.status,
               ':sha': digest,
               ':bytes': body.byteLength,
               ':usage': usage,
@@ -1421,7 +1418,7 @@ export class DynamoAttemptStore implements AttemptStore {
           }),
         )
         .catch((error: unknown) => {
-          if (!isConditional(error)) throw error;
+          if (!isConditional(error) && !isTransactionConflict(error)) throw error;
         });
     }
     const current = await this.get(owner, attemptId);
@@ -1497,7 +1494,7 @@ export class DynamoAttemptStore implements AttemptStore {
         }),
       )
       .catch((error: unknown) => {
-        if (!isConditional(error)) throw error;
+        if (!isConditional(error) && !isTransactionConflict(error)) throw error;
       });
   }
 
