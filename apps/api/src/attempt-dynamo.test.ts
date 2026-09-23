@@ -1,6 +1,7 @@
 import {
   ConditionalCheckFailedException,
   TransactionCanceledException,
+  TransactionConflictException,
   type AttributeValue,
   type DynamoDBClient,
 } from '@aws-sdk/client-dynamodb';
@@ -34,13 +35,15 @@ type CommandLike = {
   readonly constructor: { readonly name: string };
 };
 
-type HarnessBehavior = undefined | 'throw' | 'applyThenThrow';
+type HarnessBehavior = undefined | 'throw' | 'applyThenThrow' | 'transaction-conflict';
 
 const conditionalError = (): ConditionalCheckFailedException =>
   new ConditionalCheckFailedException({ message: 'conditional', $metadata: {} });
 
 const transactionError = (): TransactionCanceledException =>
   new TransactionCanceledException({ message: 'ambiguous', $metadata: {} });
+const transactionConflictError = (): TransactionConflictException =>
+  new TransactionConflictException({ message: 'conflict', $metadata: {} });
 
 const keyFromInput = (input: Record<string, unknown>): { PK: string; SK: string } => {
   const key = unmarshall(input.Key as Record<string, AttributeValue>) as {
@@ -127,6 +130,7 @@ class DynamoHarness {
         this.applyUpdate(input);
         throw conditionalError();
       }
+      if (behavior === 'transaction-conflict') throw transactionConflictError();
       if (behavior === 'throw') throw conditionalError();
       this.applyUpdate(input);
       return {};
@@ -757,6 +761,44 @@ describe('Dynamo call finalization and recovery', () => {
     expect(harness.read(`ATTEMPT#${attemptId}`, 'CALL#00000001')?.status).toBe('started');
   });
 
+  it('does not recover any body while a running attempt owns a received call', async () => {
+    const harness = new DynamoHarness();
+    const { attemptId } = seedAttempt(harness, { status: 'running', executorId: 'executor-a' });
+    seedCall(harness, attemptId, { status: 'received' });
+    const bodyStore: BodyStore = {
+      put: vi.fn(),
+      get: vi.fn(async () => {
+        throw new AttemptStoreError('running recovery must not read bodies');
+      }),
+    };
+
+    await expect(
+      storeFor(harness, bodyStore).recoverBodies('owner', attemptId),
+    ).resolves.toBeUndefined();
+
+    expect(bodyStore.get).not.toHaveBeenCalled();
+    expect(harness.read('USER#owner', `ATTEMPT#${attemptId}`)?.status).toBe('running');
+  });
+
+  it('does not recover bodies while a pending attempt may be claiming', async () => {
+    const harness = new DynamoHarness();
+    const { attemptId } = seedAttempt(harness, { status: 'pending' });
+    seedCall(harness, attemptId);
+    const bodyStore: BodyStore = {
+      put: vi.fn(),
+      get: vi.fn(async () => {
+        throw new AttemptStoreError('pending recovery must not read bodies');
+      }),
+    };
+
+    await expect(
+      storeFor(harness, bodyStore).recoverBodies('owner', attemptId),
+    ).resolves.toBeUndefined();
+
+    expect(bodyStore.get).not.toHaveBeenCalled();
+    expect(harness.read('USER#owner', `ATTEMPT#${attemptId}`)?.status).toBe('pending');
+  });
+
   it.each([
     ['NoSuchKey', false],
     ['NotFound', false],
@@ -801,6 +843,66 @@ describe('Dynamo call finalization and recovery', () => {
       recordComplete: false,
     });
     expect(bodyStore.get).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['response metadata', '#responseSha256'],
+    ['aggregate metadata', '#calls'],
+  ])('does not turn a terminal %s conflict into a GET failure', async (_label, conflictField) => {
+    const harness = new DynamoHarness();
+    const { attemptId } = seedAttempt(harness, { status: 'error', executorId: 'executor-a' });
+    seedCall(harness, attemptId);
+    harness.updateBehavior = (input) =>
+      String(input.UpdateExpression).includes(conflictField) ? 'transaction-conflict' : undefined;
+    const bodyStore: BodyStore = {
+      put: vi.fn(),
+      get: vi.fn(async () => new TextEncoder().encode('{"ok":true}')),
+    };
+
+    await expect(
+      storeFor(harness, bodyStore).recoverBodies('owner', attemptId),
+    ).resolves.toBeUndefined();
+
+    const call = harness.read(`ATTEMPT#${attemptId}`, 'CALL#00000001')!;
+    const header = harness.read('USER#owner', `ATTEMPT#${attemptId}`)!;
+    if (conflictField === '#responseSha256') {
+      expect(call.status).toBe('started');
+      expect(call.responseSha256).toBeUndefined();
+      expect(header.calls).toBe(1);
+      expect(header.recordComplete).toBe(false);
+    } else {
+      expect(call.status).toBe('received');
+      expect(call.responseSha256).toMatch(/^[a-f0-9]{64}$/);
+      expect(header.calls).toBe(0);
+      expect(header.recordComplete).toBe(true);
+    }
+  });
+
+  it('guards response recovery against a stale call status', async () => {
+    const harness = new DynamoHarness();
+    const { attemptId } = seedAttempt(harness, { status: 'error', executorId: 'executor-a' });
+    seedCall(harness, attemptId);
+    let responseCondition = '';
+    harness.updateBehavior = (input) => {
+      if (String(input.UpdateExpression).includes('#responseSha256')) {
+        responseCondition = String(input.ConditionExpression);
+        const current = harness.read(`ATTEMPT#${attemptId}`, 'CALL#00000001')!;
+        harness.put({ ...current, status: 'error' });
+        return 'throw';
+      }
+      return undefined;
+    };
+    const bodyStore: BodyStore = {
+      put: vi.fn(),
+      get: vi.fn(async () => new TextEncoder().encode('{"ok":true}')),
+    };
+
+    await expect(
+      storeFor(harness, bodyStore).recoverBodies('owner', attemptId),
+    ).resolves.toBeUndefined();
+
+    expect(responseCondition).toContain('#status = :statusBefore');
+    expect(harness.read(`ATTEMPT#${attemptId}`, 'CALL#00000001')?.status).toBe('error');
   });
 
   it('counts an unresolved started call after terminal recovery and keeps all metrics unknown', async () => {
