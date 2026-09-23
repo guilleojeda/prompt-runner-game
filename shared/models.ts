@@ -18,6 +18,10 @@ export const MODEL_KEYS = [
 
 export type ModelKey = (typeof MODEL_KEYS)[number];
 
+/** Models selectable for new drafts and admissions in the current phase. */
+export const AVAILABLE_MODEL_KEYS = ['claude-sonnet-4.6'] as const;
+export type AvailableModelKey = (typeof AVAILABLE_MODEL_KEYS)[number];
+
 export type ModelProvider = 'openai' | 'anthropic';
 export type ModelToolChoice = 'auto' | 'any';
 export type ModelThinking = 'omitted' | 'disabled' | 'adaptive';
@@ -87,7 +91,7 @@ export class ModelProfileError extends Error {
 const profile = (value: ModelProfile): Readonly<ModelProfile> =>
   Object.freeze({ ...value, protocol: Object.freeze({ ...value.protocol }) });
 
-/** The only model profiles that may be admitted by the server. */
+/** Known model profiles; new-admission availability is the separate allowlist below. */
 export const MODEL_CATALOG: readonly ModelProfile[] = Object.freeze([
   profile({
     key: 'gpt-5.6-sol',
@@ -151,7 +155,7 @@ export const MODEL_CATALOG: readonly ModelProfile[] = Object.freeze([
   }),
 ]);
 
-export const DEFAULT_MODEL_KEY: ModelKey = 'claude-sonnet-5';
+export const DEFAULT_MODEL_KEY: ModelKey = 'claude-sonnet-4.6';
 /** Historical v1 drafts and attempts always used this key. */
 export const LEGACY_MODEL_KEY: ModelKey = 'claude-sonnet-5';
 
@@ -159,9 +163,17 @@ const profilesByKey = new Map<ModelKey, ModelProfile>(
   MODEL_CATALOG.map((entry) => [entry.key, entry]),
 );
 const knownModelKeys = new Set<ModelKey>(MODEL_KEYS);
+const availableModelKeys = new Set<ModelKey>(AVAILABLE_MODEL_KEYS);
+
+export const AVAILABLE_MODEL_CATALOG: readonly ModelProfile[] = Object.freeze(
+  MODEL_CATALOG.filter((entry) => availableModelKeys.has(entry.key)),
+);
 
 export const isModelKey = (value: unknown): value is ModelKey =>
   typeof value === 'string' && knownModelKeys.has(value as ModelKey);
+
+export const isAvailableModelKey = (value: unknown): value is AvailableModelKey =>
+  typeof value === 'string' && availableModelKeys.has(value as ModelKey);
 
 /**
  * Parse a frozen profile from a stored attempt or a trusted server boundary.
@@ -253,4 +265,12 @@ export const resolveModelProfile = (key: unknown): Readonly<ModelProfile> => {
   const resolved = profilesByKey.get(key);
   if (!resolved) throw new Error('El modelo seleccionado no está disponible.');
   return resolved;
+};
+
+/** Resolve a profile for a new admission; historical keys remain parseable above. */
+export const resolveAvailableModelProfile = (key: unknown): Readonly<ModelProfile> => {
+  if (!isAvailableModelKey(key)) {
+    throw new Error('El modelo seleccionado no está disponible para nuevos intentos.');
+  }
+  return resolveModelProfile(key);
 };

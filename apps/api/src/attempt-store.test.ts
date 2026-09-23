@@ -28,9 +28,9 @@ describe('attempt lifecycle store', () => {
     const draft = savedDraft().draft;
     const first = await store.admit({ owner: 'a', requestKey: 'same', expectedVersion: 1, draft });
     expect(first.attempt).toMatchObject({
-      modelKey: 'claude-sonnet-5',
-      modelLabel: 'Claude Sonnet 5',
-      modelId: 'global.anthropic.claude-sonnet-5',
+      modelKey: 'claude-sonnet-4.6',
+      modelLabel: 'Claude Sonnet 4.6',
+      modelId: 'global.anthropic.claude-sonnet-4-6',
     });
     const duplicate = await store.admit({
       owner: 'a',
@@ -82,19 +82,23 @@ describe('attempt lifecycle store', () => {
   });
 
   it('recovers a duplicate before checking a temporarily inactive model', async () => {
+    const blockedDraft = { ...createDefaultDraft(), modelKey: 'claude-sonnet-5' as const };
     const store = new MemoryAttemptStore({
       quotaLimit: 1,
-      draft: savedDraft(),
+      draft: { ...savedDraft(), draft: blockedDraft },
       now: () => new Date('2026-09-21T15:00:00.000Z'),
     });
-    const draft = savedDraft().draft;
+    const draft = blockedDraft;
+    const resolver = vi
+      .spyOn(models, 'resolveAvailableModelProfile')
+      .mockImplementation((key) => models.resolveModelProfile(key));
     const first = await store.admit({
       owner: 'a',
       requestKey: 'inactive',
       expectedVersion: 1,
       draft,
     });
-    const resolver = vi.spyOn(models, 'resolveModelProfile').mockImplementationOnce(() => {
+    resolver.mockImplementation(() => {
       throw new Error('temporarily unavailable');
     });
     try {
@@ -107,9 +111,6 @@ describe('attempt lifecycle store', () => {
       expect(duplicate.admitted).toBe(false);
       expect(duplicate.attempt.id).toBe(first.attempt.id);
       expect((await store.quota('a')).used).toBe(1);
-      resolver.mockImplementation(() => {
-        throw new Error('temporarily unavailable');
-      });
       await expect(
         store.admit({ owner: 'a', requestKey: 'new-inactive', expectedVersion: 1, draft }),
       ).rejects.toBeInstanceOf(ModelUnavailableError);

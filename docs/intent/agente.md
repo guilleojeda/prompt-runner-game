@@ -87,7 +87,7 @@ Si no hay herramientas habilitadas, la interfaz debe pedir que se agregue al men
 
 ## Capturar configuraciones y snapshots
 
-El jugador elige un modelo del catálogo Bedrock admitido desde el editor. La elección se guarda junto con instrucciones y habilidades, y usa parámetros propios del perfil; no permite introducir endpoints o parámetros arbitrarios. Los fallos de acceso o cuota se informan sin sustituir el modelo.
+El editor ofrece Sonnet 4.6 como modelo predeterminado y único disponible para intentos nuevos. Un borrador guardado con otro modelo conserva su elección y exige elegir explícitamente Sonnet 4.6 antes de Probar. La elección se guarda junto con instrucciones y habilidades, y usa parámetros propios del perfil; no permite introducir endpoints o parámetros arbitrarios. Los fallos de acceso o cuota se informan sin sustituir el modelo.
 
 El clic en **Probar** valida y guarda directamente el borrador. Cada intento admitido toma una copia fija de esa configuración y del nivel seleccionado antes de su primer turno. La copia incluye, como mínimo, instrucciones, herramientas habilitadas, identificadores opacos, descripciones, esquemas aplicables y la configuración de inferencia elegida. El valor de `animation_enabled` se guarda en el intento como preferencia de presentación y no se incluye en el payload del modelo.
 

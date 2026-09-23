@@ -22,7 +22,7 @@ import {
 import {
   LEGACY_MODEL_KEY,
   readModelProfile,
-  resolveModelProfile,
+  resolveAvailableModelProfile,
   type ModelProfile,
 } from '../../../shared/models.js';
 import { createInitialState, LEVEL, scoreAttempt } from '../../../shared/game.js';
@@ -244,7 +244,7 @@ const configForAdmission = (
 ): AttemptConfig => {
   let model: Readonly<ModelProfile>;
   try {
-    model = resolveModelProfile(draft.modelKey);
+    model = resolveAvailableModelProfile(draft.modelKey);
   } catch {
     throw new ModelUnavailableError();
   }

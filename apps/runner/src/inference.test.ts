@@ -3,7 +3,7 @@ import { Readable } from 'node:stream';
 import { HttpRequest, HttpResponse } from '@smithy/core/transport';
 import type { HttpHandlerOptions, RequestHandler, RequestHandlerOutput } from '@smithy/types';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { MODEL_CATALOG, type ModelProfile } from '../../../shared/models.js';
+import { MODEL_CATALOG, modelByKey, type ModelProfile } from '../../../shared/models.js';
 import {
   AuditedRequestHandler,
   DECISION_INFERENCE_IMPLEMENTATION,
@@ -232,7 +232,7 @@ describe('auditable Strands Bedrock decision', () => {
 
   it('executes an admitted versioned snapshot with its original values after catalog changes', async () => {
     const historical = {
-      ...DEFAULT_DECISION_MODEL_CONFIG,
+      ...modelByKey('claude-sonnet-5')!,
       label: 'Claude Sonnet 5 histórico',
       modelId: 'us.anthropic.claude-sonnet-5',
       region: 'us-west-2',
@@ -344,9 +344,9 @@ describe('auditable Strands Bedrock decision', () => {
     for (const body of bodies) {
       expect(body).toMatchObject({
         inferenceConfig: { maxTokens: 512 },
-        additionalModelRequestFields: { thinking: { type: 'disabled' } },
         toolConfig: { toolChoice: { any: {} } },
       });
+      expect(body).not.toHaveProperty('additionalModelRequestFields');
       expect(body).not.toHaveProperty('cacheConfig');
       expect(JSON.stringify(body)).not.toContain('cachePoint');
       const messages = body.messages as Array<{ role: string; content: unknown[] }>;

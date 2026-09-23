@@ -199,7 +199,7 @@ export const DEFAULT_ATTEMPT_CONFIG: AttemptConfig = {
   engineVersion: 'static-engine-v1',
   protocolVersion: 'tool-protocol-v1',
   protocol: { api: 'converse', stream: false },
-  inferenceVersion: 'sonnet5-global-v1',
+  inferenceVersion: 'claude-sonnet-4.6-global-v1',
   model: resolveModelProfile(DEFAULT_MODEL_KEY),
   scoreVersion: 'score-v1',
   maxTurns: 12,

@@ -1,6 +1,6 @@
 # Ejecución del juego y del agente
 
-**Ejecución estática implementada; aceptación operativa de la fase 3 pendiente.** AgentCore Runtime con Strands en TypeScript y Amazon Bedrock mediante su integración nativa reúne la coordinación del intento, el motor estático y el registro. La fase 3 ejecuta el nivel `principal-estatico-v1`, conserva el resultado y permite consultar intentos propios. `animationEnabled` es `false` y `presentationComplete` empieza en `true`: el renderer, la animación y el replay son capacidades posteriores. Este documento distingue el circuito actual del diseño aprobado para esas fases. La disponibilidad de inferencia se verifica por modelo y cuenta; el selector no garantiza acceso. Los requisitos están en [la especificación](../../README.md#documentación-del-producto); Cognito usa su correo predeterminado inicialmente y SES se incorpora después; el frontend se publica en S3 privado mediante CloudFront con Origin Access Control, según [acceso y entrega](acceso-y-entrega.md).
+**Ejecución estática con Sonnet 4.6.** AgentCore Runtime con Strands en TypeScript y Amazon Bedrock mediante su integración nativa reúne la coordinación del intento, el motor estático y el registro. La fase 3 ejecuta el nivel `principal-estatico-v1`, conserva el resultado y permite consultar intentos propios. `animationEnabled` es `false` y `presentationComplete` empieza en `true`: el renderer, la animación y el replay son capacidades posteriores. Este documento distingue el circuito actual del diseño aprobado para esas fases. Sonnet 4.6 es el único modelo disponible para intentos nuevos; los perfiles históricos conservan su identidad y parámetros. Los requisitos están en [la especificación](../../README.md#documentación-del-producto); Cognito usa su correo predeterminado inicialmente y SES se incorpora después; el frontend se publica en S3 privado mediante CloudFront con Origin Access Control, según [acceso y entrega](acceso-y-entrega.md).
 
 ## Componentes y responsabilidades
 
@@ -63,7 +63,7 @@ Fase 4 agregará el toggle de Animación, sprites SVG, replay desde el registro 
 
 ## Inferencia
 
-La integración usa **`BedrockModel` de Strands 1.18.0 y Converse sin streaming** para el catálogo finito de OpenAI y Claude, desde `us-east-1` y con credenciales IAM. `shared/models.ts` es la autoridad de claves, etiquetas y perfiles; la UI sólo elige una clave. No hay APIs directas de fabricantes, Mantle, claves API nuevas ni descubrimiento de modelos durante cada intento. El cliente AWS fija `maxAttempts=1`.
+La integración usa **`BedrockModel` de Strands 1.18.0 y Converse sin streaming** para el catálogo finito de OpenAI y Claude, desde `us-east-1` y con credenciales IAM. `shared/models.ts` es la autoridad de claves, etiquetas, perfiles y disponibilidad para nuevas admisiones; la UI sólo elige una clave. Sonnet 4.6 es el único perfil disponible. La tabla conserva además los perfiles conocidos para leer y recuperar datos históricos; no declara operativos los modelos diferidos. No hay APIs directas de fabricantes, Mantle, claves API nuevas ni descubrimiento de modelos durante cada intento. El cliente AWS fija `maxAttempts=1`.
 
 | Modelo | Perfil global | Salida máxima | Razonamiento y herramientas |
 |---|---|---:|---|
@@ -73,7 +73,7 @@ La integración usa **`BedrockModel` de Strands 1.18.0 y Converse sin streaming*
 | Claude Opus 5 | `global.anthropic.claude-opus-5` | 512 | Thinking explícitamente desactivado; `any`. |
 | Claude Opus 5.5 | `global.anthropic.claude-opus-5-5` | 4096 | Adaptive thinking, esfuerzo `low`; `auto`. |
 
-Sonnet 5 conserva el default. Los límites son parámetros técnicos guardados por intento. No se envían temperature ni controles de caché por analogía entre proveedores. Omitir un override se registra como omisión, sin inventar el valor efectivo del servicio. GPT-6 Luna y Sol quedan fuera del selector hasta que exista disponibilidad Bedrock confirmada; no se sustituyen por otros modelos.
+Sonnet 4.6 es el default de borradores e intentos nuevos. GPT-5.6 Sol, Sonnet 5 y Opus 5/5.5 no se admiten en intentos nuevos hasta completar su habilitación y verificación. Los borradores previos conservan su elección y requieren cambiarla explícitamente a Sonnet 4.6; los registros v1 siguen significando Sonnet 5. La recuperación por clave de intentos ya admitidos precede a este control de disponibilidad. Los límites son parámetros técnicos guardados por intento. No se envían temperature ni controles de caché por analogía entre proveedores. Omitir un override se registra como omisión, sin inventar el valor efectivo del servicio. GPT-6 Luna y Sol quedan fuera del selector hasta que exista disponibilidad Bedrock confirmada; no se sustituyen por otros modelos.
 
 Cada intento guarda el perfil completo y versionado; el ejecutor usa ese snapshot aunque cambien los defaults. La identidad efectiva también queda en cada llamada, porque Converse incluye el modelo en la ruta HTTP y no en el body. La disponibilidad documental no acredita permisos, cuota o inferencia exitosa en la cuenta. Véanse [Bedrock](../reference/bedrock.md) y [Strands](../reference/agentcore.md#strands-dentro-de-runtime).
 
