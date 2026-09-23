@@ -58,19 +58,19 @@ Las descripciones e instrucciones del público solo influyen en la selección de
 
 La configuración del modelo, parámetros de inferencia, límites de turnos, cuota diaria, pesos, valores de objetos y niveles debe estar documentada. Cuando se muestre dinero, también las tarifas y su fecha. Un cambio en las habilidades o instrucciones del jugador no requiere un despliegue ni crear nuevos recursos de agente.
 
-La entrega usa pull requests con checks y despliegue automático desde `main` mediante GitHub Actions, OIDC y CDK en TypeScript. El ambiente es único y sus actualizaciones afectan al público. [README](../../README.md#desarrollo-local) describe la instalación y los comandos; [acceso y entrega](../architecture/acceso-y-entrega.md) conserva la preparación y operación. La entrada actual puede desarrollarse y verificarse sin credenciales ni inferencia. Cuando se incorpore el agente se documentará su modo de prueba sin inferencia real.
+La entrega usa pull requests con checks y despliegue automático desde `main` mediante GitHub Actions, OIDC y CDK en TypeScript. El ambiente es único y sus actualizaciones afectan al público. [README](../../README.md#desarrollo-local) describe la instalación y los comandos; [acceso y entrega](../architecture/acceso-y-entrega.md) conserva la preparación y operación. La entrada actual puede desarrollarse y verificarse sin credenciales ni inferencia. Las pruebas locales del agente usan transportes controlados; la aceptación operativa requiere invocaciones reales de Bedrock.
 
-## Hechos y elecciones pendientes antes de implementar
+## Implementación y verificaciones
 
 Las capacidades publicadas y sus límites se conservan en referencias técnicas. Estas fuentes permiten comparar soluciones; no convierten una alternativa en decisión aprobada.
 
-| Tema | Base factual | Elección o verificación todavía necesaria |
+| Tema | Base factual | Comportamiento y límites |
 |---|---|---|
-| Runtime + Strands | [AgentCore](../reference/agentcore.md) | Implementar y verificar decisiones independientes, herramientas, registro y continuidad. La arquitectura está elegida. |
+| Runtime + Strands | [AgentCore](../reference/agentcore.md) | Decisiones con contexto independiente, herramienta validada y registro durable implementados según [ejecución](../architecture/ejecucion.md). |
 | Bedrock | [APIs, métricas y tarifas](../reference/bedrock.md) | Verificar acceso, cuotas e inferencia nativa para cada modelo del catálogo. Parámetros y ruta están definidos en [ejecución](../architecture/ejecucion.md#inferencia). |
 | Acceso por email | [Identidad y correo](../reference/identidad.md) | Cognito Managed Login Essentials con correo predeterminado, confirmación y recuperación. SES propio queda para una fase posterior sobre el mismo pool. |
-| Cálculo independiente del navegador | [Tareas y sesiones](../reference/agentcore.md#continuidad-sesión-y-almacenamiento) | Verificar la tarea de background y la recuperación del intento y su presentación al recargar. |
-| DynamoDB y registros | [Contrato de registro](../architecture/registro-de-ejecucion.md) y [datos](../architecture/datos.md) | Borrador on-demand disponible; el registro de intentos y cuerpos S3 conserva su implementación y verificación pendientes. |
+| Cálculo independiente del navegador | [Tareas y sesiones](../reference/agentcore.md#continuidad-sesión-y-almacenamiento) | El cálculo continúa en el servidor al cerrar la pestaña; una nueva sesión recupera el estado y el resultado. Un proceso perdido no se reanuda automáticamente. |
+| DynamoDB y registros | [Contrato de registro](../architecture/registro-de-ejecucion.md) y [datos](../architecture/datos.md) | Borradores e intentos en DynamoDB on-demand; cuerpos de inferencia en S3 privado. La lectura conserva los formatos históricos conocidos. |
 | Despliegue | [CDK y GitHub Actions](../reference/datos-y-entrega.md) | Hosting y workflow operativos mediante OIDC; [URL pública](../../README.md) y preparación AWS documentadas. El ambiente inicial es único. |
 
 El estado observado mediante lecturas de la cuenta se documenta por separado en [cuenta AWS](../reference/cuenta-aws.md). Una consulta de cuota o disponibilidad no prueba la capacidad de la aplicación ni una inferencia exitosa.
