@@ -15,7 +15,7 @@ import {
   foundationModelIdFor,
   STARTER_LAMBDA_ROLE_NAME,
 } from './execution.js';
-import { MODEL_CATALOG } from '../../shared/models.js';
+import { AVAILABLE_MODEL_CATALOG, MODEL_CATALOG } from '../../shared/models.js';
 
 // CDK's first template synthesis pays one-time construct startup cost; this
 // timeout gives infrastructure assertions room for that cost without changing
@@ -517,17 +517,20 @@ describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, 
         Condition: { StringEquals: { 'aws:RequestedRegion': 'us-east-1' } },
       }),
     );
-    expect(JSON.stringify(runnerPolicy?.Properties.PolicyDocument)).toContain(
-      'inference-profile/global.anthropic.claude-sonnet-5',
-    );
     const runnerPolicyJson = JSON.stringify(runnerPolicy?.Properties.PolicyDocument);
-    for (const profile of MODEL_CATALOG) {
+    for (const profile of AVAILABLE_MODEL_CATALOG) {
       expect(runnerPolicyJson).toContain(`inference-profile/${profile.modelId}`);
       expect(
         runnerPolicyJson.match(
           new RegExp(`foundation-model/${foundationModelIdFor(profile)}(?=")`, 'gu'),
         ),
       ).toHaveLength(2);
+    }
+    for (const profile of MODEL_CATALOG.filter(
+      (candidate) => !AVAILABLE_MODEL_CATALOG.some((available) => available.key === candidate.key),
+    )) {
+      expect(runnerPolicyJson).not.toContain(`inference-profile/${profile.modelId}`);
+      expect(runnerPolicyJson).not.toContain(`foundation-model/${foundationModelIdFor(profile)}`);
     }
     expect(runnerPolicyJson).not.toContain('inference-profile/*');
     expect(runnerPolicyJson).not.toContain('gpt-6');

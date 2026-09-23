@@ -17,7 +17,6 @@ import {
 } from './draft';
 import { handleRequest } from './handler';
 import { MemoryAttemptStore } from './attempt-store';
-import * as models from '../../../shared/models';
 
 const identity = {
   sub: 'user-a',
@@ -80,7 +79,7 @@ const dependencies = (store: DraftStore, fetch: typeof globalThis.fetch = verifi
 });
 
 describe('draft API handler', () => {
-  it('admits an unchanged v1-at-limit draft returned by GET without a migration PUT', async () => {
+  it('reads an unchanged v1-at-limit draft without migrating it and blocks its new admission', async () => {
     const current = createDefaultDraft();
     const legacy = {
       schemaVersion: 1 as const,
@@ -129,37 +128,29 @@ describe('draft API handler', () => {
     );
 
     expect(getResponse.statusCode).toBe(200);
-    expect(postResponse.statusCode).toBe(200);
-    expect((responseBody(postResponse).attempt as Record<string, unknown>).modelKey).toBe(
-      'claude-sonnet-5',
-    );
+    expect(postResponse.statusCode).toBe(400);
     expect(draftStore.put).not.toHaveBeenCalled();
-    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(dispatch).not.toHaveBeenCalled();
   });
 
   it('returns a 4xx and leaves quota untouched when a known model is inactive', async () => {
-    const draft = createDefaultDraft();
+    const draft = { ...createDefaultDraft(), modelKey: 'claude-sonnet-5' as const };
     const attemptStore = new MemoryAttemptStore({
       draft: { version: 1, draft },
       quotaLimit: 1,
     });
     const draftStore: DraftStore = { get: vi.fn(), put: vi.fn() };
-    const resolver = vi.spyOn(models, 'resolveModelProfile').mockImplementation(() => {
-      throw new Error('temporarily unavailable');
-    });
-    try {
-      const response = await handleRequest(
-        eventFor('POST', {
-          path: '/attempts',
-          body: JSON.stringify({ requestKey: 'inactive', expectedVersion: 1, draft }),
-        }),
-        { ...dependencies(draftStore), attemptStore, dispatch: vi.fn() },
-      );
-      expect(response.statusCode).toBe(400);
-      expect((await attemptStore.quota('user-a')).used).toBe(0);
-    } finally {
-      resolver.mockRestore();
-    }
+    const dispatch = vi.fn();
+    const response = await handleRequest(
+      eventFor('POST', {
+        path: '/attempts',
+        body: JSON.stringify({ requestKey: 'inactive', expectedVersion: 1, draft }),
+      }),
+      { ...dependencies(draftStore), attemptStore, dispatch },
+    );
+    expect(response.statusCode).toBe(400);
+    expect((await attemptStore.quota('user-a')).used).toBe(0);
+    expect(dispatch).not.toHaveBeenCalled();
   });
 
   it('gets the authenticated owner default and never asks the store for a request owner', async () => {

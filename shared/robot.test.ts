@@ -9,7 +9,7 @@ import {
   validateDraft,
   type LegacyRobotDraft,
 } from './robot';
-import { DEFAULT_MODEL_KEY, MODEL_CATALOG } from './models';
+import { DEFAULT_MODEL_KEY, LEGACY_MODEL_KEY, MODEL_CATALOG } from './models';
 
 const draftWithInstructionBytes = (bytes: number) => {
   const base = createDefaultDraft();
@@ -44,6 +44,7 @@ describe('robot draft contract', () => {
     expect(draft.instructions).toBe(
       'Siempre preferí ir a la derecha, a menos que tengas un buen motivo para no hacerlo',
     );
+    expect(draft.modelKey).toBe('claude-sonnet-4.6');
     expect(draft.skills.filter((skill) => skill.enabled).map((skill) => skill.id)).toEqual([
       'advance',
     ]);
@@ -141,7 +142,7 @@ describe('robot draft contract', () => {
     const before = JSON.stringify(ROBOT_CATALOG);
     const bytes = draftByteLength(createDefaultDraft());
 
-    expect(bytes).toBe(1509);
+    expect(bytes).toBe(1511);
     expect(JSON.stringify(ROBOT_CATALOG)).toBe(before);
     expect(Object.isFrozen(ROBOT_CATALOG)).toBe(true);
     expect(Object.isFrozen(ROBOT_CATALOG[0].inputSchema)).toBe(true);
@@ -157,7 +158,8 @@ describe('robot draft contract', () => {
     };
     const parsed = validateDraft(legacy);
 
-    expect(parsed.modelKey).toBe(DEFAULT_MODEL_KEY);
+    expect(parsed.modelKey).toBe(LEGACY_MODEL_KEY);
+    expect(parsed.modelKey).not.toBe(DEFAULT_MODEL_KEY);
     expect(legacy).not.toHaveProperty('modelKey');
     expect(draftsEqual(legacy, parsed)).toBe(true);
   });

@@ -1,15 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_MODEL_KEY,
+  AVAILABLE_MODEL_CATALOG,
+  AVAILABLE_MODEL_KEYS,
   MODEL_CATALOG,
   MODEL_KEYS,
+  resolveAvailableModelProfile,
   modelByKey,
   readModelProfile,
   resolveModelProfile,
 } from './models.js';
 
 describe('Bedrock model catalog', () => {
-  it('publishes exactly the approved five profiles and Sonnet 5 as default', () => {
+  it('keeps historical profiles while publishing Sonnet 4.6 as the current default', () => {
     expect(MODEL_CATALOG.map((model) => model.key)).toEqual([
       'gpt-5.6-sol',
       'claude-sonnet-4.6',
@@ -17,10 +20,12 @@ describe('Bedrock model catalog', () => {
       'claude-opus-5',
       'claude-opus-5.5',
     ]);
-    expect(DEFAULT_MODEL_KEY).toBe('claude-sonnet-5');
-    expect(modelByKey(DEFAULT_MODEL_KEY)?.modelId).toBe('global.anthropic.claude-sonnet-5');
+    expect(DEFAULT_MODEL_KEY).toBe('claude-sonnet-4.6');
+    expect(modelByKey(DEFAULT_MODEL_KEY)?.modelId).toBe('global.anthropic.claude-sonnet-4-6');
     expect(MODEL_CATALOG.some((model) => model.key.includes('gpt-6'))).toBe(false);
     expect(MODEL_KEYS).toEqual(MODEL_CATALOG.map((model) => model.key));
+    expect(AVAILABLE_MODEL_KEYS).toEqual(['claude-sonnet-4.6']);
+    expect(AVAILABLE_MODEL_CATALOG.map((model) => model.key)).toEqual(['claude-sonnet-4.6']);
   });
 
   it('keeps parameters in each typed profile', () => {
@@ -36,6 +41,8 @@ describe('Bedrock model catalog', () => {
       toolChoice: 'auto',
     });
     expect(() => resolveModelProfile('global.anthropic.claude-sonnet-5')).toThrow();
+    expect(resolveAvailableModelProfile('claude-sonnet-4.6').key).toBe('claude-sonnet-4.6');
+    expect(() => resolveAvailableModelProfile('claude-sonnet-5')).toThrow();
   });
 
   it('reads a complete historical profile without consulting current catalog values', () => {

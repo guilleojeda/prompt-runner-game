@@ -68,7 +68,7 @@ describe('RobotEditor', () => {
     );
     expect(
       (screen.getByLabelText('Modelo para el próximo intento') as HTMLSelectElement).value,
-    ).toBe('claude-sonnet-5');
+    ).toBe('claude-sonnet-4.6');
     expect(screen.getByText('Guardado')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /Probar/i })).toBeNull();
   });
@@ -77,14 +77,31 @@ describe('RobotEditor', () => {
     const putDraft = vi.fn().mockResolvedValue(snapshot(1));
     const editorRef = createRef<RobotEditorHandle>();
     const onTry = vi.fn();
+    const blockedDraft = { ...createDefaultDraft(), modelKey: 'claude-sonnet-5' as const };
     render(
-      <RobotEditor ref={editorRef} api={api({ putDraft })} session={session()} onTry={onTry} />,
+      <RobotEditor
+        ref={editorRef}
+        api={api({ getDraft: vi.fn().mockResolvedValue(snapshot(0, blockedDraft)), putDraft })}
+        session={session()}
+        onTry={onTry}
+      />,
     );
     const selector = await screen.findByLabelText('Modelo para el próximo intento');
-    fireEvent.change(selector, { target: { value: 'claude-opus-5' } });
+    expect(screen.getByText(/no está disponible para nuevos intentos/)).toBeTruthy();
+    expect(screen.getAllByRole('option')).toHaveLength(2);
+    expect(
+      (screen.getByRole('option', { name: /Claude Sonnet 5/ }) as HTMLOptionElement).disabled,
+    ).toBe(true);
+    expect((screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    fireEvent.change(selector, { target: { value: 'claude-sonnet-4.6' } });
     await waitFor(() => expect(putDraft).toHaveBeenCalledOnce(), { timeout: 2_000 });
     expect(putDraft).toHaveBeenCalledOnce();
-    expect(putDraft.mock.calls[0]?.[1]).toMatchObject({ modelKey: 'claude-opus-5' });
+    expect(putDraft.mock.calls[0]?.[1]).toEqual({
+      ...blockedDraft,
+      modelKey: 'claude-sonnet-4.6',
+    });
 
     fireEvent.click(screen.getByRole('button', { name: 'Probar' }));
     expect(onTry).toHaveBeenCalledOnce();

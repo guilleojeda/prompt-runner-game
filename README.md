@@ -47,9 +47,9 @@ El límite de configuración es 65.536 bytes de JSON UTF-8, incluidos los contra
 
 ## Probar y consultar resultados
 
-El editor incluye un selector de GPT-5.6 (Sol), Claude Sonnet 4.6/5 y Opus 5/5.5, exclusivamente mediante Bedrock. Cada intento conserva el modelo y sus parámetros, también al recuperar el historial. GPT-6 Luna/Sol quedan diferidos hasta confirmar disponibilidad Bedrock.
+Claude Sonnet 4.6 es el modelo predeterminado y el único disponible para intentos nuevos, exclusivamente mediante Bedrock. Si un borrador guardado usa otro modelo, el editor lo informa y permite elegir Sonnet 4.6 antes de Probar; no cambia la elección ni los textos silenciosamente. Cada intento conserva su modelo y parámetros originales, también al recuperar el historial.
 
-La aceptación de la ejecución real sigue pendiente. El acceso y las cuotas se comprueban por modelo; una opción en el selector o una suscripción no demuestra que la cuenta pueda inferir. Los errores conservan el intento y no cambian de modelo. Antes de considerar la capacidad lista para participantes se requieren las verificaciones nativas, victoria y carga simultánea acordadas.
+Sonnet 4.6 cuenta con verificación de inferencia nativa, victoria, continuidad y cancelación. Los errores conservan el intento y no cambian de modelo. GPT-5.6 Sol, Sonnet 5 y Opus 5/5.5 quedan fuera de nuevas ejecuciones hasta completar su habilitación y verificación. La capacidad de uso concurrente y la integración de GPT-6 Luna/Sol siguen pendientes.
 
 El recorrido inicial tiene cinco tramos: suelo, pozo, suelo, rama baja y suelo, con la salida al final y hasta doce acciones. Avanzar y Retroceder caminan; Saltar y Agacharse y avanzar reciben dirección; Nadar consume un turno sin mover al robot. Las descripciones explican las habilidades al agente, pero no cambian la física.
 

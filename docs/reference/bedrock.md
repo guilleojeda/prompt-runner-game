@@ -1,6 +1,6 @@
 # Referencia técnica: Bedrock y Claude Sonnet
 
-Fuentes oficiales consultadas el **16–17 de septiembre de 2026**. Esta referencia respalda la integración acordada de Sonnet 5 con `BedrockModel` de Strands, perfil global y Converse sin streaming; no acredita una inferencia exitosa en la cuenta. Los contratos están en [plataforma](../intent/plataforma.md), [agente](../intent/agente.md) y [consumo y puntuación](../intent/consumo-y-puntaje.md).
+Fuentes oficiales consultadas el **16–17 de septiembre de 2026**. Esta referencia documenta los contratos de Sonnet 4.6 y Sonnet 5 con `BedrockModel` de Strands, perfil global y Converse sin streaming; las fuentes del servicio no sustituyen la verificación de la cuenta. Los contratos están en [plataforma](../intent/plataforma.md), [agente](../intent/agente.md) y [consumo y puntuación](../intent/consumo-y-puntaje.md).
 
 ## APIs y regiones
 
@@ -11,7 +11,7 @@ Fuentes oficiales consultadas el **16–17 de septiembre de 2026**. Esta referen
 
 Fuentes: [Sonnet 5](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-sonnet-5.html), [Sonnet 4.6](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-sonnet-4-6.html).
 
-La región origen no garantiza dónde se procesa la inferencia. El perfil global puede enrutar a otras regiones; esa modalidad está permitida y se conserva en el snapshot. El modelo inicial es Sonnet 5; 4.6 se mantiene solo como referencia comparativa de API y tarifa.
+La región origen no garantiza dónde se procesa la inferencia. El perfil global puede enrutar a otras regiones; esa modalidad está permitida y se conserva en el snapshot. El modelo operativo es Sonnet 4.6. Sonnet 5 se conserva como perfil conocido para registros históricos; habilitar su uso nuevo requiere completar la verificación de acceso e inferencia.
 
 ### Clientes TypeScript y credenciales del rol
 

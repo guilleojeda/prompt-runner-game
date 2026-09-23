@@ -25,6 +25,7 @@ import {
   AdmissionConflictError,
   AttemptStoreError,
   createDynamoAttemptStore,
+  ModelUnavailableError,
   S3BodyStore,
 } from './attempt-store.js';
 
@@ -260,6 +261,7 @@ describe('Dynamo attempt admission conditions', () => {
         },
         scoreParameters: { ...DEFAULT_ATTEMPT_CONFIG.scoreParameters, base: 321 },
       },
+      draft: { ...createDefaultDraft(), modelKey: 'claude-sonnet-5' as const },
     });
 
     const record = await storeFor(harness).get('owner', attemptId);
@@ -284,6 +286,8 @@ describe('Dynamo attempt admission conditions', () => {
         inferenceVersion: 'historical-profile-v9',
         model: {
           ...DEFAULT_ATTEMPT_CONFIG.model,
+          key: 'claude-sonnet-5',
+          provider: 'anthropic',
           label: 'Historical label',
           modelId: 'us.anthropic.claude-sonnet-5',
           region: 'eu-west-1',
@@ -292,6 +296,7 @@ describe('Dynamo attempt admission conditions', () => {
           protocol: { stream: false, thinking: 'disabled', toolChoice: 'any' },
         },
       },
+      draft: { ...createDefaultDraft(), modelKey: 'claude-sonnet-5' as const },
     });
 
     const record = await storeFor(harness).get('owner', attemptId);
@@ -337,7 +342,7 @@ describe('Dynamo attempt admission conditions', () => {
     expect(transaction.TransactItems[4].Update.ConditionExpression).toContain('#used < :limit');
   });
 
-  it('admits a legacy v1 draft without rewriting it in the condition check', async () => {
+  it('rejects an unchanged legacy v1 draft before creating a new attempt', async () => {
     const harness = new DynamoHarness();
     const current = createDefaultDraft();
     const legacy = {
@@ -353,23 +358,15 @@ describe('Dynamo attempt admission conditions', () => {
       updatedAt: '2026-09-21T15:00:00.000Z',
       draft: legacy,
     });
-    const result = await storeFor(harness).admit({
-      owner: 'owner',
-      requestKey: 'legacy',
-      expectedVersion: 1,
-      draft: validateDraft(legacy),
-    });
-    expect(result.admitted).toBe(true);
-    expect(result.attempt.modelKey).toBe('claude-sonnet-5');
-    const transaction = harness.send.mock.calls.find(
-      ([command]) => command.input.TransactItems,
-    )?.[0].input as { TransactItems: readonly Record<string, unknown>[] };
-    const condition = transaction.TransactItems[0].ConditionCheck as {
-      ExpressionAttributeValues: Record<string, AttributeValue>;
-    };
-    const conditionValues = unmarshall(condition.ExpressionAttributeValues);
-    expect(conditionValues[':draft']).toEqual(legacy);
-    expect(conditionValues[':draft']).not.toHaveProperty('modelKey');
+    await expect(
+      storeFor(harness).admit({
+        owner: 'owner',
+        requestKey: 'legacy',
+        expectedVersion: 1,
+        draft: validateDraft(legacy),
+      }),
+    ).rejects.toBeInstanceOf(ModelUnavailableError);
+    expect(harness.send.mock.calls.some(([command]) => command.input.TransactItems)).toBe(false);
   });
 
   it('rejects a concurrent change that only changes the selected model', async () => {
@@ -609,13 +606,13 @@ describe('Dynamo call finalization and recovery', () => {
       updatedAt: '2026-09-21T15:00:00.000Z',
     });
     expect(call).toMatchObject({
-      modelKey: 'claude-sonnet-5',
-      modelId: 'global.anthropic.claude-sonnet-5',
+      modelKey: 'claude-sonnet-4.6',
+      modelId: 'global.anthropic.claude-sonnet-4-6',
       region: 'us-east-1',
-      profileVersion: 'claude-sonnet-5-global-v1',
+      profileVersion: 'claude-sonnet-4.6-global-v1',
     });
     expect(harness.read(`ATTEMPT#${attemptId}`, 'CALL#00000001')).toMatchObject({
-      modelKey: 'claude-sonnet-5',
+      modelKey: 'claude-sonnet-4.6',
     });
   });
 

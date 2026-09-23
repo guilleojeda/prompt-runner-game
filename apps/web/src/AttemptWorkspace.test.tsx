@@ -39,9 +39,9 @@ function summary(status: AttemptSummary['status'] = 'running'): AttemptSummary {
     status,
     cancelRequested: false,
     levelId: 'principal-estatico-v1',
-    modelKey: 'claude-sonnet-5',
-    modelLabel: 'Claude Sonnet 5',
-    modelId: 'global.anthropic.claude-sonnet-5',
+    modelKey: 'claude-sonnet-4.6',
+    modelLabel: 'Claude Sonnet 4.6',
+    modelId: 'global.anthropic.claude-sonnet-4-6',
     turnsUsed: 2,
     maxTurns: 12,
     calls: 2,
@@ -156,7 +156,7 @@ describe('AttemptWorkspace', () => {
       1,
       expect.objectContaining({
         instructions: expect.stringContaining('Siempre preferí'),
-        modelKey: 'claude-sonnet-5',
+        modelKey: 'claude-sonnet-4.6',
       }),
     );
     expect(await screen.findByRole('button', { name: 'Cancelar' })).toBeTruthy();
