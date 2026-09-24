@@ -85,7 +85,7 @@ Una duración ilustrativa de caminar puede ser distinta de saltar o caer. El tie
 
 ## Reproducción continua a velocidad fija
 
-`prepareReplay(record, profile)` construye los intervalos, marcadores y recursos requeridos. `sample(t)` devuelve terreno, objetos, salida, posición/pose/frame del robot, efectos y cámara para el tiempo transcurrido `t`. Es una función interna de dibujo: la misma entrada y tiempo producen la misma escena, sin depender de haber reproducido todos los frames anteriores. No constituye una función de búsqueda o navegación disponible al usuario.
+`prepareReplay(record)` valida el registro contra el único nivel vigente y construye los intervalos, marcadores y recursos requeridos. `sample(t)` devuelve terreno, objetos, salida, posición/pose/frame del robot, efectos y cámara para el tiempo transcurrido `t`. Es una función interna de dibujo: la misma entrada y tiempo producen la misma escena, sin depender de haber reproducido todos los frames anteriores. No constituye una función de búsqueda o navegación disponible al usuario.
 
 El reloj conserva el instante de inicio y calcula `tiempo = min(ahora - inicio, duraciónTotal)` con una fuente monotónica. Avanza hacia adelante hasta completar la secuencia, sin estados de pausa, cambios de velocidad, retrocesos, saltos de turno ni finalización anticipada por controles del usuario. Los intervalos propios de esperar, aterrizar o celebrar forman parte de la animación continua.
 

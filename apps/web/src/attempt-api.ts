@@ -7,6 +7,7 @@ import type {
 } from '../../../shared/attempt.js';
 import { ATTEMPT_RECORD_VERSION } from '../../../shared/attempt.js';
 import {
+  isSemanticallyValidActionResolution,
   LEVEL,
   type LevelDefinition,
   type LevelSegment,
@@ -306,7 +307,13 @@ function terrainAllowedByLevel(value: unknown, segments: readonly LevelSegment[]
 }
 
 function isReplayAction(value: unknown): boolean {
-  if (!isRecord(value) || !Number.isSafeInteger(value.seq)) return false;
+  if (
+    !isRecord(value) ||
+    typeof value.seq !== 'number' ||
+    !Number.isSafeInteger(value.seq) ||
+    value.seq < 1
+  )
+    return false;
   if (
     typeof value.decisionId !== 'string' ||
     typeof value.beforeStateId !== 'string' ||
@@ -318,35 +325,12 @@ function isReplayAction(value: unknown): boolean {
   ) {
     return false;
   }
-  const action = value.action;
-  const validAction =
-    action.kind === 'advance' ||
-    action.kind === 'retreat' ||
-    action.kind === 'swim' ||
-    action.kind === 'wait' ||
-    ((action.kind === 'jump' || action.kind === 'crouch') &&
-      (action.direction === 'left' || action.direction === 'right'));
-  const resolution = value.resolution;
-  const validResolution =
-    ['moved', 'no_op', 'fall', 'collision'].includes(String(resolution.outcome)) &&
-    [
-      'moved',
-      'left_boundary',
-      'right_boundary',
-      'swim_no_effect',
-      'wait',
-      'walk_into_pit',
-      'crouch_into_pit',
-      'walk_into_branch',
-      'jump_into_branch',
-      'walk_into_barrier',
-      'crouch_into_low_barrier',
-      'jump_into_high_barrier',
-    ].includes(String(resolution.reason));
-  const movementFields =
-    resolution.outcome === 'no_op' ||
-    (Number.isSafeInteger(resolution.segment) && Number.isSafeInteger(resolution.targetSupport));
-  return validAction && validResolution && movementFields;
+  return isSemanticallyValidActionResolution(
+    value.action,
+    value.before,
+    value.after,
+    value.resolution,
+  );
 }
 
 function isReplayRecord(value: unknown): value is ReplayRecordView {

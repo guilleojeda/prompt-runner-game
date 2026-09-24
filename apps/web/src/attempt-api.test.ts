@@ -253,4 +253,35 @@ describe('AttemptApiClient', () => {
     );
     expect(fetchImpl.mock.calls[1]?.[1]).toMatchObject({ method: 'POST' });
   });
+
+  it('rejects replay data with a terrain cause that contradicts the recorded action', async () => {
+    const source = createClosedAttemptRecordFixture();
+    const states = new Map(source.snapshots.map((snapshot) => [snapshot.id, snapshot]));
+    const record = {
+      recordVersion: source.recordVersion,
+      id: source.id,
+      createdAt: source.createdAt,
+      updatedAt: source.updatedAt,
+      config: { level: source.config.level },
+      snapshots: source.snapshots,
+      actions: source.actions.map((action, index) => ({
+        ...action,
+        before: states.get(action.beforeStateId),
+        after: states.get(action.afterStateId),
+        ...(index === 0 ? { resolution: { ...action.resolution, reason: 'walk_into_pit' } } : {}),
+      })),
+      closure: source.closure,
+      metrics: source.metrics,
+      score: source.score,
+    };
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(JSON.stringify({ record }), { status: 200 }));
+    const client = new AttemptApiClient(config, {
+      tokenProvider: () => 'token',
+      fetch: fetchImpl,
+    });
+
+    await expect(client.getReplay(source.id)).rejects.toMatchObject({ code: 'server' });
+  });
 });

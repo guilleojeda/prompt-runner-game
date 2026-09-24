@@ -4,6 +4,9 @@ import {
   type ReplayRecordView,
 } from '../../../../shared/attempt.js';
 import {
+  isActionResolution,
+  isNormalizedAction,
+  isSemanticallyValidActionResolution,
   LEVEL,
   type Direction,
   type LevelSegment,
@@ -109,22 +112,6 @@ const SYMBOLS = Object.freeze([
 ]);
 
 const terminalStatuses = new Set(['victory', 'defeat', 'incomplete', 'cancelled', 'error']);
-const supportedActions = new Set(['advance', 'retreat', 'jump', 'crouch', 'swim', 'wait']);
-const supportedOutcomes = new Set(['moved', 'no_op', 'fall', 'collision']);
-const supportedReasons = new Set([
-  'moved',
-  'left_boundary',
-  'right_boundary',
-  'swim_no_effect',
-  'wait',
-  'walk_into_pit',
-  'crouch_into_pit',
-  'walk_into_branch',
-  'jump_into_branch',
-  'walk_into_barrier',
-  'crouch_into_low_barrier',
-  'jump_into_high_barrier',
-]);
 
 const fail = (message: string): never => {
   throw new Error(`No se puede reproducir este intento: ${message}`);
@@ -275,85 +262,19 @@ const validateRecord = (record: ReplayRecordView): void => {
     ) {
       fail(`la acción ${index + 1} tiene referencias rotas`);
     }
-    if (!supportedActions.has(action.action.kind)) fail(`la acción ${index + 1} no está soportada`);
-    if (
-      !supportedOutcomes.has(action.resolution.outcome) ||
-      !supportedReasons.has(action.resolution.reason)
-    ) {
+    if (!isNormalizedAction(action.action)) fail(`la acción ${index + 1} no está soportada`);
+    if (!isActionResolution(action.resolution)) {
       fail(`la resolución ${index + 1} no está soportada`);
     }
     if (
-      (action.action.kind === 'jump' || action.action.kind === 'crouch') &&
-      action.action.direction !== 'left' &&
-      action.action.direction !== 'right'
+      !isSemanticallyValidActionResolution(
+        action.action,
+        action.before,
+        action.after,
+        action.resolution,
+      )
     ) {
-      fail(`la dirección de la acción ${index + 1} no es válida`);
-    }
-    if (
-      action.resolution.outcome === 'moved' ||
-      action.resolution.outcome === 'fall' ||
-      action.resolution.outcome === 'collision'
-    ) {
-      if (
-        !('segment' in action.resolution) ||
-        !Number.isInteger(action.resolution.segment) ||
-        !Number.isInteger(action.resolution.targetSupport)
-      ) {
-        fail(`la resolución ${index + 1} no tiene tramo y apoyo válidos`);
-      }
-      const direction = directionOf(action.action);
-      const expectedSegment =
-        direction === 'left' ? action.before.support - 1 : action.before.support;
-      const expectedTarget = action.before.support + (direction === 'left' ? -1 : 1);
-      if (
-        direction === null ||
-        action.resolution.segment !== expectedSegment ||
-        action.resolution.targetSupport !== expectedTarget ||
-        action.resolution.segment < 0 ||
-        action.resolution.segment >= LEVEL.segments.length ||
-        action.resolution.targetSupport < 0 ||
-        action.resolution.targetSupport > LEVEL.segments.length ||
-        action.before.status !== 'running'
-      ) {
-        fail(`la resolución ${index + 1} contradice el movimiento registrado`);
-      }
-      if (
-        (action.resolution.outcome === 'moved' && action.after.support !== expectedTarget) ||
-        (action.resolution.outcome !== 'moved' && action.after.support !== action.before.support)
-      ) {
-        fail(`la resolución ${index + 1} no coincide con sus estados`);
-      }
-    } else {
-      const reason = action.resolution.reason;
-      const validNoOp =
-        (action.action.kind === 'wait' && reason === 'wait') ||
-        (action.action.kind === 'swim' && reason === 'swim_no_effect') ||
-        (directionOf(action.action) === 'left' &&
-          reason === 'left_boundary' &&
-          action.before.support === 0) ||
-        (directionOf(action.action) === 'right' &&
-          reason === 'right_boundary' &&
-          action.before.support === LEVEL.exit.support);
-      if (!validNoOp || action.after.support !== action.before.support) {
-        fail(`la acción sin movimiento ${index + 1} tiene una causa incompatible`);
-      }
-    }
-
-    if (action.before.status !== 'running')
-      fail(`hay acciones después de un estado terminal en el turno ${index}`);
-    const expectedPhaseTurn =
-      action.after.status === 'running' ? action.before.phaseTurn + 1 : action.before.phaseTurn;
-    if (action.after.phaseTurn !== expectedPhaseTurn) {
-      fail(`la fase del terreno cambia en un momento incompatible en el turno ${index + 1}`);
-    }
-    if (
-      action.after.status !== 'running' &&
-      !sameValue(action.before.terrain, action.after.terrain)
-    ) {
-      fail(`el turno terminal ${index + 1} inventa una fase posterior`);
-    }
-    if (action.after.status === 'incomplete' && action.after.turnsUsed !== LEVEL.maxTurns) {
-      fail(`el turno ${index + 1} termina antes del límite`);
+      fail(`la acción ${index + 1} contradice el contrato del juego`);
     }
     if (index < record.actions.length - 1 && action.after.status !== 'running') {
       fail(`hay acciones publicadas después del cierre del juego en el turno ${index + 1}`);
