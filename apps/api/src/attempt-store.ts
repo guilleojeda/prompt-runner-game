@@ -712,7 +712,7 @@ export class DynamoAttemptStore implements AttemptStore {
             ':owner': owner,
             ':animationEnabled': animationEnabled,
             ':version': nextVersion,
-            ':expectedVersion': expectedVersion,
+            ...(expectedVersion === 0 ? {} : { ':expectedVersion': expectedVersion }),
             ':updatedAt': this.now().toISOString(),
           }),
         }),
