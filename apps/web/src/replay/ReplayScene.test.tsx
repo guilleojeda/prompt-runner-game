@@ -4,11 +4,48 @@ import { readFile } from 'node:fs/promises';
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createClosedAttemptRecordFixture } from '../../../../shared/attempt.fixture.js';
+import type { NormalizedAction } from '../../../../shared/game.js';
 import { prepareReplay } from './prepare.js';
 import { ReplayScene } from './ReplayScene.js';
 import { publicReplayView, replayRecordForActions } from './replay.test-support.js';
 
 const publicFixture = () => publicReplayView(createClosedAttemptRecordFixture());
+
+const collisionCases = [
+  {
+    direction: 'right',
+    actions: [
+      { kind: 'advance' },
+      { kind: 'jump', direction: 'right' },
+      { kind: 'advance' },
+      { kind: 'advance' },
+    ],
+  },
+  {
+    direction: 'left',
+    actions: [
+      { kind: 'advance' },
+      { kind: 'jump', direction: 'right' },
+      { kind: 'advance' },
+      { kind: 'crouch', direction: 'right' },
+      { kind: 'retreat' },
+    ],
+  },
+] as const satisfies readonly {
+  direction: 'left' | 'right';
+  actions: readonly NormalizedAction[];
+}[];
+
+const fallCases = [
+  { direction: 'right', actions: [{ kind: 'advance' }, { kind: 'advance' }] },
+  {
+    direction: 'left',
+    actions: [{ kind: 'advance' }, { kind: 'jump', direction: 'right' }, { kind: 'retreat' }],
+  },
+] as const satisfies readonly {
+  direction: 'left' | 'right';
+  actions: readonly NormalizedAction[];
+}[];
 
 let pendingFrames: Map<number, FrameRequestCallback>;
 let nextFrameId: number;
@@ -171,4 +208,67 @@ describe('ReplayScene', () => {
     expect(complete).toHaveBeenCalledOnce();
     expect(error).not.toHaveBeenCalled();
   });
+
+  it.each(collisionCases)(
+    'keeps the $direction-side impact cue clear of the robot face',
+    async ({ direction, actions }) => {
+      const record = replayRecordForActions(actions, 'defeat');
+      render(
+        <ReplayScene record={record} onReady={vi.fn()} onComplete={vi.fn()} onError={vi.fn()} />,
+      );
+      await waitFor(() => expect(pendingFrames.size).toBe(1));
+      await nextFrame(1000);
+      const durationMs = prepareReplay(record).duration * 1000;
+      await nextFrame(1000 + durationMs);
+
+      const scene = screen.getByRole('img');
+      const robot = scene.querySelector('[data-replay-layer="robot"] > g');
+      const impact = scene.querySelector('use[data-effect="impact"]');
+      expect(scene.getAttribute('data-complete')).toBe('true');
+      expect(robot?.getAttribute('data-facing')).toBe(direction);
+      expect(robot?.getAttribute('data-pose')).toBe('impact');
+      expect(scene.querySelectorAll('use[data-effect="impact"]')).toHaveLength(1);
+      expect(impact).not.toBeNull();
+
+      const centerX = Number(robot?.getAttribute('data-center-x'));
+      const footY = Number(robot?.getAttribute('data-foot-y'));
+      const effectX = Number(impact?.getAttribute('x'));
+      const effectY = Number(impact?.getAttribute('y'));
+      const effectWidth = Number(impact?.getAttribute('width'));
+      const effectHeight = Number(impact?.getAttribute('height'));
+      const effectCenterX = effectX + effectWidth / 2;
+      const eyeLineTop = footY - (108 - 19) * 0.62;
+
+      expect(effectWidth).toBeLessThan(40);
+      expect(effectY + effectHeight).toBeLessThan(eyeLineTop);
+      expect(direction === 'right' ? effectCenterX > centerX : effectCenterX < centerX).toBe(true);
+    },
+  );
+
+  it.each(fallCases)(
+    'keeps the $direction-side terminal fall fully inside the pit viewport',
+    async ({ direction, actions }) => {
+      const record = replayRecordForActions(actions, 'defeat');
+      render(
+        <ReplayScene record={record} onReady={vi.fn()} onComplete={vi.fn()} onError={vi.fn()} />,
+      );
+      await waitFor(() => expect(pendingFrames.size).toBe(1));
+      await nextFrame(1000);
+      const durationMs = prepareReplay(record).duration * 1000;
+      await nextFrame(1000 + durationMs);
+
+      const scene = screen.getByRole('img');
+      const robot = scene.querySelector('[data-replay-layer="robot"] > g');
+      expect(scene.getAttribute('data-complete')).toBe('true');
+      expect(robot?.getAttribute('data-facing')).toBe(direction);
+      expect(robot?.getAttribute('data-pose')).toBe('fall');
+      expect(Number(robot?.getAttribute('data-drop'))).toBe(70);
+
+      const footY = Number(robot?.getAttribute('data-foot-y'));
+      const spriteTop = footY - 108 * 0.62;
+      const spriteBottom = footY + (112 - 108) * 0.62;
+      expect(spriteTop).toBeGreaterThanOrEqual(250);
+      expect(spriteBottom).toBeLessThan(330);
+    },
+  );
 });

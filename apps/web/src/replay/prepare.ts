@@ -51,6 +51,8 @@ const TIMING = Object.freeze({
   impact: 0.68,
   victory: 1.02,
 });
+// Keeps the terminal sprite inside the viewBox while placing its anchor below the ledge.
+const FALL_DEPTH = 70;
 
 const SYMBOLS = Object.freeze([
   'body',
@@ -336,7 +338,7 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
         return {
           ...common,
           support: from + (nearEdge - from) * ease(approach),
-          drop: 116 * ease(fallProgress),
+          drop: FALL_DEPTH * ease(fallProgress),
           facing: direction,
           pose: 'fall',
           effect: 'none',
@@ -427,7 +429,7 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
           : terminalPose === 'impact'
             ? lastState.support + (terminalCue?.direction === 'left' ? -0.3 : 0.3)
             : lastState.support,
-      drop: terminalPose === 'fall' ? 116 : 0,
+      drop: terminalPose === 'fall' ? FALL_DEPTH : 0,
       facing: endingFacing,
       pose: terminalPose,
       terrain: terminalAction?.before.terrain ?? lastState.terrain,

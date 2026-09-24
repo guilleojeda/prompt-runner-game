@@ -185,7 +185,10 @@ const Robot = ({ sample }: { readonly sample: ReplaySample }) => {
   return (
     <g
       aria-hidden="true"
+      data-center-x={centerX}
       data-facing={sample.facing}
+      data-foot-y={footY}
+      data-drop={sample.drop}
       data-pose={sample.pose}
       transform={`translate(${centerX} ${footY}) scale(${scaleX} ${ROBOT_SCALE}) translate(-50 -108)`}
     >
@@ -196,16 +199,22 @@ const Robot = ({ sample }: { readonly sample: ReplaySample }) => {
 
 const Effects = ({ sample }: { readonly sample: ReplaySample }) => {
   if (sample.effect === 'none') return null;
-  const x = SUPPORT_START_X + sample.support * SEGMENT_WIDTH - 37;
-  const y = sample.effect === 'victory' ? 132 : 160;
+  const centerX = SUPPORT_START_X + sample.support * SEGMENT_WIDTH;
+  const victory = sample.effect === 'victory';
+  const size = victory ? 74 : 34;
+  const x = victory
+    ? centerX - size / 2
+    : centerX + (sample.facing === 'left' ? -20 : 20) - size / 2;
+  const y = victory ? 132 : 146;
   return (
     <use
       aria-hidden="true"
+      data-effect={sample.effect}
       href={sample.effect === 'victory' ? victoryHref : impactHref}
       x={x}
       y={y}
-      width="74"
-      height="74"
+      width={size}
+      height={size}
     />
   );
 };
