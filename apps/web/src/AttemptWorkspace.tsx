@@ -18,13 +18,8 @@ import {
   type QuotaSummary,
 } from './attempt-api.js';
 import {
-  addPendingPresentationAck,
   clearAttemptRecovery,
-  clearForegroundAttemptRecovery,
-  hasPendingPresentationAck,
-  readPendingPresentationAcks,
   readAttemptRecovery,
-  removePendingPresentationAck,
   writeAttemptRecovery,
 } from './attempt-recovery.js';
 import type { RobotEditorHandle } from './RobotEditor.js';
@@ -737,67 +732,8 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       };
     }, [refreshPreferenceOnFocus]);
 
-    const retryPendingPresentationAcks = useCallback(
-      (signal: AbortSignal): void => {
-        for (const attemptId of readPendingPresentationAcks(sessionSub)) {
-          void api
-            .completePresentation(attemptId, signal)
-            .then((completed) => {
-              if (signal.aborted) return;
-              removePendingPresentationAck(sessionSub, attemptId);
-              const recovery = readAttemptRecovery(sessionSub);
-              const isCurrentAttempt =
-                !startLockRef.current && attemptRef.current?.id === attemptId;
-              if (recovery?.attemptId === attemptId && isCurrentAttempt) {
-                clearForegroundAttemptRecovery(sessionSub);
-              }
-              if (isCurrentAttempt) {
-                setAttempt(completed);
-                attemptRef.current = completed;
-                setHistory((items) =>
-                  items.map((item) => (item.id === completed.id ? completed : item)),
-                );
-                if (completionAttemptRef.current === attemptId) {
-                  completionOperationRef.current += 1;
-                  completionBusyRef.current = false;
-                  completionAttemptRef.current = null;
-                  setCompletionBusy(false);
-                  setPlaybackReachedEnd(false);
-                  setPlaybackKind((kind) => (kind === 'automatic' ? null : kind));
-                  setError(null);
-                }
-              }
-            })
-            .catch((retryError: unknown) => {
-              if (signal.aborted) return;
-              if (isAuthenticationFailure(retryError)) onAuthRequired?.();
-            });
-        }
-      },
-      [api, onAuthRequired, sessionSub],
-    );
-
-    useEffect(() => {
-      const controller = new AbortController();
-      const retryOnResume = (): void => {
-        if (document.visibilityState === 'hidden') return;
-        retryPendingPresentationAcks(controller.signal);
-      };
-      retryOnResume();
-      window.addEventListener('focus', retryOnResume);
-      document.addEventListener('visibilitychange', retryOnResume);
-      return () => {
-        controller.abort();
-        window.removeEventListener('focus', retryOnResume);
-        document.removeEventListener('visibilitychange', retryOnResume);
-      };
-    }, [retryPendingPresentationAcks]);
-
     const applyAttempt = useCallback(
-      (
-        next: AttemptSummary,
-        options: { clearRequest?: boolean; presentationWasAlreadyShown?: boolean } = {},
-      ): void => {
+      (next: AttemptSummary, options: { clearRequest?: boolean } = {}): void => {
         if (attemptRef.current && attemptRef.current.id !== next.id) {
           completionOperationRef.current += 1;
           completionBusyRef.current = false;
@@ -805,8 +741,6 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           setCompletionBusy(false);
           setPlaybackReachedEnd(false);
         }
-        const presentationWasAlreadyShown =
-          options.presentationWasAlreadyShown ?? hasPendingPresentationAck(sessionSub, next.id);
         attemptRef.current = next;
         setAttempt(next);
         setHistory((current) => {
@@ -823,7 +757,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           writeAttemptRecovery({ sub: sessionSub, attemptId: next.id });
         } else if ((options.clearRequest ?? true) || isTerminal(next.status)) {
           frozenRef.current = null;
-          clearForegroundAttemptRecovery(sessionSub);
+          clearAttemptRecovery(sessionSub);
         } else {
           const frozen = frozenRef.current;
           writeAttemptRecovery({
@@ -833,7 +767,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           });
         }
         setError(null);
-        if (needsAutomaticPresentation(next) && !presentationWasAlreadyShown) {
+        if (needsAutomaticPresentation(next)) {
           void beginReplay(next, 'automatic');
         } else {
           setReplayRecord(null);
@@ -962,7 +896,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             if (isAuthenticationFailure(retryError)) onAuthRequired?.();
             return true;
           }
-          clearForegroundAttemptRecovery(sessionSub);
+          clearAttemptRecovery(sessionSub);
           frozenRef.current = null;
           startLockRef.current = false;
           setMode('idle');
@@ -974,13 +908,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     );
 
     const recoverKnownAttempt = useCallback(
-      async (signal?: AbortSignal, shownAtMount?: ReadonlySet<string>): Promise<boolean> => {
+      async (signal?: AbortSignal): Promise<boolean> => {
         const reference = readAttemptRecovery(sessionSub);
         if (!reference) return false;
-        const presentationWasAlreadyShown =
-          reference.attemptId !== undefined &&
-          (hasPendingPresentationAck(sessionSub, reference.attemptId) ||
-            shownAtMount?.has(reference.attemptId) === true);
         const storedFrozen = frozenAdmissionFromRecovery(reference);
         if (storedFrozen) frozenRef.current = storedFrozen;
         try {
@@ -991,10 +921,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
               : null;
           if (!next || signal?.aborted) return false;
           frozenRef.current = null;
-          applyAttempt(next, {
-            clearRequest: isTerminal(next.status),
-            ...(presentationWasAlreadyShown ? { presentationWasAlreadyShown: true } : {}),
-          });
+          applyAttempt(next, { clearRequest: isTerminal(next.status) });
           return true;
         } catch (recoveryError) {
           if (signal?.aborted) return false;
@@ -1029,7 +956,6 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       const generation = generationRef.current + 1;
       generationRef.current = generation;
       const controller = new AbortController();
-      const presentationAcksAtMount = new Set(readPendingPresentationAcks(sessionSub));
       void (async () => {
         try {
           await Promise.resolve();
@@ -1042,7 +968,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             refreshHistory(controller.signal),
             refreshAnimationPreference(controller.signal, true),
           ]);
-          if (await recoverKnownAttempt(controller.signal, presentationAcksAtMount)) return;
+          if (await recoverKnownAttempt(controller.signal)) return;
           const all = await listAllAttempts(controller.signal);
           if (controller.signal.aborted || generationRef.current !== generation) return;
           const active = all.filter((item) => isActive(item.status));
@@ -1122,7 +1048,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           return;
         }
         if (isTerminal(next.status) && next.presentationComplete) {
-          clearForegroundAttemptRecovery(sessionSub);
+          clearAttemptRecovery(sessionSub);
         }
         await refreshQuota();
         await refreshHistory();
@@ -1167,7 +1093,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         setError(attemptErrorMessage(captureError));
       }
       if (!snapshot) {
-        clearForegroundAttemptRecovery(sessionSub);
+        clearAttemptRecovery(sessionSub);
         setMode('idle');
         startLockRef.current = false;
         setError(
@@ -1231,7 +1157,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           onAuthRequired?.();
           return;
         }
-        clearForegroundAttemptRecovery(sessionSub);
+        clearAttemptRecovery(sessionSub);
         frozenRef.current = null;
         setMode('idle');
         startLockRef.current = false;
@@ -1268,9 +1194,6 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           ? { requestKey: storedReference?.requestKey ?? frozen?.requestKey }
           : {}),
       };
-      const presentationWasAlreadyShown =
-        reference.attemptId !== undefined &&
-        hasPendingPresentationAck(sessionSub, reference.attemptId);
       if (!reference.attemptId && !reference.requestKey) {
         setError('No hay una referencia de recuperación para este intento.');
         return;
@@ -1289,10 +1212,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             return;
           }
           frozenRef.current = null;
-          applyAttempt(found, {
-            clearRequest: isTerminal(found.status),
-            ...(presentationWasAlreadyShown ? { presentationWasAlreadyShown: true } : {}),
-          });
+          applyAttempt(found, { clearRequest: isTerminal(found.status) });
           return;
         }
       } catch (lookupError) {
@@ -1361,7 +1281,6 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         const operationGeneration = generationRef.current;
         operationEpochRef.current += 1;
         const operationEpoch = operationEpochRef.current;
-        const presentationWasAlreadyShown = hasPendingPresentationAck(sessionSub, id);
         const previousMode: WorkspaceMode = modeRef.current === 'result' ? 'result' : 'idle';
         setMode('opening');
         setError(null);
@@ -1373,10 +1292,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           ) {
             return;
           }
-          applyAttempt(next, {
-            clearRequest: false,
-            ...(presentationWasAlreadyShown ? { presentationWasAlreadyShown: true } : {}),
-          });
+          applyAttempt(next, { clearRequest: false });
         } catch (openError) {
           if (
             generationRef.current !== operationGeneration ||
@@ -1389,7 +1305,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           setError(attemptErrorMessage(openError));
         }
       },
-      [api, applyAttempt, busy, onAuthRequired, sessionSub],
+      [api, applyAttempt, busy, onAuthRequired],
     );
 
     const openReplayFromHistory = useCallback(
@@ -1398,7 +1314,6 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         const operationGeneration = generationRef.current;
         operationEpochRef.current += 1;
         const operationEpoch = operationEpochRef.current;
-        const presentationWasAlreadyShown = hasPendingPresentationAck(sessionSub, id);
         setMode('opening');
         setError(null);
         try {
@@ -1426,15 +1341,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           setAttempt(next);
           setHistory((current) => current.map((item) => (item.id === next.id ? next : item)));
           if (needsAutomaticPresentation(next)) {
-            applyAttempt(next, {
-              clearRequest: false,
-              ...(presentationWasAlreadyShown ? { presentationWasAlreadyShown: true } : {}),
-            });
+            applyAttempt(next, { clearRequest: false });
           } else if (next.turnsUsed === 0) {
-            applyAttempt(next, {
-              clearRequest: false,
-              ...(presentationWasAlreadyShown ? { presentationWasAlreadyShown: true } : {}),
-            });
+            applyAttempt(next, { clearRequest: false });
           } else {
             await beginReplay(next, 'manual');
           }
@@ -1450,7 +1359,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           setMode('result');
         }
       },
-      [api, applyAttempt, beginReplay, busy, onAuthRequired, sessionSub],
+      [api, applyAttempt, beginReplay, busy, onAuthRequired],
     );
 
     const replayCurrentAttempt = useCallback((): void => {
@@ -1469,7 +1378,6 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
 
     const completePresentationInBackground = useCallback(
       (current: AttemptSummary): void => {
-        const storedForRecovery = addPendingPresentationAck(sessionSub, current.id);
         if (completionBusyRef.current && completionAttemptRef.current === current.id) {
           return;
         }
@@ -1482,14 +1390,15 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         void api
           .completePresentation(current.id)
           .then((completed) => {
-            if (generationRef.current !== generation) return;
-            removePendingPresentationAck(sessionSub, current.id);
-            const recovery = readAttemptRecovery(sessionSub);
-            if (recovery?.attemptId === current.id && attemptRef.current?.id === current.id) {
-              clearForegroundAttemptRecovery(sessionSub);
+            if (
+              generationRef.current !== generation ||
+              completionOperationRef.current !== completionOperation ||
+              attemptRef.current?.id !== current.id
+            ) {
+              return;
             }
-            if (completionOperationRef.current !== completionOperation) return;
-            if (attemptRef.current?.id !== current.id) return;
+            const recovery = readAttemptRecovery(sessionSub);
+            if (recovery?.attemptId === current.id) clearAttemptRecovery(sessionSub);
             attemptRef.current = completed;
             setAttempt(completed);
             setHistory((items) =>
@@ -1505,9 +1414,6 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
               completionOperationRef.current !== completionOperation ||
               attemptRef.current?.id !== current.id
             ) {
-              return;
-            }
-            if (storedForRecovery && !hasPendingPresentationAck(sessionSub, current.id)) {
               return;
             }
             if (isAuthenticationFailure(completionError)) onAuthRequired?.();

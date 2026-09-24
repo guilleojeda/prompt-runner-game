@@ -107,12 +107,6 @@ function replayRecord(id = 'attempt-1'): ReplayRecordView {
   };
 }
 
-function storedPresentationAckIds(): string[] {
-  const raw = window.sessionStorage.getItem('prompt-runner:presentation-acks');
-  if (!raw) return [];
-  return (JSON.parse(raw) as { attemptIds: string[] }).attemptIds;
-}
-
 function api(overrides: Partial<AttemptApi> = {}): AttemptApi {
   return {
     createAttempt: vi
@@ -492,7 +486,6 @@ describe('AttemptWorkspace', () => {
     expect(await screen.findByText('Guardando el cierre de la presentación…')).toBeTruthy();
     expect(completePresentation).toHaveBeenCalledOnce();
     expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toContain(pending.id);
-    expect(storedPresentationAckIds()).toEqual([pending.id]);
     expect(
       (
         screen.getByRole('button', {
@@ -508,7 +501,6 @@ describe('AttemptWorkspace', () => {
     await waitFor(() =>
       expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toBeNull(),
     );
-    await waitFor(() => expect(storedPresentationAckIds()).toEqual([]));
   });
 
   it('shows and unlocks the result while the automatic presentation mark is still pending', async () => {
@@ -551,7 +543,6 @@ describe('AttemptWorkspace', () => {
     expect(onBusyChange).toHaveBeenLastCalledWith(false);
     expect(completePresentation).toHaveBeenCalledOnce();
     expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toContain(pending.id);
-    expect(storedPresentationAckIds()).toEqual([pending.id]);
 
     await act(async () => {
       finishMark({ ...pending, presentationComplete: true });
@@ -560,45 +551,9 @@ describe('AttemptWorkspace', () => {
     await waitFor(() =>
       expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toBeNull(),
     );
-    await waitFor(() => expect(storedPresentationAckIds()).toEqual([]));
   });
 
-  it('retries a pending ACK on resume and clears its saving state after confirmation', async () => {
-    const pending = {
-      ...summary('victory'),
-      turnsUsed: 5,
-      animationEnabled: true,
-      presentationComplete: false,
-    };
-    window.sessionStorage.setItem(
-      'prompt-runner:attempt-recovery',
-      JSON.stringify({ sub: 'subject-a', attemptId: pending.id }),
-    );
-    const firstMark = new Promise<AttemptSummary>(() => undefined);
-    const completePresentation = vi
-      .fn()
-      .mockReturnValueOnce(firstMark)
-      .mockResolvedValueOnce({ ...pending, presentationComplete: true });
-    const attemptApi = api({
-      getAttempt: vi.fn().mockResolvedValue(pending),
-      getReplay: vi.fn().mockResolvedValue(replayRecord()),
-      completePresentation,
-    });
-    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Completar reproducción' }));
-    expect(await screen.findByText('Guardando el cierre de la presentación…')).toBeTruthy();
-    act(() => window.dispatchEvent(new Event('focus')));
-
-    await waitFor(() => expect(completePresentation).toHaveBeenCalledTimes(2));
-    expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
-    await waitFor(() => expect(storedPresentationAckIds()).toEqual([]));
-    expect(screen.queryByText('Guardando el cierre de la presentación…')).toBeNull();
-    expect(attemptApi.getReplay).toHaveBeenCalledOnce();
-  });
-
-  it('keeps result A recoverable across repeated reloads while its ACK stays pending', async () => {
+  it('replays from the server snapshot after repeated reloads when ACK confirmation failed', async () => {
     const pending = {
       ...summary('victory'),
       turnsUsed: 5,
@@ -624,33 +579,36 @@ describe('AttemptWorkspace', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Completar reproducción' }));
     expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
     expect(await screen.findByText(/No se pudo guardar el cierre/)).toBeTruthy();
-    expect(storedPresentationAckIds()).toEqual([pending.id]);
     expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toContain(pending.id);
     firstRender.unmount();
 
     for (let reload = 0; reload < 2; reload += 1) {
-      const replay = vi.fn();
+      const getReplay = vi.fn().mockResolvedValue(replayRecord());
       const retryMark = vi
         .fn()
         .mockRejectedValue(new AttemptApiFailure('server', 'Sigue pendiente.', 500));
       const resumedApi = api({
         getAttempt: vi.fn().mockResolvedValue(pending),
-        getReplay: replay,
+        getReplay,
         completePresentation: retryMark,
       });
       const resumed = render(
         <AttemptWorkspace api={resumedApi} editor={editor} session={session()} />,
       );
+      expect(await screen.findByRole('button', { name: 'Completar reproducción' })).toBeTruthy();
+      expect(screen.queryByRole('heading', { name: 'Victoria' })).toBeNull();
+      expect(getReplay).toHaveBeenCalledOnce();
+      expect(retryMark).not.toHaveBeenCalled();
+      expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toContain(pending.id);
+      fireEvent.click(screen.getByRole('button', { name: 'Completar reproducción' }));
       expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
       await waitFor(() => expect(retryMark).toHaveBeenCalledOnce());
-      expect(replay).not.toHaveBeenCalled();
-      expect(storedPresentationAckIds()).toEqual([pending.id]);
       expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toContain(pending.id);
       resumed.unmount();
     }
   });
 
-  it('preserves local shown evidence if mount ACK succeeds before a stale getAttempt returns', async () => {
+  it('uses a completed server summary to open the result directly after reload', async () => {
     const pending = {
       ...summary('victory'),
       turnsUsed: 5,
@@ -662,10 +620,6 @@ describe('AttemptWorkspace', () => {
       'prompt-runner:attempt-recovery',
       JSON.stringify({ sub: 'subject-a', attemptId: pending.id }),
     );
-    window.sessionStorage.setItem(
-      'prompt-runner:presentation-acks',
-      JSON.stringify({ sub: 'subject-a', attemptIds: [pending.id] }),
-    );
     let finishGetAttempt!: (value: AttemptSummary) => void;
     const getAttempt = vi.fn(
       () =>
@@ -674,90 +628,47 @@ describe('AttemptWorkspace', () => {
         }),
     );
     const getReplay = vi.fn();
-    const completePresentation = vi.fn().mockResolvedValue(completed);
+    const completePresentation = vi.fn();
     const attemptApi = api({ getAttempt, getReplay, completePresentation });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
 
     await waitFor(() =>
-      expect(completePresentation).toHaveBeenCalledWith(pending.id, expect.any(AbortSignal)),
+      expect(getAttempt).toHaveBeenCalledWith(pending.id, expect.any(AbortSignal)),
     );
-    await waitFor(() => expect(storedPresentationAckIds()).toEqual([]));
-    expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toContain(pending.id);
-    expect(getAttempt).toHaveBeenCalledWith(pending.id, expect.any(AbortSignal));
 
     await act(async () => {
-      finishGetAttempt(pending);
+      finishGetAttempt(completed);
       await Promise.resolve();
     });
     expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
     expect(getReplay).not.toHaveBeenCalled();
-    expect(storedPresentationAckIds()).toEqual([]);
-    expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toContain(pending.id);
-
-    cleanup();
-    const finalApi = api({
-      getAttempt: vi.fn().mockResolvedValue(completed),
-      getReplay: vi.fn(),
-      completePresentation: vi.fn(),
-    });
-    render(<AttemptWorkspace api={finalApi} editor={editor} session={session()} />);
-    expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
-    expect(finalApi.getReplay).not.toHaveBeenCalled();
-    expect(finalApi.completePresentation).not.toHaveBeenCalled();
+    expect(completePresentation).not.toHaveBeenCalled();
     expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toBeNull();
   });
 
-  it('uses shown evidence captured before opening history when the ACK wins the race', async () => {
+  it('replays a history attempt when the server still reports presentation pending', async () => {
     const pending = {
       ...summary('victory'),
       turnsUsed: 5,
       animationEnabled: true,
       presentationComplete: false,
     };
-    const completed = { ...pending, presentationComplete: true };
-    window.sessionStorage.setItem(
-      'prompt-runner:presentation-acks',
-      JSON.stringify({ sub: 'subject-a', attemptIds: [pending.id] }),
-    );
-    let finishGetAttempt!: (value: AttemptSummary) => void;
-    const getAttempt = vi.fn(
-      () =>
-        new Promise<AttemptSummary>((resolve) => {
-          finishGetAttempt = resolve;
-        }),
-    );
-    const firstAck = new Promise<AttemptSummary>(() => undefined);
-    const completePresentation = vi
-      .fn()
-      .mockReturnValueOnce(firstAck)
-      .mockResolvedValueOnce(completed);
-    const getReplay = vi.fn();
+    const getReplay = vi.fn().mockResolvedValue(replayRecord(pending.id));
     const attemptApi = api({
-      getAttempt,
       listAttempts: vi.fn().mockResolvedValue({ attempts: [pending] }),
+      getAttempt: vi.fn().mockResolvedValue(pending),
       getReplay,
-      completePresentation,
     });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
     await screen.findByText('Historial');
     fireEvent.click(screen.getByRole('button', { name: 'Ver resultado' }));
-    await waitFor(() => expect(getAttempt).toHaveBeenCalledWith(pending.id));
-    act(() => window.dispatchEvent(new Event('focus')));
-    await waitFor(() => expect(completePresentation).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(storedPresentationAckIds()).toEqual([]));
-
-    await act(async () => {
-      finishGetAttempt(pending);
-      await Promise.resolve();
-    });
-    expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
-    expect(getReplay).not.toHaveBeenCalled();
-    expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toContain(pending.id);
+    expect(await screen.findByRole('button', { name: 'Completar reproducción' })).toBeTruthy();
+    expect(getReplay).toHaveBeenCalledWith(pending.id);
   });
 
-  it('recovers B while retrying A acknowledgement without replaying or replacing B', async () => {
+  it('recovers B without carrying A as the foreground recovery', async () => {
     const attemptA = {
       ...summary('victory'),
       turnsUsed: 5,
@@ -793,7 +704,6 @@ describe('AttemptWorkspace', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Completar reproducción' }));
     expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
-    await waitFor(() => expect(storedPresentationAckIds()).toEqual([attemptA.id]));
     expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toContain(attemptA.id);
 
     act(() => (ref.current as AttemptWorkspaceHandle).start());
@@ -804,34 +714,25 @@ describe('AttemptWorkspace', () => {
       ) as { attemptId?: string };
       expect(recovery.attemptId).toBe(attemptB.id);
     });
-    expect(storedPresentationAckIds()).toEqual([attemptA.id]);
     firstRender.unmount();
 
-    window.sessionStorage.setItem(
-      'prompt-runner:presentation-acks',
-      JSON.stringify({ sub: 'subject-a', attemptIds: [attemptA.id, attemptA.id] }),
-    );
-    const retryAcks = vi
-      .fn()
-      .mockRejectedValueOnce(new AttemptApiFailure('server', 'No se guardó.', 500))
-      .mockResolvedValueOnce({ ...attemptA, presentationComplete: true });
+    const completePresentation = vi.fn();
     const resumedApi = api({
       getAttempt: vi
         .fn()
         .mockImplementation(async (id: string) => (id === attemptB.id ? attemptB : attemptA)),
       getReplay: vi.fn(),
-      completePresentation: retryAcks,
+      completePresentation,
     });
 
     const secondRender = render(
       <AttemptWorkspace api={resumedApi} editor={editor} session={session()} />,
     );
     expect(await screen.findByRole('button', { name: 'Cancelar' })).toBeTruthy();
-    await waitFor(() => expect(retryAcks).toHaveBeenCalledTimes(1));
-    expect(retryAcks).toHaveBeenCalledWith(attemptA.id, expect.any(AbortSignal));
     expect(resumedApi.getAttempt).toHaveBeenCalledWith(attemptB.id, expect.any(AbortSignal));
+    expect(resumedApi.getAttempt).not.toHaveBeenCalledWith(attemptA.id, expect.anything());
     expect(resumedApi.getReplay).not.toHaveBeenCalled();
-    expect(storedPresentationAckIds()).toEqual([attemptA.id]);
+    expect(completePresentation).not.toHaveBeenCalled();
     expect(
       JSON.parse(window.sessionStorage.getItem('prompt-runner:attempt-recovery') ?? '{}'),
     ).toMatchObject({ sub: 'subject-a', attemptId: attemptB.id });
@@ -840,13 +741,12 @@ describe('AttemptWorkspace', () => {
     const finalApi = api({
       getAttempt: vi.fn().mockResolvedValue(attemptB),
       getReplay: vi.fn(),
-      completePresentation: retryAcks,
+      completePresentation,
     });
     render(<AttemptWorkspace api={finalApi} editor={editor} session={session()} />);
     expect(await screen.findByRole('button', { name: 'Cancelar' })).toBeTruthy();
-    await waitFor(() => expect(retryAcks).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(storedPresentationAckIds()).toEqual([]));
     expect(finalApi.getReplay).not.toHaveBeenCalled();
+    expect(completePresentation).not.toHaveBeenCalled();
     expect(
       JSON.parse(window.sessionStorage.getItem('prompt-runner:attempt-recovery') ?? '{}'),
     ).toMatchObject({ sub: 'subject-a', attemptId: attemptB.id });
@@ -907,11 +807,10 @@ describe('AttemptWorkspace', () => {
     expect(await screen.findByRole('button', { name: 'Cancelar' })).toBeTruthy();
     expect(screen.queryByRole('heading', { name: 'Victoria' })).toBeNull();
     expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toContain(attemptB.id);
-    expect(storedPresentationAckIds()).toEqual([]);
   });
 
-  it('uses local completion evidence to avoid replaying after a reload with a stale foreground hint', async () => {
-    const alreadyShown = {
+  it('replays from the server snapshot even after the result was already shown locally', async () => {
+    const pending = {
       ...summary('victory'),
       turnsUsed: 5,
       animationEnabled: true,
@@ -919,29 +818,20 @@ describe('AttemptWorkspace', () => {
     };
     window.sessionStorage.setItem(
       'prompt-runner:attempt-recovery',
-      JSON.stringify({ sub: 'subject-a', attemptId: alreadyShown.id }),
+      JSON.stringify({ sub: 'subject-a', attemptId: pending.id }),
     );
-    window.sessionStorage.setItem(
-      'prompt-runner:presentation-acks',
-      JSON.stringify({ sub: 'subject-a', attemptIds: [alreadyShown.id] }),
-    );
-    const completePresentation = vi
-      .fn()
-      .mockRejectedValue(new AttemptApiFailure('server', 'Todavía no se guardó.', 500));
+    const getReplay = vi.fn().mockResolvedValue(replayRecord(pending.id));
     const attemptApi = api({
-      getAttempt: vi.fn().mockResolvedValue(alreadyShown),
-      getReplay: vi.fn(),
-      completePresentation,
+      getAttempt: vi.fn().mockResolvedValue(pending),
+      getReplay,
     });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
 
-    expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
-    await waitFor(() =>
-      expect(completePresentation).toHaveBeenCalledWith(alreadyShown.id, expect.any(AbortSignal)),
-    );
-    expect(attemptApi.getReplay).not.toHaveBeenCalled();
-    expect(storedPresentationAckIds()).toEqual([alreadyShown.id]);
+    expect(await screen.findByRole('button', { name: 'Completar reproducción' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Victoria' })).toBeNull();
+    expect(getReplay).toHaveBeenCalledWith(pending.id);
+    expect(attemptApi.completePresentation).not.toHaveBeenCalled();
   });
 
   it('shows the result after playback even when the completion mark needs a retry', async () => {
@@ -970,12 +860,10 @@ describe('AttemptWorkspace', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Completar reproducción' }));
     expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
     expect(screen.getByText(/No se pudo guardar el cierre de la presentación/)).toBeTruthy();
-    expect(storedPresentationAckIds()).toEqual(['attempt-1']);
     fireEvent.click(screen.getByRole('button', { name: 'Reintentar cierre de presentación' }));
     await waitFor(() => expect(completePresentation).toHaveBeenCalledTimes(2));
     expect(screen.queryByText(/No se pudo guardar el cierre de la presentación/)).toBeNull();
     expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toBeNull();
-    expect(storedPresentationAckIds()).toEqual([]);
   });
 
   it('freezes the selected model in the admission payload and labels the returned result', async () => {
