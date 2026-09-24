@@ -195,7 +195,12 @@ function statusDescription(status: AttemptStatus): string {
 type PlaybackKind = 'automatic' | 'manual';
 
 function needsAutomaticPresentation(attempt: AttemptSummary): boolean {
-  return attempt.animationEnabled && !attempt.presentationComplete && attempt.turnsUsed > 0;
+  return (
+    isTerminal(attempt.status) &&
+    attempt.animationEnabled &&
+    !attempt.presentationComplete &&
+    attempt.turnsUsed > 0
+  );
 }
 
 function formatMetric(value: number | null): string {

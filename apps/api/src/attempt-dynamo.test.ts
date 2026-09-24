@@ -67,6 +67,7 @@ class DynamoHarness {
   public readonly items = new Map<string, Record<string, AttributeValue>>();
   public readonly send = vi.fn((command: CommandLike) => this.handle(command));
   public queryPageSize = Number.POSITIVE_INFINITY;
+  public rejectUnusedUpdateValues = false;
   public updateBehavior: (input: Record<string, unknown>) => HarnessBehavior = () => undefined;
   public transactionBehavior: (input: Record<string, unknown>) => HarnessBehavior = () => undefined;
 
@@ -146,6 +147,17 @@ class DynamoHarness {
       };
     }
     if (name === 'UpdateItemCommand') {
+      if (this.rejectUnusedUpdateValues) {
+        const expression = `${String(input.UpdateExpression ?? '')} ${String(input.ConditionExpression ?? '')}`;
+        const values = input.ExpressionAttributeValues
+          ? unmarshall(input.ExpressionAttributeValues as Record<string, AttributeValue>)
+          : {};
+        const unused = Object.keys(values).filter(
+          (placeholder) => !expression.includes(placeholder),
+        );
+        if (unused.length > 0)
+          throw new Error(`Unused expression attribute values: ${unused.join(', ')}`);
+      }
       const behavior = this.updateBehavior(input);
       if (behavior === 'applyThenThrow') {
         this.applyUpdate(input);
@@ -557,6 +569,29 @@ describe('Dynamo attempt admission conditions', () => {
 });
 
 describe('Dynamo animation preference and replay projection', () => {
+  it('writes the first default preference with a strict absent-item condition and no unused values', async () => {
+    const harness = new DynamoHarness();
+    harness.rejectUnusedUpdateValues = true;
+    const store = storeFor(harness);
+
+    expect(await store.getAnimationPreference('owner')).toEqual({
+      animationEnabled: true,
+      version: 0,
+    });
+    expect(harness.read('USER#owner', 'PREFERENCE#ANIMATION')).toBeUndefined();
+    await expect(store.putAnimationPreference('owner', false, 0)).resolves.toEqual({
+      animationEnabled: false,
+      version: 1,
+    });
+
+    const item = harness.read('USER#owner', 'PREFERENCE#ANIMATION');
+    expect(item).toMatchObject({ animationEnabled: false, version: 1 });
+    const write = harness.send.mock.calls
+      .map(([command]) => command)
+      .find((command) => command.constructor.name === 'UpdateItemCommand');
+    expect(write?.input.ConditionExpression).toBe('attribute_not_exists(PK)');
+  });
+
   it('persists the default-on preference and rejects a stale conditional write', async () => {
     const harness = new DynamoHarness();
     const store = storeFor(harness);

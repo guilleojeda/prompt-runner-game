@@ -312,6 +312,37 @@ describe('AttemptWorkspace', () => {
     expect(createAttempt).not.toHaveBeenCalled();
   });
 
+  it('waits for a terminal summary before fetching an automatic replay', async () => {
+    const active = {
+      ...summary('running'),
+      turnsUsed: 2,
+      animationEnabled: true,
+      presentationComplete: false,
+    };
+    const terminal = {
+      ...active,
+      status: 'victory' as const,
+      turnsUsed: 5,
+      updatedAt: '2026-09-21T12:05:00.000Z',
+    };
+    const getAttempt = vi.fn().mockResolvedValue(terminal);
+    const getReplay = vi.fn().mockResolvedValue(replayRecord());
+    const attemptApi = api({
+      listAttempts: vi.fn().mockResolvedValue({ attempts: [active] }),
+      getAttempt,
+      getReplay,
+    });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+
+    expect(await screen.findByRole('button', { name: 'Cancelar' })).toBeTruthy();
+    expect(getReplay).not.toHaveBeenCalled();
+    await waitFor(() => expect(getReplay).toHaveBeenCalledOnce(), { timeout: 4_000 });
+    expect(getAttempt).toHaveBeenCalledOnce();
+    expect(await screen.findByRole('button', { name: 'Completar reproducción' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Victoria' })).toBeNull();
+  });
+
   it.each([
     ['cancelled', 'Cancelado'],
     ['error', 'Error de ejecución'],
