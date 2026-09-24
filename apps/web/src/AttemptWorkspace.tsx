@@ -746,26 +746,26 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
               if (signal.aborted) return;
               removePendingPresentationAck(sessionSub, attemptId);
               const recovery = readAttemptRecovery(sessionSub);
-              if (recovery?.attemptId === attemptId) {
+              const isCurrentAttempt =
+                !startLockRef.current && attemptRef.current?.id === attemptId;
+              if (recovery?.attemptId === attemptId && isCurrentAttempt) {
                 clearForegroundAttemptRecovery(sessionSub);
               }
-              if (
-                !startLockRef.current &&
-                completionAttemptRef.current === attemptId &&
-                attemptRef.current?.id === attemptId
-              ) {
-                completionOperationRef.current += 1;
-                completionBusyRef.current = false;
-                completionAttemptRef.current = null;
-                setCompletionBusy(false);
-                setPlaybackReachedEnd(false);
-                setPlaybackKind((kind) => (kind === 'automatic' ? null : kind));
+              if (isCurrentAttempt) {
                 setAttempt(completed);
                 attemptRef.current = completed;
                 setHistory((items) =>
                   items.map((item) => (item.id === completed.id ? completed : item)),
                 );
-                setError(null);
+                if (completionAttemptRef.current === attemptId) {
+                  completionOperationRef.current += 1;
+                  completionBusyRef.current = false;
+                  completionAttemptRef.current = null;
+                  setCompletionBusy(false);
+                  setPlaybackReachedEnd(false);
+                  setPlaybackKind((kind) => (kind === 'automatic' ? null : kind));
+                  setError(null);
+                }
               }
             })
             .catch((retryError: unknown) => {
@@ -794,7 +794,10 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     }, [retryPendingPresentationAcks]);
 
     const applyAttempt = useCallback(
-      (next: AttemptSummary, options: { clearRequest?: boolean } = {}): void => {
+      (
+        next: AttemptSummary,
+        options: { clearRequest?: boolean; presentationWasAlreadyShown?: boolean } = {},
+      ): void => {
         if (attemptRef.current && attemptRef.current.id !== next.id) {
           completionOperationRef.current += 1;
           completionBusyRef.current = false;
@@ -802,7 +805,8 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           setCompletionBusy(false);
           setPlaybackReachedEnd(false);
         }
-        const presentationWasAlreadyShown = hasPendingPresentationAck(sessionSub, next.id);
+        const presentationWasAlreadyShown =
+          options.presentationWasAlreadyShown ?? hasPendingPresentationAck(sessionSub, next.id);
         attemptRef.current = next;
         setAttempt(next);
         setHistory((current) => {
@@ -814,14 +818,10 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           });
           return changed ? updated : current;
         });
-        if (needsAutomaticPresentation(next) && !presentationWasAlreadyShown) {
+        if (needsAutomaticPresentation(next)) {
           frozenRef.current = null;
           writeAttemptRecovery({ sub: sessionSub, attemptId: next.id });
-        } else if (
-          presentationWasAlreadyShown ||
-          (options.clearRequest ?? true) ||
-          isTerminal(next.status)
-        ) {
+        } else if ((options.clearRequest ?? true) || isTerminal(next.status)) {
           frozenRef.current = null;
           clearForegroundAttemptRecovery(sessionSub);
         } else {
@@ -974,9 +974,13 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     );
 
     const recoverKnownAttempt = useCallback(
-      async (signal?: AbortSignal): Promise<boolean> => {
+      async (signal?: AbortSignal, shownAtMount?: ReadonlySet<string>): Promise<boolean> => {
         const reference = readAttemptRecovery(sessionSub);
         if (!reference) return false;
+        const presentationWasAlreadyShown =
+          reference.attemptId !== undefined &&
+          (hasPendingPresentationAck(sessionSub, reference.attemptId) ||
+            shownAtMount?.has(reference.attemptId) === true);
         const storedFrozen = frozenAdmissionFromRecovery(reference);
         if (storedFrozen) frozenRef.current = storedFrozen;
         try {
@@ -987,7 +991,10 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
               : null;
           if (!next || signal?.aborted) return false;
           frozenRef.current = null;
-          applyAttempt(next, { clearRequest: isTerminal(next.status) });
+          applyAttempt(next, {
+            clearRequest: isTerminal(next.status),
+            ...(presentationWasAlreadyShown ? { presentationWasAlreadyShown: true } : {}),
+          });
           return true;
         } catch (recoveryError) {
           if (signal?.aborted) return false;
@@ -1022,6 +1029,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       const generation = generationRef.current + 1;
       generationRef.current = generation;
       const controller = new AbortController();
+      const presentationAcksAtMount = new Set(readPendingPresentationAcks(sessionSub));
       void (async () => {
         try {
           await Promise.resolve();
@@ -1034,7 +1042,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             refreshHistory(controller.signal),
             refreshAnimationPreference(controller.signal, true),
           ]);
-          if (await recoverKnownAttempt(controller.signal)) return;
+          if (await recoverKnownAttempt(controller.signal, presentationAcksAtMount)) return;
           const all = await listAllAttempts(controller.signal);
           if (controller.signal.aborted || generationRef.current !== generation) return;
           const active = all.filter((item) => isActive(item.status));
@@ -1260,6 +1268,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           ? { requestKey: storedReference?.requestKey ?? frozen?.requestKey }
           : {}),
       };
+      const presentationWasAlreadyShown =
+        reference.attemptId !== undefined &&
+        hasPendingPresentationAck(sessionSub, reference.attemptId);
       if (!reference.attemptId && !reference.requestKey) {
         setError('No hay una referencia de recuperación para este intento.');
         return;
@@ -1278,7 +1289,10 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             return;
           }
           frozenRef.current = null;
-          applyAttempt(found, { clearRequest: isTerminal(found.status) });
+          applyAttempt(found, {
+            clearRequest: isTerminal(found.status),
+            ...(presentationWasAlreadyShown ? { presentationWasAlreadyShown: true } : {}),
+          });
           return;
         }
       } catch (lookupError) {
@@ -1347,6 +1361,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         const operationGeneration = generationRef.current;
         operationEpochRef.current += 1;
         const operationEpoch = operationEpochRef.current;
+        const presentationWasAlreadyShown = hasPendingPresentationAck(sessionSub, id);
         const previousMode: WorkspaceMode = modeRef.current === 'result' ? 'result' : 'idle';
         setMode('opening');
         setError(null);
@@ -1358,7 +1373,10 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           ) {
             return;
           }
-          applyAttempt(next, { clearRequest: false });
+          applyAttempt(next, {
+            clearRequest: false,
+            ...(presentationWasAlreadyShown ? { presentationWasAlreadyShown: true } : {}),
+          });
         } catch (openError) {
           if (
             generationRef.current !== operationGeneration ||
@@ -1371,7 +1389,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           setError(attemptErrorMessage(openError));
         }
       },
-      [api, applyAttempt, busy, onAuthRequired],
+      [api, applyAttempt, busy, onAuthRequired, sessionSub],
     );
 
     const openReplayFromHistory = useCallback(
@@ -1380,6 +1398,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         const operationGeneration = generationRef.current;
         operationEpochRef.current += 1;
         const operationEpoch = operationEpochRef.current;
+        const presentationWasAlreadyShown = hasPendingPresentationAck(sessionSub, id);
         setMode('opening');
         setError(null);
         try {
@@ -1407,9 +1426,15 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           setAttempt(next);
           setHistory((current) => current.map((item) => (item.id === next.id ? next : item)));
           if (needsAutomaticPresentation(next)) {
-            applyAttempt(next, { clearRequest: false });
+            applyAttempt(next, {
+              clearRequest: false,
+              ...(presentationWasAlreadyShown ? { presentationWasAlreadyShown: true } : {}),
+            });
           } else if (next.turnsUsed === 0) {
-            applyAttempt(next, { clearRequest: false });
+            applyAttempt(next, {
+              clearRequest: false,
+              ...(presentationWasAlreadyShown ? { presentationWasAlreadyShown: true } : {}),
+            });
           } else {
             await beginReplay(next, 'manual');
           }
@@ -1425,7 +1450,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           setMode('result');
         }
       },
-      [api, applyAttempt, beginReplay, busy, onAuthRequired],
+      [api, applyAttempt, beginReplay, busy, onAuthRequired, sessionSub],
     );
 
     const replayCurrentAttempt = useCallback((): void => {
@@ -1445,10 +1470,6 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     const completePresentationInBackground = useCallback(
       (current: AttemptSummary): void => {
         const storedForRecovery = addPendingPresentationAck(sessionSub, current.id);
-        const currentRecovery = readAttemptRecovery(sessionSub);
-        if (storedForRecovery && currentRecovery?.attemptId === current.id) {
-          clearForegroundAttemptRecovery(sessionSub);
-        }
         if (completionBusyRef.current && completionAttemptRef.current === current.id) {
           return;
         }
@@ -1464,7 +1485,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             if (generationRef.current !== generation) return;
             removePendingPresentationAck(sessionSub, current.id);
             const recovery = readAttemptRecovery(sessionSub);
-            if (recovery?.attemptId === current.id) {
+            if (recovery?.attemptId === current.id && attemptRef.current?.id === current.id) {
               clearForegroundAttemptRecovery(sessionSub);
             }
             if (completionOperationRef.current !== completionOperation) return;
