@@ -93,25 +93,16 @@ const Backdrop = () => (
   </>
 );
 
-const Terrain = ({ sample }: { readonly sample: ReplaySample }) => {
+const TerrainBack = ({ sample }: { readonly sample: ReplaySample }) => {
   const endSupport = sample.terrain.length;
   return (
-    <g aria-hidden="true">
+    <g data-replay-layer="terrain-back" aria-hidden="true">
       <use href={groundHref} x="0" y="236" width={SUPPORT_START_X} height="70" />
       {sample.terrain.map((terrain, index) => {
         const x = SUPPORT_START_X + index * SEGMENT_WIDTH;
         if (terrain === 'pit') {
           return (
             <g key={`pit-${index}`}>
-              <use href={pitHref} x={x} y="236" width="24" height="70" />
-              <use
-                href={pitHref}
-                x="0"
-                y="236"
-                width="24"
-                height="70"
-                transform={`translate(${x + SEGMENT_WIDTH} 0) scale(-1 1)`}
-              />
               <path d={`M${x + 22} 254h76v69H${x + 22}z`} fill="#dff6fa" opacity="0.62" />
               <path
                 d={`M${x + 35} 280q25-11 49 0`}
@@ -129,9 +120,6 @@ const Terrain = ({ sample }: { readonly sample: ReplaySample }) => {
               <use href={branchBackHref} x={x} y="133" width={SEGMENT_WIDTH} height="92" />
             )}
             <use href={groundHref} x={x} y="236" width={SEGMENT_WIDTH} height="70" />
-            {terrain === 'branch' && (
-              <use href={branchFrontHref} x={x} y="167" width={SEGMENT_WIDTH} height="44" />
-            )}
           </g>
         );
       })}
@@ -153,6 +141,42 @@ const Terrain = ({ sample }: { readonly sample: ReplaySample }) => {
   );
 };
 
+const TerrainFront = ({ sample }: { readonly sample: ReplaySample }) => (
+  <g data-replay-layer="terrain-front" aria-hidden="true">
+    {sample.terrain.map((terrain, index) => {
+      const x = SUPPORT_START_X + index * SEGMENT_WIDTH;
+      if (terrain === 'pit') {
+        return (
+          <g key={`pit-edge-${index}`}>
+            <use href={pitHref} x={x} y="236" width="24" height="70" />
+            <use
+              href={pitHref}
+              x="0"
+              y="236"
+              width="24"
+              height="70"
+              transform={`translate(${x + SEGMENT_WIDTH} 0) scale(-1 1)`}
+            />
+          </g>
+        );
+      }
+      if (terrain === 'branch') {
+        return (
+          <use
+            key={`branch-front-${index}`}
+            href={branchFrontHref}
+            x={x}
+            y="167"
+            width={SEGMENT_WIDTH}
+            height="44"
+          />
+        );
+      }
+      return null;
+    })}
+  </g>
+);
+
 const Robot = ({ sample }: { readonly sample: ReplaySample }) => {
   const centerX = SUPPORT_START_X + sample.support * SEGMENT_WIDTH;
   const scaleX = sample.facing === 'left' ? -ROBOT_SCALE : ROBOT_SCALE;
@@ -161,6 +185,8 @@ const Robot = ({ sample }: { readonly sample: ReplaySample }) => {
   return (
     <g
       aria-hidden="true"
+      data-facing={sample.facing}
+      data-pose={sample.pose}
       transform={`translate(${centerX} ${footY}) scale(${scaleX} ${ROBOT_SCALE}) translate(-50 -108)`}
     >
       <use href={symbolHref(symbol)} x="0" y="0" width="100" height="112" />
@@ -199,13 +225,19 @@ const ReplayCanvas = ({
     data-profile="v1"
     data-complete={sample.complete}
     data-action-index={sample.actionIndex ?? ''}
+    data-closure-status={sample.closureStatus}
   >
     <title>Reproducción del intento: robot {poseLabel(sample.pose)}</title>
-    <Backdrop />
-    <Terrain sample={sample} />
+    <g data-replay-layer="backdrop">
+      <Backdrop />
+    </g>
+    <TerrainBack sample={sample} />
     {sample.effect === 'victory' && <Effects sample={sample} />}
-    <Robot sample={sample} />
-    {sample.effect === 'impact' && <Effects sample={sample} />}
+    <g data-replay-layer="robot">
+      <Robot sample={sample} />
+    </g>
+    <TerrainFront sample={sample} />
+    {sample.effect !== 'none' && <Effects sample={sample} />}
     <g aria-hidden="true" fontFamily="system-ui, sans-serif">
       <rect x="22" y="20" width="110" height="34" rx="17" fill="#fff" fillOpacity="0.78" />
       <text x="77" y="42" textAnchor="middle" fill="#23445b" fontSize="15" fontWeight="600">

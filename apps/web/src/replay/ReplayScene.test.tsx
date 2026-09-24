@@ -4,36 +4,11 @@ import { readFile } from 'node:fs/promises';
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createClosedAttemptRecordFixture } from '../../../../shared/attempt.fixture.js';
-import type {
-  AttemptRecord,
-  AttemptRecordView,
-  ReplayRecordView,
-} from '../../../../shared/attempt.js';
 import { prepareReplay } from './prepare.js';
 import { ReplayScene } from './ReplayScene.js';
+import { publicReplayView, replayRecordForActions } from './replay.test-support.js';
 
-const publicFixture = (): ReplayRecordView => {
-  const record: AttemptRecord = createClosedAttemptRecordFixture();
-  const states = new Map(record.snapshots.map((snapshot) => [snapshot.id, snapshot]));
-  const actions: AttemptRecordView['actions'] = record.actions.map((action) => {
-    const before = states.get(action.beforeStateId);
-    const after = states.get(action.afterStateId);
-    if (!before || !after) throw new Error('fixture action is missing a state');
-    return { ...action, before, after };
-  });
-  return {
-    recordVersion: record.recordVersion,
-    id: record.id,
-    createdAt: record.createdAt,
-    updatedAt: record.updatedAt,
-    config: { level: record.config.level },
-    snapshots: record.snapshots,
-    actions,
-    closure: record.closure,
-    metrics: record.metrics,
-    score: record.score,
-  };
-};
+const publicFixture = () => publicReplayView(createClosedAttemptRecordFixture());
 
 let pendingFrames: Map<number, FrameRequestCallback>;
 let nextFrameId: number;
@@ -96,7 +71,22 @@ describe('ReplayScene', () => {
     await nextFrame(1000);
     expect(ready).toHaveBeenCalledOnce();
     expect(complete).not.toHaveBeenCalled();
-    expect(screen.getByRole('img').getAttribute('data-action-index')).toBe('0');
+    const scene = screen.getByRole('img');
+    expect(scene.getAttribute('data-action-index')).toBe('0');
+    expect(
+      [...scene.querySelectorAll('[data-replay-layer]')].map((layer) =>
+        layer.getAttribute('data-replay-layer'),
+      ),
+    ).toEqual(['backdrop', 'terrain-back', 'robot', 'terrain-front']);
+    expect(
+      scene.querySelector('[data-replay-layer="terrain-front"] use[href$="#terrain-pit-edge"]'),
+    ).not.toBeNull();
+    expect(
+      scene.querySelector('[data-replay-layer="terrain-front"] use[href$="#terrain-branch-front"]'),
+    ).not.toBeNull();
+    const standingRobot = scene.querySelector('[data-replay-layer="robot"] > g');
+    expect(standingRobot?.getAttribute('data-facing')).toBe('right');
+    expect(standingRobot?.getAttribute('data-pose')).toBe('step-a');
 
     const durationMs = prepareReplay(publicFixture()).duration * 1000;
     await nextFrame(1000 + durationMs + 3500);
@@ -127,5 +117,56 @@ describe('ReplayScene', () => {
     expect(ready).not.toHaveBeenCalled();
     expect(complete).not.toHaveBeenCalled();
     expect(pendingFrames.size).toBe(0);
+  });
+
+  it('renders a left jump with the mirrored master sprite', async () => {
+    const record = replayRecordForActions([
+      { kind: 'advance' },
+      { kind: 'jump', direction: 'right' },
+      { kind: 'jump', direction: 'left' },
+    ]);
+    const ready = vi.fn();
+    render(<ReplayScene record={record} onReady={ready} onComplete={vi.fn()} onError={vi.fn()} />);
+    await waitFor(() => expect(pendingFrames.size).toBe(1));
+    await nextFrame(1000);
+    await nextFrame(3010);
+
+    const scene = screen.getByRole('img');
+    expect(scene.getAttribute('data-action-index')).toBe('2');
+    const robot = scene.querySelector('[data-replay-layer="robot"] > g');
+    expect(robot?.getAttribute('data-pose')).toBe('jump');
+    expect(robot?.getAttribute('data-facing')).toBe('left');
+    expect(robot?.getAttribute('transform')).toContain('scale(-0.62 0.62)');
+    expect(ready).toHaveBeenCalledOnce();
+  });
+
+  it('plays several recorded actions before an error closure and reports the last frame', async () => {
+    const record = replayRecordForActions(
+      [{ kind: 'advance' }, { kind: 'jump', direction: 'right' }, { kind: 'advance' }],
+      'error',
+    );
+    const ready = vi.fn();
+    const complete = vi.fn();
+    const error = vi.fn();
+    render(<ReplayScene record={record} onReady={ready} onComplete={complete} onError={error} />);
+    await waitFor(() => expect(pendingFrames.size).toBe(1));
+    await nextFrame(0);
+    await nextFrame(1150);
+    expect(screen.getByRole('img').getAttribute('data-action-index')).toBe('1');
+    expect(
+      screen
+        .getByRole('img')
+        .querySelector('[data-replay-layer="robot"] > g')
+        ?.getAttribute('data-pose'),
+    ).toBe('jump');
+    await nextFrame(2300);
+
+    const scene = screen.getByRole('img');
+    expect(scene.getAttribute('data-complete')).toBe('true');
+    expect(scene.getAttribute('data-closure-status')).toBe('error');
+    expect(scene.getAttribute('data-action-index')).toBe('2');
+    expect(ready).toHaveBeenCalledOnce();
+    expect(complete).toHaveBeenCalledOnce();
+    expect(error).not.toHaveBeenCalled();
   });
 });
