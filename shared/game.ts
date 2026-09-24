@@ -222,6 +222,52 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const hasOwn = (value: object, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(value, key);
 
+const isResolutionReason = (value: unknown): value is ResolutionReason =>
+  value === 'moved' ||
+  value === 'left_boundary' ||
+  value === 'right_boundary' ||
+  value === 'swim_no_effect' ||
+  value === 'wait' ||
+  value === 'walk_into_pit' ||
+  value === 'crouch_into_pit' ||
+  value === 'walk_into_branch' ||
+  value === 'jump_into_branch' ||
+  value === 'walk_into_barrier' ||
+  value === 'crouch_into_low_barrier' ||
+  value === 'jump_into_high_barrier';
+
+/** Type guard for the single normalized action contract used by game and replay records. */
+export const isNormalizedAction = (value: unknown): value is NormalizedAction => {
+  if (!isRecord(value)) return false;
+  if (
+    value.kind === 'advance' ||
+    value.kind === 'retreat' ||
+    value.kind === 'swim' ||
+    value.kind === 'wait'
+  ) {
+    return !hasOwn(value, 'direction');
+  }
+  return (
+    (value.kind === 'jump' || value.kind === 'crouch') &&
+    (value.direction === 'left' || value.direction === 'right')
+  );
+};
+
+/** Type guard for the single action resolution contract used by durable and public records. */
+export const isActionResolution = (value: unknown): value is ActionResolution => {
+  if (!isRecord(value) || !isResolutionReason(value.reason)) return false;
+  if (value.outcome === 'no_op') return true;
+  return (
+    (value.outcome === 'moved' || value.outcome === 'fall' || value.outcome === 'collision') &&
+    typeof value.segment === 'number' &&
+    Number.isSafeInteger(value.segment) &&
+    value.segment >= 0 &&
+    typeof value.targetSupport === 'number' &&
+    Number.isSafeInteger(value.targetSupport) &&
+    value.targetSupport >= 0
+  );
+};
+
 const deepFreeze = <T>(value: T): T => {
   if (typeof value === 'object' && value !== null && !Object.isFrozen(value)) {
     Object.freeze(value);
@@ -436,6 +482,40 @@ const modeForAction = (
   return 'walk';
 };
 
+type MovementMode = 'walk' | 'jump' | 'crouch';
+type MovementCompatibility = {
+  readonly outcome: 'moved' | 'fall' | 'collision';
+  readonly reason: ResolutionReason;
+};
+
+const MOVEMENT_COMPATIBILITY = {
+  ground: {
+    walk: { outcome: 'moved', reason: 'moved' },
+    jump: { outcome: 'moved', reason: 'moved' },
+    crouch: { outcome: 'moved', reason: 'moved' },
+  },
+  pit: {
+    walk: { outcome: 'fall', reason: 'walk_into_pit' },
+    jump: { outcome: 'moved', reason: 'moved' },
+    crouch: { outcome: 'fall', reason: 'crouch_into_pit' },
+  },
+  branch: {
+    walk: { outcome: 'collision', reason: 'walk_into_branch' },
+    jump: { outcome: 'collision', reason: 'jump_into_branch' },
+    crouch: { outcome: 'moved', reason: 'moved' },
+  },
+  barrier_low: {
+    walk: { outcome: 'collision', reason: 'walk_into_barrier' },
+    jump: { outcome: 'moved', reason: 'moved' },
+    crouch: { outcome: 'collision', reason: 'crouch_into_low_barrier' },
+  },
+  barrier_high: {
+    walk: { outcome: 'collision', reason: 'walk_into_barrier' },
+    jump: { outcome: 'collision', reason: 'jump_into_high_barrier' },
+    crouch: { outcome: 'moved', reason: 'moved' },
+  },
+} satisfies Record<TerrainState, Record<MovementMode, MovementCompatibility>>;
+
 const directionForAction = (action: NormalizedAction): Direction | undefined => {
   if (action.kind === 'advance') return 'right';
   if (action.kind === 'retreat') return 'left';
@@ -443,72 +523,136 @@ const directionForAction = (action: NormalizedAction): Direction | undefined => 
   return undefined;
 };
 
-const movementCompatibility = (
-  terrain: TerrainState,
-  mode: 'walk' | 'jump' | 'crouch' | 'swim',
-): { readonly outcome: 'moved' | 'fall' | 'collision'; readonly reason: ResolutionReason } => {
-  if (terrain === 'ground') return { outcome: 'moved', reason: 'moved' };
-  if (terrain === 'pit') {
-    return mode === 'jump'
-      ? { outcome: 'moved', reason: 'moved' }
-      : mode === 'crouch'
-        ? { outcome: 'fall', reason: 'crouch_into_pit' }
-        : { outcome: 'fall', reason: 'walk_into_pit' };
+const movementCompatibility = (terrain: TerrainState, mode: MovementMode): MovementCompatibility =>
+  MOVEMENT_COMPATIBILITY[terrain][mode];
+
+type SemanticSnapshot = {
+  readonly support: number;
+  readonly turnsUsed: number;
+  readonly phaseTurn: number;
+  readonly terrain: readonly TerrainState[];
+  readonly exitEnabled: boolean;
+  readonly status: GameStatus;
+};
+
+const isGameStatus = (value: unknown): value is GameStatus =>
+  value === 'running' || value === 'victory' || value === 'defeat' || value === 'incomplete';
+
+const isSemanticSnapshot = (value: unknown): value is SemanticSnapshot =>
+  isRecord(value) &&
+  typeof value.support === 'number' &&
+  Number.isSafeInteger(value.support) &&
+  value.support >= 0 &&
+  value.support <= LEVEL.segments.length &&
+  typeof value.turnsUsed === 'number' &&
+  Number.isSafeInteger(value.turnsUsed) &&
+  value.turnsUsed >= 0 &&
+  typeof value.phaseTurn === 'number' &&
+  Number.isSafeInteger(value.phaseTurn) &&
+  value.phaseTurn >= 0 &&
+  Array.isArray(value.terrain) &&
+  value.terrain.length === LEVEL.segments.length &&
+  value.terrain.every(validTerrain) &&
+  typeof value.exitEnabled === 'boolean' &&
+  isGameStatus(value.status);
+
+const sameTerrain = (value: unknown, expected: readonly TerrainState[]): boolean =>
+  Array.isArray(value) &&
+  value.length === expected.length &&
+  value.every((item, index) => item === expected[index]);
+
+/**
+ * Checks a recorded action against the current contract without reconstructing game state.
+ * The compatibility table is also the game engine's declarative terrain/action matrix.
+ */
+export const isSemanticallyValidActionResolution = (
+  actionValue: unknown,
+  beforeValue: unknown,
+  afterValue: unknown,
+  resolutionValue: unknown,
+): boolean => {
+  if (
+    !isNormalizedAction(actionValue) ||
+    !isActionResolution(resolutionValue) ||
+    !isSemanticSnapshot(beforeValue) ||
+    !isSemanticSnapshot(afterValue)
+  ) {
+    return false;
   }
-  if (terrain === 'branch') {
-    return mode === 'crouch'
-      ? { outcome: 'moved', reason: 'moved' }
-      : mode === 'jump'
-        ? { outcome: 'collision', reason: 'jump_into_branch' }
-        : { outcome: 'collision', reason: 'walk_into_branch' };
+
+  const before = beforeValue;
+  const after = afterValue;
+  const resolution = resolutionValue;
+  if (before.status !== 'running') return false;
+  if (
+    before.turnsUsed >= LEVEL.maxTurns ||
+    after.turnsUsed !== before.turnsUsed + 1 ||
+    before.phaseTurn !== before.turnsUsed ||
+    after.exitEnabled !== before.exitEnabled ||
+    !sameTerrain(before.terrain, effectiveTerrain(LEVEL, before.phaseTurn))
+  ) {
+    return false;
   }
-  if (terrain === 'barrier_low') {
-    return mode === 'jump'
-      ? { outcome: 'moved', reason: 'moved' }
-      : mode === 'walk'
-        ? { outcome: 'collision', reason: 'walk_into_barrier' }
-        : { outcome: 'collision', reason: 'crouch_into_low_barrier' };
+
+  let expectedSupport = before.support;
+  if (actionValue.kind === 'wait') {
+    if (resolution.outcome !== 'no_op' || resolution.reason !== 'wait') return false;
+  } else if (actionValue.kind === 'swim') {
+    if (resolution.outcome !== 'no_op' || resolution.reason !== 'swim_no_effect') return false;
+  } else {
+    const direction = directionForAction(actionValue);
+    if (!direction) return false;
+    const targetSupport = before.support + (direction === 'right' ? 1 : -1);
+    if (targetSupport < 0 || targetSupport > LEVEL.segments.length) {
+      if (
+        resolution.outcome !== 'no_op' ||
+        resolution.reason !== (direction === 'right' ? 'right_boundary' : 'left_boundary')
+      ) {
+        return false;
+      }
+    } else {
+      const segment = direction === 'right' ? before.support : targetSupport;
+      const terrain = before.terrain[segment];
+      if (terrain === undefined) return false;
+      const mode = modeForAction(actionValue);
+      if (mode === 'swim') return false;
+      const expected = movementCompatibility(terrain, mode);
+      if (
+        resolution.outcome !== expected.outcome ||
+        resolution.reason !== expected.reason ||
+        resolution.segment !== segment ||
+        resolution.targetSupport !== targetSupport
+      ) {
+        return false;
+      }
+      if (expected.outcome === 'moved') expectedSupport = targetSupport;
+    }
   }
-  if (terrain === 'barrier_high') {
-    return mode === 'crouch'
-      ? { outcome: 'moved', reason: 'moved' }
-      : mode === 'walk'
-        ? { outcome: 'collision', reason: 'walk_into_barrier' }
-        : { outcome: 'collision', reason: 'jump_into_high_barrier' };
-  }
-  throw new GameStateError(`Unsupported static terrain: ${terrain}`);
+
+  if (after.support !== expectedSupport) return false;
+  const fatal = resolution.outcome === 'fall' || resolution.outcome === 'collision';
+  const reachesEnabledExit =
+    resolution.outcome === 'moved' &&
+    expectedSupport === LEVEL.exit.support &&
+    before.exitEnabled === true;
+  const expectedStatus: GameStatus = fatal
+    ? 'defeat'
+    : reachesEnabledExit
+      ? 'victory'
+      : before.turnsUsed + 1 >= LEVEL.maxTurns
+        ? 'incomplete'
+        : 'running';
+  if (after.status !== expectedStatus) return false;
+
+  const expectedPhaseTurn = expectedStatus === 'running' ? before.phaseTurn + 1 : before.phaseTurn;
+  return (
+    after.phaseTurn === expectedPhaseTurn &&
+    sameTerrain(after.terrain, effectiveTerrain(LEVEL, expectedPhaseTurn))
+  );
 };
 
 const validateAction = (action: NormalizedAction): void => {
-  if (!isRecord(action) || typeof action.kind !== 'string') {
-    throw new GameStateError('The action is not normalized.');
-  }
-  if (
-    action.kind !== 'advance' &&
-    action.kind !== 'retreat' &&
-    action.kind !== 'jump' &&
-    action.kind !== 'crouch' &&
-    action.kind !== 'swim' &&
-    action.kind !== 'wait'
-  ) {
-    throw new GameStateError('The action kind is unknown.');
-  }
-  if (
-    (action.kind === 'jump' || action.kind === 'crouch') &&
-    action.direction !== 'left' &&
-    action.direction !== 'right'
-  ) {
-    throw new GameStateError('A directional action requires a valid direction.');
-  }
-  if (
-    (action.kind === 'advance' ||
-      action.kind === 'retreat' ||
-      action.kind === 'swim' ||
-      action.kind === 'wait') &&
-    hasOwn(action, 'direction')
-  ) {
-    throw new GameStateError('This action does not accept a direction.');
-  }
+  if (!isNormalizedAction(action)) throw new GameStateError('The action is not normalized.');
 };
 
 const afterTurn = (

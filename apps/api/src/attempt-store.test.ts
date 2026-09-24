@@ -341,6 +341,39 @@ describe('attempt lifecycle store', () => {
     });
   });
 
+  it('rejects a persisted movement whose cause does not match its recorded terrain', async () => {
+    const draft = createDefaultDraft();
+    const store = new MemoryAttemptStore({ draft: { version: 1, draft } });
+    const { attempt } = await store.admit({
+      owner: 'a',
+      requestKey: 'invalid-replay-cause',
+      expectedVersion: 1,
+      draft,
+      animationEnabled: true,
+    });
+    await store.claim('a', attempt.id, 'executor');
+    const before = (await store.getSnapshot('a', attempt.id)) as GameSnapshot;
+    const resolved = resolveAction(before, { kind: 'advance' }, LEVEL);
+    await store.publishAction('a', attempt.id, 'executor', {
+      seq: 1,
+      decisionId: 'decision-1',
+      action: resolved.action,
+      resolution: { ...resolved.resolution, reason: 'walk_into_pit' },
+      beforeStateId: resolved.before.id,
+      afterStateId: resolved.after.id,
+      beforeSnapshot: resolved.before,
+      afterSnapshot: resolved.after,
+      progress: 1 / LEVEL.segments.length,
+      finalSupport: resolved.after.support,
+      turnsUsed: resolved.after.turnsUsed,
+    });
+    await store.close('a', attempt.id, 'cancelled', 'cancelled_by_user');
+
+    await expect(store.getReplayRecord('a', attempt.id)).rejects.toThrow(
+      'contradice el contrato del juego',
+    );
+  });
+
   it('replays the low-barrier collision cause from its start phase', async () => {
     const base = createDefaultDraft();
     const draft = {

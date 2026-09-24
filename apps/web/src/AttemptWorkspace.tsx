@@ -145,7 +145,7 @@ function reasonLabel(reason: string): string {
     walk_into_branch: 'El robot intentó caminar bajo una rama y chocó.',
     jump_into_branch: 'El robot saltó contra una rama y chocó.',
     walk_into_barrier: 'El robot intentó atravesar una barrera y chocó.',
-    crouch_into_low_barrier: 'El robot pasó agachado por una barrera baja y chocó.',
+    crouch_into_low_barrier: 'El robot intentó pasar agachado por una barrera baja y chocó.',
     jump_into_high_barrier: 'El robot saltó contra una barrera alta y chocó.',
     start_deadline_expired: 'El cálculo no pudo comenzar dentro del tiempo disponible.',
     runtime_deadline_expired: 'La ejecución no terminó dentro del tiempo disponible.',

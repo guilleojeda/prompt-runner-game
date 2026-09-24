@@ -21,7 +21,13 @@ import type {
   NormalizedAction,
   TerrainState,
 } from '../game.js';
-import { LEVEL, RULES_VERSION } from '../game.js';
+import {
+  isActionResolution,
+  isNormalizedAction,
+  isSemanticallyValidActionResolution,
+  LEVEL,
+  RULES_VERSION,
+} from '../game.js';
 
 /** API summaries use the authoritative attempt contract from shared/attempt.ts. */
 export type AttemptStatus = SharedAttemptStatus;
@@ -252,19 +258,6 @@ const isTerrain = (value: unknown): value is TerrainState =>
   value === 'branch' ||
   value === 'barrier_low' ||
   value === 'barrier_high';
-const isResolutionReason = (value: unknown): value is ActionResolution['reason'] =>
-  value === 'moved' ||
-  value === 'left_boundary' ||
-  value === 'right_boundary' ||
-  value === 'swim_no_effect' ||
-  value === 'wait' ||
-  value === 'walk_into_pit' ||
-  value === 'crouch_into_pit' ||
-  value === 'walk_into_branch' ||
-  value === 'jump_into_branch' ||
-  value === 'walk_into_barrier' ||
-  value === 'crouch_into_low_barrier' ||
-  value === 'jump_into_high_barrier';
 const isTerminal = (status: AttemptStatus): boolean =>
   status === 'victory' ||
   status === 'defeat' ||
@@ -334,46 +327,25 @@ const readAction = (value: unknown): AttemptActionRecord => {
     throw new ReplayRecordError('El registro contiene una acción inválida.');
   }
   const rawAction = value.action;
-  if (!isObject(rawAction))
-    throw new ReplayRecordError('El registro contiene una acción inválida.');
-  let action: NormalizedAction | undefined;
-  if (rawAction.kind === 'advance') action = { kind: 'advance' };
-  else if (rawAction.kind === 'retreat') action = { kind: 'retreat' };
-  else if (rawAction.kind === 'swim') action = { kind: 'swim' };
-  else if (rawAction.kind === 'wait') action = { kind: 'wait' };
-  else if (
-    (rawAction.kind === 'jump' || rawAction.kind === 'crouch') &&
-    (rawAction.direction === 'left' || rawAction.direction === 'right')
-  ) {
-    action = { kind: rawAction.kind, direction: rawAction.direction };
-  }
-  if (!action) throw new ReplayRecordError('El registro contiene una acción no compatible.');
+  if (!isNormalizedAction(rawAction))
+    throw new ReplayRecordError('El registro contiene una acción no compatible.');
+  const action: NormalizedAction =
+    rawAction.kind === 'jump' || rawAction.kind === 'crouch'
+      ? { kind: rawAction.kind, direction: rawAction.direction }
+      : { kind: rawAction.kind };
 
   const rawResolution = value.resolution;
-  if (!isObject(rawResolution)) {
-    throw new ReplayRecordError('El registro contiene una resolución inválida.');
-  }
-  const reason = isResolutionReason(rawResolution.reason) ? rawResolution.reason : undefined;
-  if (!reason) throw new ReplayRecordError('El registro contiene una resolución no compatible.');
-  let resolution: ActionResolution | undefined;
-  if (rawResolution.outcome === 'no_op') {
-    resolution = { outcome: 'no_op', reason };
-  } else if (
-    (rawResolution.outcome === 'moved' ||
-      rawResolution.outcome === 'fall' ||
-      rawResolution.outcome === 'collision') &&
-    isInteger(rawResolution.segment) &&
-    isInteger(rawResolution.targetSupport)
-  ) {
-    resolution = {
-      outcome: rawResolution.outcome,
-      reason,
-      segment: rawResolution.segment,
-      targetSupport: rawResolution.targetSupport,
-    };
-  }
-  if (!resolution)
+  if (!isActionResolution(rawResolution))
     throw new ReplayRecordError('El registro contiene una resolución no compatible.');
+  const resolution: ActionResolution =
+    rawResolution.outcome === 'no_op'
+      ? { outcome: 'no_op', reason: rawResolution.reason }
+      : {
+          outcome: rawResolution.outcome,
+          reason: rawResolution.reason,
+          segment: rawResolution.segment,
+          targetSupport: rawResolution.targetSupport,
+        };
   return {
     seq: value.seq,
     decisionId: value.decisionId,
@@ -540,6 +512,9 @@ export const replayRecordViewOf = (
       after.turnsUsed !== before.turnsUsed + 1
     ) {
       throw new ReplayRecordError('La secuencia de acciones o estados está incompleta.');
+    }
+    if (!isSemanticallyValidActionResolution(action.action, before, after, action.resolution)) {
+      throw new ReplayRecordError(`La acción ${index + 1} contradice el contrato del juego.`);
     }
     return { ...action, before, after };
   });
