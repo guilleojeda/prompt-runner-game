@@ -178,6 +178,49 @@ describe('periodic deterministic game engine', () => {
     },
   );
 
+  it.each([
+    [0, 'ground', 'walk', 'moved', 'moved'],
+    [0, 'ground', 'jump', 'moved', 'moved'],
+    [0, 'ground', 'crouch', 'moved', 'moved'],
+    [1, 'pit', 'walk', 'fall', 'walk_into_pit'],
+    [1, 'pit', 'jump', 'moved', 'moved'],
+    [1, 'pit', 'crouch', 'fall', 'crouch_into_pit'],
+  ] as const)(
+    'platform descriptor at phase %i materializes as %s and resolves %s in both directions',
+    (phaseTurn, terrain, mode, outcome, reason) => {
+      for (const direction of bothDirections) {
+        const platformIndex = direction === 'right' ? 1 : 0;
+        const segments: LevelSegment[] = [
+          { type: 'ground' },
+          { type: 'ground' },
+          { type: 'ground' },
+        ];
+        segments[platformIndex] = {
+          type: 'platform',
+          phases: ['ground', 'pit', 'pit'],
+          offset: 0,
+        };
+        const level: LevelDefinition = {
+          id: 'platform-test',
+          version: 1,
+          rulesVersion: RULES_VERSION,
+          maxTurns: 16,
+          segments,
+          objects: [],
+          exit: { support: 3, requiredObjectIds: [] },
+        };
+        const before = stateAt(level, 1, { phaseTurn, turnsUsed: phaseTurn });
+        const result = resolveAction(before, actionFor(mode, direction), level);
+
+        expect(before.terrain[platformIndex]).toBe(terrain);
+        expect(result.resolution.outcome).toBe(outcome);
+        expect(result.resolution.reason).toBe(reason);
+        expect(result.after.turnsUsed).toBe(phaseTurn + 1);
+        expect(result.after.status).toBe(outcome === 'moved' ? 'running' : 'defeat');
+      }
+    },
+  );
+
   it('resolves the seven-crossing route against each action-start phase', () => {
     const actions: readonly NormalizedAction[] = [
       { kind: 'advance' },

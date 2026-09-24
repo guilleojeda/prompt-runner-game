@@ -163,7 +163,7 @@ aws cloudformation describe-stacks --stack-name PromptRunnerHosting --region us-
 
 El output `WebsiteUrl` entrega la URL HTTPS de CloudFront; `BuildRevision` identifica la revisión publicada. Compararla con el commit del run y con `document.documentElement.dataset.buildRevision` después de abrir y recargar la web. La carga debe resolver React, CSS y favicon sin errores de consola o red. Un asset inexistente debe devolver un error, y un GET anónimo directo al bucket de origen debe ser rechazado.
 
-Los assets con hash se conservan para que una pestaña abierta siga resolviendo su build. Se publican antes del documento de entrada. El HTML y la metadata mutable no se cachean de forma indefinida; una invalidación de CloudFront no reemplaza el control de caché del navegador. No se configura una respuesta HTML general para errores del origen.
+Los assets del build vigente se publican antes del documento de entrada. La publicación elimina los objetos que no pertenecen al build actual, así que no se garantiza que una pestaña con una versión anterior siga encontrando sus assets. El HTML y la metadata mutable no se cachean de forma indefinida; una invalidación de CloudFront no reemplaza el control de caché del navegador. No se configura una respuesta HTML general para errores del origen.
 
 Si falla una actualización, conservar el log completo y el estado de CloudFormation antes de reintentar. Corregir el código o la configuración en el mismo circuito de PR, checks y `main`; no publicar manualmente otra copia del frontend para ocultar un fallo del pipeline. Bootstrap y acceso inicial son las únicas operaciones preparatorias realizadas con credenciales de operador.
 
