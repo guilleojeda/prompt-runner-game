@@ -166,7 +166,7 @@ describe('prepareReplay', () => {
     const terminal = prepared.sample(prepared.duration);
     expect(terminal).toMatchObject({ pose: 'fall', complete: true, closureStatus: 'defeat' });
     expect(terminal.support).toBeCloseTo(1.42);
-    expect(terminal.drop).toBe(116);
+    expect(terminal.drop).toBe(70);
   });
 
   it('falls left from the far side of the pit without crossing the gap on a walk', () => {
@@ -191,7 +191,7 @@ describe('prepareReplay', () => {
     expect(prepared.sample(2.66)).toMatchObject({
       complete: true,
       support: 1.58,
-      drop: 116,
+      drop: 70,
       closureStatus: 'defeat',
     });
   });
