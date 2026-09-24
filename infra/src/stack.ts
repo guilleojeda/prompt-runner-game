@@ -65,7 +65,7 @@ export class PromptRunnerHostingStack extends cdk.Stack {
 
     const immutableAssetsPolicy = new cloudfront.CachePolicy(this, 'ImmutableAssetsCachePolicy', {
       cachePolicyName: 'prompt-runner-game-immutable-assets',
-      comment: 'Content-hashed Vite assets can be retained across revisions.',
+      comment: 'Content-hashed Vite assets served with immutable caching.',
       minTtl: cdk.Duration.seconds(0),
       defaultTtl: cdk.Duration.days(365),
       maxTtl: cdk.Duration.days(365),
@@ -128,7 +128,7 @@ export class PromptRunnerHostingStack extends cdk.Stack {
       sources: [s3deploy.Source.asset(path.join(webDistPath, 'assets'))],
       destinationBucket: this.websiteBucket,
       destinationKeyPrefix: 'assets',
-      prune: false,
+      prune: true,
       retainOnDelete: true,
       role: assetDeploymentRole,
       cacheControl: [
@@ -156,6 +156,7 @@ export class PromptRunnerHostingStack extends cdk.Stack {
         '/favicon.svg',
         '/manifest.webmanifest',
         '/auth-config.json',
+        '/assets/*',
       ],
     });
     entryDeployment.node.addDependency(assetsDeployment);

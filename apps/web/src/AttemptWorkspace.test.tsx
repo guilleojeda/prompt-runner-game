@@ -4,7 +4,12 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { User } from 'oidc-client-ts';
 import { StrictMode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createDefaultDraft, type DraftSnapshot } from '../../../shared/robot.js';
+import {
+  createDefaultDraft,
+  ROBOT_CATALOG_VERSION,
+  ROBOT_SCHEMA_VERSION,
+  type DraftSnapshot,
+} from '../../../shared/robot.js';
 import { createClosedAttemptRecordFixture } from '../../../shared/attempt.fixture.js';
 import type { ReplayRecordView } from '../../../shared/attempt.js';
 import type { AuthSession } from './auth.js';
@@ -64,12 +69,12 @@ function summary(status: AttemptSummary['status'] = 'running'): AttemptSummary {
     updatedAt: '2026-09-21T12:00:01.000Z',
     status,
     cancelRequested: false,
-    levelId: 'principal-estatico-v1',
+    levelId: 'principal-periodico-v2',
     modelKey: 'claude-sonnet-4.6',
     modelLabel: 'Claude Sonnet 4.6',
     modelId: 'global.anthropic.claude-sonnet-4-6',
     turnsUsed: 2,
-    maxTurns: 12,
+    maxTurns: 16,
     calls: 2,
     inputTokens: null,
     outputTokens: null,
@@ -105,6 +110,26 @@ function replayRecord(id = 'attempt-1'): ReplayRecordView {
     metrics: source.metrics,
     score: source.score,
   };
+}
+
+function setCurrentRecovery(storageKey: string, serializedReference: string): void {
+  let value: unknown;
+  try {
+    value = JSON.parse(serializedReference);
+  } catch {
+    window.sessionStorage.setItem(storageKey, serializedReference);
+    return;
+  }
+  if (storageKey === 'prompt-runner:attempt-recovery' && value && typeof value === 'object') {
+    value = {
+      ...value,
+      draftContract: {
+        schemaVersion: ROBOT_SCHEMA_VERSION,
+        catalogVersion: ROBOT_CATALOG_VERSION,
+      },
+    };
+  }
+  window.sessionStorage.setItem(storageKey, JSON.stringify(value));
 }
 
 function api(overrides: Partial<AttemptApi> = {}): AttemptApi {
@@ -166,7 +191,7 @@ describe('AttemptWorkspace', () => {
         ...summary('victory'),
         animationEnabled: false,
         presentationComplete: true,
-        turnsUsed: 5,
+        turnsUsed: 7,
       },
       dispatchConfirmed: true,
     });
@@ -180,6 +205,8 @@ describe('AttemptWorkspace', () => {
     render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
 
     await screen.findByText('Historial');
+    expect(screen.getByText('Terreno periódico')).toBeTruthy();
+    expect(screen.getByText(/cambia entre suelo, pozo, rama, barrera y plataforma/)).toBeTruthy();
     const animation = screen.getByRole('checkbox', { name: 'Animación' }) as HTMLInputElement;
     expect(animation.checked).toBe(true);
     fireEvent.click(animation);
@@ -194,6 +221,9 @@ describe('AttemptWorkspace', () => {
 
     expect(createAttempt).toHaveBeenCalledWith(expect.any(String), 2, createDefaultDraft(), false);
     expect(attemptApi.getReplay).not.toHaveBeenCalled();
+    expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
+    expect(screen.getByText('El robot llegó a la salida del recorrido.')).toBeTruthy();
+    expect(screen.queryByText(/estático/)).toBeNull();
     expect(putAnimationPreference).toHaveBeenCalledWith(false, 0, expect.any(AbortSignal));
     await act(async () => {
       finishPreferenceSave({ animationEnabled: false, version: 1 });
@@ -271,11 +301,11 @@ describe('AttemptWorkspace', () => {
   it('recovers pending playback without exposing the result early and lets the player replay without inference', async () => {
     const pending = {
       ...summary('victory'),
-      turnsUsed: 5,
+      turnsUsed: 7,
       animationEnabled: true,
       presentationComplete: false,
     };
-    window.sessionStorage.setItem(
+    setCurrentRecovery(
       'prompt-runner:attempt-recovery',
       JSON.stringify({ sub: 'subject-a', attemptId: pending.id }),
     );
@@ -322,7 +352,7 @@ describe('AttemptWorkspace', () => {
     const terminal = {
       ...active,
       status: 'victory' as const,
-      turnsUsed: 5,
+      turnsUsed: 7,
       updatedAt: '2026-09-21T12:05:00.000Z',
     };
     const getAttempt = vi.fn().mockResolvedValue(terminal);
@@ -346,13 +376,13 @@ describe('AttemptWorkspace', () => {
   it('refreshes an incomplete automatic summary before retrying the replay', async () => {
     const incomplete = {
       ...summary('victory'),
-      turnsUsed: 5,
+      turnsUsed: 7,
       animationEnabled: true,
       presentationComplete: false,
       recordComplete: false,
     };
     const complete = { ...incomplete, recordComplete: true };
-    window.sessionStorage.setItem(
+    setCurrentRecovery(
       'prompt-runner:attempt-recovery',
       JSON.stringify({ sub: 'subject-a', attemptId: incomplete.id }),
     );
@@ -374,12 +404,12 @@ describe('AttemptWorkspace', () => {
   it('keeps the result accessible if the refreshed record remains incomplete', async () => {
     const incomplete = {
       ...summary('victory'),
-      turnsUsed: 5,
+      turnsUsed: 7,
       animationEnabled: true,
       presentationComplete: false,
       recordComplete: false,
     };
-    window.sessionStorage.setItem(
+    setCurrentRecovery(
       'prompt-runner:attempt-recovery',
       JSON.stringify({ sub: 'subject-a', attemptId: incomplete.id }),
     );
@@ -427,8 +457,8 @@ describe('AttemptWorkspace', () => {
     },
   );
 
-  it('replays a phase-three history record manually without admitting or marking it again', async () => {
-    const historical = { ...summary('victory'), animationEnabled: false, turnsUsed: 5 };
+  it('replays a current history record manually without admitting or marking it again', async () => {
+    const historical = { ...summary('victory'), animationEnabled: false, turnsUsed: 7 };
     const getReplay = vi.fn().mockResolvedValue(replayRecord(historical.id));
     const createAttempt = vi.fn();
     const completePresentation = vi.fn();
@@ -455,11 +485,11 @@ describe('AttemptWorkspace', () => {
   it('keeps replay errors recoverable and lets the player open the stored result', async () => {
     const pending = {
       ...summary('victory'),
-      turnsUsed: 5,
+      turnsUsed: 7,
       animationEnabled: true,
       presentationComplete: false,
     };
-    window.sessionStorage.setItem(
+    setCurrentRecovery(
       'prompt-runner:attempt-recovery',
       JSON.stringify({ sub: 'subject-a', attemptId: pending.id }),
     );
@@ -506,11 +536,11 @@ describe('AttemptWorkspace', () => {
   it('shows and unlocks the result while the automatic presentation mark is still pending', async () => {
     const pending = {
       ...summary('victory'),
-      turnsUsed: 5,
+      turnsUsed: 7,
       animationEnabled: true,
       presentationComplete: false,
     };
-    window.sessionStorage.setItem(
+    setCurrentRecovery(
       'prompt-runner:attempt-recovery',
       JSON.stringify({ sub: 'subject-a', attemptId: pending.id }),
     );
@@ -556,11 +586,11 @@ describe('AttemptWorkspace', () => {
   it('replays from the server snapshot after repeated reloads when ACK confirmation failed', async () => {
     const pending = {
       ...summary('victory'),
-      turnsUsed: 5,
+      turnsUsed: 7,
       animationEnabled: true,
       presentationComplete: false,
     };
-    window.sessionStorage.setItem(
+    setCurrentRecovery(
       'prompt-runner:attempt-recovery',
       JSON.stringify({ sub: 'subject-a', attemptId: pending.id }),
     );
@@ -611,12 +641,12 @@ describe('AttemptWorkspace', () => {
   it('uses a completed server summary to open the result directly after reload', async () => {
     const pending = {
       ...summary('victory'),
-      turnsUsed: 5,
+      turnsUsed: 7,
       animationEnabled: true,
       presentationComplete: false,
     };
     const completed = { ...pending, presentationComplete: true };
-    window.sessionStorage.setItem(
+    setCurrentRecovery(
       'prompt-runner:attempt-recovery',
       JSON.stringify({ sub: 'subject-a', attemptId: pending.id }),
     );
@@ -650,7 +680,7 @@ describe('AttemptWorkspace', () => {
   it('replays a history attempt when the server still reports presentation pending', async () => {
     const pending = {
       ...summary('victory'),
-      turnsUsed: 5,
+      turnsUsed: 7,
       animationEnabled: true,
       presentationComplete: false,
     };
@@ -671,7 +701,7 @@ describe('AttemptWorkspace', () => {
   it('recovers B without carrying A as the foreground recovery', async () => {
     const attemptA = {
       ...summary('victory'),
-      turnsUsed: 5,
+      turnsUsed: 7,
       animationEnabled: true,
       presentationComplete: false,
     };
@@ -681,7 +711,7 @@ describe('AttemptWorkspace', () => {
       animationEnabled: false,
       presentationComplete: true,
     };
-    window.sessionStorage.setItem(
+    setCurrentRecovery(
       'prompt-runner:attempt-recovery',
       JSON.stringify({ sub: 'subject-a', attemptId: attemptA.id }),
     );
@@ -755,7 +785,7 @@ describe('AttemptWorkspace', () => {
   it('ignores a late successful ACK callback from A after B becomes current', async () => {
     const attemptA = {
       ...summary('victory'),
-      turnsUsed: 5,
+      turnsUsed: 7,
       animationEnabled: true,
       presentationComplete: false,
     };
@@ -765,7 +795,7 @@ describe('AttemptWorkspace', () => {
       animationEnabled: false,
       presentationComplete: true,
     };
-    window.sessionStorage.setItem(
+    setCurrentRecovery(
       'prompt-runner:attempt-recovery',
       JSON.stringify({ sub: 'subject-a', attemptId: attemptA.id }),
     );
@@ -812,11 +842,11 @@ describe('AttemptWorkspace', () => {
   it('replays from the server snapshot even after the result was already shown locally', async () => {
     const pending = {
       ...summary('victory'),
-      turnsUsed: 5,
+      turnsUsed: 7,
       animationEnabled: true,
       presentationComplete: false,
     };
-    window.sessionStorage.setItem(
+    setCurrentRecovery(
       'prompt-runner:attempt-recovery',
       JSON.stringify({ sub: 'subject-a', attemptId: pending.id }),
     );
@@ -837,11 +867,11 @@ describe('AttemptWorkspace', () => {
   it('shows the result after playback even when the completion mark needs a retry', async () => {
     const pending = {
       ...summary('victory'),
-      turnsUsed: 5,
+      turnsUsed: 7,
       animationEnabled: true,
       presentationComplete: false,
     };
-    window.sessionStorage.setItem(
+    setCurrentRecovery(
       'prompt-runner:attempt-recovery',
       JSON.stringify({ sub: 'subject-a', attemptId: pending.id }),
     );
@@ -866,13 +896,13 @@ describe('AttemptWorkspace', () => {
     expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toBeNull();
   });
 
-  it('freezes the selected model in the admission payload and labels the returned result', async () => {
-    const selectedDraft = { ...createDefaultDraft(), modelKey: 'claude-opus-5' as const };
+  it('freezes the current model in the admission payload and labels the returned result', async () => {
+    const selectedDraft = createDefaultDraft();
     const completed = {
       ...summary('victory'),
-      modelKey: 'claude-opus-5' as const,
-      modelLabel: 'Claude Opus 5',
-      modelId: 'global.anthropic.claude-opus-5',
+      modelKey: 'claude-sonnet-4.6' as const,
+      modelLabel: 'Claude Sonnet 4.6',
+      modelId: 'global.anthropic.claude-sonnet-4-6',
       reasoningTokens: 17,
     };
     const createAttempt = vi
@@ -898,10 +928,10 @@ describe('AttemptWorkspace', () => {
     expect(createAttempt).toHaveBeenCalledWith(
       expect.any(String),
       4,
-      expect.objectContaining({ modelKey: 'claude-opus-5' }),
+      expect.objectContaining({ modelKey: 'claude-sonnet-4.6' }),
       true,
     );
-    expect(await screen.findByText('Modelo: Claude Opus 5')).toBeTruthy();
+    expect(await screen.findByText('Modelo: Claude Sonnet 4.6')).toBeTruthy();
     expect(
       screen.getByText('Razonamiento (incluido en salida)').parentElement?.textContent,
     ).toContain('17');
@@ -1063,15 +1093,16 @@ describe('AttemptWorkspace', () => {
     expect(getAttemptRequest).toHaveBeenCalledOnce();
   });
 
-  it('retries a phase-three frozen admission as animation off after reload and a 404 lookup', async () => {
+  it('retries a current frozen admission with animation on after reload and a 404 lookup', async () => {
     const draft = { ...createDefaultDraft(), instructions: 'Snapshot exacto' };
-    window.sessionStorage.setItem(
+    setCurrentRecovery(
       'prompt-runner:attempt-recovery',
       JSON.stringify({
         sub: 'subject-a',
         requestKey: 'persisted-key',
         expectedVersion: 7,
         draft,
+        animationEnabled: true,
       }),
     );
     const createAttempt = vi.fn().mockResolvedValue({
@@ -1095,13 +1126,13 @@ describe('AttemptWorkspace', () => {
     expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
     expect(getAttemptRequest).toHaveBeenCalledWith('persisted-key', expect.anything());
     expect(createAttempt).toHaveBeenCalledOnce();
-    expect(createAttempt).toHaveBeenCalledWith('persisted-key', 7, draft, false, expect.anything());
+    expect(createAttempt).toHaveBeenCalledWith('persisted-key', 7, draft, true, expect.anything());
     expect(captureSnapshot).not.toHaveBeenCalled();
     expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toBeNull();
   });
 
   it('keeps a key-only recovery marker without inventing a draft to retry', async () => {
-    window.sessionStorage.setItem(
+    setCurrentRecovery(
       'prompt-runner:attempt-recovery',
       JSON.stringify({ sub: 'subject-a', requestKey: 'marker-only-key' }),
     );
@@ -1122,9 +1153,15 @@ describe('AttemptWorkspace', () => {
 
   it('does not re-admit when the lookup finds the attempt after reload', async () => {
     const draft = createDefaultDraft();
-    window.sessionStorage.setItem(
+    setCurrentRecovery(
       'prompt-runner:attempt-recovery',
-      JSON.stringify({ sub: 'subject-a', requestKey: 'found-key', expectedVersion: 3, draft }),
+      JSON.stringify({
+        sub: 'subject-a',
+        requestKey: 'found-key',
+        expectedVersion: 3,
+        draft,
+        animationEnabled: false,
+      }),
     );
     const createAttempt = vi.fn();
     const getAttemptRequest = vi.fn().mockResolvedValue(summary('running'));
@@ -1138,6 +1175,22 @@ describe('AttemptWorkspace', () => {
     expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).not.toContain(
       'expectedVersion',
     );
+  });
+
+  it('ignores and clears a session reference written without the current draft contract', async () => {
+    window.sessionStorage.setItem(
+      'prompt-runner:attempt-recovery',
+      JSON.stringify({ sub: 'subject-a', attemptId: 'attempt-from-old-contract' }),
+    );
+    const getAttempt = vi.fn();
+    const attemptApi = api({ getAttempt });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+
+    await screen.findByText('Historial');
+    expect(getAttempt).not.toHaveBeenCalled();
+    expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toBeNull();
   });
 
   it.each([
@@ -1178,7 +1231,7 @@ describe('AttemptWorkspace', () => {
       },
     ],
   ])('does not re-admit a %s from session storage', async (_label, stored) => {
-    window.sessionStorage.setItem('prompt-runner:attempt-recovery', JSON.stringify(stored));
+    setCurrentRecovery('prompt-runner:attempt-recovery', JSON.stringify(stored));
     const createAttempt = vi.fn();
     const getAttemptRequest = vi.fn();
     const attemptApi = api({ createAttempt, getAttemptRequest });

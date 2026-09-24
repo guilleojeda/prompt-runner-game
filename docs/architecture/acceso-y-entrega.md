@@ -1,6 +1,6 @@
 # Acceso, publicación y entrega
 
-**Acceso con Cognito y publicación de React estático en S3 privado, servido por CloudFront con Origin Access Control (OAC), mediante CDK en TypeScript y GitHub Actions.** El circuito incorpora el acceso verificado, la configuración persistida, las rutas de intentos y starter/Runtime/S3, con Sonnet 4.6 como único modelo disponible para intentos nuevos. El juego estático, la animación opcional y el replay de registros cerrados forman parte del código; las mecánicas posteriores siguen pendientes. Se usa correo predeterminado y un único ambiente; SES se incorporará después. El diseño de animación está en [animación](animacion.md). Las restricciones elegidas por el usuario se mantienen en [plataforma](../intent/plataforma.md); las referencias técnicas están en [identidad](../reference/identidad.md), [datos y entrega](../reference/datos-y-entrega.md) y [cuenta AWS](../reference/cuenta-aws.md).
+**Acceso con Cognito y publicación de React estático en S3 privado, servido por CloudFront con Origin Access Control (OAC), mediante CDK en TypeScript y GitHub Actions.** El circuito incorpora el acceso verificado, la configuración persistida, las rutas de intentos y starter/Runtime/S3, con Sonnet 4.6 como único modelo operativo. El nivel principal periódico, la animación opcional y el replay del contrato vigente forman parte del código. Se usa correo predeterminado y un único ambiente; SES se incorporará después. El diseño de animación está en [animación](animacion.md). Las restricciones elegidas por el usuario se mantienen en [plataforma](../intent/plataforma.md); las referencias técnicas están en [identidad](../reference/identidad.md), [datos y entrega](../reference/datos-y-entrega.md) y [cuenta AWS](../reference/cuenta-aws.md).
 
 ## Primera versión: Cognito con correo predeterminado
 
@@ -61,13 +61,13 @@ Cognito con Resend también evita solicitar producción SES, pero añade una Lam
 
 El hosting usa **React estático en un bucket S3 privado, servido por CloudFront mediante Origin Access Control (OAC)**. El build y la publicación de assets y configuración se ejecutan con GitHub Actions y CDK en TypeScript. Se utiliza la URL AWS, sin dominio propio. La única ruta de la entrada inicial es `/`; se puede recargar y no existe una redirección general de errores a HTML. Al agregar rutas de la SPA se incorporará su recarga sin convertir errores de assets o API en una respuesta HTML exitosa.
 
-El renderer utiliza React y sprites dentro de SVG, a partir de registros cerrados y un único reloj de reproducción. El [diseño de animación](animacion.md) define clips, trayectorias, carga y compatibilidad, con avance continuo a velocidad fija y sin controles del usuario; CSS se usa para estilos y no como un reloj independiente. El juego muestra estado, resultado, historial y replay sin ejecutar física en el navegador. El diagnóstico técnico permanece para una fase posterior.
+El renderer utiliza React y sprites dentro de SVG, a partir de registros cerrados del contrato vigente y un único reloj de reproducción. El [diseño de animación](animacion.md) define clips, trayectorias y carga, con avance continuo a velocidad fija y sin controles del usuario; CSS se usa para estilos y no como un reloj independiente. El juego muestra estado, resultado, historial y replay sin ejecutar física en el navegador. El diagnóstico técnico permanece para una fase posterior.
 
 La interfaz tiene una única acción Probar: guarda el borrador actual, admite el intento y bloquea los controles de configuración y nuevos intentos mientras calcula y durante la animación automática. El toggle de Animación se guarda por usuario; cada intento captura su valor. Un intento sin animación o sin acciones muestra el resultado directamente. Los demás se reproducen antes de presentar el resultado, que también puede iniciar un replay manual desde el resultado o el historial, según [experiencia](../intent/experiencia.md).
 
 Amplify Hosting también podría definirse con CDK y recibir publicaciones desde GitHub Actions mediante su API. Ofrece hosting y previews administrados, pero esas capacidades no están pedidas y añadirían un circuito de publicación diferente al backend CDK. S3/CloudFront mantiene una forma uniforme de entregar esta SPA y es la decisión aprobada. No se extrapola un costo mensual sin uso.
 
-El bucket del frontend es privado y se sirve exclusivamente a través de CloudFront con OAC. El bucket de cuerpos de inferencia también es privado e independiente del bucket del frontend. Los logs operativos registran IDs, transiciones y errores; no duplican por defecto prompts, cuerpos ni tokens de autenticación. El registro completo del producto permanece en su almacenamiento autorizado y sin caducidad automática.
+El bucket del frontend es privado y se sirve exclusivamente a través de CloudFront con OAC. El bucket de cuerpos de inferencia también es privado e independiente del bucket del frontend. Los logs operativos registran IDs, transiciones y errores; no duplican por defecto prompts, cuerpos ni tokens de autenticación. Los datos del contrato vigente no tienen caducidad automática mientras siga operativo. Los datos de prueba de contratos anteriores pueden permanecer si no afectan el flujo o eliminarse; no requieren lectores antiguos.
 
 ## Entrega automática y ambientes
 
@@ -81,8 +81,8 @@ El circuito de entrega es:
 - `main` vuelve a verificar y despliega automáticamente por GitHub Actions. Los despliegues se serializan sin cancelar uno que esté actualizando recursos.
 - GitHub obtiene credenciales temporales con OIDC; la confianza restringe repositorio y rama/environment según los claims reales. No se guardan claves AWS permanentes.
 - Los roles del runtime, API y arranque tienen permisos por responsabilidad. El agente solo accede a inferencia y datos de aplicación necesarios; no recibe credenciales ni herramientas de despliegue.
-- Los recursos de datos e identidad se conservan ante despliegues o reemplazos rutinarios. Los formatos de registros se versionan; un lector nuevo debe poder reproducir los registros retenidos.
-- Las comprobaciones posteriores al despliegue vinculan versión de código y entorno con acceso real, inferencia, persistencia y replay. Un rollback de código no borra usuarios o intentos ni sustituye la compatibilidad de datos.
+- Los recursos de datos e identidad se conservan ante despliegues o reemplazos rutinarios. La aplicación admite un solo contrato de borrador, nivel, reglas y registro.
+- Las comprobaciones posteriores al despliegue vinculan versión de código y entorno con acceso real, inferencia, persistencia y replay del contrato vigente. Un rollback de código no convierte ni restaura datos de contratos reemplazados.
 
 ## Ambiente operativo
 
@@ -124,7 +124,7 @@ AgentCore crea el endpoint predeterminado y una identidad interna junto al Runti
 
 Las transacciones DynamoDB se autorizan por sus operaciones internas: `GetItem`, `PutItem`, `UpdateItem` y `ConditionCheckItem` cuando se usan comprobaciones condicionales. `TransactWriteItems` es la operación de API, no un permiso IAM adicional. Los roles de API y ejecutor necesitan esos permisos sobre la tabla retenida; ver [IAM con transacciones DynamoDB](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis-iam.html).
 
-El rol Runtime autoriza únicamente el perfil global de Sonnet 4.6 y sus foundation models de destino exactos; API y starter no reciben permisos de inferencia. Los perfiles diferidos permanecen legibles como datos históricos, sin permiso de invocación en Runtime. El grafo de despliegue ordena el Runtime y sus permisos antes de la Lambda API y la entrada web después de esa Lambda. Se pueden publicar assets estáticos antes sin activar la interfaz nueva.
+El rol Runtime autoriza únicamente el perfil global de Sonnet 4.6 y sus foundation models de destino exactos; API y starter no reciben permisos de inferencia. Los modelos diferidos no tienen perfiles operativos en Runtime hasta su fase de implementación. El grafo de despliegue ordena el Runtime y sus permisos antes de la Lambda API y la entrada web después de esa Lambda. Se pueden publicar assets estáticos antes sin activar la interfaz nueva.
 
 Un acuerdo de modelo disponible no prueba que la cuenta pueda inferir. Antes de aceptar la ejecución, verificar una llamada real al perfil acordado y la cuota aplicada; una denegación de habilitación de cuenta requiere resolver el acceso con AWS. No se sustituye el modelo para presentar esa verificación como exitosa.
 
@@ -169,6 +169,6 @@ Si falla una actualización, conservar el log completo y el estado de CloudForma
 
 ## Comprobaciones de aceptación relevantes
 
-Para fase 4, la aceptación cubre correo predeterminado, login, recuperación, pertenencia, rutas de admisión/consulta/cancelación, cuota, motor estático, snapshots, cuerpos privados, preferencia de Animación, reproducción sin inferencia y cierre al cancelar/error. La inferencia nativa con Sonnet 4.6, continuidad, cancelación y publicación se comprueban en el ambiente público. Cada cambio debe revalidar el comportamiento que afecte y conservar la identidad de registros históricos. La carga amplia queda para una fase posterior. Las pruebas del motor cubren los últimos turnos y ambos sentidos de movimiento del nivel estático.
+La aceptación del contrato vigente cubre correo predeterminado, login, recuperación, pertenencia, rutas de admisión/consulta/cancelación, cuota, `principal-periodico-v2`, snapshots, cuerpos privados, preferencia de Animación, reproducción sin inferencia y cierre al cancelar/error. La inferencia nativa con Sonnet 4.6, continuidad, cancelación y publicación se comprueban en el ambiente público. Cada cambio revalida el comportamiento que afecte; no se requiere conservar registros o borradores de contratos retirados. La carga amplia queda para una fase posterior. Las pruebas del motor cubren las siete secciones, las fases periódicas, Esperar y el límite de 16 acciones.
 
 Las lecturas de Lambda y Bedrock identifican preparación pendiente. La primera versión verifica la entrega real con Cognito y sus límites aceptados; la habilitación de SES y el emisor propio pertenecen a la fase posterior. No se condiciona la versión inicial a tener SES en producción.

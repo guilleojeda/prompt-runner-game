@@ -15,9 +15,9 @@ describe('durable closed attempt contract fixture', () => {
     const record = createClosedAttemptRecordFixture();
 
     expect(record.recordVersion).toBe(ATTEMPT_RECORD_VERSION);
-    expect(record.config.level.id).toBe('principal-estatico-v1');
-    expect(record.config.level.version).toBe(1);
-    expect(record.config.level.rulesVersion).toBe(1);
+    expect(record.config.level.id).toBe('principal-periodico-v2');
+    expect(record.config.level.version).toBe(2);
+    expect(record.config.level.rulesVersion).toBe(2);
     expect(record.config.scoreRules).toMatchObject({
       base: 1000,
       turnWeight: 10,
@@ -28,14 +28,23 @@ describe('durable closed attempt contract fixture', () => {
     });
     expect(Object.isFrozen(record.config)).toBe(true);
     expect(Object.isFrozen(record.config.scoreRules)).toBe(true);
-    expect(record.score).toBe(949.4);
+    expect(record.score).toBe(929.4);
   });
 
   it('forms a closed reference chain without duplicating posterior snapshots in actions', () => {
     const record = createClosedAttemptRecordFixture();
     const snapshotIds = record.snapshots.map((snapshot) => snapshot.id);
 
-    expect(snapshotIds).toEqual(['state-0', 'state-1', 'state-2', 'state-3', 'state-4', 'state-5']);
+    expect(snapshotIds).toEqual([
+      'state-0',
+      'state-1',
+      'state-2',
+      'state-3',
+      'state-4',
+      'state-5',
+      'state-6',
+      'state-7',
+    ]);
     expect(new Set(snapshotIds).size).toBe(snapshotIds.length);
     expect(record.actions).toHaveLength(record.snapshots.length - 1);
     for (const [index, action] of record.actions.entries()) {
@@ -47,8 +56,8 @@ describe('durable closed attempt contract fixture', () => {
     }
     expect(record.closure).toEqual({
       status: 'victory',
-      actionCount: 5,
-      finalStateId: 'state-5',
+      actionCount: 7,
+      finalStateId: 'state-7',
       recordComplete: true,
     });
   });
@@ -88,7 +97,7 @@ describe('durable closed attempt contract fixture', () => {
     expect(keys).toContain('USER#fixture-owner/ATTEMPT#fixture-closed-attempt');
     expect(keys).toContain('ATTEMPT#fixture-closed-attempt/META');
     expect(keys).toContain('ATTEMPT#fixture-closed-attempt/STATE#state-0');
-    expect(keys).toContain('ATTEMPT#fixture-closed-attempt/STATE#state-5');
+    expect(keys).toContain('ATTEMPT#fixture-closed-attempt/STATE#state-7');
     expect(keys).toContain('ATTEMPT#fixture-closed-attempt/ACTION#00000001');
     expect(keys).toContain('ATTEMPT#fixture-closed-attempt/CALL#00000001');
     expect(

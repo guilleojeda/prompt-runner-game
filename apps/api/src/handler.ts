@@ -242,16 +242,15 @@ const attemptInput = (
   ) {
     throw new ApiError(400, 'invalid', 'expectedVersion debe ser un entero no negativo.');
   }
-  if (object.animationEnabled !== undefined && typeof object.animationEnabled !== 'boolean') {
+  if (typeof object.animationEnabled !== 'boolean') {
     throw new ApiError(400, 'invalid', 'animationEnabled debe ser un booleano.');
   }
   try {
     return {
       requestKey: object.requestKey,
       expectedVersion: object.expectedVersion,
-      draft: validateDraft(object.draft, { allowLegacyMetadataOverflow: true }),
-      // Requests from the phase-3 client had no animation field and were off.
-      animationEnabled: object.animationEnabled === true,
+      draft: validateDraft(object.draft),
+      animationEnabled: object.animationEnabled,
     };
   } catch (error) {
     if (error instanceof DraftValidationError)

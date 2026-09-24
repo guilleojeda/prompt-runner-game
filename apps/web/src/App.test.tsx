@@ -9,7 +9,12 @@ import { AuthFailure, type AuthClient, type AuthConfig, type AuthSession } from 
 import { DraftApiClient, type DraftApi } from './draft-api.js';
 import { AttemptApiFailure, type AttemptApi, type AttemptSummary } from './attempt-api.js';
 import type { PendingConfirmationClient } from './pending-confirmation.js';
-import { createDefaultDraft, type DraftSnapshot } from '../../../shared/robot.js';
+import {
+  createDefaultDraft,
+  ROBOT_CATALOG_VERSION,
+  ROBOT_SCHEMA_VERSION,
+  type DraftSnapshot,
+} from '../../../shared/robot.js';
 import { createClosedAttemptRecordFixture } from '../../../shared/attempt.fixture.js';
 import type { ReplayRecordView } from '../../../shared/attempt.js';
 
@@ -123,6 +128,26 @@ function replayRecord(id: string): ReplayRecordView {
     metrics: source.metrics,
     score: source.score,
   };
+}
+
+function setCurrentRecovery(storageKey: string, serializedReference: string): void {
+  let value: unknown;
+  try {
+    value = JSON.parse(serializedReference);
+  } catch {
+    window.sessionStorage.setItem(storageKey, serializedReference);
+    return;
+  }
+  if (storageKey === 'prompt-runner:attempt-recovery' && value && typeof value === 'object') {
+    value = {
+      ...value,
+      draftContract: {
+        schemaVersion: ROBOT_SCHEMA_VERSION,
+        catalogVersion: ROBOT_CATALOG_VERSION,
+      },
+    };
+  }
+  window.sessionStorage.setItem(storageKey, JSON.stringify(value));
 }
 
 afterEach(() => {
@@ -425,7 +450,7 @@ describe('access screen', () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    window.sessionStorage.setItem(
+    setCurrentRecovery(
       'prompt-runner:attempt-recovery',
       JSON.stringify({
         sub: 'subject-a',
@@ -473,7 +498,7 @@ describe('access screen', () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    window.sessionStorage.setItem(
+    setCurrentRecovery(
       'prompt-runner:attempt-recovery',
       JSON.stringify({
         sub: 'subject-a',
@@ -601,12 +626,12 @@ describe('access screen', () => {
       updatedAt: '2026-09-21T12:00:01.000Z',
       status: 'victory',
       cancelRequested: false,
-      levelId: 'principal-estatico-v1',
+      levelId: 'principal-periodico-v2',
       modelKey: 'claude-sonnet-4.6',
       modelLabel: 'Claude Sonnet 4.6',
       modelId: 'global.anthropic.claude-sonnet-4-6',
-      turnsUsed: 5,
-      maxTurns: 12,
+      turnsUsed: 7,
+      maxTurns: 16,
       calls: 5,
       inputTokens: null,
       outputTokens: null,
@@ -621,7 +646,7 @@ describe('access screen', () => {
       presentationComplete: false,
       recordComplete: true,
     };
-    window.sessionStorage.setItem(
+    setCurrentRecovery(
       'prompt-runner:attempt-recovery',
       JSON.stringify({ sub: 'subject-a', attemptId }),
     );
@@ -745,12 +770,12 @@ describe('access screen', () => {
       updatedAt: '2026-09-21T12:01:00.000Z',
       status: 'victory',
       cancelRequested: false,
-      levelId: 'principal-estatico-v1',
-      modelKey: 'claude-sonnet-5',
-      modelLabel: 'Claude Sonnet 5',
-      modelId: 'global.anthropic.claude-sonnet-5',
-      turnsUsed: 5,
-      maxTurns: 12,
+      levelId: 'principal-periodico-v2',
+      modelKey: 'claude-sonnet-4.6',
+      modelLabel: 'Claude Sonnet 4.6',
+      modelId: 'global.anthropic.claude-sonnet-4-6',
+      turnsUsed: 7,
+      maxTurns: 16,
       calls: 5,
       inputTokens: null,
       outputTokens: null,
@@ -760,7 +785,7 @@ describe('access screen', () => {
       cacheWriteTokens: null,
       score: null,
       progress: 1,
-      finalSupport: 5,
+      finalSupport: 7,
       animationEnabled: false,
       presentationComplete: true,
       recordComplete: true,

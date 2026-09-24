@@ -1,6 +1,6 @@
 # Experiencia y alcance
 
-Especificación vigente de la experiencia. El acceso, la preparación persistida y los intentos reales del recorrido estático están implementados, con animación opcional, resultado directo, cancelación, historial y reproducción. Las mecánicas y capacidades posteriores siguen pendientes. Se relaciona con [intentos](intentos.md), [agente](agente.md), [reglas del juego](juego.md), [consumo y puntaje](consumo-y-puntaje.md) y [plataforma](plataforma.md).
+Especificación vigente de la experiencia. El acceso, la preparación persistida y los intentos reales del nivel principal periódico están implementados, con Esperar, animación opcional, resultado directo, cancelación, historial y reproducción. Los objetos, la comparación y el recorrido de transferencia pertenecen a fases posteriores. Se relaciona con [intentos](intentos.md), [agente](agente.md), [reglas del juego](juego.md), [consumo y puntaje](consumo-y-puntaje.md) y [plataforma](plataforma.md).
 
 ## Propósito y participantes
 
@@ -15,7 +15,7 @@ La interfaz está en español y debe poder entenderse sin conocer AWS ni program
 - **Sesión colaborativa:** los presentadores operan una única interfaz desde una computadora de escritorio conectada a un proyector. El público propone habilidades, descripciones e instrucciones y observa los resultados. Los asistentes no necesitan teléfono, cuenta ni conexión propia para participar verbalmente.
 - **Juego individual:** cada participante entra a la aplicación web desde un navegador de escritorio, crea una cuenta con email verificado y usa las mismas mecánicas y posibilidades de edición. El registro, la cuota y el guardado se definen en [plataforma](plataforma.md).
 
-La primera versión no requiere soporte para celulares o tablets. El booth y el juego individual usan las mismas reglas y los dos recorridos previstos; sólo cambia quién opera la interfaz. La pantalla compartida debe mantener texto reconocible, obstáculos distinguibles y resultados visibles desde el proyector.
+La primera versión no requiere soporte para celulares o tablets. El booth y el juego individual usan las mismas reglas y el nivel principal vigente; sólo cambia quién opera la interfaz. El recorrido de transferencia se incorporará en una fase posterior. La pantalla compartida debe mantener texto reconocible, obstáculos distinguibles y resultados visibles desde el proyector.
 
 ## Preparación disponible
 
@@ -25,17 +25,17 @@ Un conflicto conserva el texto local y permite revisar la versión guardada ante
 
 La pantalla está en español y se opera con teclado. Probar congela lo visible, confirma su guardado y admite un intento con control de versión. Se bloquean los controles, incluido cerrar sesión, hasta presentar el resultado; durante cálculo sólo Cancelar es operativo. Los errores de acceso o red permiten recuperar la sesión o consulta sin crear otro intento. El historial propio es paginado y abre resultados conservados. Si hay varios intentos activos desde otras sesiones, se elige cuál retomar antes de entrar en su cálculo; no se impone una exclusión global por usuario.
 
-Por ahora no hay selector de nivel: se juega el recorrido estático. El toggle **Animación** está disponible y su preferencia se guarda en el servidor por usuario; cada intento conserva el valor elegido. Las referencias de recuperación de la pestaña no sustituyen el registro del servidor. Durante una admisión ya iniciada, la pestaña puede conservar transitoriamente la clave, versión, elección de Animación y snapshot exactos en `sessionStorage` para reintentar la misma solicitud tras una respuesta perdida. La referencia foreground conserva el intento cuyo cálculo o resultado todavía se debe recuperar y pasa al nuevo intento al admitirlo. No se conserva evidencia local de que una presentación ya se vio. El resultado se muestra al llegar al último frame o al elegir **Ver resultado** y el ACK se envía en segundo plano; si falla, el resultado sigue disponible y ofrece reintentar el ACK. Si se recarga mientras el servidor aún informa `presentationComplete=false`, la reproducción vuelve a empezar. Estas referencias no guardan un borrador alternativo ni funcionan como preferencia.
+No hay selector de nivel: se juega el único nivel vigente, `principal-periodico-v2`. El toggle **Animación** está disponible y su preferencia se guarda en el servidor por usuario; cada intento conserva el valor elegido. Esperar puede habilitarse en el editor. Las referencias de recuperación de la pestaña no sustituyen el registro del servidor. Durante una admisión ya iniciada, la pestaña puede conservar transitoriamente la clave, versión, elección de Animación y snapshot exactos en `sessionStorage` para reintentar la misma solicitud tras una respuesta perdida. La referencia foreground conserva el intento cuyo cálculo o resultado todavía se debe recuperar y pasa al nuevo intento al admitirlo. No se conserva evidencia local de que una presentación ya se vio. El resultado se muestra al llegar al último frame o al elegir **Ver resultado** y el ACK se envía en segundo plano; si falla, el resultado sigue disponible y ofrece reintentar el ACK. Si se recarga mientras el servidor aún informa `presentationComplete=false`, la reproducción vuelve a empezar. Estas referencias no guardan un borrador alternativo ni funcionan como preferencia.
 
 ## Circuito de una partida
 
-1. La persona accede a su cuenta y selecciona o revisa el recorrido y la configuración.
+1. La persona accede a su cuenta y revisa el nivel principal y la configuración.
 2. Edita el borrador: habilita capacidades del catálogo, escribe sus descripciones y modifica las instrucciones generales.
 3. Ajusta el toggle **Animación**. Está activado por defecto, es ajustable y el servidor conserva esa preferencia para futuros intentos; el valor vigente se captura de nuevo en cada clic en **Probar**.
 4. Hace clic en **Probar**. Los controles se bloquean inmediatamente mientras se valida la admisión y se guarda el borrador visible. El intento fija nivel, configuración, parámetros de puntuación y el valor actual de **Animación**. No hay un botón separado para aplicar el borrador.
 5. Si el servidor admite el intento, inicia el cálculo secuencial y conserva el registro. La interfaz muestra «Preparando intento» y bloquea la edición.
 6. Cuando el registro queda cerrado, si el snapshot tiene `Animación` activado, la interfaz reproduce automáticamente el registro completo. Al terminar muestra el resultado; si está desactivado, salta la reproducción y muestra el resultado de inmediato.
-7. La persona consulta el resultado, compara intentos, modifica el borrador y vuelve a hacer clic en **Probar**.
+7. La persona consulta el resultado y el historial, modifica el borrador y vuelve a hacer clic en **Probar**. La comparación entre soluciones se incorporará en una fase posterior.
 
 El snapshot de **Animación** es sólo una decisión de presentación para ese intento. No cambia el prompt, las herramientas, las llamadas, los tokens, los turnos, el puntaje, la cuota ni el registro. Ambas rutas guardan siempre el registro completo, las métricas y los recursos necesarios para reproducirlo después desde el historial.
 
@@ -45,14 +45,14 @@ Los estados de la interfaz describen qué puede hacer la persona. No son una cop
 
 | Estado de interfaz | Controles habilitados | Comportamiento |
 | --- | --- | --- |
-| Edición | Campos, nivel, toggle, **Probar** e historial | Se modifica el borrador y se puede iniciar una admisión |
+| Edición | Campos, toggle, **Probar** e historial | Se modifica el borrador y se puede iniciar una admisión |
 | Guardando o admitiendo | Ningún control operativo mientras se confirma la admisión | Si hay conflicto o error antes de admitir, se conserva el borrador, no se usa cuota ni agente y se vuelve a Edición |
-| Cálculo | Sólo **Cancelar** | Se bloquean campos, habilidades, nivel, toggle, **Probar**, historial e inicio de otras visualizaciones |
-| Animación automática | Ninguno | Avanza a velocidad fija, hacia adelante y sin interrupciones; campos, habilidades, nivel, toggle, **Probar** e historial siguen bloqueados hasta terminar |
-| Resultado | Campos, nivel, toggle, **Probar** e historial | Se consulta el resultado y se puede iniciar otro intento |
+| Cálculo | Sólo **Cancelar** | Se bloquean campos, habilidades, toggle, **Probar**, historial e inicio de otras visualizaciones |
+| Animación automática | Ninguno | Avanza a velocidad fija, hacia adelante y sin interrupciones; campos, habilidades, toggle, **Probar** e historial siguen bloqueados hasta terminar |
+| Resultado | Campos, toggle, **Probar** e historial | Se consulta el resultado y se puede iniciar otro intento |
 | Visualización desde resultado o historial | Ninguno mientras se reproduce | Una vez iniciada, avanza automáticamente de principio a fin a la misma velocidad fija; no hay inferencia ni edición o navegación durante la reproducción |
 
-Durante el cálculo **Cancelar** es el único control operativo. No se habilita edición parcial ni se permite cambiar el nivel, el toggle o las instrucciones hasta que el intento llegue a un estado terminal. La animación se muestra completa, en orden y a una única velocidad fija. Durante ella no hay controles para pausar, retroceder, avanzar, saltar turnos, reiniciar ni modificar la velocidad. El bloqueo continúa hasta presentar el resultado.
+Durante el cálculo **Cancelar** es el único control operativo. No se habilita edición parcial ni se permite cambiar el toggle o las instrucciones hasta que el intento llegue a un estado terminal. La animación se muestra completa, en orden y a una única velocidad fija. Durante ella no hay controles para pausar, retroceder, avanzar, saltar turnos, reiniciar ni modificar la velocidad. El bloqueo continúa hasta presentar el resultado.
 
 Una cancelación o un error sin acciones ejecutadas no inicia una reproducción vacía: muestra el resultado con su causa y desbloquea la interfaz. Si existe un registro parcial cerrado con acciones, se aplican las reglas de reproducción de [intentos](intentos.md) según el valor de **Animación** guardado. Un error o cancelación nunca se presenta como derrota del robot.
 
@@ -74,11 +74,11 @@ El diagnóstico permite inspeccionar, para una decisión, la observación, el pr
 
 ## Resultados
 
-La vista de resultado muestra si el recorrido terminó en victoria, derrota, límite, cancelación o error, junto con los turnos, objetos, tokens reales y puntaje cuando corresponde. Una derrota muestra la acción registrada y el obstáculo que la provocó, por ejemplo «Intentó caminar por un pozo»; no presenta una explicación inventada como pensamiento real del modelo. El costo monetario es opcional cuando hay datos suficientes y se identifica como estimado según [consumo y puntaje](consumo-y-puntaje.md).
+La vista de resultado muestra si el recorrido terminó en victoria, derrota, límite, cancelación o error, junto con los turnos, tokens reales y puntaje cuando corresponde. Los objetos se mostrarán cuando se incorpore esa mecánica. Una derrota muestra la acción registrada y el obstáculo que la provocó, por ejemplo «Intentó caminar por un pozo»; no presenta una explicación inventada como pensamiento real del modelo. El costo monetario es opcional cuando hay datos suficientes y se identifica como estimado según [consumo y puntaje](consumo-y-puntaje.md).
 
 ## Contenido educativo y alcance
 
-La configuración inicial tiene una limitación real en capacidades, descripciones o instrucciones. La frase de preferir la derecha forma parte de las instrucciones iniciales y es editable según [agente](agente.md). El catálogo, la física y los dos recorridos están en [juego](juego.md).
+La configuración inicial tiene una limitación real en capacidades, descripciones o instrucciones. La frase de preferir la derecha forma parte de las instrucciones iniciales y es editable según [agente](agente.md). El catálogo y la física del nivel principal están en [juego](juego.md); el recorrido de transferencia llegará en una fase posterior.
 
 La experiencia puede mostrar resultados auténticos de una ejecución, incluyendo una derrota causada por una acción registrada. No garantiza que una descripción incorrecta produzca siempre una derrota, que agregar herramientas perjudique al modelo o que una descripción larga sea peor. La calibración educativa se realiza después de contar con una versión funcionando.
 
@@ -97,7 +97,7 @@ Quedan fuera de esta versión:
 
 ## Verificación de la experiencia
 
-Al implementar, recorrer desde el acceso hasta editar, probar, recuperar, reproducir, comparar y volver a probar. Verificar que:
+Al implementar, recorrer desde el acceso hasta editar, probar, recuperar, reproducir y volver a probar. Verificar que:
 
 - **Probar** guarde el borrador y cree el snapshot sin un botón de aplicación separado;
 - el toggle quede fijado por intento, tenga preferencia persistida y no altere inferencia ni métricas;

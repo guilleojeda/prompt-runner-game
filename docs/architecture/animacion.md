@@ -1,6 +1,6 @@
 # Animación y catálogo visual
 
-**Reproductor del recorrido estático implementado.** Define cómo presentar el [registro de ejecución](registro-de-ejecucion.md). La animación avanza automáticamente, a velocidad fija, hacia adelante y sin controles del usuario. Conserva el flujo y las garantías acordadas en [experiencia](../intent/experiencia.md) e [intentos](../intent/intentos.md). El catálogo visual actual cubre el nivel estático; las mecánicas posteriores requerirán ampliar sus recetas y gráficos.
+**Reproductor del nivel principal periódico.** Define cómo presentar el [registro de ejecución](registro-de-ejecucion.md). La animación avanza automáticamente, a velocidad fija, hacia adelante y sin controles del usuario. Conserva el flujo y las garantías acordadas en [experiencia](../intent/experiencia.md) e [intentos](../intent/intentos.md). El perfil visual vigente cubre las siete secciones del nivel, incluidas las fases de barrera y plataforma.
 
 ## Enfoque elegido
 
@@ -39,9 +39,9 @@ Si todo el nivel entra de forma legible, se dibuja completo. Si no, la cámara d
 | Terreno | Tipo/estado, piezas por capa, dimensiones y anclas semánticas | Borde de entrada del pozo, contacto con obstáculo superior. |
 | Objeto y salida | Identidad visual por tipo, estado y ancla en el apoyo | Llave presente/recogida; salida bloqueada/habilitada. |
 | Receta | Trayectoria, clips, marcadores y efectos para una acción con su resultado | Desplazar caminando; aproximar al borde y caer; recoger y habilitar salida. |
-| Perfil visual | Versión y formatos/códigos compatibles; geometría, catálogo y recetas coherentes | Interpretación completa de una familia de registros. |
+| Perfil visual | Nivel y reglas del contrato vigente; geometría, catálogo y recetas coherentes | Interpretación completa de los registros admitidos. |
 
-El perfil estático `v1` usa un SVG original con símbolos para robot, terreno, salida y efectos, publicado con URL de asset versionada por el build. Las poses del robot comparten cabeza, torso, extremidades, cara y paleta; transforman esas mismas piezas para caminar, saltar, agacharse, caer, chocar y celebrar. Esta construcción conserva proporciones y ancla de pies entre poses sin generar imágenes independientes para cada frame. El catálogo actual incluye las formas del nivel estático; no representa todavía objetos ni barreras periódicas.
+El perfil vigente usa un SVG original con símbolos para robot, terreno, salida y efectos, publicado con URL de asset versionada por el build. Las poses del robot comparten cabeza, torso, extremidades, cara y paleta; transforman esas mismas piezas para caminar, saltar, agacharse, caer, chocar y celebrar. Esta construcción conserva proporciones y ancla de pies entre poses sin generar imágenes independientes para cada frame. El catálogo representa las siete secciones del nivel, los estados bajo/alto de la barrera y la plataforma en suelo/pozo; no contiene objetos en el contrato vigente.
 
 El anclaje del robot está en los pies. Cambiar de frame o de postura conserva ese punto de referencia; así un sprite más alto no desplaza al personaje. La orientación base se refleja para caminar, saltar o agacharse a la izquierda; no se duplica un set completo por dirección. Si algún arte asimétrico necesita variantes, el catálogo puede seleccionarlas sin cambiar los datos del intento.
 
@@ -97,7 +97,7 @@ La pantalla puede informar el turno que se está mostrando, sin controles de tra
 
 ## Integración con Probar y el resultado
 
-Se conserva **Probar → bloqueo → cálculo → animación si estaba habilitada → resultado**. El toggle queda fijado por intento. La animación solo empieza con registro cerrado, secuencia completa, nivel fijo y recursos preparados. Mientras se cargan muestra «Preparando animación», sin adelantar métricas o habilitar el editor. El perfil estático carga el SVG versionado y comprueba los símbolos requeridos antes de comenzar. Si un perfil posterior usa imágenes raster, su precarga debe comprobar también la [decodificación](https://developer.mozilla.org/en-US/docs/Web/API/HTMLImageElement/decode).
+Se conserva **Probar → bloqueo → cálculo → animación si estaba habilitada → resultado**. El toggle queda fijado por intento. La animación solo empieza con registro cerrado, secuencia completa, nivel fijo y recursos preparados. Mientras se cargan muestra «Preparando animación», sin adelantar métricas o habilitar el editor. El perfil vigente carga el SVG versionado y comprueba los símbolos requeridos antes de comenzar. Si un perfil futuro usa imágenes raster, su precarga debe comprobar también la [decodificación](https://developer.mozilla.org/en-US/docs/Web/API/HTMLImageElement/decode).
 
 Con Animación apagada, el resultado no espera descarga de sprites ni del detalle de reproducción. Se conserva el registro completo en el servidor para volver a verlo desde el resultado o el historial. Con Animación encendida, el fin automático de la secuencia —incluida reacción o celebración final— libera el resultado. Durante la animación no hay controles operativos, incluido Cancelar; el editor permanece bloqueado hasta que termine.
 
@@ -111,7 +111,7 @@ Si falta un recurso o el registro no puede interpretarse, la pantalla informa **
 
 Una reproducción fija un perfil y catálogo completos al empezar. Sus assets tienen URLs inmutables para que no se mezclen versiones a mitad de una secuencia. El perfil declara qué formatos, tipos de terreno/objeto, acciones y causas interpreta. La publicación verifica que todo contenido soportado tenga representación, incluidas sus fases y resultados.
 
-La garantía es la misma secuencia lógica, no los mismos píxeles. Se pueden mejorar skins y clips conservando el significado, sin guardar cada skin histórica ni fijar arte dentro del motor. Debe mantenerse un lector y al menos un perfil compatible con los registros retenidos, o una adaptación explícita equivalente. Un despliegue no puede eliminar el único catálogo compatible. Un esquema o causa no soportados producen un error explícito; no se reconstruye el pasado con las reglas nuevas.
+La garantía es la misma secuencia lógica para registros del contrato vigente, no los mismos píxeles. Se pueden mejorar skins y clips conservando el significado, sin fijar arte dentro del motor. La aplicación acepta un único perfil de registro vigente; un esquema, referencia o causa retirada se rechaza explícitamente. No se mantienen lectores, perfiles visuales ni adaptaciones para registros de contratos reemplazados, y nunca se reconstruye el pasado con reglas nuevas. Los datos de prueba anteriores pueden permanecer si no estorban o eliminarse.
 
 Agregar una variante visual de llano o rama requiere recursos y un descriptor del catálogo. Agregar una mecánica nueva requiere su definición en el nivel, reglas del motor, observación, resultados registrados y representación visual. Si produce resultados ya existentes —desplazamiento, caída, choque— reutiliza las recetas; un efecto nuevo amplía el contrato y su receta. No se necesita un sistema de plugins, generación de código ni un editor de niveles para lograr esa extensión.
 
@@ -131,4 +131,4 @@ Para el recorrido de un robot y obstáculos descrito, se elige SVG con imágenes
 - Derrota, victoria y límite en el último turno reproducen la precedencia ya resuelta; cancelación/error no agregan una acción.
 - Ambos valores de Animación guardan el mismo registro; no hay inferencia durante replay, métricas anticipadas ni edición durante presentación.
 - Recarga, assets fallidos, registro incompleto y formato no soportado conservan el resultado y evitan una UI permanentemente bloqueada.
-- Un registro retenido se reproduce después de cambiar reglas o assets compatibles sin reinterpretar sus resultados.
+- Un registro del contrato vigente se reproduce con el perfil publicado; una referencia de nivel, regla o causa retirada se rechaza y no se reinterpreta.

@@ -115,6 +115,30 @@ describe('DraftApiClient', () => {
     });
   });
 
+  it('rejects drafts saved with either older schema version', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ version: 3, draft: { schemaVersion: 1, catalogVersion: 1 } }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ version: 4, draft: { schemaVersion: 2, catalogVersion: 1 } }),
+          { status: 200 },
+        ),
+      );
+    const client = new DraftApiClient(config, {
+      tokenProvider: () => 'access-token',
+      fetch: fetchImpl,
+    });
+
+    await expect(client.getDraft()).rejects.toMatchObject({ code: 'server' });
+    await expect(client.getDraft()).rejects.toMatchObject({ code: 'server' });
+  });
+
   it('treats a successful PUT with an unreadable or invalid body as ambiguous', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()

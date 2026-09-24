@@ -16,6 +16,7 @@ describe('Runtime acknowledgement and task health', () => {
       requestKey: 'runtime',
       expectedVersion: 1,
       draft,
+      animationEnabled: false,
     });
     await store.requestCancel('owner', admitted.attempt.id);
     let active = 0;
@@ -60,6 +61,7 @@ describe('Runtime acknowledgement and task health', () => {
       requestKey: 'duplicate',
       expectedVersion: 1,
       draft,
+      animationEnabled: false,
     });
     let release!: () => void;
     const blocked = new Promise<void>((resolve) => {

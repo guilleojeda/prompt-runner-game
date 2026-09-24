@@ -10,6 +10,7 @@ const { attempt } = await store.admit({
   requestKey: 'http-test',
   expectedVersion: 1,
   draft,
+  animationEnabled: false,
 });
 let release!: () => void;
 const held = new Promise<void>((resolve) => {

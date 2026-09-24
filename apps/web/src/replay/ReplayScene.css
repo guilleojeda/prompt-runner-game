@@ -1,7 +1,9 @@
 .replay-scene__canvas {
   display: block;
   width: 100%;
-  max-height: 32rem;
+  height: auto;
+  max-height: min(70vh, 48rem);
+  aspect-ratio: 760 / 330;
   border: 1px solid rgba(242, 239, 232, 0.2);
   border-radius: 0.85rem;
   background: #eaf8fc;

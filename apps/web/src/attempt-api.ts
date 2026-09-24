@@ -5,6 +5,13 @@ import type {
   AttemptSummary,
   ReplayRecordView,
 } from '../../../shared/attempt.js';
+import { ATTEMPT_RECORD_VERSION } from '../../../shared/attempt.js';
+import {
+  LEVEL,
+  type LevelDefinition,
+  type LevelSegment,
+  type TerrainState,
+} from '../../../shared/game.js';
 import { isModelKey, type ModelKey } from '../../../shared/models.js';
 import type { AuthConfig } from './auth.js';
 
@@ -124,10 +131,12 @@ function parseAttempt(value: unknown): AttemptSummary | null {
     !createdAt ||
     !updatedAt ||
     !levelId ||
+    levelId !== LEVEL.id ||
     typeof status !== 'string' ||
     !attemptStatuses.includes(status as AttemptStatus) ||
     turnsUsed === null ||
     maxTurns === null ||
+    maxTurns !== LEVEL.maxTurns ||
     calls === null ||
     progress === null ||
     finalSupport === null ||
@@ -236,7 +245,6 @@ function parseAnimationPreference(value: unknown): AnimationPreference | null {
   return { animationEnabled: value.animationEnabled, version };
 }
 
-const terrains = ['ground', 'pit', 'branch'] as const;
 const gameStatuses = ['running', 'victory', 'defeat', 'incomplete'] as const;
 const terminalStatuses: readonly AttemptStatus[] = [
   'victory',
@@ -257,8 +265,7 @@ function isGameSnapshot(value: unknown): boolean {
     Number.isSafeInteger(value.support) &&
     Number.isSafeInteger(value.turnsUsed) &&
     Number.isSafeInteger(value.phaseTurn) &&
-    Array.isArray(value.terrain) &&
-    value.terrain.every((terrain) => terrains.includes(terrain as (typeof terrains)[number])) &&
+    terrainAllowedByLevel(value.terrain, LEVEL.segments) &&
     isStringArray(value.remainingObjects) &&
     isStringArray(value.inventory) &&
     typeof value.exitEnabled === 'boolean' &&
@@ -268,33 +275,33 @@ function isGameSnapshot(value: unknown): boolean {
   );
 }
 
-function isReplayLevel(value: unknown): boolean {
+const stableValue = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(stableValue);
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort()
+      .map((key) => [key, stableValue(value[key])]),
+  );
+};
+
+const sameValue = (left: unknown, right: unknown): boolean =>
+  JSON.stringify(stableValue(left)) === JSON.stringify(stableValue(right));
+
+function isReplayLevel(value: unknown): value is LevelDefinition {
+  return isRecord(value) && sameValue(value, LEVEL);
+}
+
+function terrainAllowedByLevel(value: unknown, segments: readonly LevelSegment[]): boolean {
   return (
-    isRecord(value) &&
-    typeof value.id === 'string' &&
-    Number.isSafeInteger(value.version) &&
-    Number.isSafeInteger(value.rulesVersion) &&
-    Number.isSafeInteger(value.maxTurns) &&
-    Array.isArray(value.segments) &&
-    value.segments.length > 0 &&
-    value.segments.every(
-      (segment) =>
-        isRecord(segment) &&
-        typeof segment.type === 'string' &&
-        terrains.includes(segment.type as (typeof terrains)[number]),
-    ) &&
-    Array.isArray(value.objects) &&
-    value.objects.every(
-      (object) =>
-        isRecord(object) &&
-        typeof object.id === 'string' &&
-        Number.isSafeInteger(object.support) &&
-        typeof object.scoreValue === 'number' &&
-        Number.isFinite(object.scoreValue),
-    ) &&
-    isRecord(value.exit) &&
-    Number.isSafeInteger(value.exit.support) &&
-    isStringArray(value.exit.requiredObjectIds)
+    Array.isArray(value) &&
+    value.length === segments.length &&
+    segments.every((segment, index) => {
+      const terrain = value[index];
+      return segment.type === 'barrier' || segment.type === 'platform'
+        ? segment.phases.includes(terrain as TerrainState)
+        : terrain === segment.type;
+    })
   );
 }
 
@@ -316,6 +323,7 @@ function isReplayAction(value: unknown): boolean {
     action.kind === 'advance' ||
     action.kind === 'retreat' ||
     action.kind === 'swim' ||
+    action.kind === 'wait' ||
     ((action.kind === 'jump' || action.kind === 'crouch') &&
       (action.direction === 'left' || action.direction === 'right'));
   const resolution = value.resolution;
@@ -326,10 +334,14 @@ function isReplayAction(value: unknown): boolean {
       'left_boundary',
       'right_boundary',
       'swim_no_effect',
+      'wait',
       'walk_into_pit',
       'crouch_into_pit',
       'walk_into_branch',
       'jump_into_branch',
+      'walk_into_barrier',
+      'crouch_into_low_barrier',
+      'jump_into_high_barrier',
     ].includes(String(resolution.reason));
   const movementFields =
     resolution.outcome === 'no_op' ||
@@ -340,7 +352,7 @@ function isReplayAction(value: unknown): boolean {
 function isReplayRecord(value: unknown): value is ReplayRecordView {
   if (
     !isRecord(value) ||
-    value.recordVersion !== 1 ||
+    value.recordVersion !== ATTEMPT_RECORD_VERSION ||
     typeof value.id !== 'string' ||
     typeof value.createdAt !== 'string' ||
     typeof value.updatedAt !== 'string' ||

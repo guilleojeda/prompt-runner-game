@@ -1,4 +1,4 @@
-import { ROBOT_CATALOG } from './robot.js';
+import { ROBOT_CATALOG, ROBOT_CATALOG_VERSION, ROBOT_SCHEMA_VERSION } from './robot.js';
 import {
   DEFAULT_SCORE_RULES,
   LEVEL,
@@ -9,6 +9,7 @@ import {
   type NormalizedAction,
   type ResolvedAction,
 } from './game.js';
+import { ATTEMPT_RECORD_VERSION } from './attempt.js';
 import type {
   AttemptActionRecord,
   AttemptConfigSnapshot,
@@ -29,12 +30,14 @@ const referenceActions: readonly NormalizedAction[] = [
   { kind: 'jump', direction: 'right' },
   { kind: 'advance' },
   { kind: 'crouch', direction: 'right' },
+  { kind: 'jump', direction: 'right' },
+  { kind: 'jump', direction: 'right' },
   { kind: 'advance' },
 ];
 
 const robotSnapshot = (): AttemptRobotSnapshot => ({
-  schemaVersion: 1,
-  catalogVersion: 1,
+  schemaVersion: ROBOT_SCHEMA_VERSION,
+  catalogVersion: ROBOT_CATALOG_VERSION,
   instructions:
     'Siempre preferí ir a la derecha, a menos que tengas un buen motivo para no hacerlo',
   skills: ROBOT_CATALOG.map((entry) => ({
@@ -93,7 +96,7 @@ export const createClosedAttemptRecordFixture = (): AttemptRecord => {
     cacheWriteTokens: 0,
   } as const;
   const record: AttemptRecord = {
-    recordVersion: 1,
+    recordVersion: ATTEMPT_RECORD_VERSION,
     id: 'fixture-closed-attempt',
     createdAt: '2026-09-21T12:00:00.000Z',
     updatedAt: '2026-09-21T12:00:05.000Z',

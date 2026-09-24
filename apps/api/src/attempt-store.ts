@@ -14,15 +14,14 @@ import {
   createDefaultDraft,
   draftsEqual,
   ROBOT_CATALOG,
+  ROBOT_SCHEMA_VERSION,
   validateDraft,
   type DraftSnapshot,
-  type LegacyRobotDraft,
   type RobotDraft,
 } from '../../../shared/robot.js';
 import {
-  LEGACY_MODEL_KEY,
   readModelProfile,
-  resolveAvailableModelProfile,
+  resolveModelProfile,
   type ModelProfile,
 } from '../../../shared/models.js';
 import { createInitialState, LEVEL, scoreAttempt } from '../../../shared/game.js';
@@ -37,6 +36,7 @@ import {
   AttemptNotTerminalError,
   DEFAULT_ATTEMPT_CONFIG,
   ReplayRecordError,
+  readCurrentLevel,
   replayRecordViewOf,
   summaryOf,
   type ActionPublication,
@@ -104,12 +104,12 @@ const DEFAULT_QUOTA = 100;
 const sha256 = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
 const utf8 = (value: unknown): Uint8Array => new TextEncoder().encode(JSON.stringify(value));
 
-/** Stable draft encoding used by the request fingerprint. */
-export const canonicalDraft = (draft: RobotDraft | LegacyRobotDraft): string =>
+/** Stable current-draft encoding used by the request fingerprint. */
+export const canonicalDraft = (draft: RobotDraft): string =>
   JSON.stringify({
-    schemaVersion: 2,
+    schemaVersion: ROBOT_SCHEMA_VERSION,
     catalogVersion: draft.catalogVersion,
-    modelKey: 'modelKey' in draft ? draft.modelKey : LEGACY_MODEL_KEY,
+    modelKey: draft.modelKey,
     instructions: draft.instructions,
     skills: draft.skills.map((skill) => ({
       id: skill.id,
@@ -118,10 +118,8 @@ export const canonicalDraft = (draft: RobotDraft | LegacyRobotDraft): string =>
     })),
   });
 
-export const fingerprintOf = (
-  draft: RobotDraft | LegacyRobotDraft,
-  animationEnabled = false,
-): string => sha256(utf8(JSON.stringify({ draft: canonicalDraft(draft), animationEnabled })));
+export const fingerprintOf = (draft: RobotDraft, animationEnabled = false): string =>
+  sha256(utf8(JSON.stringify({ draft: canonicalDraft(draft), animationEnabled })));
 
 export const calendarDay = (date: Date): string =>
   new Intl.DateTimeFormat('en-CA', {
@@ -141,7 +139,7 @@ export const nextReset = (date: Date): string => {
   return probe.toISOString();
 };
 
-const initialSnapshot = () => createInitialState(LEVEL);
+const initialSnapshot = (level: AttemptConfig['levelDefinition']) => createInitialState(level);
 
 const skillsFor = (draft: RobotDraft): AttemptSkill[] =>
   draft.skills
@@ -160,9 +158,6 @@ const skillsFor = (draft: RobotDraft): AttemptSkill[] =>
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
-const isFiniteNumber = (value: unknown): value is number =>
-  typeof value === 'number' && Number.isFinite(value);
-
 const freezeDeep = <T>(value: T): T => {
   if (typeof value === 'object' && value !== null && !Object.isFrozen(value)) {
     Object.freeze(value);
@@ -171,86 +166,36 @@ const freezeDeep = <T>(value: T): T => {
   return value;
 };
 
-/**
- * The phase-2 record shape had no model profile fields. Keep this explicit
- * historical identity separate from MODEL_CATALOG so changing today's
- * catalog cannot rewrite an already admitted attempt during readback.
- */
-const LEGACY_SONNET5_PROFILE: Readonly<ModelProfile> = Object.freeze({
-  key: 'claude-sonnet-5',
-  label: 'Claude Sonnet 5',
-  provider: 'anthropic',
-  modelId: 'global.anthropic.claude-sonnet-5',
-  region: 'us-east-1',
-  api: 'converse',
-  profileVersion: 'sonnet5-global-v1',
-  maxTokens: 512,
-  protocol: Object.freeze({ stream: false, thinking: 'disabled', toolChoice: 'any' }),
-});
-
 const storedConfig = (value: unknown): AttemptConfig => {
-  if (!isRecord(value) || !isRecord(value.model))
+  if (!isRecord(value) || !isRecord(value.model) || !isRecord(value.protocol))
     throw new AttemptStoreError('El intento guardado tiene una configuración incompatible.');
-
-  const rawModel = value.model;
-  if (Object.prototype.hasOwnProperty.call(rawModel, 'key')) {
-    let model: Readonly<ModelProfile>;
-    try {
-      model = readModelProfile(rawModel);
-    } catch (error) {
-      throw new AttemptStoreError('El intento guardado tiene un perfil de modelo incompatible.', {
-        cause: error,
-      });
-    }
-    if (
-      value.protocol &&
-      isRecord(value.protocol) &&
-      value.protocol.api === 'converse' &&
-      value.protocol.stream === false
-    ) {
-      return freezeDeep({
-        ...(value as unknown as Omit<AttemptConfig, 'model'>),
-        model,
-      });
-    }
-    throw new AttemptStoreError('El intento guardado tiene un protocolo incompatible.');
-  }
-
-  // Records written before model selection have one known effective profile.
-  // Convert only this explicit format; never merge current defaults into a
-  // historical snapshot, because that would change its recorded parameters.
-  if (
-    rawModel.modelId === 'global.anthropic.claude-sonnet-5' &&
-    typeof rawModel.region === 'string' &&
-    isFiniteNumber(rawModel.maxTokens)
-  ) {
-    const legacyProtocol: ModelProfile['protocol'] = isRecord(value.protocol)
-      ? {
-          stream: false as const,
-          thinking:
-            value.protocol.thinking === 'disabled' || value.protocol.thinking === 'adaptive'
-              ? value.protocol.thinking
-              : 'omitted',
-          toolChoice: value.protocol.toolChoice === 'auto' ? ('auto' as const) : ('any' as const),
-        }
-      : LEGACY_SONNET5_PROFILE.protocol;
-    return freezeDeep({
-      ...(value as unknown as Omit<AttemptConfig, 'model' | 'protocol'>),
-      protocol: { api: 'converse', stream: false },
-      model: {
-        ...LEGACY_SONNET5_PROFILE,
-        modelId: rawModel.modelId,
-        region: rawModel.region,
-        maxTokens: rawModel.maxTokens,
-        profileVersion:
-          typeof value.inferenceVersion === 'string'
-            ? value.inferenceVersion
-            : LEGACY_SONNET5_PROFILE.profileVersion,
-        protocol: legacyProtocol,
-      },
+  let model: ReturnType<typeof readModelProfile>;
+  let levelDefinition: AttemptConfig['levelDefinition'];
+  try {
+    model = readModelProfile(value.model);
+    levelDefinition = readCurrentLevel(value.levelDefinition);
+  } catch (error) {
+    throw new AttemptStoreError('El intento guardado no coincide con el contrato actual.', {
+      cause: error,
     });
   }
-  throw new AttemptStoreError('El intento guardado tiene una configuración incompatible.');
+  if (
+    value.protocol.api !== 'converse' ||
+    value.protocol.stream !== false ||
+    value.levelId !== levelDefinition.id ||
+    value.levelVersion !== String(levelDefinition.version) ||
+    value.engineVersion !== 'periodic-engine-v2' ||
+    value.protocolVersion !== 'tool-protocol-v2' ||
+    value.inferenceVersion !== model.profileVersion ||
+    value.maxTurns !== levelDefinition.maxTurns
+  ) {
+    throw new AttemptStoreError('El intento guardado tiene una configuración incompatible.');
+  }
+  return freezeDeep({
+    ...(value as unknown as Omit<AttemptConfig, 'model' | 'levelDefinition'>),
+    levelDefinition,
+    model,
+  });
 };
 
 const configForAdmission = (
@@ -259,13 +204,19 @@ const configForAdmission = (
 ): AttemptConfig => {
   let model: Readonly<ModelProfile>;
   try {
-    model = resolveAvailableModelProfile(draft.modelKey);
+    model = resolveModelProfile(draft.modelKey);
   } catch {
     throw new ModelUnavailableError();
   }
   const config: AttemptConfig = {
     ...DEFAULT_ATTEMPT_CONFIG,
     ...(overrides ?? {}),
+    levelId: LEVEL.id,
+    levelVersion: String(LEVEL.version),
+    levelDefinition: LEVEL,
+    engineVersion: 'periodic-engine-v2',
+    protocolVersion: 'tool-protocol-v2',
+    maxTurns: LEVEL.maxTurns,
     protocol: { api: 'converse', stream: false },
     inferenceVersion: model.profileVersion,
     model,
@@ -320,6 +271,13 @@ const delay = (milliseconds: number): Promise<void> =>
 const MAX_CLOSE_CONFLICT_RETRIES = 3;
 
 const toRecord = (item: Record<string, unknown>): PersistedAttempt => {
+  if (
+    item.recordVersion !== ATTEMPT_RECORD_VERSION ||
+    typeof item.animationEnabled !== 'boolean' ||
+    typeof item.presentationComplete !== 'boolean'
+  ) {
+    throw new AttemptStoreError('El intento guardado usa una versión incompatible.');
+  }
   const config = storedConfig(item.config);
   const record = item as unknown as PersistedAttempt;
   const draft = validateDraft(item.draft);
@@ -328,10 +286,6 @@ const toRecord = (item: Record<string, unknown>): PersistedAttempt => {
   }
   return {
     ...record,
-    // Phase-3 rows predate the preference. Their behavior was animation-off,
-    // with presentation already complete; do not reinterpret them on read.
-    animationEnabled: item.animationEnabled === true,
-    presentationComplete: item.presentationComplete === false ? false : true,
     config,
     draft,
     skills: item.skills as AttemptSkill[],
@@ -445,7 +399,7 @@ export class DynamoAttemptStore implements AttemptStore {
     const now = nowDate.toISOString();
     const day = calendarDay(nowDate);
     const id = `${now.replace(/[-:.TZ]/gu, '').slice(0, 14)}-${randomUUID()}`;
-    const initial = initialSnapshot();
+    const initial = initialSnapshot(config.levelDefinition);
     const record: PersistedAttempt = {
       recordVersion: ATTEMPT_RECORD_VERSION,
       id,
@@ -523,9 +477,7 @@ export class DynamoAttemptStore implements AttemptStore {
                 ExpressionAttributeNames: { '#version': 'version', '#draft': 'draft' },
                 ExpressionAttributeValues: marshall({
                   ':version': input.expectedVersion,
-                  // Compare the exact value read from DynamoDB. A v1 draft is
-                  // normalized only for semantic validation above; writing its
-                  // v2 projection here would make an unchanged draft conflict.
+                  // Compare the exact current draft value read from DynamoDB.
                   ':draft': current.draft,
                 }),
               },
@@ -1878,7 +1830,7 @@ export class MemoryAttemptStore implements AttemptStore {
     if (used >= this.quotaLimit) throw new QuotaExceededError(day, used, this.quotaLimit);
 
     const id = `${now.replace(/[-:.TZ]/gu, '').slice(0, 14)}-${randomUUID()}`;
-    const initial = initialSnapshot();
+    const initial = initialSnapshot(config.levelDefinition);
     const record: PersistedAttempt = {
       recordVersion: ATTEMPT_RECORD_VERSION,
       ...summaryOf({

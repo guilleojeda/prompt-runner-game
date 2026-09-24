@@ -107,14 +107,14 @@ const runtimeEvent = (
   );
 };
 
-/** Adapter over the authoritative phase-three deterministic engine. */
+/** Adapter over the authoritative deterministic game engine. */
 export const createGameEngine = (): EngineAdapter => ({
   observe: ({ snapshot, level }) =>
     observe(snapshot as GameSnapshot, level) as unknown as JsonValue,
   apply: ({ snapshot, level, skills, action }) => {
     const current = snapshot as GameSnapshot;
     const selection = skills.map((skill) => ({
-      id: skill.id as 'advance' | 'retreat' | 'jump' | 'crouch' | 'swim',
+      id: skill.id as 'advance' | 'retreat' | 'jump' | 'crouch' | 'swim' | 'wait',
       opaqueId: skill.opaqueId,
       enabled: true,
     }));

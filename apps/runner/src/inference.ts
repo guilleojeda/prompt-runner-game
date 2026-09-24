@@ -20,8 +20,6 @@ import {
   modelByKey,
   readModelProfile,
   type ModelProfile,
-  type ModelProtocol,
-  type ModelReasoningEffort,
 } from '../../../shared/models.js';
 import { usageFromBedrockResponseBytes, type ProviderUsage } from './usage.js';
 
@@ -594,50 +592,6 @@ const systemPrompt = (instructions: string): string =>
 const observationMessage = (observation: JSONValue): string =>
   `Observación local presente:\n${JSON.stringify(observation)}`;
 
-type DisabledThinkingArgs = Readonly<{
-  readonly additionalModelRequestFields: Readonly<{
-    readonly thinking: Readonly<{ readonly type: 'disabled' }>;
-  }>;
-}>;
-
-type AdaptiveThinkingFields = Readonly<{
-  readonly thinking: Readonly<{ readonly type: 'adaptive' }>;
-  readonly output_config: Readonly<{ readonly effort: ModelReasoningEffort }>;
-}>;
-
-type BedrockRequestOverrides = Readonly<{
-  readonly additionalRequestFields?: AdaptiveThinkingFields;
-  readonly additionalArgs?: DisabledThinkingArgs;
-}>;
-
-/**
- * Project the typed profile protocol into the small set of native Converse
- * fields supported by this integration. There is intentionally no generic
- * provider parameter bag: every emitted field is selected by the catalog row.
- */
-const requestOverridesFor = (protocol: ModelProtocol): BedrockRequestOverrides => {
-  if (protocol.thinking === 'omitted') return {};
-  if (protocol.thinking === 'disabled') {
-    // Strands removes `thinking` from additionalRequestFields when toolChoice
-    // is forced. additionalArgs is the SDK-supported escape hatch for this
-    // exact Converse request shape.
-    return {
-      additionalArgs: {
-        additionalModelRequestFields: { thinking: { type: 'disabled' } },
-      },
-    };
-  }
-  if (!protocol.reasoningEffort) {
-    throw new Error('An adaptive model profile must declare reasoning effort.');
-  }
-  return {
-    additionalRequestFields: {
-      thinking: { type: 'adaptive' },
-      output_config: { effort: protocol.reasoningEffort },
-    },
-  };
-};
-
 const receiptUsage = (receipt: TransportReceipt | null): ProviderUsage =>
   usageFromBedrockResponseBytes(receipt?.bytes ?? null, 'separate');
 
@@ -734,7 +688,6 @@ const classifyProviderFailure = (
  */
 const validateNativeResponseContent = (
   bytes: Uint8Array,
-  model: Readonly<ModelProfile>,
   usage: ProviderUsage,
   receipt: TransportReceipt,
 ): void => {
@@ -766,13 +719,8 @@ const validateNativeResponseContent = (
     );
   }
   const toolCount = blocks.filter((block) => own(block, 'toolUse')).length;
-  const reasoningCount = blocks.filter((block) => own(block, 'reasoningContent')).length;
   const textCount = blocks.filter((block) => own(block, 'text')).length;
-  if (
-    toolCount !== 1 ||
-    textCount > 0 ||
-    (reasoningCount > 0 && model.provider !== 'openai' && model.protocol.thinking !== 'adaptive')
-  ) {
+  if (toolCount !== 1 || textCount > 0 || blocks.some((block) => own(block, 'reasoningContent'))) {
     throw new DecisionFailure(
       'invalid_response',
       'The model response must contain exactly one tool and only permitted reasoning blocks.',
@@ -785,7 +733,6 @@ const validateNativeResponseContent = (
 const validateResponse = (
   result: Awaited<ReturnType<Agent['invoke']>>,
   tools: readonly DecisionTool[],
-  model: Readonly<ModelProfile>,
   usage: ProviderUsage,
   receipt: TransportReceipt,
 ): DecisionAction => {
@@ -808,14 +755,7 @@ const validateResponse = (
   const content = result.lastMessage.content;
   const toolBlocks = content.filter((block) => block.type === 'toolUseBlock');
   const nonToolBlocks = content.filter((block) => block.type !== 'toolUseBlock');
-  // GPT-5.6 has no explicit Converse thinking override in its approved
-  // profile, but its provider default may still emit native reasoning.
-  const reasoningAllowed = model.provider === 'openai' || model.protocol.thinking === 'adaptive';
-  if (
-    toolBlocks.length !== 1 ||
-    nonToolBlocks.some((block) => block.type !== 'reasoningBlock') ||
-    (!reasoningAllowed && nonToolBlocks.length > 0)
-  ) {
+  if (toolBlocks.length !== 1 || nonToolBlocks.length > 0) {
     throw new DecisionFailure(
       'invalid_response',
       'The model response must contain exactly one tool and only permitted reasoning blocks.',
@@ -897,13 +837,11 @@ export const executeDecision = async (
   const transport = new AuditedRequestHandler(delegate, audit, responseAuditTimeoutMs);
 
   try {
-    const overrides = requestOverridesFor(model.protocol);
     const bedrockModel = new BedrockModel({
       modelId: model.modelId,
       region: model.region,
       maxTokens: model.maxTokens,
       stream: model.protocol.stream,
-      ...overrides,
       clientConfig: {
         maxAttempts: 1,
         requestHandler: transport,
@@ -951,8 +889,8 @@ export const executeDecision = async (
       );
     }
     const usage = receiptUsage(receipt);
-    validateNativeResponseContent(receipt.bytes, model, usage, receipt);
-    const action = validateResponse(result, input.tools, model, usage, receipt);
+    validateNativeResponseContent(receipt.bytes, usage, receipt);
+    const action = validateResponse(result, input.tools, usage, receipt);
     return {
       action,
       usage,

@@ -24,12 +24,15 @@ describe('Runtime attempt coordinator', () => {
       requestKey: 'run',
       expectedVersion: 1,
       draft,
+      animationEnabled: false,
     });
     const actions = [
       { name: 'tool_1', input: {} },
       { name: 'tool_3', input: { direction: 'derecha' } },
       { name: 'tool_1', input: {} },
       { name: 'tool_4', input: { direction: 'derecha' } },
+      { name: 'tool_3', input: { direction: 'derecha' } },
+      { name: 'tool_3', input: { direction: 'derecha' } },
       { name: 'tool_1', input: {} },
     ];
     let index = 0;
@@ -66,11 +69,11 @@ describe('Runtime attempt coordinator', () => {
     );
     const record = await store.get('a', admitted.attempt.id);
     expect(record?.status).toBe('victory');
-    expect(record?.turnsUsed).toBe(5);
-    expect(record?.calls).toBe(5);
-    expect(record?.gameTokens).toBe(10);
-    expect(record?.score).toBe(949.99);
-    expect(await store.getCalls('a', admitted.attempt.id)).toHaveLength(5);
+    expect(record?.turnsUsed).toBe(7);
+    expect(record?.calls).toBe(7);
+    expect(record?.gameTokens).toBe(14);
+    expect(record?.score).toBe(929.99);
+    expect(await store.getCalls('a', admitted.attempt.id)).toHaveLength(7);
     expect(await store.getCalls('a', admitted.attempt.id)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -100,6 +103,7 @@ describe('Runtime attempt coordinator', () => {
       requestKey: 'cancel',
       expectedVersion: 1,
       draft,
+      animationEnabled: false,
     });
     await store.requestCancel('a', admitted.attempt.id);
     let invoked = false;
@@ -127,6 +131,7 @@ describe('Runtime attempt coordinator', () => {
       requestKey: 'throttle',
       expectedVersion: 1,
       draft,
+      animationEnabled: false,
     });
     let attempts = 0;
     const delays: number[] = [];
@@ -211,6 +216,7 @@ describe('Runtime attempt coordinator', () => {
       requestKey: 'invalid',
       expectedVersion: 1,
       draft,
+      animationEnabled: false,
     });
     const infer: InferenceAdapter = async ({ audit }) => {
       await audit.beforeSend(new TextEncoder().encode('request'));

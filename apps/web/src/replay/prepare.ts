@@ -1,13 +1,22 @@
-import type { AttemptActionView, ReplayRecordView } from '../../../../shared/attempt.js';
+import {
+  ATTEMPT_RECORD_VERSION,
+  type AttemptActionView,
+  type ReplayRecordView,
+} from '../../../../shared/attempt.js';
 import {
   LEVEL,
   type Direction,
-  type GameSnapshot,
+  type LevelSegment,
   type TerrainState,
 } from '../../../../shared/game.js';
 
 export type ReplayPose =
   'idle' | 'step-a' | 'step-b' | 'jump' | 'crouch' | 'fall' | 'impact' | 'celebrate';
+
+export interface ReplayTerrainTransition {
+  readonly to: readonly TerrainState[];
+  readonly progress: number;
+}
 
 export interface ReplaySample {
   readonly time: number;
@@ -17,7 +26,12 @@ export interface ReplaySample {
   readonly drop: number;
   readonly facing: Direction;
   readonly pose: ReplayPose;
+  /** The terrain saved before the current action remains visible during its gesture. */
   readonly terrain: readonly TerrainState[];
+  /** Set only during a transition following a continuing action. */
+  readonly terrainTransition: ReplayTerrainTransition | null;
+  /** Horizontal world offset for the viewport camera. */
+  readonly cameraX: number;
   readonly actionIndex: number | null;
   readonly actionNumber: number;
   readonly closureStatus: ReplayRecordView['closure']['status'];
@@ -31,6 +45,12 @@ export interface PreparedReplay {
   readonly sample: (elapsedSeconds: number) => ReplaySample;
 }
 
+interface PhaseTransitionCue {
+  readonly start: number;
+  readonly end: number;
+  readonly to: readonly TerrainState[];
+}
+
 interface ActionCue {
   readonly start: number;
   readonly end: number;
@@ -38,15 +58,21 @@ interface ActionCue {
   readonly index: number;
   readonly direction: Direction | null;
   readonly facing: Direction;
+  readonly transition: PhaseTransitionCue | null;
 }
 
-export const REPLAY_PROFILE_VERSION = 'v1' as const;
+export const REPLAY_VIEW_WIDTH = 760;
+export const REPLAY_SUPPORT_START_X = 80;
+export const REPLAY_SEGMENT_WIDTH = 120;
+export const REPLAY_WORLD_WIDTH =
+  REPLAY_SUPPORT_START_X + LEVEL.segments.length * REPLAY_SEGMENT_WIDTH + 240;
 
 const TIMING = Object.freeze({
   walk: 0.72,
   jump: 0.86,
   crouch: 0.72,
   noOp: 0.42,
+  phase: 0.22,
   fall: 1.08,
   impact: 0.68,
   victory: 1.02,
@@ -70,26 +96,34 @@ const SYMBOLS = Object.freeze([
   'robot-impact',
   'robot-celebrate',
   'terrain-ground',
+  'terrain-platform-ground',
+  'terrain-platform-frame',
   'terrain-pit-edge',
   'terrain-branch-back',
   'terrain-branch-front',
+  'terrain-barrier-low',
+  'terrain-barrier-high',
   'terrain-exit',
   'effect-impact',
   'effect-victory',
 ]);
 
 const terminalStatuses = new Set(['victory', 'defeat', 'incomplete', 'cancelled', 'error']);
-const supportedActions = new Set(['advance', 'retreat', 'jump', 'crouch', 'swim']);
+const supportedActions = new Set(['advance', 'retreat', 'jump', 'crouch', 'swim', 'wait']);
 const supportedOutcomes = new Set(['moved', 'no_op', 'fall', 'collision']);
 const supportedReasons = new Set([
   'moved',
   'left_boundary',
   'right_boundary',
   'swim_no_effect',
+  'wait',
   'walk_into_pit',
   'crouch_into_pit',
   'walk_into_branch',
   'jump_into_branch',
+  'walk_into_barrier',
+  'crouch_into_low_barrier',
+  'jump_into_high_barrier',
 ]);
 
 const fail = (message: string): never => {
@@ -99,42 +133,76 @@ const fail = (message: string): never => {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
+const stableValue = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(stableValue);
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort()
+      .map((key) => [key, stableValue(value[key])]),
+  );
+};
+
 const sameValue = (left: unknown, right: unknown): boolean =>
-  JSON.stringify(left) === JSON.stringify(right);
+  JSON.stringify(stableValue(left)) === JSON.stringify(stableValue(right));
+
+const isPeriodicSegment = (
+  segment: LevelSegment,
+): segment is Extract<LevelSegment, { readonly phases: readonly TerrainState[] }> =>
+  segment.type === 'barrier' || segment.type === 'platform';
+
+const terrainAllowedByLevel = (
+  terrain: unknown,
+  segments: readonly LevelSegment[],
+  phaseTurn: number,
+): terrain is readonly TerrainState[] =>
+  Array.isArray(terrain) &&
+  terrain.length === segments.length &&
+  segments.every((segment, index) => {
+    const state = terrain[index];
+    if (!isPeriodicSegment(segment)) return state === segment.type;
+    const phaseIndex =
+      (((phaseTurn + segment.offset) % segment.phases.length) + segment.phases.length) %
+      segment.phases.length;
+    return state === segment.phases[phaseIndex];
+  });
 
 const validateSnapshot = (
-  snapshot: GameSnapshot,
-  levelTerrain: readonly TerrainState[],
+  value: unknown,
+  segments: readonly LevelSegment[],
   expectedIndex: number,
 ): void => {
-  if (!isRecord(snapshot) || typeof snapshot.id !== 'string' || !snapshot.id) {
+  if (!isRecord(value) || typeof value.id !== 'string' || !value.id) {
     fail(`el estado ${expectedIndex} no tiene un identificador válido`);
   }
+  const snapshot = value as Record<string, unknown>;
   if (
     snapshot.turnsUsed !== expectedIndex ||
-    !Array.isArray(snapshot.terrain) ||
-    snapshot.terrain.length !== levelTerrain.length
+    !Number.isInteger(snapshot.phaseTurn) ||
+    (snapshot.phaseTurn as number) < 0 ||
+    !terrainAllowedByLevel(snapshot.terrain, segments, snapshot.phaseTurn as number)
   ) {
-    fail(`el estado ${expectedIndex} no coincide con el nivel estático`);
-  }
-  if (!sameValue(snapshot.terrain, levelTerrain)) {
-    fail('la fase de terreno no pertenece al perfil estático v1');
+    fail(`el estado ${expectedIndex} no coincide con la fase y el nivel fijados`);
   }
   if (
     !Number.isInteger(snapshot.support) ||
-    snapshot.support < 0 ||
-    snapshot.support > levelTerrain.length ||
-    !Number.isInteger(snapshot.phaseTurn) ||
+    (snapshot.support as number) < 0 ||
+    (snapshot.support as number) > segments.length ||
     typeof snapshot.exitEnabled !== 'boolean' ||
     !Array.isArray(snapshot.remainingObjects) ||
     !Array.isArray(snapshot.inventory) ||
     !Number.isInteger(snapshot.maxSupportReached) ||
-    !['running', 'victory', 'defeat', 'incomplete'].includes(snapshot.status)
+    (snapshot.maxSupportReached as number) < (snapshot.support as number) ||
+    !['running', 'victory', 'defeat', 'incomplete'].includes(String(snapshot.status))
   ) {
     fail(`el estado ${expectedIndex} tiene campos incompatibles`);
   }
-  if (snapshot.remainingObjects.length > 0 || snapshot.inventory.length > 0) {
-    fail('el perfil estático v1 no interpreta objetos ni inventario');
+  if (
+    (snapshot.remainingObjects as readonly unknown[]).length > 0 ||
+    (snapshot.inventory as readonly unknown[]).length > 0 ||
+    snapshot.exitEnabled !== true
+  ) {
+    fail('el recorrido vigente no interpreta objetos ni inventario');
   }
 };
 
@@ -157,20 +225,13 @@ const cueDuration = (action: AttemptActionView): number => {
 };
 
 const validateRecord = (record: ReplayRecordView): void => {
-  if (!isRecord(record) || record.recordVersion !== 1) fail('versión de registro no compatible');
+  if (!isRecord(record) || record.recordVersion !== ATTEMPT_RECORD_VERSION) {
+    fail('versión de registro no compatible');
+  }
   if (!isRecord(record.config) || !isRecord(record.config.level)) fail('falta el nivel fijado');
   if (!isRecord(record.closure)) fail('falta el cierre del intento');
-  const level = record.config.level;
-  if (
-    level.id !== LEVEL.id ||
-    level.version !== LEVEL.version ||
-    level.rulesVersion !== LEVEL.rulesVersion ||
-    !sameValue(level.segments, LEVEL.segments) ||
-    !sameValue(level.objects, LEVEL.objects) ||
-    !sameValue(level.exit, LEVEL.exit)
-  ) {
-    fail('nivel o mecánica no compatible con el perfil estático v1');
-  }
+  if (!sameValue(record.config.level, LEVEL))
+    fail('nivel o mecánica no compatible con el recorrido vigente');
   if (!Array.isArray(record.snapshots) || !Array.isArray(record.actions)) {
     fail('faltan acciones o estados del registro');
   }
@@ -178,12 +239,15 @@ const validateRecord = (record: ReplayRecordView): void => {
   if (!record.closure.recordComplete) fail('el registro está incompleto');
   if (record.closure.actionCount !== record.actions.length)
     fail('el contador de acciones no coincide');
+  if (record.actions.length > LEVEL.maxTurns) fail('el registro excede el límite de acciones');
   if (record.snapshots.length !== record.actions.length + 1)
     fail('falta un estado de la secuencia');
   if (record.snapshots.length === 0) fail('falta el estado inicial');
 
-  const terrain = LEVEL.segments.map((segment) => segment.type);
-  record.snapshots.forEach((snapshot, index) => validateSnapshot(snapshot, terrain, index));
+  record.snapshots.forEach((snapshot, index) => validateSnapshot(snapshot, LEVEL.segments, index));
+  if (record.snapshots[0]?.status !== 'running' || record.snapshots[0]?.phaseTurn !== 0) {
+    fail('el estado inicial no pertenece al recorrido vigente');
+  }
   const seenStateIds = new Set(record.snapshots.map((snapshot) => snapshot.id));
   if (seenStateIds.size !== record.snapshots.length)
     fail('hay identificadores de estado duplicados');
@@ -246,9 +310,9 @@ const validateRecord = (record: ReplayRecordView): void => {
         action.resolution.segment !== expectedSegment ||
         action.resolution.targetSupport !== expectedTarget ||
         action.resolution.segment < 0 ||
-        action.resolution.segment >= terrain.length ||
+        action.resolution.segment >= LEVEL.segments.length ||
         action.resolution.targetSupport < 0 ||
-        action.resolution.targetSupport > terrain.length ||
+        action.resolution.targetSupport > LEVEL.segments.length ||
         action.before.status !== 'running'
       ) {
         fail(`la resolución ${index + 1} contradice el movimiento registrado`);
@@ -259,16 +323,39 @@ const validateRecord = (record: ReplayRecordView): void => {
       ) {
         fail(`la resolución ${index + 1} no coincide con sus estados`);
       }
-    } else if (
-      action.action.kind !== 'swim' &&
-      action.resolution.reason !== 'left_boundary' &&
-      action.resolution.reason !== 'right_boundary'
-    ) {
-      fail(`la acción sin movimiento ${index + 1} tiene una causa incompatible`);
-    } else if (action.action.kind === 'swim' && action.resolution.reason !== 'swim_no_effect') {
-      fail(`la acción sin efecto ${index + 1} tiene una causa incompatible`);
+    } else {
+      const reason = action.resolution.reason;
+      const validNoOp =
+        (action.action.kind === 'wait' && reason === 'wait') ||
+        (action.action.kind === 'swim' && reason === 'swim_no_effect') ||
+        (directionOf(action.action) === 'left' &&
+          reason === 'left_boundary' &&
+          action.before.support === 0) ||
+        (directionOf(action.action) === 'right' &&
+          reason === 'right_boundary' &&
+          action.before.support === LEVEL.exit.support);
+      if (!validNoOp || action.after.support !== action.before.support) {
+        fail(`la acción sin movimiento ${index + 1} tiene una causa incompatible`);
+      }
     }
-    if (index < record.actions.length - 1 && after?.status !== 'running') {
+
+    if (action.before.status !== 'running')
+      fail(`hay acciones después de un estado terminal en el turno ${index}`);
+    const expectedPhaseTurn =
+      action.after.status === 'running' ? action.before.phaseTurn + 1 : action.before.phaseTurn;
+    if (action.after.phaseTurn !== expectedPhaseTurn) {
+      fail(`la fase del terreno cambia en un momento incompatible en el turno ${index + 1}`);
+    }
+    if (
+      action.after.status !== 'running' &&
+      !sameValue(action.before.terrain, action.after.terrain)
+    ) {
+      fail(`el turno terminal ${index + 1} inventa una fase posterior`);
+    }
+    if (action.after.status === 'incomplete' && action.after.turnsUsed !== LEVEL.maxTurns) {
+      fail(`el turno ${index + 1} termina antes del límite`);
+    }
+    if (index < record.actions.length - 1 && action.after.status !== 'running') {
       fail(`hay acciones publicadas después del cierre del juego en el turno ${index + 1}`);
     }
   });
@@ -276,21 +363,32 @@ const validateRecord = (record: ReplayRecordView): void => {
   const lastState = record.snapshots.at(-1);
   if (record.closure.finalStateId !== lastState?.id)
     fail('el estado final no coincide con el cierre');
+  if (['victory', 'defeat', 'incomplete'].includes(record.closure.status)) {
+    if (lastState?.status !== record.closure.status)
+      fail('el cierre no coincide con el estado terminal del juego');
+  } else if (lastState?.status !== 'running') {
+    fail('el cierre operativo no puede agregar otro estado de juego terminal');
+  }
   if (
-    ['victory', 'defeat', 'incomplete'].includes(record.closure.status) &&
-    lastState?.status !== record.closure.status
+    record.actions.length === 0 &&
+    record.closure.status !== 'cancelled' &&
+    record.closure.status !== 'error'
   ) {
-    fail('el cierre no coincide con el estado terminal del juego');
+    fail('un cierre de juego requiere al menos una acción');
   }
-  if (record.actions.length === 0 && record.closure.status === 'victory') {
-    fail('una victoria sin acciones no pertenece al juego estático v1');
-  }
+};
+
+const cameraForSupport = (support: number): number => {
+  const robotX = REPLAY_SUPPORT_START_X + support * REPLAY_SEGMENT_WIDTH;
+  return Math.max(
+    0,
+    Math.min(REPLAY_WORLD_WIDTH - REPLAY_VIEW_WIDTH, robotX - REPLAY_VIEW_WIDTH / 2),
+  );
 };
 
 /**
  * Validate a closed public record once and produce a pure time sampler.
- * The sampler never advances hidden state, so dropped animation frames do not
- * change which registered action or pose is shown.
+ * The sampler reads phases from saved before/after snapshots; it never reruns game rules.
  */
 export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
   validateRecord(record);
@@ -301,8 +399,18 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
     const direction = directionOf(action.action);
     if (direction) facing = direction;
     const duration = cueDuration(action);
-    cues.push({ start: cursor, end: cursor + duration, action, index, direction, facing });
-    cursor += duration;
+    const start = cursor;
+    const end = start + duration;
+    cursor = end;
+    let transition: PhaseTransitionCue | null = null;
+    if (
+      action.after.status === 'running' &&
+      !sameValue(action.before.terrain, action.after.terrain)
+    ) {
+      transition = { start: cursor, end: cursor + TIMING.phase, to: action.after.terrain };
+      cursor = transition.end;
+    }
+    cues.push({ start, end, action, index, direction, facing, transition });
   }
   const victory = record.closure.status === 'victory';
   const actionDuration = cursor;
@@ -315,7 +423,7 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
     const time = Number.isFinite(elapsedSeconds)
       ? Math.max(0, Math.min(duration, elapsedSeconds))
       : 0;
-    const cue = cues.find(({ end }) => time < end);
+    const cue = cues.find(({ start, end }) => time >= start && time < end);
     if (cue) {
       const action = cue.action;
       const p = Math.max(0, Math.min(1, (time - cue.start) / (cue.end - cue.start)));
@@ -325,6 +433,8 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
       const common = {
         time,
         terrain: action.before.terrain,
+        terrainTransition: null,
+        cameraX: cameraForSupport(from),
         actionIndex: cue.index,
         actionNumber: cue.index + 1,
         closureStatus: record.closure.status,
@@ -335,9 +445,11 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
         const nearEdge = from + (cue.direction === 'left' ? -0.42 : 0.42);
         const approach = Math.min(1, p / 0.28);
         const fallProgress = Math.max(0, (p - 0.28) / 0.72);
+        const support = from + (nearEdge - from) * ease(approach);
         return {
           ...common,
-          support: from + (nearEdge - from) * ease(approach),
+          support,
+          cameraX: cameraForSupport(support),
           drop: FALL_DEPTH * ease(fallProgress),
           facing: direction,
           pose: 'fall',
@@ -346,9 +458,11 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
       }
       if (action.resolution.outcome === 'collision') {
         const contact = from + (cue.direction === 'left' ? -0.3 : 0.3);
+        const support = from + (contact - from) * ease(Math.min(1, p / 0.58));
         return {
           ...common,
-          support: from + (contact - from) * ease(Math.min(1, p / 0.58)),
+          support,
+          cameraX: cameraForSupport(support),
           drop: 0,
           facing: direction,
           pose: p < 0.58 ? (p < 0.3 ? 'step-a' : 'step-b') : 'impact',
@@ -367,11 +481,12 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
       }
 
       const amount = ease(p);
-      const travel = from + (to - from) * amount;
+      const support = from + (to - from) * amount;
       if (action.action.kind === 'jump') {
         return {
           ...common,
-          support: travel,
+          support,
+          cameraX: cameraForSupport(support),
           drop: -Math.sin(Math.PI * p) * 66,
           facing: direction,
           pose: 'jump',
@@ -381,7 +496,8 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
       if (action.action.kind === 'crouch') {
         return {
           ...common,
-          support: travel,
+          support,
+          cameraX: cameraForSupport(support),
           drop: 0,
           facing: direction,
           pose: p < 0.18 || p > 0.82 ? 'idle' : 'crouch',
@@ -390,11 +506,39 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
       }
       return {
         ...common,
-        support: travel,
+        support,
+        cameraX: cameraForSupport(support),
         drop: 0,
         facing: direction,
         pose: p >= 0.84 ? 'idle' : p < 0.5 ? 'step-a' : 'step-b',
         effect: 'none',
+      };
+    }
+
+    const transitioning = cues.find(
+      (candidate) =>
+        candidate.transition &&
+        time >= candidate.transition.start &&
+        time < candidate.transition.end,
+    );
+    if (transitioning?.transition) {
+      const phase = transitioning.transition;
+      const progress = Math.max(0, Math.min(1, (time - phase.start) / (phase.end - phase.start)));
+      const support = transitioning.action.after.support;
+      return {
+        time,
+        support,
+        drop: 0,
+        facing: transitioning.facing,
+        pose: 'idle',
+        terrain: transitioning.action.before.terrain,
+        terrainTransition: { to: phase.to, progress: ease(progress) },
+        cameraX: cameraForSupport(support),
+        actionIndex: transitioning.index,
+        actionNumber: transitioning.index + 1,
+        closureStatus: record.closure.status,
+        effect: 'none',
+        complete: false,
       };
     }
 
@@ -406,6 +550,8 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
         facing: endingFacing,
         pose: 'celebrate',
         terrain: lastState.terrain,
+        terrainTransition: null,
+        cameraX: cameraForSupport(lastState.support),
         actionIndex: null,
         actionNumber: record.actions.length,
         closureStatus: record.closure.status,
@@ -421,18 +567,21 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
         : terminalAction?.resolution.outcome === 'collision'
           ? 'impact'
           : 'idle';
+    const support =
+      terminalPose === 'fall'
+        ? lastState.support + (terminalCue?.direction === 'left' ? -0.42 : 0.42)
+        : terminalPose === 'impact'
+          ? lastState.support + (terminalCue?.direction === 'left' ? -0.3 : 0.3)
+          : lastState.support;
     return {
       time,
-      support:
-        terminalPose === 'fall'
-          ? lastState.support + (terminalCue?.direction === 'left' ? -0.42 : 0.42)
-          : terminalPose === 'impact'
-            ? lastState.support + (terminalCue?.direction === 'left' ? -0.3 : 0.3)
-            : lastState.support,
+      support,
       drop: terminalPose === 'fall' ? FALL_DEPTH : 0,
       facing: endingFacing,
       pose: terminalPose,
-      terrain: terminalAction?.before.terrain ?? lastState.terrain,
+      terrain: lastState.terrain,
+      terrainTransition: null,
+      cameraX: cameraForSupport(support),
       actionIndex: terminalCue?.index ?? null,
       actionNumber: record.actions.length,
       closureStatus: record.closure.status,

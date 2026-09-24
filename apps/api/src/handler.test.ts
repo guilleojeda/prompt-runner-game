@@ -2,13 +2,7 @@ import { type DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { marshall } from '@aws-sdk/util-dynamodb';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { describe, expect, it, vi } from 'vitest';
-import {
-  MAX_DRAFT_BYTES,
-  createDefaultDraft,
-  draftByteLength,
-  validateDraft,
-  type DraftSnapshot,
-} from '../../../shared/robot';
+import { createDefaultDraft, type DraftSnapshot } from '../../../shared/robot';
 import {
   DraftConflictError,
   DraftStorageError,
@@ -79,64 +73,28 @@ const dependencies = (store: DraftStore, fetch: typeof globalThis.fetch = verifi
 });
 
 describe('draft API handler', () => {
-  it('reads an unchanged v1-at-limit draft without migrating it and blocks its new admission', async () => {
-    const current = createDefaultDraft();
-    const legacy = {
-      schemaVersion: 1 as const,
-      catalogVersion: current.catalogVersion,
-      instructions: '',
-      skills: current.skills,
-    };
-    const atLimit = {
-      ...legacy,
-      instructions: 'x'.repeat(MAX_DRAFT_BYTES - draftByteLength(legacy)),
-    };
-    const normalized = validateDraft(atLimit);
-    expect(draftByteLength(atLimit)).toBe(MAX_DRAFT_BYTES);
-    expect(draftByteLength(normalized)).toBeGreaterThan(MAX_DRAFT_BYTES);
-    const draftStore: DraftStore = {
-      get: vi.fn().mockResolvedValue({ version: 4, draft: normalized }),
-      put: vi.fn(),
-    };
-    const attemptStore = new MemoryAttemptStore({
-      draft: { version: 4, draft: atLimit as unknown as DraftSnapshot['draft'] },
-    });
-    const dispatch = vi.fn(async () => undefined);
-    const deps = {
-      ...dependencies(draftStore),
-      attemptStore,
-      dispatch,
-    };
-
-    const oversizedPut = await handleRequest(
-      eventFor('PUT', {
-        body: JSON.stringify({ expectedVersion: 4, draft: normalized }),
-      }),
-      deps,
-    );
-    expect(oversizedPut.statusCode).toBe(413);
-    expect(draftStore.put).not.toHaveBeenCalled();
-
-    const getResponse = await handleRequest(eventFor('GET'), deps);
-    const getDraft = responseBody(getResponse).draft;
-    const postResponse = await handleRequest(
+  it('requires the current request contract, including the animation choice', async () => {
+    const draft = createDefaultDraft();
+    const attemptStore = new MemoryAttemptStore({ draft: { version: 1, draft } });
+    const draftStore: DraftStore = { get: vi.fn(), put: vi.fn() };
+    const dispatch = vi.fn();
+    const response = await handleRequest(
       eventFor('POST', {
         path: '/attempts',
-        body: JSON.stringify({ requestKey: 'boundary', expectedVersion: 4, draft: getDraft }),
+        body: JSON.stringify({ requestKey: 'missing-choice', expectedVersion: 1, draft }),
       }),
-      deps,
+      { ...dependencies(draftStore), attemptStore, dispatch },
     );
 
-    expect(getResponse.statusCode).toBe(200);
-    expect(postResponse.statusCode).toBe(400);
-    expect(draftStore.put).not.toHaveBeenCalled();
+    expect(response.statusCode).toBe(400);
+    expect((await attemptStore.quota('user-a')).used).toBe(0);
     expect(dispatch).not.toHaveBeenCalled();
   });
 
-  it('returns a 4xx and leaves quota untouched when a known model is inactive', async () => {
-    const draft = { ...createDefaultDraft(), modelKey: 'claude-sonnet-5' as const };
+  it('rejects a retired model key before admission', async () => {
+    const draft = { ...createDefaultDraft(), modelKey: 'claude-sonnet-5' };
     const attemptStore = new MemoryAttemptStore({
-      draft: { version: 1, draft },
+      draft: { version: 1, draft: createDefaultDraft() },
       quotaLimit: 1,
     });
     const draftStore: DraftStore = { get: vi.fn(), put: vi.fn() };
@@ -144,7 +102,12 @@ describe('draft API handler', () => {
     const response = await handleRequest(
       eventFor('POST', {
         path: '/attempts',
-        body: JSON.stringify({ requestKey: 'inactive', expectedVersion: 1, draft }),
+        body: JSON.stringify({
+          requestKey: 'retired-model',
+          expectedVersion: 1,
+          draft,
+          animationEnabled: false,
+        }),
       }),
       { ...dependencies(draftStore), attemptStore, dispatch },
     );
@@ -263,7 +226,7 @@ describe('draft API handler', () => {
       { expectedVersion: 0, draft, owner: 'user-b' },
       { expectedVersion: 0, draft: { ...draft, owner: 'user-b' } },
       { expectedVersion: -1, draft },
-      { expectedVersion: 0, draft: { ...draft, schemaVersion: 3 } },
+      { expectedVersion: 0, draft: { ...draft, schemaVersion: 2 } },
     ]) {
       const invalidResponse = await handleRequest(
         eventFor('PUT', { body: JSON.stringify(body) }),

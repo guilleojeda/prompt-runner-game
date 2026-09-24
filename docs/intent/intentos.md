@@ -1,14 +1,14 @@
 # Intentos: ejecución, registro y reproducción
 
-Estado: cálculo estático, registro, selección de modelo, consultas, animación opcional y reproducción visibles implementados. Las mecánicas posteriores siguen pendientes.
+Estado: ejecución del nivel principal periódico con Sonnet 4.6, registro, consultas, Esperar, animación opcional y reproducción del contrato vigente.
 
 Esta página define el ciclo de un intento desde que se fija la configuración hasta que se muestra su reproducción. Se relaciona con [la experiencia](experiencia.md), [las reglas del juego](juego.md), [el agente](agente.md) y [la plataforma](plataforma.md).
 
-El diseño técnico está en [registro de ejecución](../architecture/registro-de-ejecucion.md) y [animación](../architecture/animacion.md). El cálculo, el registro y su reproducción están implementados para el recorrido estático. El almacenamiento físico se documenta en [datos](../architecture/datos.md).
+El diseño técnico está en [registro de ejecución](../architecture/registro-de-ejecucion.md) y [animación](../architecture/animacion.md). El cálculo, el registro y su reproducción usan `principal-periodico-v2`. El almacenamiento físico se documenta en [datos](../architecture/datos.md).
 
 ## Alcance y reglas que no cambian
 
-Un intento es una ejecución independiente. Su modelo y perfil quedan fijados al admitir; resultado e historial muestran esa identidad aunque cambie después el selector o el catálogo. Los registros históricos válidos de Sonnet 5 siguen siendo recuperables. El agente no recibe memoria, resultados ni conversaciones de otros intentos. El aprendizaje entre intentos consiste en editar las habilidades, sus descripciones o las instrucciones y crear otro snapshot con **Probar**; no consiste en entrenar ni adaptar el modelo.
+Un intento es una ejecución independiente. Sonnet 4.6 y el perfil vigente quedan fijados al admitir. El agente no recibe memoria, resultados ni conversaciones de otros intentos. El aprendizaje entre intentos consiste en editar las habilidades, sus descripciones o las instrucciones y crear otro snapshot con **Probar**; no consiste en entrenar ni adaptar el modelo. Los registros del contrato vigente se consultan y reproducen; no se promete conservar lectores para contratos reemplazados.
 
 El intento separa el cálculo de la presentación:
 
@@ -17,13 +17,13 @@ El intento separa el cálculo de la presentación:
 
 Ambas rutas cierran y conservan el mismo registro. La reproducción no vuelve a consultar al modelo, no toma decisiones, no ejecuta acciones y no cambia el resultado ni las métricas.
 
-Toda la información de la aplicación debe conservarse en el servidor, sin una caducidad automática requerida. Esto incluye configuraciones y versiones aplicadas, niveles usados, historial, registros reproducibles, resultados y métricas. Cada registro pertenece a un usuario y debe quedar aislado de los registros de otros usuarios. Al volver a ingresar, incluso desde otro navegador de escritorio, el usuario debe poder consultar sus configuraciones e intentos guardados.
+La información del contrato vigente se conserva en el servidor, sin caducidad automática mientras ese contrato siga operativo. Incluye configuraciones aplicadas, el nivel usado, historial, registros reproducibles, resultados y métricas. Cada registro pertenece a un usuario y debe quedar aislado de los registros de otros usuarios. Los datos de prueba de contratos anteriores pueden eliminarse o permanecer sin uso si no interfieren; no se migran ni requieren lectores anteriores.
 
-El cálculo se mantiene en el servidor. El job en curso, su snapshot, su registro y el valor de `animation_enabled` se conservan para que una recarga recupere el intento sin repetir inferencia ni crear otro intento. Toda la información de la aplicación se conserva sin una caducidad automática requerida.
+El cálculo se mantiene en el servidor. El job en curso, su snapshot, su registro y el valor de `animation_enabled` se conservan para que una recarga recupere el intento sin repetir inferencia ni crear otro intento.
 
 ## Inicio y fijación del intento
 
-Antes de iniciar, la persona selecciona o revisa el nivel y edita el borrador de configuración del agente. Al hacer clic en **Probar**, el servidor valida y guarda directamente ese borrador; si admite el intento, toma una copia inmutable de:
+Antes de iniciar, la persona revisa el nivel principal vigente y edita el borrador de configuración del agente. Al hacer clic en **Probar**, el servidor valida y guarda directamente ese borrador; si admite el intento, toma una copia inmutable de:
 
 - la definición y versión del nivel;
 - las habilidades habilitadas, sus identificadores opacos, schemas y descripciones;
@@ -33,14 +33,14 @@ Antes de iniciar, la persona selecciona o revisa el nivel y edita el borrador de
 - los parámetros de puntuación vigentes;
 - el valor del toggle **Animación** para esa presentación.
 
-Editar después el borrador no modifica esa copia ni ningún intento anterior. La copia fija permite reproducir y comparar el intento aunque el catálogo, el nivel o los textos cambien más adelante. El valor de **Animación** se guarda para presentar ese intento y no modifica prompt, herramientas, llamadas, tokens, turnos, puntaje, cuota ni el registro.
+Editar después el borrador no modifica esa copia ni ningún intento anterior. La copia fija permite reproducir el intento bajo el contrato vigente. Al reemplazar un contrato, no se conserva compatibilidad con sus registros. El valor de **Animación** se guarda para presentar ese intento y no modifica prompt, herramientas, llamadas, tokens, turnos, puntaje, cuota ni el registro.
 
 Al crear el intento se reinicia el mundo con:
 
 - posición inicial;
 - turno 0;
-- objetos originales en el suelo;
-- inventario vacío, salvo que una definición futura del nivel establezca explícitamente otra condición;
+- sin objetos en el nivel vigente;
+- inventario vacío;
 - estado inicial de la salida;
 - contadores de turnos, llamadas y uso propios del intento.
 
@@ -60,7 +60,7 @@ En cada decisión el ejecutor:
 4. Envía una solicitud nueva al modelo, sin historial ni estado de decisiones previas. Incluye el protocolo técnico, las instrucciones fijadas y todas las herramientas habilitadas, sin filtrar las que parecen compatibles con el obstáculo actual.
 5. Valida que la respuesta seleccione exactamente una herramienta habilitada y que sus argumentos cumplan el schema. No se ejecuta una herramienta inventada, deshabilitada, mal formada o acompañada de varias acciones. Una secuencia escrita dentro de una descripción tampoco se interpreta como varias acciones.
 6. Resuelve la única acción contra el estado del mundo del turno de inicio.
-7. Cuenta un turno de juego, incluso si la acción fue esperar, recoger un objeto, no produjo cambios, llegó a un límite o resultó fatal.
+7. Cuenta un turno de juego, incluso si la acción fue esperar, no produjo cambios, llegó a un límite o resultó fatal. Recoger un objeto contará cuando se incorpore esa mecánica.
 8. Evalúa el estado terminal en el orden definido abajo. Si el intento continúa, avanza el reloj periódico y construye el estado del turno siguiente.
 9. Registra el evento completo y conserva el uso de la llamada o llamadas que produjeron esa decisión.
 
@@ -112,7 +112,7 @@ Si la política no obtiene una respuesta ejecutable, el intento termina como err
 
 ## Registro del intento
 
-El servidor conserva el registro asociado al usuario sin plazo de caducidad automática. Debe ser posible abrirlo más adelante, cargar la copia fija y reproducirla sin acceso al proveedor de inferencia.
+El servidor conserva el registro del contrato vigente asociado al usuario sin plazo de caducidad automática mientras ese contrato siga operativo. Debe ser posible abrirlo más adelante, cargar la copia fija y reproducirla sin acceso al proveedor de inferencia.
 
 El registro del intento contiene como mínimo:
 
@@ -128,7 +128,7 @@ El registro del intento contiene como mínimo:
 | Estado inicial | Snapshot del mundo con el que comenzó el intento |
 | Eventos | Eventos ordenados de cada decisión y sus llamadas |
 | Estado final | Snapshot final, estado terminal y causa de finalización |
-| Métricas | Turnos utilizados, cantidad de llamadas, consumo de tokens y objetos recogidos |
+| Métricas | Turnos utilizados, cantidad de llamadas y consumo de tokens. La métrica de objetos recogidos se agregará cuando exista esa mecánica. |
 | Resultado | Puntaje, sólo cuando corresponde a un intento completado |
 
 Cada evento debe conservar como mínimo:
@@ -141,7 +141,7 @@ Cada evento debe conservar como mínimo:
 - identidad interna de la acción real para el motor, el registro y la interfaz humana;
 - resultado de la acción: movimiento válido, recogida, sin efecto o derrota;
 - posición lógica de origen y destino cuando corresponda;
-- objetos o estado de la salida modificados;
+- estado de la salida modificado; objetos, cuando exista esa mecánica;
 - motivo programático del no-op, choque, caída o error de validación;
 - snapshot resultante del mundo, o el estado conservado si no se ejecutó una acción válida;
 - datos de animación necesarios para representar una trayectoria, caída o choque, cuando no se puedan derivar sin ambigüedad;
@@ -149,7 +149,7 @@ Cada evento debe conservar como mínimo:
 
 El evento usa el turno de su estado anterior. Cuando la partida continúa, su estado posterior incluye el turno siguiente. En una finalización, la última acción sigue contando, pero no se crea una nueva fase jugable. El estado de los obstáculos utilizado para resolver la acción debe poder identificarse desde ese snapshot y la copia fija del nivel.
 
-Cada snapshot representa al menos la posición, el turno, los objetos restantes, el inventario interno, el estado del intento, el estado de la salida y los datos internos necesarios para resolver las acciones y las métricas. El motor deriva las fases de la copia fija del nivel y el turno y conserva sus estados efectivos en el snapshot; el reproductor los lee sin recalcular periodicidad, según el [contrato de registro](../architecture/registro-de-ejecucion.md).
+Cada snapshot representa al menos la posición, el turno, el estado del intento, el estado de la salida y los datos internos necesarios para resolver las acciones y las métricas. En el nivel vigente no hay objetos, el inventario está vacío y la salida siempre está habilitada. El motor deriva las fases de la copia fija del nivel y el turno y conserva sus estados efectivos en el snapshot; el reproductor los lee sin recalcular periodicidad, según el [contrato de registro](../architecture/registro-de-ejecucion.md).
 
 Registrar el uso original del proveedor junto con los campos normalizados evita perder información cuando las categorías cambian entre APIs. La normalización y el cálculo del puntaje se detallan en [consumo y puntaje](consumo-y-puntaje.md).
 
@@ -190,7 +190,7 @@ El servidor conserva el estado del job y el registro; la interfaz conserva adem�
 
 El servidor debe poder distinguir, como mínimo, admisión pendiente, cálculo en curso y terminal con causa de victoria, derrota, límite, cancelación o error. También conserva el valor de `animation_enabled` y el registro cerrado. La interfaz puede estar en edición, guardando o admitiendo, cálculo, animación automática, resultado o replay manual; esos estados no se deben tratar como los mismos estados del job.
 
-Durante el cálculo sólo **Cancelar** es operativo. Se bloquean edición, habilidades, nivel, toggle **Animación**, **Probar**, historial y reproducción. Durante cualquier animación se mantienen bloqueados edición, habilidades, nivel, toggle, **Probar** e historial y no hay controles de reproducción operativos. No se habilita edición hasta un estado terminal y el fin automático de la presentación.
+Durante el cálculo sólo **Cancelar** es operativo. Se bloquean edición, habilidades, toggle **Animación**, **Probar**, historial y reproducción. Durante cualquier animación se mantienen bloqueados edición, habilidades, toggle, **Probar** e historial y no hay controles de reproducción operativos. No se habilita edición hasta un estado terminal y el fin automático de la presentación.
 
 Una cancelación o un error sin acciones ejecutadas cierra el resultado con su causa y no inicia una reproducción vacía. Si el registro cerrado contiene acciones, la reproducción automática sigue el valor de `animation_enabled`; el resultado se muestra después de ella si está activo y de inmediato si está desactivado. En ambos casos los replays posteriores desde el historial son manuales y no vuelven a inferir.
 

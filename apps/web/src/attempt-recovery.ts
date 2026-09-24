@@ -1,6 +1,7 @@
 import {
   MAX_DRAFT_BYTES,
   ROBOT_SCHEMA_VERSION,
+  ROBOT_CATALOG_VERSION,
   draftByteLength,
   validateDraft,
   type RobotDraft,
@@ -25,12 +26,27 @@ const hasOwn = (value: object, key: string): boolean =>
 
 const RECOVERY_KEYS = new Set([
   'sub',
+  'draftContract',
   'requestKey',
   'attemptId',
   'expectedVersion',
   'draft',
   'animationEnabled',
 ]);
+
+const CURRENT_DRAFT_CONTRACT = Object.freeze({
+  schemaVersion: ROBOT_SCHEMA_VERSION,
+  catalogVersion: ROBOT_CATALOG_VERSION,
+});
+
+function hasCurrentDraftContract(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    value.schemaVersion === CURRENT_DRAFT_CONTRACT.schemaVersion &&
+    value.catalogVersion === CURRENT_DRAFT_CONTRACT.catalogVersion &&
+    Object.keys(value).length === 2
+  );
+}
 
 type RecoverySnapshotRecord = Record<string, unknown> & {
   readonly requestKey: string;
@@ -45,6 +61,7 @@ function isRecoverySnapshot(value: Record<string, unknown>): value is RecoverySn
     typeof value.expectedVersion !== 'number' ||
     !Number.isSafeInteger(value.expectedVersion) ||
     value.expectedVersion < 0 ||
+    typeof value.animationEnabled !== 'boolean' ||
     value.draft === undefined
   ) {
     return false;
@@ -69,6 +86,10 @@ export function readAttemptRecovery(sub: string): AttemptRecoveryReference | nul
       clearAttemptRecovery(value.sub);
       return null;
     }
+    if (isRecord(value) && value.sub === sub && !hasCurrentDraftContract(value.draftContract)) {
+      clearAttemptRecovery(sub);
+      return null;
+    }
     if (
       !isRecord(value) ||
       value.sub !== sub ||
@@ -91,7 +112,10 @@ export function readAttemptRecovery(sub: string): AttemptRecoveryReference | nul
     }
     const snapshot = hasOwn(value, 'expectedVersion') && hasOwn(value, 'draft');
     if (snapshot) {
-      if (!isRecoverySnapshot(value)) return null;
+      if (!isRecoverySnapshot(value)) {
+        clearAttemptRecovery(sub);
+        return null;
+      }
       return {
         sub,
         requestKey: value.requestKey,
@@ -118,7 +142,10 @@ export function readAttemptRecovery(sub: string): AttemptRecoveryReference | nul
 
 export function writeAttemptRecovery(reference: AttemptRecoveryReference): void {
   try {
-    window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(reference));
+    window.sessionStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ ...reference, draftContract: CURRENT_DRAFT_CONTRACT }),
+    );
   } catch {
     // Storage is a recovery hint; the server remains authoritative.
   }
