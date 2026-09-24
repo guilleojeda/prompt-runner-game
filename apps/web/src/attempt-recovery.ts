@@ -7,7 +7,6 @@ import {
 } from '../../../shared/robot.js';
 
 const STORAGE_KEY = 'prompt-runner:attempt-recovery';
-const PRESENTATION_ACKS_KEY = 'prompt-runner:presentation-acks';
 
 export interface AttemptRecoveryReference {
   readonly sub: string;
@@ -16,11 +15,6 @@ export interface AttemptRecoveryReference {
   readonly expectedVersion?: number;
   readonly draft?: RobotDraft;
   readonly animationEnabled?: boolean;
-}
-
-interface PendingPresentationAcks {
-  readonly sub: string;
-  readonly attemptIds: readonly string[];
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -131,11 +125,6 @@ export function writeAttemptRecovery(reference: AttemptRecoveryReference): void 
 }
 
 export function clearAttemptRecovery(sub?: string): void {
-  clearForegroundAttemptRecovery(sub);
-  clearPendingPresentationAcks(sub);
-}
-
-export function clearForegroundAttemptRecovery(sub?: string): void {
   try {
     const current = window.sessionStorage.getItem(STORAGE_KEY);
     if (!current || !sub) {
@@ -148,90 +137,5 @@ export function clearForegroundAttemptRecovery(sub?: string): void {
     }
   } catch {
     window.sessionStorage.removeItem(STORAGE_KEY);
-  }
-}
-
-export function readPendingPresentationAcks(sub: string): readonly string[] {
-  try {
-    const raw = window.sessionStorage.getItem(PRESENTATION_ACKS_KEY);
-    if (!raw) return [];
-    const value: unknown = JSON.parse(raw);
-    if (isRecord(value) && typeof value.sub === 'string' && value.sub !== sub) {
-      clearPendingPresentationAcks(value.sub);
-      return [];
-    }
-    if (
-      !isRecord(value) ||
-      value.sub !== sub ||
-      typeof value.sub !== 'string' ||
-      !Array.isArray(value.attemptIds) ||
-      Object.keys(value).some((key) => key !== 'sub' && key !== 'attemptIds') ||
-      value.attemptIds.some(
-        (attemptId) =>
-          typeof attemptId !== 'string' || attemptId.length === 0 || attemptId.length > 256,
-      )
-    ) {
-      window.sessionStorage.removeItem(PRESENTATION_ACKS_KEY);
-      return [];
-    }
-    const attemptIds = [...new Set(value.attemptIds as string[])];
-    if (attemptIds.length !== value.attemptIds.length) {
-      writePendingPresentationAcks({ sub, attemptIds });
-    }
-    return attemptIds;
-  } catch {
-    window.sessionStorage.removeItem(PRESENTATION_ACKS_KEY);
-    return [];
-  }
-}
-
-export function addPendingPresentationAck(sub: string, attemptId: string): boolean {
-  if (!attemptId || attemptId.length > 256) return false;
-  const attemptIds = readPendingPresentationAcks(sub);
-  if (attemptIds.includes(attemptId)) return true;
-  return writePendingPresentationAcks({ sub, attemptIds: [...attemptIds, attemptId] });
-}
-
-export function removePendingPresentationAck(sub: string, attemptId: string): void {
-  const attemptIds = readPendingPresentationAcks(sub);
-  const remaining = attemptIds.filter((id) => id !== attemptId);
-  if (remaining.length === attemptIds.length) return;
-  if (remaining.length === 0) {
-    clearPendingPresentationAcks(sub);
-  } else {
-    writePendingPresentationAcks({ sub, attemptIds: remaining });
-  }
-}
-
-export function hasPendingPresentationAck(sub: string, attemptId: string): boolean {
-  return readPendingPresentationAcks(sub).includes(attemptId);
-}
-
-export function clearPendingPresentationAcks(sub?: string): void {
-  try {
-    const current = window.sessionStorage.getItem(PRESENTATION_ACKS_KEY);
-    if (!current || !sub) {
-      window.sessionStorage.removeItem(PRESENTATION_ACKS_KEY);
-      return;
-    }
-    const value: unknown = JSON.parse(current);
-    if (!isRecord(value) || value.sub === sub) {
-      window.sessionStorage.removeItem(PRESENTATION_ACKS_KEY);
-    }
-  } catch {
-    window.sessionStorage.removeItem(PRESENTATION_ACKS_KEY);
-  }
-}
-
-function writePendingPresentationAcks(value: PendingPresentationAcks): boolean {
-  try {
-    if (value.attemptIds.length === 0) {
-      window.sessionStorage.removeItem(PRESENTATION_ACKS_KEY);
-    } else {
-      window.sessionStorage.setItem(PRESENTATION_ACKS_KEY, JSON.stringify(value));
-    }
-    return true;
-  } catch {
-    return false;
   }
 }

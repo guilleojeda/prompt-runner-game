@@ -725,9 +725,11 @@ describe('access screen', () => {
 
     expect(await screen.findByRole('heading', { name: 'Historial' })).toBeTruthy();
     await waitFor(() => expect(listAttempts).toHaveBeenCalledTimes(2));
-    expect((screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement).disabled).toBe(
-      false,
-    );
+    await waitFor(() => {
+      expect((screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement).disabled).toBe(
+        false,
+      );
+    });
   });
 
   it('pauses the authenticated workspace after an API auth failure and preserves identity for re-entry', async () => {
