@@ -110,6 +110,7 @@ describe('ReplayScene', () => {
     expect(complete).not.toHaveBeenCalled();
     const scene = screen.getByRole('img');
     expect(scene.getAttribute('data-action-index')).toBe('0');
+    expect(scene.querySelector('text')?.textContent).toBe('Turno 1 / 5');
     expect(
       [...scene.querySelectorAll('[data-replay-layer]')].map((layer) =>
         layer.getAttribute('data-replay-layer'),
@@ -125,10 +126,14 @@ describe('ReplayScene', () => {
     expect(standingRobot?.getAttribute('data-facing')).toBe('right');
     expect(standingRobot?.getAttribute('data-pose')).toBe('step-a');
 
+    await nextFrame(1720);
+    expect(screen.getByRole('img').querySelector('text')?.textContent).toBe('Turno 2 / 5');
+
     const durationMs = prepareReplay(publicFixture()).duration * 1000;
     await nextFrame(1000 + durationMs + 3500);
     const completedScene = screen.getByRole('img');
     expect(completedScene.getAttribute('data-complete')).toBe('true');
+    expect(completedScene.querySelector('text')?.textContent).toBe('Turno 5 / 5');
     expect(completedScene.querySelectorAll('use[href$="#effect-victory"]')).toHaveLength(1);
     expect(complete).toHaveBeenCalledOnce();
     expect(error).not.toHaveBeenCalled();

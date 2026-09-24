@@ -251,7 +251,7 @@ const ReplayCanvas = ({
       <text x="77" y="42" textAnchor="middle" fill="#23445b" fontSize="15" fontWeight="600">
         {record.actions.length === 0
           ? 'Sin acciones'
-          : `Turno ${Math.min(sample.actionNumber + (sample.complete ? 0 : 1), record.actions.length)} / ${record.actions.length}`}
+          : `Turno ${sample.actionNumber} / ${record.actions.length}`}
       </text>
     </g>
   </svg>

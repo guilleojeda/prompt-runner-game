@@ -107,6 +107,12 @@ function replayRecord(id = 'attempt-1'): ReplayRecordView {
   };
 }
 
+function storedPresentationAckIds(): string[] {
+  const raw = window.sessionStorage.getItem('prompt-runner:presentation-acks');
+  if (!raw) return [];
+  return (JSON.parse(raw) as { attemptIds: string[] }).attemptIds;
+}
+
 function api(overrides: Partial<AttemptApi> = {}): AttemptApi {
   return {
     createAttempt: vi
@@ -343,6 +349,62 @@ describe('AttemptWorkspace', () => {
     expect(screen.queryByRole('heading', { name: 'Victoria' })).toBeNull();
   });
 
+  it('refreshes an incomplete automatic summary before retrying the replay', async () => {
+    const incomplete = {
+      ...summary('victory'),
+      turnsUsed: 5,
+      animationEnabled: true,
+      presentationComplete: false,
+      recordComplete: false,
+    };
+    const complete = { ...incomplete, recordComplete: true };
+    window.sessionStorage.setItem(
+      'prompt-runner:attempt-recovery',
+      JSON.stringify({ sub: 'subject-a', attemptId: incomplete.id }),
+    );
+    const getAttempt = vi.fn().mockResolvedValueOnce(incomplete).mockResolvedValueOnce(complete);
+    const getReplay = vi.fn().mockResolvedValue(replayRecord());
+    const attemptApi = api({ getAttempt, getReplay });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+
+    expect(await screen.findByText(/El registro está incompleto/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Reintentar reproducción' }));
+
+    expect(await screen.findByRole('button', { name: 'Completar reproducción' })).toBeTruthy();
+    expect(getAttempt).toHaveBeenCalledTimes(2);
+    expect(getReplay).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('heading', { name: 'Victoria' })).toBeNull();
+  });
+
+  it('keeps the result accessible if the refreshed record remains incomplete', async () => {
+    const incomplete = {
+      ...summary('victory'),
+      turnsUsed: 5,
+      animationEnabled: true,
+      presentationComplete: false,
+      recordComplete: false,
+    };
+    window.sessionStorage.setItem(
+      'prompt-runner:attempt-recovery',
+      JSON.stringify({ sub: 'subject-a', attemptId: incomplete.id }),
+    );
+    const getAttempt = vi.fn().mockResolvedValue(incomplete);
+    const getReplay = vi.fn();
+    const attemptApi = api({ getAttempt, getReplay });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+
+    expect(await screen.findByText(/El registro está incompleto/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Reintentar reproducción' }));
+    expect(await screen.findByText(/El registro sigue incompleto/)).toBeTruthy();
+    expect(getReplay).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Ver resultado' }));
+    expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
+    expect(getReplay).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['cancelled', 'Cancelado'],
     ['error', 'Error de ejecución'],
@@ -407,10 +469,13 @@ describe('AttemptWorkspace', () => {
       'prompt-runner:attempt-recovery',
       JSON.stringify({ sub: 'subject-a', attemptId: pending.id }),
     );
-    const completePresentation = vi.fn().mockResolvedValue({
-      ...pending,
-      presentationComplete: true,
-    });
+    let finishMark!: (value: AttemptSummary) => void;
+    const completePresentation = vi.fn(
+      () =>
+        new Promise<AttemptSummary>((resolve) => {
+          finishMark = resolve;
+        }),
+    );
     const attemptApi = api({
       getAttempt: vi.fn().mockResolvedValue(pending),
       getReplay: vi.fn().mockResolvedValue(replayRecord()),
@@ -424,7 +489,300 @@ describe('AttemptWorkspace', () => {
     expect(screen.queryByRole('heading', { name: 'Victoria' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Ver resultado' }));
     expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
+    expect(await screen.findByText('Guardando el cierre de la presentación…')).toBeTruthy();
     expect(completePresentation).toHaveBeenCalledOnce();
+    expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toBeNull();
+    expect(storedPresentationAckIds()).toEqual([pending.id]);
+    expect(
+      (
+        screen.getByRole('button', {
+          name: 'Reintentar cierre de presentación',
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+
+    await act(async () => {
+      finishMark({ ...pending, presentationComplete: true });
+      await Promise.resolve();
+    });
+    await waitFor(() =>
+      expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toBeNull(),
+    );
+    await waitFor(() => expect(storedPresentationAckIds()).toEqual([]));
+  });
+
+  it('shows and unlocks the result while the automatic presentation mark is still pending', async () => {
+    const pending = {
+      ...summary('victory'),
+      turnsUsed: 5,
+      animationEnabled: true,
+      presentationComplete: false,
+    };
+    window.sessionStorage.setItem(
+      'prompt-runner:attempt-recovery',
+      JSON.stringify({ sub: 'subject-a', attemptId: pending.id }),
+    );
+    let finishMark!: (value: AttemptSummary) => void;
+    const completePresentation = vi.fn(
+      () =>
+        new Promise<AttemptSummary>((resolve) => {
+          finishMark = resolve;
+        }),
+    );
+    const onBusyChange = vi.fn();
+    const attemptApi = api({
+      getAttempt: vi.fn().mockResolvedValue(pending),
+      getReplay: vi.fn().mockResolvedValue(replayRecord()),
+      completePresentation,
+    });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    render(
+      <AttemptWorkspace
+        api={attemptApi}
+        editor={editor}
+        session={session()}
+        onBusyChange={onBusyChange}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Completar reproducción' }));
+    expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
+    expect(await screen.findByText('Guardando el cierre de la presentación…')).toBeTruthy();
+    expect(onBusyChange).toHaveBeenLastCalledWith(false);
+    expect(completePresentation).toHaveBeenCalledOnce();
+    expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toBeNull();
+    expect(storedPresentationAckIds()).toEqual([pending.id]);
+
+    await act(async () => {
+      finishMark({ ...pending, presentationComplete: true });
+      await Promise.resolve();
+    });
+    await waitFor(() =>
+      expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toBeNull(),
+    );
+    await waitFor(() => expect(storedPresentationAckIds()).toEqual([]));
+  });
+
+  it('retries a pending ACK on resume and clears its saving state after confirmation', async () => {
+    const pending = {
+      ...summary('victory'),
+      turnsUsed: 5,
+      animationEnabled: true,
+      presentationComplete: false,
+    };
+    window.sessionStorage.setItem(
+      'prompt-runner:attempt-recovery',
+      JSON.stringify({ sub: 'subject-a', attemptId: pending.id }),
+    );
+    const firstMark = new Promise<AttemptSummary>(() => undefined);
+    const completePresentation = vi
+      .fn()
+      .mockReturnValueOnce(firstMark)
+      .mockResolvedValueOnce({ ...pending, presentationComplete: true });
+    const attemptApi = api({
+      getAttempt: vi.fn().mockResolvedValue(pending),
+      getReplay: vi.fn().mockResolvedValue(replayRecord()),
+      completePresentation,
+    });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Completar reproducción' }));
+    expect(await screen.findByText('Guardando el cierre de la presentación…')).toBeTruthy();
+    act(() => window.dispatchEvent(new Event('focus')));
+
+    await waitFor(() => expect(completePresentation).toHaveBeenCalledTimes(2));
+    expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
+    await waitFor(() => expect(storedPresentationAckIds()).toEqual([]));
+    expect(screen.queryByText('Guardando el cierre de la presentación…')).toBeNull();
+    expect(attemptApi.getReplay).toHaveBeenCalledOnce();
+  });
+
+  it('recovers B while retrying A acknowledgement without replaying or replacing B', async () => {
+    const attemptA = {
+      ...summary('victory'),
+      turnsUsed: 5,
+      animationEnabled: true,
+      presentationComplete: false,
+    };
+    const attemptB = {
+      ...summary('running'),
+      id: 'attempt-2',
+      animationEnabled: false,
+      presentationComplete: true,
+    };
+    window.sessionStorage.setItem(
+      'prompt-runner:attempt-recovery',
+      JSON.stringify({ sub: 'subject-a', attemptId: attemptA.id }),
+    );
+    const firstMark = new Promise<AttemptSummary>(() => undefined);
+    const firstApi = api({
+      getAttempt: vi.fn().mockResolvedValue(attemptA),
+      getReplay: vi.fn().mockResolvedValue(replayRecord(attemptA.id)),
+      completePresentation: vi.fn().mockReturnValue(firstMark),
+      createAttempt: vi.fn().mockResolvedValue({ attempt: attemptB, dispatchConfirmed: true }),
+    });
+    const editor = {
+      current: {
+        captureSnapshot: vi.fn().mockResolvedValue({ version: 3, draft: createDefaultDraft() }),
+      },
+    } as unknown as { current: RobotEditorHandle | null };
+    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
+    const firstRender = render(
+      <AttemptWorkspace ref={ref} api={firstApi} editor={editor} session={session()} />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Completar reproducción' }));
+    expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
+    await waitFor(() => expect(storedPresentationAckIds()).toEqual([attemptA.id]));
+    expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toBeNull();
+
+    act(() => (ref.current as AttemptWorkspaceHandle).start());
+    await waitFor(() => expect(firstApi.createAttempt).toHaveBeenCalledOnce());
+    await waitFor(() => {
+      const recovery = JSON.parse(
+        window.sessionStorage.getItem('prompt-runner:attempt-recovery') ?? '{}',
+      ) as { attemptId?: string };
+      expect(recovery.attemptId).toBe(attemptB.id);
+    });
+    expect(storedPresentationAckIds()).toEqual([attemptA.id]);
+    firstRender.unmount();
+
+    window.sessionStorage.setItem(
+      'prompt-runner:presentation-acks',
+      JSON.stringify({ sub: 'subject-a', attemptIds: [attemptA.id, attemptA.id] }),
+    );
+    const retryAcks = vi
+      .fn()
+      .mockRejectedValueOnce(new AttemptApiFailure('server', 'No se guardó.', 500))
+      .mockResolvedValueOnce({ ...attemptA, presentationComplete: true });
+    const resumedApi = api({
+      getAttempt: vi
+        .fn()
+        .mockImplementation(async (id: string) => (id === attemptB.id ? attemptB : attemptA)),
+      getReplay: vi.fn(),
+      completePresentation: retryAcks,
+    });
+
+    const secondRender = render(
+      <AttemptWorkspace api={resumedApi} editor={editor} session={session()} />,
+    );
+    expect(await screen.findByRole('button', { name: 'Cancelar' })).toBeTruthy();
+    await waitFor(() => expect(retryAcks).toHaveBeenCalledTimes(1));
+    expect(retryAcks).toHaveBeenCalledWith(attemptA.id, expect.any(AbortSignal));
+    expect(resumedApi.getAttempt).toHaveBeenCalledWith(attemptB.id, expect.any(AbortSignal));
+    expect(resumedApi.getReplay).not.toHaveBeenCalled();
+    expect(storedPresentationAckIds()).toEqual([attemptA.id]);
+    expect(
+      JSON.parse(window.sessionStorage.getItem('prompt-runner:attempt-recovery') ?? '{}'),
+    ).toMatchObject({ sub: 'subject-a', attemptId: attemptB.id });
+    secondRender.unmount();
+
+    const finalApi = api({
+      getAttempt: vi.fn().mockResolvedValue(attemptB),
+      getReplay: vi.fn(),
+      completePresentation: retryAcks,
+    });
+    render(<AttemptWorkspace api={finalApi} editor={editor} session={session()} />);
+    expect(await screen.findByRole('button', { name: 'Cancelar' })).toBeTruthy();
+    await waitFor(() => expect(retryAcks).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(storedPresentationAckIds()).toEqual([]));
+    expect(finalApi.getReplay).not.toHaveBeenCalled();
+    expect(
+      JSON.parse(window.sessionStorage.getItem('prompt-runner:attempt-recovery') ?? '{}'),
+    ).toMatchObject({ sub: 'subject-a', attemptId: attemptB.id });
+  });
+
+  it('ignores a late successful ACK callback from A after B becomes current', async () => {
+    const attemptA = {
+      ...summary('victory'),
+      turnsUsed: 5,
+      animationEnabled: true,
+      presentationComplete: false,
+    };
+    const attemptB = {
+      ...summary('running'),
+      id: 'attempt-2',
+      animationEnabled: false,
+      presentationComplete: true,
+    };
+    window.sessionStorage.setItem(
+      'prompt-runner:attempt-recovery',
+      JSON.stringify({ sub: 'subject-a', attemptId: attemptA.id }),
+    );
+    let finishMark!: (value: AttemptSummary) => void;
+    const completePresentation = vi.fn(
+      () =>
+        new Promise<AttemptSummary>((resolve) => {
+          finishMark = resolve;
+        }),
+    );
+    const attemptApi = api({
+      getAttempt: vi.fn().mockResolvedValue(attemptA),
+      getReplay: vi.fn().mockResolvedValue(replayRecord(attemptA.id)),
+      completePresentation,
+      createAttempt: vi.fn().mockResolvedValue({ attempt: attemptB, dispatchConfirmed: true }),
+    });
+    const editor = {
+      current: {
+        captureSnapshot: vi.fn().mockResolvedValue({ version: 3, draft: createDefaultDraft() }),
+      },
+    } as unknown as { current: RobotEditorHandle | null };
+    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
+    render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Completar reproducción' }));
+    expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
+    act(() => (ref.current as AttemptWorkspaceHandle).start());
+    await waitFor(() => {
+      const recovery = JSON.parse(
+        window.sessionStorage.getItem('prompt-runner:attempt-recovery') ?? '{}',
+      ) as { attemptId?: string };
+      expect(recovery.attemptId).toBe(attemptB.id);
+    });
+
+    await act(async () => {
+      finishMark({ ...attemptA, presentationComplete: true });
+      await Promise.resolve();
+    });
+    expect(await screen.findByRole('button', { name: 'Cancelar' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Victoria' })).toBeNull();
+    expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toContain(attemptB.id);
+    expect(storedPresentationAckIds()).toEqual([]);
+  });
+
+  it('uses local completion evidence to avoid replaying after a reload with a stale foreground hint', async () => {
+    const alreadyShown = {
+      ...summary('victory'),
+      turnsUsed: 5,
+      animationEnabled: true,
+      presentationComplete: false,
+    };
+    window.sessionStorage.setItem(
+      'prompt-runner:attempt-recovery',
+      JSON.stringify({ sub: 'subject-a', attemptId: alreadyShown.id }),
+    );
+    window.sessionStorage.setItem(
+      'prompt-runner:presentation-acks',
+      JSON.stringify({ sub: 'subject-a', attemptIds: [alreadyShown.id] }),
+    );
+    const completePresentation = vi
+      .fn()
+      .mockRejectedValue(new AttemptApiFailure('server', 'Todavía no se guardó.', 500));
+    const attemptApi = api({
+      getAttempt: vi.fn().mockResolvedValue(alreadyShown),
+      getReplay: vi.fn(),
+      completePresentation,
+    });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+
+    expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
+    await waitFor(() =>
+      expect(completePresentation).toHaveBeenCalledWith(alreadyShown.id, expect.any(AbortSignal)),
+    );
+    expect(attemptApi.getReplay).not.toHaveBeenCalled();
+    expect(storedPresentationAckIds()).toEqual([alreadyShown.id]);
   });
 
   it('shows the result after playback even when the completion mark needs a retry', async () => {
@@ -452,15 +810,13 @@ describe('AttemptWorkspace', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Completar reproducción' }));
     expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
-    expect(
-      screen.getByText(/La animación terminó, pero no se pudo guardar su cierre/),
-    ).toBeTruthy();
+    expect(screen.getByText(/No se pudo guardar el cierre de la presentación/)).toBeTruthy();
+    expect(storedPresentationAckIds()).toEqual(['attempt-1']);
     fireEvent.click(screen.getByRole('button', { name: 'Reintentar cierre de presentación' }));
     await waitFor(() => expect(completePresentation).toHaveBeenCalledTimes(2));
-    expect(
-      screen.queryByText(/La animación terminó, pero no se pudo guardar su cierre/),
-    ).toBeNull();
+    expect(screen.queryByText(/No se pudo guardar el cierre de la presentación/)).toBeNull();
     expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toBeNull();
+    expect(storedPresentationAckIds()).toEqual([]);
   });
 
   it('freezes the selected model in the admission payload and labels the returned result', async () => {

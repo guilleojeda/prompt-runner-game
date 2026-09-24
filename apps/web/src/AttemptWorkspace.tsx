@@ -18,8 +18,13 @@ import {
   type QuotaSummary,
 } from './attempt-api.js';
 import {
+  addPendingPresentationAck,
   clearAttemptRecovery,
+  clearForegroundAttemptRecovery,
+  hasPendingPresentationAck,
+  readPendingPresentationAcks,
   readAttemptRecovery,
+  removePendingPresentationAck,
   writeAttemptRecovery,
 } from './attempt-recovery.js';
 import type { RobotEditorHandle } from './RobotEditor.js';
@@ -417,6 +422,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     const operationEpochRef = useRef(0);
     const replayEpochRef = useRef(0);
     const completionBusyRef = useRef(false);
+    const completionAttemptRef = useRef<string | null>(null);
     const completionOperationRef = useRef(0);
     const animationEnabledRef = useRef(true);
     const preferenceVersionRef = useRef(0);
@@ -450,6 +456,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         replayEpochRef.current += 1;
         completionOperationRef.current += 1;
         completionBusyRef.current = false;
+        completionAttemptRef.current = null;
         animationEnabledRef.current = true;
         setAnimationEnabled(true);
         preferenceVersionRef.current = 0;
@@ -675,7 +682,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         setReplayRecord(null);
         setPlaybackReachedEnd(false);
         setError(null);
+        completionOperationRef.current += 1;
         completionBusyRef.current = false;
+        completionAttemptRef.current = null;
         setCompletionBusy(false);
         if (kind === 'automatic' && !target.recordComplete) {
           setMode('replay-error');
@@ -728,8 +737,72 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       };
     }, [refreshPreferenceOnFocus]);
 
+    const retryPendingPresentationAcks = useCallback(
+      (signal: AbortSignal): void => {
+        for (const attemptId of readPendingPresentationAcks(sessionSub)) {
+          void api
+            .completePresentation(attemptId, signal)
+            .then((completed) => {
+              if (signal.aborted) return;
+              removePendingPresentationAck(sessionSub, attemptId);
+              const recovery = readAttemptRecovery(sessionSub);
+              if (recovery?.attemptId === attemptId) {
+                clearForegroundAttemptRecovery(sessionSub);
+              }
+              if (
+                !startLockRef.current &&
+                completionAttemptRef.current === attemptId &&
+                attemptRef.current?.id === attemptId
+              ) {
+                completionOperationRef.current += 1;
+                completionBusyRef.current = false;
+                completionAttemptRef.current = null;
+                setCompletionBusy(false);
+                setPlaybackReachedEnd(false);
+                setPlaybackKind((kind) => (kind === 'automatic' ? null : kind));
+                setAttempt(completed);
+                attemptRef.current = completed;
+                setHistory((items) =>
+                  items.map((item) => (item.id === completed.id ? completed : item)),
+                );
+                setError(null);
+              }
+            })
+            .catch((retryError: unknown) => {
+              if (signal.aborted) return;
+              if (isAuthenticationFailure(retryError)) onAuthRequired?.();
+            });
+        }
+      },
+      [api, onAuthRequired, sessionSub],
+    );
+
+    useEffect(() => {
+      const controller = new AbortController();
+      const retryOnResume = (): void => {
+        if (document.visibilityState === 'hidden') return;
+        retryPendingPresentationAcks(controller.signal);
+      };
+      retryOnResume();
+      window.addEventListener('focus', retryOnResume);
+      document.addEventListener('visibilitychange', retryOnResume);
+      return () => {
+        controller.abort();
+        window.removeEventListener('focus', retryOnResume);
+        document.removeEventListener('visibilitychange', retryOnResume);
+      };
+    }, [retryPendingPresentationAcks]);
+
     const applyAttempt = useCallback(
       (next: AttemptSummary, options: { clearRequest?: boolean } = {}): void => {
+        if (attemptRef.current && attemptRef.current.id !== next.id) {
+          completionOperationRef.current += 1;
+          completionBusyRef.current = false;
+          completionAttemptRef.current = null;
+          setCompletionBusy(false);
+          setPlaybackReachedEnd(false);
+        }
+        const presentationWasAlreadyShown = hasPendingPresentationAck(sessionSub, next.id);
         attemptRef.current = next;
         setAttempt(next);
         setHistory((current) => {
@@ -741,12 +814,16 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           });
           return changed ? updated : current;
         });
-        if (needsAutomaticPresentation(next)) {
+        if (needsAutomaticPresentation(next) && !presentationWasAlreadyShown) {
           frozenRef.current = null;
           writeAttemptRecovery({ sub: sessionSub, attemptId: next.id });
-        } else if ((options.clearRequest ?? true) || isTerminal(next.status)) {
+        } else if (
+          presentationWasAlreadyShown ||
+          (options.clearRequest ?? true) ||
+          isTerminal(next.status)
+        ) {
           frozenRef.current = null;
-          clearAttemptRecovery(sessionSub);
+          clearForegroundAttemptRecovery(sessionSub);
         } else {
           const frozen = frozenRef.current;
           writeAttemptRecovery({
@@ -756,7 +833,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           });
         }
         setError(null);
-        if (needsAutomaticPresentation(next)) {
+        if (needsAutomaticPresentation(next) && !presentationWasAlreadyShown) {
           void beginReplay(next, 'automatic');
         } else {
           setReplayRecord(null);
@@ -885,7 +962,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             if (isAuthenticationFailure(retryError)) onAuthRequired?.();
             return true;
           }
-          clearAttemptRecovery(sessionSub);
+          clearForegroundAttemptRecovery(sessionSub);
           frozenRef.current = null;
           startLockRef.current = false;
           setMode('idle');
@@ -1037,7 +1114,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           return;
         }
         if (isTerminal(next.status) && next.presentationComplete) {
-          clearAttemptRecovery(sessionSub);
+          clearForegroundAttemptRecovery(sessionSub);
         }
         await refreshQuota();
         await refreshHistory();
@@ -1062,6 +1139,10 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         return;
       }
       startLockRef.current = true;
+      completionOperationRef.current += 1;
+      completionBusyRef.current = false;
+      completionAttemptRef.current = null;
+      setCompletionBusy(false);
       const frozenAnimationEnabled = animationEnabledRef.current;
       operationEpochRef.current += 1;
       const operationGeneration = generationRef.current;
@@ -1078,7 +1159,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         setError(attemptErrorMessage(captureError));
       }
       if (!snapshot) {
-        clearAttemptRecovery(sessionSub);
+        clearForegroundAttemptRecovery(sessionSub);
         setMode('idle');
         startLockRef.current = false;
         setError(
@@ -1142,7 +1223,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           onAuthRequired?.();
           return;
         }
-        clearAttemptRecovery(sessionSub);
+        clearForegroundAttemptRecovery(sessionSub);
         frozenRef.current = null;
         setMode('idle');
         startLockRef.current = false;
@@ -1361,98 +1442,156 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       void beginReplay(current, 'manual');
     }, [beginReplay, busy]);
 
+    const completePresentationInBackground = useCallback(
+      (current: AttemptSummary): void => {
+        const storedForRecovery = addPendingPresentationAck(sessionSub, current.id);
+        const currentRecovery = readAttemptRecovery(sessionSub);
+        if (storedForRecovery && currentRecovery?.attemptId === current.id) {
+          clearForegroundAttemptRecovery(sessionSub);
+        }
+        if (completionBusyRef.current && completionAttemptRef.current === current.id) {
+          return;
+        }
+        const generation = generationRef.current;
+        const completionOperation = ++completionOperationRef.current;
+        completionBusyRef.current = true;
+        completionAttemptRef.current = current.id;
+        setCompletionBusy(true);
+        setError(null);
+        void api
+          .completePresentation(current.id)
+          .then((completed) => {
+            if (generationRef.current !== generation) return;
+            removePendingPresentationAck(sessionSub, current.id);
+            const recovery = readAttemptRecovery(sessionSub);
+            if (recovery?.attemptId === current.id) {
+              clearForegroundAttemptRecovery(sessionSub);
+            }
+            if (completionOperationRef.current !== completionOperation) return;
+            if (attemptRef.current?.id !== current.id) return;
+            attemptRef.current = completed;
+            setAttempt(completed);
+            setHistory((items) =>
+              items.map((item) => (item.id === completed.id ? completed : item)),
+            );
+            setPlaybackReachedEnd(false);
+            setPlaybackKind((kind) => (kind === 'automatic' ? null : kind));
+            setError(null);
+          })
+          .catch((completionError: unknown) => {
+            if (
+              generationRef.current !== generation ||
+              completionOperationRef.current !== completionOperation ||
+              attemptRef.current?.id !== current.id
+            ) {
+              return;
+            }
+            if (storedForRecovery && !hasPendingPresentationAck(sessionSub, current.id)) {
+              return;
+            }
+            if (isAuthenticationFailure(completionError)) onAuthRequired?.();
+            setError(
+              `No se pudo guardar el cierre de la presentación: ${attemptErrorMessage(completionError)}`,
+            );
+          })
+          .finally(() => {
+            if (completionOperationRef.current !== completionOperation) return;
+            completionBusyRef.current = false;
+            completionAttemptRef.current = null;
+            setCompletionBusy(false);
+          });
+      },
+      [api, onAuthRequired, sessionSub],
+    );
+
     const retryReplay = useCallback((): void => {
       const current = attemptRef.current;
       if (!current || busy) return;
       if (playbackReachedEnd && playbackKind === 'automatic') {
-        if (completionBusyRef.current) return;
-        completionBusyRef.current = true;
-        setCompletionBusy(true);
-        const completionOperation = ++completionOperationRef.current;
-        const epoch = replayEpochRef.current;
+        completePresentationInBackground(current);
+        return;
+      }
+      if (playbackKind === 'automatic' && !current.recordComplete) {
+        const generation = generationRef.current;
+        const operationEpoch = ++operationEpochRef.current;
+        const id = current.id;
+        setMode('opening');
+        setError(null);
         void api
-          .completePresentation(current.id)
-          .then((completed) => {
+          .getAttempt(id)
+          .then((refreshed) => {
             if (
-              replayEpochRef.current !== epoch ||
-              completionOperationRef.current !== completionOperation
-            )
+              generationRef.current !== generation ||
+              operationEpochRef.current !== operationEpoch ||
+              attemptRef.current?.id !== id
+            ) {
               return;
-            setPlaybackReachedEnd(false);
-            setReplayRecord(null);
-            setPlaybackKind(null);
-            applyAttempt(completed);
-          })
-          .catch((completionError: unknown) => {
-            if (
-              replayEpochRef.current !== epoch ||
-              completionOperationRef.current !== completionOperation
-            )
-              return;
-            if (isAuthenticationFailure(completionError)) onAuthRequired?.();
-            setError(attemptErrorMessage(completionError));
-          })
-          .finally(() => {
-            if (completionOperationRef.current === completionOperation) {
-              completionBusyRef.current = false;
-              setCompletionBusy(false);
             }
+            if (refreshed.id !== id) {
+              setError('El intento consultado no coincide con el resultado abierto.');
+              setMode('replay-error');
+              return;
+            }
+            attemptRef.current = refreshed;
+            setAttempt(refreshed);
+            setHistory((items) => items.map((item) => (item.id === id ? refreshed : item)));
+            if (!isTerminal(refreshed.status)) {
+              applyAttempt(refreshed, { clearRequest: false });
+              return;
+            }
+            if (!refreshed.recordComplete) {
+              setError(
+                'El registro sigue incompleto. Podés volver a intentarlo o ver el resultado guardado.',
+              );
+              setMode('replay-error');
+              return;
+            }
+            if (needsAutomaticPresentation(refreshed)) {
+              void beginReplay(refreshed, 'automatic');
+            } else {
+              applyAttempt(refreshed, { clearRequest: false });
+            }
+          })
+          .catch((refreshError: unknown) => {
+            if (
+              generationRef.current !== generation ||
+              operationEpochRef.current !== operationEpoch ||
+              attemptRef.current?.id !== id
+            ) {
+              return;
+            }
+            if (isAuthenticationFailure(refreshError)) onAuthRequired?.();
+            setError(attemptErrorMessage(refreshError));
+            setMode('replay-error');
           });
         return;
       }
       void beginReplay(current, playbackKind ?? 'manual');
-    }, [api, applyAttempt, beginReplay, busy, onAuthRequired, playbackKind, playbackReachedEnd]);
+    }, [
+      api,
+      applyAttempt,
+      beginReplay,
+      busy,
+      completePresentationInBackground,
+      onAuthRequired,
+      playbackKind,
+      playbackReachedEnd,
+    ]);
 
-    const showResultAfterReplayError = useCallback(async (): Promise<void> => {
+    const showResultAfterReplayError = useCallback((): void => {
       const current = attemptRef.current;
       if (!current || !isTerminal(current.status)) return;
-      if (completionBusyRef.current) return;
       const shouldComplete =
         current.animationEnabled && !current.presentationComplete && current.turnsUsed > 0;
-      if (shouldComplete) {
-        const generation = generationRef.current;
-        const replayEpoch = replayEpochRef.current;
-        const completionOperation = ++completionOperationRef.current;
-        completionBusyRef.current = true;
-        setCompletionBusy(true);
-        try {
-          const completed = await api.completePresentation(current.id);
-          if (
-            generationRef.current !== generation ||
-            replayEpochRef.current !== replayEpoch ||
-            completionOperationRef.current !== completionOperation
-          ) {
-            return;
-          }
-          applyAttempt(completed);
-          setReplayRecord(null);
-          setPlaybackKind(null);
-          setPlaybackReachedEnd(false);
-          return;
-        } catch (completionError) {
-          if (
-            generationRef.current !== generation ||
-            replayEpochRef.current !== replayEpoch ||
-            completionOperationRef.current !== completionOperation
-          ) {
-            return;
-          }
-          if (isAuthenticationFailure(completionError)) onAuthRequired?.();
-          setError(
-            `${attemptErrorMessage(completionError)} Podés ver el resultado guardado y reintentar la presentación más tarde.`,
-          );
-        } finally {
-          if (completionOperationRef.current === completionOperation) {
-            completionBusyRef.current = false;
-            setCompletionBusy(false);
-          }
-        }
-      }
       setReplayRecord(null);
-      setPlaybackKind(null);
-      setPlaybackReachedEnd(false);
+      setPlaybackKind(shouldComplete ? 'automatic' : null);
+      setPlaybackReachedEnd(shouldComplete);
+      setError(null);
       setMode('result');
-    }, [api, applyAttempt, onAuthRequired]);
+      if (shouldComplete) {
+        completePresentationInBackground(current);
+      }
+    }, [completePresentationInBackground]);
 
     const replayAttemptId = replayRecord?.id;
 
@@ -1461,10 +1600,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       setMode((current) => (current === 'preparing-replay' ? 'replaying' : current));
     }, [replayAttemptId]);
 
-    const onReplayComplete = useCallback(async (): Promise<void> => {
+    const onReplayComplete = useCallback((): void => {
       const current = attemptRef.current;
-      if (!current || current.id !== replayAttemptId || !playbackKind || completionBusyRef.current)
-        return;
+      if (!current || current.id !== replayAttemptId || !playbackKind) return;
       if (playbackKind === 'manual') {
         setReplayRecord(null);
         setPlaybackKind(null);
@@ -1472,41 +1610,12 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         setMode('result');
         return;
       }
-      completionBusyRef.current = true;
-      setCompletionBusy(true);
       setPlaybackReachedEnd(true);
-      const completionOperation = ++completionOperationRef.current;
-      const epoch = replayEpochRef.current;
-      try {
-        const completed = await api.completePresentation(current.id);
-        if (
-          replayEpochRef.current !== epoch ||
-          completionOperationRef.current !== completionOperation
-        )
-          return;
-        setPlaybackReachedEnd(false);
-        setReplayRecord(null);
-        setPlaybackKind(null);
-        applyAttempt(completed);
-      } catch (completionError) {
-        if (
-          replayEpochRef.current !== epoch ||
-          completionOperationRef.current !== completionOperation
-        )
-          return;
-        if (isAuthenticationFailure(completionError)) onAuthRequired?.();
-        setError(
-          `La animación terminó, pero no se pudo guardar su cierre: ${attemptErrorMessage(completionError)}`,
-        );
-        setReplayRecord(null);
-        setMode('result');
-      } finally {
-        if (completionOperationRef.current === completionOperation) {
-          completionBusyRef.current = false;
-          setCompletionBusy(false);
-        }
-      }
-    }, [api, applyAttempt, onAuthRequired, playbackKind, replayAttemptId]);
+      setReplayRecord(null);
+      setError(null);
+      setMode('result');
+      completePresentationInBackground(current);
+    }, [completePresentationInBackground, playbackKind, replayAttemptId]);
 
     const onReplayError = useCallback(
       (replayFailure: Error): void => {
@@ -1681,16 +1790,6 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
                 </button>
               </>
             )}
-            {mode === 'result' && playbackReachedEnd && playbackKind === 'automatic' && (
-              <button
-                className="secondary-button"
-                type="button"
-                onClick={retryReplay}
-                disabled={completionBusy}
-              >
-                Reintentar cierre de presentación
-              </button>
-            )}
             {(mode === 'idle' || mode === 'result') && (
               <button
                 className="secondary-button"
@@ -1803,6 +1902,24 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
 
         {mode === 'result' && attempt && (
           <ResultCard attempt={attempt} onReplay={replayCurrentAttempt} />
+        )}
+
+        {mode === 'result' && playbackReachedEnd && playbackKind === 'automatic' && (
+          <>
+            {completionBusy && (
+              <p className="attempt-message" role="status">
+                Guardando el cierre de la presentación…
+              </p>
+            )}
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={retryReplay}
+              disabled={completionBusy}
+            >
+              Reintentar cierre de presentación
+            </button>
+          </>
         )}
 
         {(mode === 'idle' || mode === 'result') && (
