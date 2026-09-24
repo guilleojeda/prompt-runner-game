@@ -5,7 +5,12 @@ import * as attemptStoreModule from './attempt-store';
 import { MemoryAttemptStore } from './attempt-store';
 import { handleRequest } from './handler';
 
-const eventFor = (method: 'GET' | 'POST', path: string, body?: unknown): APIGatewayProxyEventV2 =>
+const eventFor = (
+  method: 'GET' | 'POST' | 'PUT',
+  path: string,
+  body?: unknown,
+  sub = 'owner',
+): APIGatewayProxyEventV2 =>
   ({
     version: '2.0',
     routeKey: `${method} ${path}`,
@@ -18,7 +23,7 @@ const eventFor = (method: 'GET' | 'POST', path: string, body?: unknown): APIGate
       authorizer: {
         jwt: {
           claims: {
-            sub: 'owner',
+            sub,
             token_use: 'access',
             client_id: 'client',
             scope: 'prompt-runner/robot',
@@ -114,5 +119,139 @@ describe('attempt API projection and dispatch recovery', () => {
     const recoveredAttempt = responseBody(recovered).attempt as Record<string, unknown>;
     expect(recoveredAttempt).not.toHaveProperty('owner');
     expect(recoveredAttempt).not.toHaveProperty('requestKey');
+  });
+
+  it('persists the server-owned animation preference with a version conflict for stale writes', async () => {
+    const draft = createDefaultDraft();
+    const attemptStore = new MemoryAttemptStore({ draft: { version: 1, draft } });
+    const dependencies = {
+      store: { get: vi.fn().mockResolvedValue({ version: 1, draft }), put: vi.fn() },
+      attemptStore,
+      fetch: vi.fn(
+        async () => new Response(JSON.stringify({ sub: 'owner', email_verified: true })),
+      ),
+      clientId: 'client',
+      userInfoUrl: 'https://cognito.example.test/userinfo',
+    };
+
+    const initial = await handleRequest(eventFor('GET', '/animation-preference'), dependencies);
+    expect(responseBody(initial)).toEqual({ animationEnabled: true, version: 0 });
+    const saved = await handleRequest(
+      eventFor('PUT', '/animation-preference', { animationEnabled: false, expectedVersion: 0 }),
+      dependencies,
+    );
+    expect(responseBody(saved)).toEqual({ animationEnabled: false, version: 1 });
+    const reloaded = await handleRequest(eventFor('GET', '/animation-preference'), dependencies);
+    expect(responseBody(reloaded)).toEqual({ animationEnabled: false, version: 1 });
+    const stale = await handleRequest(
+      eventFor('PUT', '/animation-preference', { animationEnabled: true, expectedVersion: 0 }),
+      dependencies,
+    );
+    expect(stale.statusCode).toBe(409);
+    expect(responseBody(stale)).toMatchObject({
+      code: 'conflict',
+      current: { animationEnabled: false, version: 1 },
+    });
+  });
+
+  it('projects only public replay data and completes terminal zero-action presentation idempotently', async () => {
+    const draft = { ...createDefaultDraft(), instructions: 'PRIVATE TEST PROMPT' };
+    const draftStore = { get: vi.fn().mockResolvedValue({ version: 1, draft }), put: vi.fn() };
+    const attemptStore = new MemoryAttemptStore({ draft: { version: 1, draft } });
+    const dispatch = vi.fn();
+    const dependencies = {
+      store: draftStore,
+      attemptStore,
+      dispatch,
+      fetch: vi.fn(
+        async () => new Response(JSON.stringify({ sub: 'owner', email_verified: true })),
+      ),
+      clientId: 'client',
+      userInfoUrl: 'https://cognito.example.test/userinfo',
+    };
+    const { attempt } = await attemptStore.admit({
+      owner: 'owner',
+      requestKey: 'terminal-noop',
+      expectedVersion: 1,
+      draft,
+      animationEnabled: true,
+    });
+    const cancelled = await attemptStore.requestCancel('owner', attempt.id);
+    expect(cancelled?.presentationComplete).toBe(true);
+
+    const replay = await handleRequest(
+      eventFor('GET', `/attempts/${attempt.id}/replay`),
+      dependencies,
+    );
+    expect(replay.statusCode).toBe(200);
+    const body = responseBody(replay);
+    expect(body.record).toMatchObject({
+      id: attempt.id,
+      actions: [],
+      snapshots: [{ id: 'state-0' }],
+      closure: { status: 'cancelled', actionCount: 0, recordComplete: true },
+    });
+    expect(JSON.stringify(body)).not.toContain('PRIVATE TEST PROMPT');
+    expect(body.record).not.toHaveProperty('owner');
+    expect(body.record).not.toHaveProperty('draft');
+    expect(body.record).not.toHaveProperty('instructions');
+    expect(body.record).not.toHaveProperty('config.robot');
+    expect(dispatch).not.toHaveBeenCalled();
+
+    const complete = await handleRequest(
+      eventFor('POST', `/attempts/${attempt.id}/presentation-complete`),
+      dependencies,
+    );
+    const duplicate = await handleRequest(
+      eventFor('POST', `/attempts/${attempt.id}/presentation-complete`),
+      dependencies,
+    );
+    expect(complete.statusCode).toBe(200);
+    expect(responseBody(duplicate).attempt).toMatchObject({
+      id: attempt.id,
+      presentationComplete: true,
+    });
+
+    const otherUser = await handleRequest(
+      eventFor('GET', `/attempts/${attempt.id}/replay`, undefined, 'other'),
+      {
+        ...dependencies,
+        fetch: vi.fn(
+          async () => new Response(JSON.stringify({ sub: 'other', email_verified: true })),
+        ),
+      },
+    );
+    expect(otherUser.statusCode).toBe(404);
+  });
+
+  it('keeps old admission requests off and recovers their duplicate before dispatch', async () => {
+    const draft = createDefaultDraft();
+    const attemptStore = new MemoryAttemptStore({ draft: { version: 1, draft } });
+    const dispatch = vi.fn().mockResolvedValue(undefined);
+    const dependencies = {
+      store: { get: vi.fn().mockResolvedValue({ version: 1, draft }), put: vi.fn() },
+      attemptStore,
+      dispatch,
+      fetch: vi.fn(
+        async () => new Response(JSON.stringify({ sub: 'owner', email_verified: true })),
+      ),
+      clientId: 'client',
+      userInfoUrl: 'https://cognito.example.test/userinfo',
+    };
+    const oldBody = { requestKey: 'old-client', expectedVersion: 1, draft };
+    const first = await handleRequest(eventFor('POST', '/attempts', oldBody), dependencies);
+    const duplicate = await handleRequest(eventFor('POST', '/attempts', oldBody), dependencies);
+    expect(responseBody(first).attempt).toMatchObject({ animationEnabled: false });
+    expect((responseBody(duplicate).attempt as { id: string }).id).toBe(
+      (responseBody(first).attempt as { id: string }).id,
+    );
+    expect(dispatch).toHaveBeenCalledTimes(2);
+
+    const changedChoice = await handleRequest(
+      eventFor('POST', '/attempts', { ...oldBody, animationEnabled: true }),
+      dependencies,
+    );
+    expect(changedChoice.statusCode).toBe(409);
+    expect(responseBody(changedChoice).code).toBe('idempotency_conflict');
   });
 });

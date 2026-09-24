@@ -630,7 +630,8 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
       )}
       {locked && !paused && (
         <p className="editor-paused" role="status">
-          Conservamos esta configuración mientras comprobamos el estado o ejecutamos el intento.
+          Conservamos esta configuración mientras preparamos o reproducimos el intento, o cargamos
+          la preferencia de animación.
         </p>
       )}
       {message && status !== 'clean' && (

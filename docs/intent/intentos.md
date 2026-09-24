@@ -1,10 +1,10 @@
 # Intentos: ejecución, registro y reproducción
 
-Estado: cálculo estático, registro, selección de modelo y consultas implementados; animación y reproducción visibles todavía pendientes.
+Estado: cálculo estático, registro, selección de modelo, consultas, animación opcional y reproducción visibles implementados. Las mecánicas posteriores siguen pendientes.
 
 Esta página define el ciclo de un intento desde que se fija la configuración hasta que se muestra su reproducción. Se relaciona con [la experiencia](experiencia.md), [las reglas del juego](juego.md), [el agente](agente.md) y [la plataforma](plataforma.md).
 
-El diseño técnico aprobado está en [registro de ejecución](../architecture/registro-de-ejecucion.md) y [animación](../architecture/animacion.md). El cálculo y el registro están implementados para el recorrido estático; la animación sigue pendiente. El almacenamiento físico se documenta en [datos](../architecture/datos.md).
+El diseño técnico está en [registro de ejecución](../architecture/registro-de-ejecucion.md) y [animación](../architecture/animacion.md). El cálculo, el registro y su reproducción están implementados para el recorrido estático. El almacenamiento físico se documenta en [datos](../architecture/datos.md).
 
 ## Alcance y reglas que no cambian
 

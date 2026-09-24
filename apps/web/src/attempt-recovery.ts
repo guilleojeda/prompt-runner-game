@@ -14,6 +14,7 @@ export interface AttemptRecoveryReference {
   readonly attemptId?: string;
   readonly expectedVersion?: number;
   readonly draft?: RobotDraft;
+  readonly animationEnabled?: boolean;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -22,7 +23,14 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const hasOwn = (value: object, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(value, key);
 
-const RECOVERY_KEYS = new Set(['sub', 'requestKey', 'attemptId', 'expectedVersion', 'draft']);
+const RECOVERY_KEYS = new Set([
+  'sub',
+  'requestKey',
+  'attemptId',
+  'expectedVersion',
+  'draft',
+  'animationEnabled',
+]);
 
 type RecoverySnapshotRecord = Record<string, unknown> & {
   readonly requestKey: string;
@@ -76,7 +84,8 @@ export function readAttemptRecovery(sub: string): AttemptRecoveryReference | nul
       (typeof value.requestKey === 'string' && value.requestKey.length === 0) ||
       (typeof value.attemptId === 'string' && value.attemptId.length === 0) ||
       (typeof value.requestKey !== 'string' && typeof value.attemptId !== 'string') ||
-      hasOwn(value, 'expectedVersion') !== hasOwn(value, 'draft')
+      hasOwn(value, 'expectedVersion') !== hasOwn(value, 'draft') ||
+      (hasOwn(value, 'animationEnabled') && typeof value.animationEnabled !== 'boolean')
     ) {
       return null;
     }
@@ -88,6 +97,9 @@ export function readAttemptRecovery(sub: string): AttemptRecoveryReference | nul
         requestKey: value.requestKey,
         expectedVersion: value.expectedVersion,
         draft: validateDraft(value.draft),
+        ...(typeof value.animationEnabled === 'boolean'
+          ? { animationEnabled: value.animationEnabled }
+          : {}),
         ...(typeof value.attemptId === 'string' ? { attemptId: value.attemptId } : {}),
       };
     }
@@ -95,6 +107,9 @@ export function readAttemptRecovery(sub: string): AttemptRecoveryReference | nul
       sub,
       ...(typeof value.requestKey === 'string' ? { requestKey: value.requestKey } : {}),
       ...(typeof value.attemptId === 'string' ? { attemptId: value.attemptId } : {}),
+      ...(typeof value.animationEnabled === 'boolean'
+        ? { animationEnabled: value.animationEnabled }
+        : {}),
     };
   } catch {
     return null;

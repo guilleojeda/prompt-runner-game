@@ -42,7 +42,7 @@ export interface AttemptSummary extends AttemptMetrics {
   /** Highest support reached divided by the number of level segments. */
   readonly progress: number;
   readonly finalSupport: number;
-  readonly animationEnabled: false;
+  readonly animationEnabled: boolean;
   readonly presentationComplete: boolean;
   readonly recordComplete: boolean;
 }
@@ -67,7 +67,7 @@ export interface AttemptConfigSnapshot {
   readonly level: LevelDefinition;
   readonly scoreRules: ScoreRules;
   readonly robot: AttemptRobotSnapshot;
-  readonly animationEnabled: false;
+  readonly animationEnabled: boolean;
 }
 
 /**
@@ -113,4 +113,24 @@ export interface AttemptActionView extends AttemptActionRecord {
 
 export interface AttemptRecordView extends Omit<AttemptRecord, 'actions'> {
   readonly actions: readonly AttemptActionView[];
+}
+
+/** Public, replay-safe preference state. Version zero represents the default. */
+export interface AnimationPreference {
+  readonly animationEnabled: boolean;
+  readonly version: number;
+}
+
+/** Narrow public projection used to render a replay without exposing robot prompts or audit data. */
+export interface ReplayRecordView {
+  readonly recordVersion: typeof ATTEMPT_RECORD_VERSION;
+  readonly id: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly config: Readonly<{ level: LevelDefinition }>;
+  readonly snapshots: readonly GameSnapshot[];
+  readonly actions: readonly AttemptActionView[];
+  readonly closure: AttemptClosure;
+  readonly metrics: AttemptMetrics;
+  readonly score: number | null;
 }

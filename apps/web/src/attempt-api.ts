@@ -1,5 +1,10 @@
 import type { RobotDraft } from '../../../shared/robot.js';
-import type { AttemptStatus, AttemptSummary } from '../../../shared/attempt.js';
+import type {
+  AnimationPreference,
+  AttemptStatus,
+  AttemptSummary,
+  ReplayRecordView,
+} from '../../../shared/attempt.js';
 import { isModelKey, type ModelKey } from '../../../shared/models.js';
 import type { AuthConfig } from './auth.js';
 
@@ -24,10 +29,17 @@ export interface AttemptAdmission {
 }
 
 export interface AttemptApi {
+  getAnimationPreference(signal?: AbortSignal): Promise<AnimationPreference>;
+  putAnimationPreference(
+    animationEnabled: boolean,
+    expectedVersion: number,
+    signal?: AbortSignal,
+  ): Promise<AnimationPreference>;
   createAttempt(
     requestKey: string,
     expectedVersion: number,
     draft: RobotDraft,
+    animationEnabled: boolean,
     signal?: AbortSignal,
   ): Promise<AttemptAdmission>;
   getAttemptRequest(requestKey: string, signal?: AbortSignal): Promise<AttemptSummary>;
@@ -35,6 +47,8 @@ export interface AttemptApi {
   listAttempts(cursor?: string, signal?: AbortSignal): Promise<AttemptsPage>;
   startAttempt(id: string, signal?: AbortSignal): Promise<AttemptAdmission>;
   cancelAttempt(id: string, signal?: AbortSignal): Promise<AttemptSummary>;
+  getReplay(id: string, signal?: AbortSignal): Promise<ReplayRecordView>;
+  completePresentation(id: string, signal?: AbortSignal): Promise<AttemptSummary>;
   getQuota(signal?: AbortSignal): Promise<QuotaSummary>;
 }
 
@@ -118,7 +132,7 @@ function parseAttempt(value: unknown): AttemptSummary | null {
     progress === null ||
     finalSupport === null ||
     typeof value.cancelRequested !== 'boolean' ||
-    value.animationEnabled !== false ||
+    typeof value.animationEnabled !== 'boolean' ||
     typeof value.presentationComplete !== 'boolean' ||
     typeof value.recordComplete !== 'boolean'
   ) {
@@ -180,7 +194,7 @@ function parseAttempt(value: unknown): AttemptSummary | null {
     score,
     progress,
     finalSupport,
-    animationEnabled: false,
+    animationEnabled: value.animationEnabled,
     presentationComplete: value.presentationComplete,
     recordComplete: value.recordComplete,
   };
@@ -213,6 +227,154 @@ function parseQuota(value: unknown): QuotaSummary | null {
   const remaining = requiredNumber(value, 'remaining');
   if (!day || !resetsAt || used === null || limit === null || remaining === null) return null;
   return { day, used, limit, remaining, resetsAt };
+}
+
+function parseAnimationPreference(value: unknown): AnimationPreference | null {
+  if (!isRecord(value) || typeof value.animationEnabled !== 'boolean') return null;
+  const version = requiredNumber(value, 'version');
+  if (version === null || !Number.isSafeInteger(version) || version < 0) return null;
+  return { animationEnabled: value.animationEnabled, version };
+}
+
+const terrains = ['ground', 'pit', 'branch'] as const;
+const gameStatuses = ['running', 'victory', 'defeat', 'incomplete'] as const;
+const terminalStatuses: readonly AttemptStatus[] = [
+  'victory',
+  'defeat',
+  'incomplete',
+  'cancelled',
+  'error',
+];
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+}
+
+function isGameSnapshot(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.id === 'string' &&
+    Number.isSafeInteger(value.support) &&
+    Number.isSafeInteger(value.turnsUsed) &&
+    Number.isSafeInteger(value.phaseTurn) &&
+    Array.isArray(value.terrain) &&
+    value.terrain.every((terrain) => terrains.includes(terrain as (typeof terrains)[number])) &&
+    isStringArray(value.remainingObjects) &&
+    isStringArray(value.inventory) &&
+    typeof value.exitEnabled === 'boolean' &&
+    typeof value.status === 'string' &&
+    gameStatuses.includes(value.status as (typeof gameStatuses)[number]) &&
+    Number.isSafeInteger(value.maxSupportReached)
+  );
+}
+
+function isReplayLevel(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.id === 'string' &&
+    Number.isSafeInteger(value.version) &&
+    Number.isSafeInteger(value.rulesVersion) &&
+    Number.isSafeInteger(value.maxTurns) &&
+    Array.isArray(value.segments) &&
+    value.segments.length > 0 &&
+    value.segments.every(
+      (segment) =>
+        isRecord(segment) &&
+        typeof segment.type === 'string' &&
+        terrains.includes(segment.type as (typeof terrains)[number]),
+    ) &&
+    Array.isArray(value.objects) &&
+    value.objects.every(
+      (object) =>
+        isRecord(object) &&
+        typeof object.id === 'string' &&
+        Number.isSafeInteger(object.support) &&
+        typeof object.scoreValue === 'number' &&
+        Number.isFinite(object.scoreValue),
+    ) &&
+    isRecord(value.exit) &&
+    Number.isSafeInteger(value.exit.support) &&
+    isStringArray(value.exit.requiredObjectIds)
+  );
+}
+
+function isReplayAction(value: unknown): boolean {
+  if (!isRecord(value) || !Number.isSafeInteger(value.seq)) return false;
+  if (
+    typeof value.decisionId !== 'string' ||
+    typeof value.beforeStateId !== 'string' ||
+    typeof value.afterStateId !== 'string' ||
+    !isRecord(value.action) ||
+    !isRecord(value.resolution) ||
+    !isGameSnapshot(value.before) ||
+    !isGameSnapshot(value.after)
+  ) {
+    return false;
+  }
+  const action = value.action;
+  const validAction =
+    action.kind === 'advance' ||
+    action.kind === 'retreat' ||
+    action.kind === 'swim' ||
+    ((action.kind === 'jump' || action.kind === 'crouch') &&
+      (action.direction === 'left' || action.direction === 'right'));
+  const resolution = value.resolution;
+  const validResolution =
+    ['moved', 'no_op', 'fall', 'collision'].includes(String(resolution.outcome)) &&
+    [
+      'moved',
+      'left_boundary',
+      'right_boundary',
+      'swim_no_effect',
+      'walk_into_pit',
+      'crouch_into_pit',
+      'walk_into_branch',
+      'jump_into_branch',
+    ].includes(String(resolution.reason));
+  const movementFields =
+    resolution.outcome === 'no_op' ||
+    (Number.isSafeInteger(resolution.segment) && Number.isSafeInteger(resolution.targetSupport));
+  return validAction && validResolution && movementFields;
+}
+
+function isReplayRecord(value: unknown): value is ReplayRecordView {
+  if (
+    !isRecord(value) ||
+    value.recordVersion !== 1 ||
+    typeof value.id !== 'string' ||
+    typeof value.createdAt !== 'string' ||
+    typeof value.updatedAt !== 'string' ||
+    !isRecord(value.config) ||
+    !isReplayLevel(value.config.level) ||
+    !Array.isArray(value.snapshots) ||
+    !value.snapshots.every(isGameSnapshot) ||
+    !Array.isArray(value.actions) ||
+    !value.actions.every(isReplayAction) ||
+    !isRecord(value.closure) ||
+    typeof value.closure.status !== 'string' ||
+    !terminalStatuses.includes(value.closure.status as AttemptStatus) ||
+    !Number.isSafeInteger(value.closure.actionCount) ||
+    typeof value.closure.finalStateId !== 'string' ||
+    value.closure.recordComplete !== true ||
+    !isRecord(value.metrics) ||
+    !Number.isSafeInteger(value.metrics.calls) ||
+    (!Number.isFinite(value.score) && value.score !== null)
+  ) {
+    return false;
+  }
+  const metrics = value.metrics;
+  return [
+    metrics.inputTokens,
+    metrics.outputTokens,
+    metrics.reasoningTokens,
+    metrics.gameTokens,
+    metrics.cacheReadTokens,
+    metrics.cacheWriteTokens,
+  ].every((metric) => metric === null || (typeof metric === 'number' && Number.isFinite(metric)));
+}
+
+function parseReplayRecord(value: unknown): ReplayRecordView | null {
+  return isReplayRecord(value) ? value : null;
 }
 
 async function readBody(response: Response): Promise<unknown> {
@@ -248,14 +410,41 @@ export class AttemptApiClient implements AttemptApi {
     requestKey: string,
     expectedVersion: number,
     draft: RobotDraft,
+    animationEnabled: boolean,
     signal?: AbortSignal,
   ): Promise<AttemptAdmission> {
     return this.request(
       'POST',
       'attempts',
-      { requestKey, expectedVersion, draft },
+      { requestKey, expectedVersion, draft, animationEnabled },
       parseAdmission,
       'No se pudo admitir el intento.',
+      signal,
+    );
+  }
+
+  public getAnimationPreference(signal?: AbortSignal): Promise<AnimationPreference> {
+    return this.request(
+      'GET',
+      'animation-preference',
+      undefined,
+      parseAnimationPreference,
+      'No se pudo consultar la preferencia de animación.',
+      signal,
+    );
+  }
+
+  public putAnimationPreference(
+    animationEnabled: boolean,
+    expectedVersion: number,
+    signal?: AbortSignal,
+  ): Promise<AnimationPreference> {
+    return this.request(
+      'PUT',
+      'animation-preference',
+      { animationEnabled, expectedVersion },
+      parseAnimationPreference,
+      'No se pudo guardar la preferencia de animación.',
       signal,
     );
   }
@@ -325,6 +514,34 @@ export class AttemptApiClient implements AttemptApi {
     );
   }
 
+  public getReplay(id: string, signal?: AbortSignal): Promise<ReplayRecordView> {
+    return this.request(
+      'GET',
+      `attempts/${encodeURIComponent(id)}/replay`,
+      undefined,
+      (value) => {
+        if (!isRecord(value)) return null;
+        return parseReplayRecord(value.record);
+      },
+      'No se pudo cargar el registro para reproducirlo.',
+      signal,
+    );
+  }
+
+  public completePresentation(id: string, signal?: AbortSignal): Promise<AttemptSummary> {
+    return this.request(
+      'POST',
+      `attempts/${encodeURIComponent(id)}/presentation-complete`,
+      undefined,
+      (value) => {
+        if (!isRecord(value)) return null;
+        return parseAttempt(value.attempt);
+      },
+      'No se pudo guardar el cierre de la presentación.',
+      signal,
+    );
+  }
+
   public getQuota(signal?: AbortSignal): Promise<QuotaSummary> {
     return this.request(
       'GET',
@@ -337,7 +554,7 @@ export class AttemptApiClient implements AttemptApi {
   }
 
   private async request<T>(
-    method: 'GET' | 'POST',
+    method: 'GET' | 'POST' | 'PUT',
     path: string,
     body: unknown,
     parser: (value: unknown) => T | null,

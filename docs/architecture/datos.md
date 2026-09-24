@@ -1,6 +1,6 @@
 # Persistencia, historial y cuota
 
-**Borradores y registros publicados; aceptación operativa completa de la fase 3 pendiente.** La API admite intentos, aplica idempotencia y cuota y expone estado e historial propios. El ejecutor conserva snapshots y acciones en DynamoDB y bodies en S3 privado. El [contrato lógico del registro](registro-de-ejecucion.md) describe la forma durable actual y separa el diseño futuro de replay. Animación, objetos, terreno periódico, diagnóstico y ranking siguen fuera de esta fase. Complementa [ejecución](ejecucion.md) y respeta los requisitos de [intentos](../intent/intentos.md), [consumo](../intent/consumo-y-puntaje.md) y [plataforma](../intent/plataforma.md).
+**Borradores, registros y reproducción del recorrido estático disponibles.** La API admite intentos, aplica idempotencia y cuota y expone estado, historial y vista de reproducción propios. El ejecutor conserva snapshots y acciones en DynamoDB y bodies en S3 privado. El [contrato lógico del registro](registro-de-ejecucion.md) describe su forma durable. Objetos, terreno periódico, diagnóstico y ranking siguen pendientes. Complementa [ejecución](ejecucion.md) y respeta los requisitos de [intentos](../intent/intentos.md), [consumo](../intent/consumo-y-puntaje.md) y [plataforma](../intent/plataforma.md).
 
 ## Borrador disponible
 
@@ -16,32 +16,35 @@ El borrador v2 incluye `modelKey`; instrucciones, habilidades y selección se gu
 
 La admisión compara el contenido semántico, incluido modelo, y condiciona la transacción sobre la versión y representación raw realmente leídas de DynamoDB. Convertir un v1 en memoria no provoca un conflicto artificial. El intento guarda el perfil efectivo completo y su etiqueta; sus lectores conservan los parámetros históricos y no mezclan defaults vigentes. Las llamadas nuevas registran modelo, perfil y región además de sus cuerpos. No hay migración masiva ni otra tabla de preferencias.
 
-## Intentos de fase 3 disponibles
+## Intentos y reproducción disponibles
 
 La API autenticada expone estas rutas actuales, todas con `no-store` y pertenencia basada en el `sub` validado:
 
 | Ruta                          | Efecto actual                                                                                                                                                         |
 | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST /attempts`              | Admite `{requestKey, expectedVersion, draft}`, guarda el snapshot fijo y devuelve `{attempt, dispatchConfirmed}`. La misma clave y huella recuperan el mismo intento. |
+| `POST /attempts`              | Admite `{requestKey, expectedVersion, draft, animationEnabled}`, guarda el snapshot fijo y devuelve `{attempt, dispatchConfirmed}`. La misma clave y huella recuperan el mismo intento. |
 | `GET /attempt-requests/{key}` | Recupera una admisión propia; nunca admite ni despacha implícitamente.                                                                                                |
 | `GET /attempts/{id}`          | Lee una cabecera propia con consistencia fuerte y materializa cierres por vencimiento.                                                                                |
 | `GET /attempts?cursor=...`    | Lista el historial propio en páginas de hasta 20.                                                                                                                     |
 | `POST /attempts/{id}/start`   | Reenvía sólo el despacho de un pendiente válido dentro de su plazo.                                                                                                   |
 | `POST /attempts/{id}/cancel`  | Cierra un pendiente o marca la cancelación de un intento en curso.                                                                                                    |
+| `GET /attempts/{id}/replay`   | Proyecta el nivel fijo, estados, acciones y cierre de un intento propio cerrado y completo; no expone auditoría ni bodies.                                            |
+| `POST /attempts/{id}/presentation-complete` | Marca idempotentemente como terminada la presentación de un intento propio terminal; no cambia juego, cuota ni uso.                               |
+| `GET/PUT /animation-preference` | Lee o guarda la preferencia de Animación por usuario, con versión condicional para evitar sobreescrituras entre pestañas.                                               |
 | `GET /quota`                  | Devuelve día argentino, uso, límite, restante y próximo reinicio.                                                                                                     |
 
 La tabla compartida mantiene el borrador y los intentos mediante claves explícitas. Para un intento, la implementación usa `USER#<sub>/REQUEST#<requestKey>` para idempotencia, `USER#<sub>/ATTEMPT#<attemptId>` para la cabecera consultable, `ATTEMPT#<attemptId>/META` para la referencia interna, `ATTEMPT#<attemptId>/STATE#state-0` y estados posteriores para snapshots, `ATTEMPT#<attemptId>/ACTION#00000001` para acciones y `ATTEMPT#<attemptId>/CALL#00000001` para llamadas. El contador diario es `USER#<sub>/QUOTA#<YYYY-MM-DD>`, con fecha de `America/Argentina/Buenos_Aires`. La tabla sigue siendo on-demand, retenida y sin TTL ni índices adicionales.
 
 ## DynamoDB y S3
 
-La fase 3 usa **DynamoDB on-demand para datos estructurados y S3 privado para conservar completos los requests y responses de inferencia**. No se necesita una base relacional: los accesos actuales son configuración, admisión, cuota, intento por identificador, acciones/estados ordenados e historial propio. No hay endpoint público de bodies, diagnóstico detallado, ranking global ni índice adicional en esta fase.
+El juego usa **DynamoDB on-demand para datos estructurados y S3 privado para conservar completos los requests y responses de inferencia**. No se necesita una base relacional: los accesos actuales son configuración, preferencia de Animación, admisión, cuota, intento por identificador, acciones/estados ordenados e historial propio. No hay endpoint público de bodies, diagnóstico detallado, ranking global ni índice adicional.
 
 | Dato                                 | Autoridad y representación                                                                                                                                                                               |
 | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Propietario                          | El `sub` validado por Amazon Cognito determina el propietario y aísla sus datos.                                                                                                                         |
 | Borrador                             | Documento DynamoDB por usuario con versión para controlar ediciones concurrentes.                                                                                                                        |
 | Configuración del intento            | Versión inmutable del borrador visible al pulsar Probar, con instrucciones, selección, descripciones, IDs opacos y schemas.                                                                              |
-| Presentación                         | En fase 3 `animationEnabled=false` y `presentationComplete=true`; el toggle, la preferencia persistente y la marca de replay pertenecen a fase 4. No forman parte del payload del modelo ni del puntaje. |
+| Presentación                         | Una preferencia por usuario inicia en `true`; cada admisión fija `animationEnabled`. `presentationComplete` distingue el cierre del juego de una animación automática pendiente. No forma parte del payload del modelo ni del puntaje. |
 | Nivel, motor, protocolo e inferencia | Versiones publicadas inmutables; cada intento fija las que usó.                                                                                                                                          |
 | Cuota                                | Contador por usuario y fecha, actualizado atómicamente al admitir.                                                                                                                                       |
 | Intento                              | Cabecera pequeña con propietario, referencias fijas, estado, ejecutor, secuencia, cancelación y métricas.                                                                                                |
@@ -54,9 +57,9 @@ El diseño lógico no exige una tabla por fila de esta lista ni múltiples bases
 
 No hay TTL ni expiración de objetos del producto. Niveles y configuraciones anteriores siguen accesibles por sus referencias aunque haya nuevas versiones. Los cuerpos de inferencia nunca se publican mediante la distribución del frontend; la API comprueba pertenencia antes de devolverlos o emitir un enlace de lectura de corta duración.
 
-La fase 3 guarda siempre eventos, llamadas, snapshots y métricas completos; no existe todavía un toggle ni una presentación animada. El replay manual y su marca de presentación se agregan en fase 4 sin cambiar la autoridad del registro. El bloqueo del editor en la pantalla no sustituye el control de versión del borrador ni la idempotencia y cuota del servidor.
+Cada intento guarda eventos, llamadas, snapshots y métricas completos con ambos valores de Animación. El replay lee esos mismos datos sin cambiar su autoridad. El bloqueo del editor en la pantalla no sustituye el control de versión del borrador ni la idempotencia y cuota del servidor.
 
-El [contrato de registro](registro-de-ejecucion.md) conserva un estado inicial y otro después de cada acción, con referencias encadenadas y resultado explícito. El store de servidor conserva snapshots y llamadas; las rutas públicas actuales devuelven el resumen/estado y no exponen bodies ni diagnóstico detallado. La vista de replay, la carga de sprites y la [marca de presentación](animacion.md#integración-con-probar-y-el-resultado) son extensiones de fase 4; no se persiste progreso por frame.
+El [contrato de registro](registro-de-ejecucion.md) conserva un estado inicial y otro después de cada acción, con referencias encadenadas y resultado explícito. El store de servidor conserva snapshots y llamadas; la vista pública de replay sólo expone la proyección lógica necesaria después de comprobar pertenencia y cierre. Los bodies y el diagnóstico detallado siguen privados. La [marca de presentación](animacion.md#integración-con-probar-y-el-resultado) no guarda progreso por frame.
 
 ## Tamaño y separación de cuerpos
 

@@ -122,6 +122,54 @@ h1 {
   margin-bottom: 1.2rem;
 }
 
+.animation-preference {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+  margin: 0.8rem 0 1rem;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid rgba(242, 239, 232, 0.14);
+  border-radius: 0.65rem;
+  background: rgba(20, 19, 15, 0.28);
+}
+
+.animation-preference label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  color: #f7f1e1;
+  font-weight: 700;
+}
+
+.animation-preference input {
+  width: 1.1rem;
+  height: 1.1rem;
+  accent-color: #95c7a0;
+}
+
+.animation-preference-detail {
+  color: #b9b4a8;
+  font-size: 0.88rem;
+}
+
+.attempt-preference-conflict {
+  display: grid;
+  justify-items: start;
+  gap: 0.65rem;
+  margin-top: 0.75rem;
+  padding: 0.9rem;
+  border: 1px solid rgba(216, 179, 106, 0.5);
+  border-radius: 0.65rem;
+  background: rgba(216, 179, 106, 0.1);
+}
+
+.attempt-preference-conflict p {
+  margin: 0;
+  color: #ead6a7;
+  line-height: 1.45;
+}
+
 .attempt-heading h2,
 .attempt-result-heading h3,
 .attempt-section-heading h3,
@@ -171,12 +219,31 @@ h1 {
 .attempt-running,
 .active-attempts,
 .attempt-result,
-.attempt-history {
+.attempt-history,
+.attempt-replay {
   margin-top: 1rem;
   padding: 1rem;
   border: 1px solid rgba(242, 239, 232, 0.14);
   border-radius: 0.7rem;
   background: rgba(20, 19, 15, 0.3);
+}
+
+.attempt-replay-heading {
+  margin-bottom: 0.75rem;
+}
+
+.attempt-replay-heading h3 {
+  margin: 0 0 0.35rem;
+  color: #f7f1e1;
+}
+
+.attempt-replay-heading p {
+  margin: 0;
+  color: #b9b4a8;
+}
+
+.replay-again {
+  margin: 0.3rem 0 0.8rem;
 }
 
 .attempt-error {
@@ -440,6 +507,12 @@ h1 {
 
 .editor-form fieldset:disabled {
   opacity: 0.65;
+}
+
+.history-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
 }
 
 .field-help {
@@ -838,8 +911,11 @@ button:disabled {
     text-align: left;
   }
 
-  .attempt-running .secondary-button,
-  .history-list .secondary-button {
+  .attempt-running .secondary-button {
+    margin-top: 0.75rem;
+  }
+
+  .history-actions {
     margin-top: 0.75rem;
   }
 

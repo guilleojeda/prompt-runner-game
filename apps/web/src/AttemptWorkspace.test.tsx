@@ -5,11 +5,37 @@ import { User } from 'oidc-client-ts';
 import { StrictMode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createDefaultDraft, type DraftSnapshot } from '../../../shared/robot.js';
+import { createClosedAttemptRecordFixture } from '../../../shared/attempt.fixture.js';
+import type { ReplayRecordView } from '../../../shared/attempt.js';
 import type { AuthSession } from './auth.js';
 import { AttemptApiFailure, type AttemptApi, type AttemptSummary } from './attempt-api.js';
 import { AttemptWorkspace, type AttemptWorkspaceHandle } from './AttemptWorkspace.js';
 import { RobotEditor, type RobotEditorHandle } from './RobotEditor.js';
 import type { DraftApi } from './draft-api.js';
+
+vi.mock('./replay/ReplayScene.js', () => ({
+  ReplayScene: ({
+    onReady,
+    onComplete,
+    onError,
+  }: {
+    onReady: () => void;
+    onComplete: () => void;
+    onError: (error: Error) => void;
+  }) => (
+    <div>
+      <button type="button" onClick={onReady}>
+        Recursos listos
+      </button>
+      <button type="button" onClick={onComplete}>
+        Completar reproducción
+      </button>
+      <button type="button" onClick={() => onError(new Error('Faltan símbolos'))}>
+        Fallar reproducción
+      </button>
+    </div>
+  ),
+}));
 
 function session(): AuthSession {
   return {
@@ -60,6 +86,27 @@ function summary(status: AttemptSummary['status'] = 'running'): AttemptSummary {
   };
 }
 
+function replayRecord(id = 'attempt-1'): ReplayRecordView {
+  const source = createClosedAttemptRecordFixture();
+  const states = new Map(source.snapshots.map((snapshot) => [snapshot.id, snapshot]));
+  return {
+    recordVersion: source.recordVersion,
+    id,
+    createdAt: source.createdAt,
+    updatedAt: source.updatedAt,
+    config: { level: source.config.level },
+    snapshots: source.snapshots,
+    actions: source.actions.map((action) => ({
+      ...action,
+      before: states.get(action.beforeStateId)!,
+      after: states.get(action.afterStateId)!,
+    })),
+    closure: source.closure,
+    metrics: source.metrics,
+    score: source.score,
+  };
+}
+
 function api(overrides: Partial<AttemptApi> = {}): AttemptApi {
   return {
     createAttempt: vi
@@ -70,6 +117,19 @@ function api(overrides: Partial<AttemptApi> = {}): AttemptApi {
       .mockRejectedValue(new AttemptApiFailure('not_found', 'not found', 404)),
     getAttempt: vi.fn().mockResolvedValue(summary('running')),
     listAttempts: vi.fn().mockResolvedValue({ attempts: [] }),
+    getAnimationPreference: vi.fn().mockResolvedValue({ animationEnabled: true, version: 0 }),
+    putAnimationPreference: vi
+      .fn()
+      .mockImplementation(async (animationEnabled: boolean, expectedVersion: number) => ({
+        animationEnabled,
+        version: expectedVersion + 1,
+      })),
+    getReplay: vi.fn(),
+    completePresentation: vi.fn().mockImplementation(async (id: string) => ({
+      ...summary('victory'),
+      id,
+      animationEnabled: true,
+    })),
     startAttempt: vi
       .fn()
       .mockResolvedValue({ attempt: summary('running'), dispatchConfirmed: true }),
@@ -93,6 +153,285 @@ afterEach(() => {
 });
 
 describe('AttemptWorkspace', () => {
+  it('persists the visible animation choice and freezes that value for the new attempt', async () => {
+    let finishPreferenceSave!: (value: { animationEnabled: boolean; version: number }) => void;
+    const putAnimationPreference = vi.fn(
+      () =>
+        new Promise<{ animationEnabled: boolean; version: number }>((resolve) => {
+          finishPreferenceSave = resolve;
+        }),
+    );
+    const createAttempt = vi.fn().mockResolvedValue({
+      attempt: {
+        ...summary('victory'),
+        animationEnabled: false,
+        presentationComplete: true,
+        turnsUsed: 5,
+      },
+      dispatchConfirmed: true,
+    });
+    const attemptApi = api({ createAttempt, putAnimationPreference });
+    const editor = {
+      current: {
+        captureSnapshot: vi.fn().mockResolvedValue({ version: 2, draft: createDefaultDraft() }),
+      },
+    } as unknown as { current: RobotEditorHandle | null };
+    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
+    render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+
+    await screen.findByText('Historial');
+    const animation = screen.getByRole('checkbox', { name: 'Animación' }) as HTMLInputElement;
+    expect(animation.checked).toBe(true);
+    fireEvent.click(animation);
+    expect(animation.checked).toBe(false);
+    expect(await screen.findByText('Guardando preferencia…')).toBeTruthy();
+
+    await act(async () => {
+      (ref.current as AttemptWorkspaceHandle).start();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(createAttempt).toHaveBeenCalledWith(expect.any(String), 2, createDefaultDraft(), false);
+    expect(attemptApi.getReplay).not.toHaveBeenCalled();
+    expect(putAnimationPreference).toHaveBeenCalledWith(false, 0, expect.any(AbortSignal));
+    await act(async () => {
+      finishPreferenceSave({ animationEnabled: false, version: 1 });
+      await Promise.resolve();
+    });
+  });
+
+  it('shows and resolves a cross-tab preference conflict without changing the visible choice', async () => {
+    const getAnimationPreference = vi
+      .fn()
+      .mockResolvedValueOnce({ animationEnabled: true, version: 2 })
+      .mockResolvedValueOnce({ animationEnabled: true, version: 3 });
+    const putAnimationPreference = vi
+      .fn()
+      .mockRejectedValueOnce(new AttemptApiFailure('conflict', 'version conflict', 409))
+      .mockResolvedValueOnce({ animationEnabled: false, version: 4 });
+    const attemptApi = api({ getAnimationPreference, putAnimationPreference });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    await screen.findByText('Historial');
+
+    const animation = screen.getByRole('checkbox', { name: 'Animación' }) as HTMLInputElement;
+    fireEvent.click(animation);
+    await screen.findByText(/Otra pestaña|No se guardó tu cambio/);
+    expect(animation.checked).toBe(false);
+    expect(screen.getByText(/Valor guardado en el servidor: activado/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar mi selección' }));
+    await waitFor(() => expect(putAnimationPreference).toHaveBeenCalledTimes(2));
+    expect(putAnimationPreference.mock.calls.map(([value, version]) => [value, version])).toEqual([
+      [false, 2],
+      [false, 3],
+    ]);
+    expect(animation.checked).toBe(false);
+    expect(screen.queryByRole('button', { name: 'Guardar mi selección' })).toBeNull();
+  });
+
+  it('ignores an older focus read that resolves after this tab saves a newer preference', async () => {
+    let finishFocusRead!: (value: { animationEnabled: boolean; version: number }) => void;
+    const delayedFocusRead = new Promise<{ animationEnabled: boolean; version: number }>(
+      (resolve) => {
+        finishFocusRead = resolve;
+      },
+    );
+    const getAnimationPreference = vi
+      .fn()
+      .mockResolvedValueOnce({ animationEnabled: true, version: 0 })
+      .mockReturnValueOnce(delayedFocusRead);
+    const putAnimationPreference = vi
+      .fn()
+      .mockResolvedValue({ animationEnabled: false, version: 1 });
+    const attemptApi = api({ getAnimationPreference, putAnimationPreference });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    await screen.findByText('Historial');
+
+    act(() => window.dispatchEvent(new Event('focus')));
+    await waitFor(() => expect(getAnimationPreference).toHaveBeenCalledTimes(2));
+    const animation = screen.getByRole('checkbox', { name: 'Animación' }) as HTMLInputElement;
+    fireEvent.click(animation);
+    await waitFor(() =>
+      expect(putAnimationPreference).toHaveBeenCalledWith(false, 0, expect.any(AbortSignal)),
+    );
+    await waitFor(() => expect(screen.queryByText('Guardando preferencia…')).toBeNull());
+
+    await act(async () => {
+      finishFocusRead({ animationEnabled: true, version: 0 });
+      await Promise.resolve();
+    });
+
+    expect(animation.checked).toBe(false);
+    expect(screen.getByText('El resultado aparece directamente.')).toBeTruthy();
+  });
+
+  it('recovers pending playback without exposing the result early and lets the player replay without inference', async () => {
+    const pending = {
+      ...summary('victory'),
+      turnsUsed: 5,
+      animationEnabled: true,
+      presentationComplete: false,
+    };
+    window.sessionStorage.setItem(
+      'prompt-runner:attempt-recovery',
+      JSON.stringify({ sub: 'subject-a', attemptId: pending.id }),
+    );
+    const completePresentation = vi.fn().mockResolvedValue({
+      ...pending,
+      presentationComplete: true,
+    });
+    const getReplay = vi.fn().mockResolvedValue(replayRecord());
+    const createAttempt = vi.fn();
+    const attemptApi = api({
+      getAttempt: vi.fn().mockResolvedValue(pending),
+      getReplay,
+      completePresentation,
+      createAttempt,
+    });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+
+    expect(await screen.findByRole('button', { name: 'Completar reproducción' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Victoria' })).toBeNull();
+    expect(getReplay).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole('button', { name: 'Recursos listos' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Completar reproducción' }));
+    expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
+    expect(completePresentation).toHaveBeenCalledOnce();
+    expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Ver de nuevo' }));
+    expect(await screen.findByRole('button', { name: 'Completar reproducción' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Completar reproducción' }));
+    expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
+    expect(getReplay).toHaveBeenCalledTimes(2);
+    expect(completePresentation).toHaveBeenCalledOnce();
+    expect(createAttempt).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['cancelled', 'Cancelado'],
+    ['error', 'Error de ejecución'],
+  ] as const)(
+    'shows a zero-action %s result directly without replay controls',
+    async (status, label) => {
+      const terminal = {
+        ...summary(status),
+        animationEnabled: true,
+        presentationComplete: true,
+        turnsUsed: 0,
+      };
+      const attemptApi = api({
+        listAttempts: vi.fn().mockResolvedValue({ attempts: [terminal] }),
+        getAttempt: vi.fn().mockResolvedValue(terminal),
+      });
+      const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+      render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+
+      const showResult = await screen.findByRole('button', { name: 'Ver resultado' });
+      expect(screen.queryByRole('button', { name: 'Ver de nuevo' })).toBeNull();
+      fireEvent.click(showResult);
+      expect(await screen.findByRole('heading', { name: label })).toBeTruthy();
+      expect(screen.queryByRole('button', { name: 'Ver de nuevo' })).toBeNull();
+      expect(attemptApi.getReplay).not.toHaveBeenCalled();
+    },
+  );
+
+  it('replays a phase-three history record manually without admitting or marking it again', async () => {
+    const historical = { ...summary('victory'), animationEnabled: false, turnsUsed: 5 };
+    const getReplay = vi.fn().mockResolvedValue(replayRecord(historical.id));
+    const createAttempt = vi.fn();
+    const completePresentation = vi.fn();
+    const attemptApi = api({
+      listAttempts: vi.fn().mockResolvedValue({ attempts: [historical] }),
+      getAttempt: vi.fn().mockResolvedValue(historical),
+      getReplay,
+      createAttempt,
+      completePresentation,
+    });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Ver de nuevo' }));
+    expect(await screen.findByRole('button', { name: 'Completar reproducción' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Recursos listos' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Completar reproducción' }));
+    expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
+    expect(getReplay).toHaveBeenCalledWith(historical.id);
+    expect(createAttempt).not.toHaveBeenCalled();
+    expect(completePresentation).not.toHaveBeenCalled();
+  });
+
+  it('keeps replay errors recoverable and lets the player open the stored result', async () => {
+    const pending = {
+      ...summary('victory'),
+      turnsUsed: 5,
+      animationEnabled: true,
+      presentationComplete: false,
+    };
+    window.sessionStorage.setItem(
+      'prompt-runner:attempt-recovery',
+      JSON.stringify({ sub: 'subject-a', attemptId: pending.id }),
+    );
+    const completePresentation = vi.fn().mockResolvedValue({
+      ...pending,
+      presentationComplete: true,
+    });
+    const attemptApi = api({
+      getAttempt: vi.fn().mockResolvedValue(pending),
+      getReplay: vi.fn().mockResolvedValue(replayRecord()),
+      completePresentation,
+    });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Fallar reproducción' }));
+    expect(await screen.findByText('Faltan símbolos')).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Victoria' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Ver resultado' }));
+    expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
+    expect(completePresentation).toHaveBeenCalledOnce();
+  });
+
+  it('shows the result after playback even when the completion mark needs a retry', async () => {
+    const pending = {
+      ...summary('victory'),
+      turnsUsed: 5,
+      animationEnabled: true,
+      presentationComplete: false,
+    };
+    window.sessionStorage.setItem(
+      'prompt-runner:attempt-recovery',
+      JSON.stringify({ sub: 'subject-a', attemptId: pending.id }),
+    );
+    const completePresentation = vi
+      .fn()
+      .mockRejectedValueOnce(new AttemptApiFailure('server', 'No se guardó.', 500))
+      .mockResolvedValueOnce({ ...pending, presentationComplete: true });
+    const attemptApi = api({
+      getAttempt: vi.fn().mockResolvedValue(pending),
+      getReplay: vi.fn().mockResolvedValue(replayRecord()),
+      completePresentation,
+    });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Completar reproducción' }));
+    expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
+    expect(
+      screen.getByText(/La animación terminó, pero no se pudo guardar su cierre/),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Reintentar cierre de presentación' }));
+    await waitFor(() => expect(completePresentation).toHaveBeenCalledTimes(2));
+    expect(
+      screen.queryByText(/La animación terminó, pero no se pudo guardar su cierre/),
+    ).toBeNull();
+    expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toBeNull();
+  });
+
   it('freezes the selected model in the admission payload and labels the returned result', async () => {
     const selectedDraft = { ...createDefaultDraft(), modelKey: 'claude-opus-5' as const };
     const completed = {
@@ -121,10 +460,12 @@ describe('AttemptWorkspace', () => {
       await Promise.resolve();
     });
 
+    expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
     expect(createAttempt).toHaveBeenCalledWith(
       expect.any(String),
       4,
       expect.objectContaining({ modelKey: 'claude-opus-5' }),
+      true,
     );
     expect(await screen.findByText('Modelo: Claude Opus 5')).toBeTruthy();
     expect(
@@ -158,6 +499,7 @@ describe('AttemptWorkspace', () => {
         instructions: expect.stringContaining('Siempre preferí'),
         modelKey: 'claude-sonnet-4.6',
       }),
+      true,
     );
     expect(await screen.findByRole('button', { name: 'Cancelar' })).toBeTruthy();
 
@@ -228,6 +570,7 @@ describe('AttemptWorkspace', () => {
       expect.any(String),
       2,
       expect.objectContaining({ instructions: 'B' }),
+      true,
     );
   });
 
@@ -286,7 +629,7 @@ describe('AttemptWorkspace', () => {
     expect(getAttemptRequest).toHaveBeenCalledOnce();
   });
 
-  it('retries a persisted frozen admission after reload and a 404 lookup', async () => {
+  it('retries a phase-three frozen admission as animation off after reload and a 404 lookup', async () => {
     const draft = { ...createDefaultDraft(), instructions: 'Snapshot exacto' };
     window.sessionStorage.setItem(
       'prompt-runner:attempt-recovery',
@@ -318,7 +661,7 @@ describe('AttemptWorkspace', () => {
     expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
     expect(getAttemptRequest).toHaveBeenCalledWith('persisted-key', expect.anything());
     expect(createAttempt).toHaveBeenCalledOnce();
-    expect(createAttempt).toHaveBeenCalledWith('persisted-key', 7, draft, expect.anything());
+    expect(createAttempt).toHaveBeenCalledWith('persisted-key', 7, draft, false, expect.anything());
     expect(captureSnapshot).not.toHaveBeenCalled();
     expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toBeNull();
   });
@@ -443,7 +786,7 @@ describe('AttemptWorkspace', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Comprobar estado' }));
     expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
     expect(createAttempt).toHaveBeenCalledTimes(2);
-    expect(createAttempt.mock.calls[1]?.slice(0, 3)).toEqual(createAttempt.mock.calls[0]);
+    expect(createAttempt.mock.calls[1]?.slice(0, 4)).toEqual(createAttempt.mock.calls[0]);
   });
 
   it('clears a frozen admission after a definitive retry rejection and unlocks a new start', async () => {

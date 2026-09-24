@@ -1,12 +1,12 @@
 # Registro de ejecución para reproducción
 
-**Contrato de fase 3 implementado en el código local; verificación desplegada y reproductor todavía pendientes.** El registro conserva snapshots, acciones, llamadas, uso y cierre del intento estático. Concreta los requisitos acordados de [intentos](../intent/intentos.md), sin cambiar las [reglas del juego](../intent/juego.md). El reproductor y el catálogo de sprites se definen como diseño futuro en [animación](animacion.md); la persistencia física actual y sus claves se definen en [datos](datos.md).
+**Registro y vista de reproducción del recorrido estático implementados.** El registro conserva snapshots, acciones, llamadas, uso y cierre del intento. Concreta los requisitos acordados de [intentos](../intent/intentos.md), sin cambiar las [reglas del juego](../intent/juego.md). El reproductor y su catálogo visual se describen en [animación](animacion.md); la persistencia física y sus claves se definen en [datos](datos.md).
 
 ## Separación de responsabilidades
 
 El motor determina qué ocurrió. El registro conserva esa resolución y sus estados. El reproductor decide cómo dibujarla. Posición y acción no bastan: caminar desde el mismo apoyo puede terminar en desplazamiento, caída o choque; recoger puede habilitar la salida; esperar puede cambiar una barrera sin mover al robot.
 
-El registro completo contiene observaciones, prompts, herramientas, respuestas, validaciones, llamadas y consumo junto con las acciones publicadas. Esos datos quedan en la autoridad de servidor y los bodies completos en S3 privado. En fase 3 la API entrega resumen, historial y estado; no hay todavía una vista de replay ni endpoint público de diagnóstico. Una fase posterior podrá proyectar una vista de reproducción del mismo registro sin crear otra simulación. Toda consulta exige el mismo propietario que la del intento.
+El registro completo contiene observaciones, prompts, herramientas, respuestas, validaciones, llamadas y consumo junto con las acciones publicadas. Esos datos quedan en la autoridad de servidor y los bodies completos en S3 privado. La API entrega resumen, historial y estado; la vista de reproducción proyecta sólo nivel, estados, acciones y cierre necesarios para dibujar la secuencia. El diagnóstico detallado sigue pendiente. Toda consulta exige el mismo propietario que la del intento.
 
 ## Datos que necesita el reproductor
 
@@ -44,7 +44,7 @@ type ReplayState = {
 
 Estos campos corresponden al snapshot compartido de fase 3. El motor actual sólo materializa `ground`, `pit` y `branch`; no implementa todavía barreras periódicas, objetos, inventario ni fases cambiantes. El `maxSupportReached` permite mostrar avance aunque el robot retroceda. Los tipos de barrera, objetos y estados periódicos permanecen en el contrato aprobado para fases posteriores.
 
-El snapshot inicial es `state-0`; cada acción publicada agrega una sola fila `STATE#<afterStateId>` y conserva el snapshot previo por referencia. En el nivel estático la lista `terrain` es la misma en cada fase, pero `phaseTurn` sigue el contrato: avanza sólo si el juego continúa y queda congelado en el turno evaluado cuando hay fatalidad o victoria. El reproductor futuro leerá estas fases sin importar reglas ni recalcularlas.
+El snapshot inicial es `state-0`; cada acción publicada agrega una sola fila `STATE#<afterStateId>` y conserva el snapshot previo por referencia. En el nivel estático la lista `terrain` es la misma en cada fase, pero `phaseTurn` sigue el contrato: avanza sólo si el juego continúa y queda congelado en el turno evaluado cuando hay fatalidad o victoria. El reproductor lee estas fases sin importar reglas ni recalcularlas.
 
 Después de una acción que continúa, ambos contadores avanzan: `turnsUsed` cuenta la acción y `phaseTurn` identifica el nuevo estado. Si esa acción termina el juego, solo avanza `turnsUsed`; se conserva la fase evaluada. Por ejemplo, una caída en el turno 4 deja `turnsUsed: 5` y `phaseTurn: 4`.
 
@@ -125,7 +125,7 @@ Otros casos que el mismo contrato resuelve:
 
 El ejecutor publica juntos la resolución, el nuevo snapshot y la secuencia de la cabecera mediante la transacción definida en [datos](datos.md). El estado anterior ya existe y es inmutable. No se confirma una acción sin estado posterior ni se vuelve a inferir por repetir su escritura. La implementación actual conserva la acción en `ACTION#<seq>` y el snapshot en `STATE#<afterStateId>`; la cabecera sólo referencia el estado actual.
 
-El cierre fija el número de acciones y el último estado. Las superficies de fase 3 devuelven el resumen y el estado del intento; la entrega paginada de acciones/snapshots como vista de replay, la validación previa a animar y la consulta de bodies para diagnóstico son extensiones posteriores. Una acción o snapshot faltante sigue siendo un defecto de registro, no una secuencia más corta exitosa.
+El cierre fija el número de acciones y el último estado. La vista de replay ensambla acciones y snapshots guardados, valida su secuencia y referencias y rechaza un registro incompleto o incompatible. No entrega bodies ni datos de diagnóstico. Una acción o snapshot faltante sigue siendo un defecto de registro, no una secuencia más corta exitosa.
 
 Invariantes que verifican motor y registro: secuencia sin huecos; primer `before` igual al inicial; cada `before` igual al `after` anterior; una acción incrementa `turnsUsed` exactamente una vez; ningún evento después de un terminal; objetos únicos y salida coherentes; cierre sobre el último estado publicado. La implementación del reproductor valida estructura, referencias y compatibilidad para evitar una representación engañosa; no incorpora un segundo motor para revisar la física.
 
