@@ -68,7 +68,9 @@ class DynamoHarness {
   public readonly send = vi.fn((command: CommandLike) => this.handle(command));
   public queryPageSize = Number.POSITIVE_INFINITY;
   public rejectUnusedUpdateValues = false;
-  public updateBehavior: (input: Record<string, unknown>) => HarnessBehavior = () => undefined;
+  public updateBehavior: (
+    input: Record<string, unknown>,
+  ) => HarnessBehavior | Promise<HarnessBehavior> = () => undefined;
   public transactionBehavior: (input: Record<string, unknown>) => HarnessBehavior = () => undefined;
 
   public put(value: Record<string, unknown>): void {
@@ -158,7 +160,7 @@ class DynamoHarness {
         if (unused.length > 0)
           throw new Error(`Unused expression attribute values: ${unused.join(', ')}`);
       }
-      const behavior = this.updateBehavior(input);
+      const behavior = await this.updateBehavior(input);
       if (behavior === 'applyThenThrow') {
         this.applyUpdate(input);
         throw conditionalError();
@@ -860,6 +862,54 @@ describe('Dynamo action publication ambiguity', () => {
     };
     expect(headerUpdate.ConditionExpression).toContain('#currentStateId = :beforeState');
     expect(headerUpdate.ConditionExpression).toContain('#sequence = :previous');
+  });
+
+  it('recalculates an expired close after the first action is published concurrently', async () => {
+    const harness = new DynamoHarness();
+    const { attemptId, initial } = seedAttempt(harness, {
+      status: 'running',
+      executorId: 'executor-a',
+      runtimeDeadline: '2026-09-21T14:59:00.000Z',
+      animationEnabled: true,
+      presentationComplete: false,
+      recordVersion: 1,
+    });
+    const store = storeFor(harness);
+    const publication = publicationFor(initial);
+    let actionPublishedDuringClose = false;
+
+    harness.updateBehavior = async (input) => {
+      const update = String(input.UpdateExpression ?? '');
+      if (!update.includes('#presentationComplete = :presented')) return undefined;
+      if (!actionPublishedDuringClose) {
+        actionPublishedDuringClose = true;
+        await store.publishAction('owner', attemptId, 'executor-a', publication);
+      }
+
+      const condition = String(input.ConditionExpression ?? '');
+      if (condition.includes('#sequence = :sequence')) {
+        const values = unmarshall(
+          input.ExpressionAttributeValues as Record<string, AttributeValue>,
+        );
+        const latest = harness.read('USER#owner', `ATTEMPT#${attemptId}`);
+        return latest?.sequence === values[':sequence'] ? undefined : 'throw';
+      }
+      return undefined;
+    };
+
+    const closed = await store.closeExpired('owner', attemptId, '2026-09-21T15:00:00.000Z');
+
+    expect(actionPublishedDuringClose).toBe(true);
+    expect(closed).toMatchObject({
+      status: 'error',
+      reason: 'runtime_deadline_expired',
+      sequence: 1,
+      presentationComplete: false,
+    });
+    await expect(store.getReplayRecord('owner', attemptId)).resolves.toMatchObject({
+      actions: [{ seq: 1 }],
+      closure: { status: 'error', actionCount: 1 },
+    });
   });
 
   it('rejects a retry whose action or posterior snapshot differs from the committed payload', async () => {

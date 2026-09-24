@@ -317,6 +317,7 @@ const isTransactionConflict = (error: unknown): boolean => {
 };
 const delay = (milliseconds: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
+const MAX_CLOSE_CONFLICT_RETRIES = 3;
 
 const toRecord = (item: Record<string, unknown>): PersistedAttempt => {
   const config = storedConfig(item.config);
@@ -1381,62 +1382,76 @@ export class DynamoAttemptStore implements AttemptStore {
     executorId?: string,
     now = this.now().toISOString(),
   ): Promise<PersistedAttempt | undefined> {
-    const current = await this.get(owner, attemptId);
-    if (!current) return undefined;
-    if (current.status !== 'pending' && current.status !== 'running') return current;
-    const durableCalls = await this.getCalls(owner, attemptId);
-    const durableComplete =
-      current.recordComplete &&
-      durableCalls.every((call) => call.status !== 'started' && call.status !== 'unknown');
-    try {
-      await this.client.send(
-        new UpdateItemCommand({
-          TableName: this.tableName,
-          Key: key(`USER#${owner}`, `ATTEMPT#${attemptId}`),
-          UpdateExpression:
-            'SET #status = :status, #reason = :reason, #calls = :calls, #inputTokens = :input, #outputTokens = :output, #reasoningTokens = :reasoning, #gameTokens = :game, #cacheReadTokens = :cacheRead, #cacheWriteTokens = :cacheWrite, #presentationComplete = :presented, #recordComplete = :complete, #updatedAt = :now',
-          ConditionExpression: executorId
-            ? '#status = :running AND #executorId = :executor'
-            : '(#status = :pending OR #status = :running)',
-          ExpressionAttributeNames: {
-            '#status': 'status',
-            '#reason': 'reason',
-            '#calls': 'calls',
-            '#inputTokens': 'inputTokens',
-            '#outputTokens': 'outputTokens',
-            '#reasoningTokens': 'reasoningTokens',
-            '#gameTokens': 'gameTokens',
-            '#cacheReadTokens': 'cacheReadTokens',
-            '#cacheWriteTokens': 'cacheWriteTokens',
-            '#presentationComplete': 'presentationComplete',
-            '#recordComplete': 'recordComplete',
-            '#updatedAt': 'updatedAt',
-            ...(executorId ? { '#executorId': 'executorId' } : {}),
-          },
-          ExpressionAttributeValues: marshall({
-            ':status': terminalStatus,
-            ':reason': reason,
-            ':calls': Math.max(current.calls, durableCalls.length),
-            ':input': durableComplete ? current.inputTokens : null,
-            ':output': durableComplete ? current.outputTokens : null,
-            ':reasoning': durableComplete ? current.reasoningTokens : null,
-            ':game': durableComplete ? current.gameTokens : null,
-            ':cacheRead': durableComplete ? current.cacheReadTokens : null,
-            ':cacheWrite': durableComplete ? current.cacheWriteTokens : null,
-            ':presented': !current.animationEnabled || current.sequence === 0,
-            ':complete': durableComplete,
-            ':now': now,
-            ...(executorId
-              ? { ':running': 'running', ':executor': executorId }
-              : { ':pending': 'pending', ':running': 'running' }),
+    for (let retry = 0; retry < MAX_CLOSE_CONFLICT_RETRIES; retry += 1) {
+      const current = await this.get(owner, attemptId);
+      if (!current) return undefined;
+      if (current.status !== 'pending' && current.status !== 'running') return current;
+      const durableCalls = await this.getCalls(owner, attemptId);
+      const durableComplete =
+        current.recordComplete &&
+        durableCalls.every((call) => call.status !== 'started' && call.status !== 'unknown');
+      try {
+        await this.client.send(
+          new UpdateItemCommand({
+            TableName: this.tableName,
+            Key: key(`USER#${owner}`, `ATTEMPT#${attemptId}`),
+            UpdateExpression:
+              'SET #status = :status, #reason = :reason, #calls = :calls, #inputTokens = :input, #outputTokens = :output, #reasoningTokens = :reasoning, #gameTokens = :game, #cacheReadTokens = :cacheRead, #cacheWriteTokens = :cacheWrite, #presentationComplete = :presented, #recordComplete = :complete, #updatedAt = :now',
+            ConditionExpression: executorId
+              ? '#status = :running AND #executorId = :executor AND #sequence = :sequence'
+              : '(#status = :pending OR #status = :running) AND #sequence = :sequence',
+            ExpressionAttributeNames: {
+              '#status': 'status',
+              '#reason': 'reason',
+              '#calls': 'calls',
+              '#inputTokens': 'inputTokens',
+              '#outputTokens': 'outputTokens',
+              '#reasoningTokens': 'reasoningTokens',
+              '#gameTokens': 'gameTokens',
+              '#cacheReadTokens': 'cacheReadTokens',
+              '#cacheWriteTokens': 'cacheWriteTokens',
+              '#presentationComplete': 'presentationComplete',
+              '#recordComplete': 'recordComplete',
+              '#updatedAt': 'updatedAt',
+              '#sequence': 'sequence',
+              ...(executorId ? { '#executorId': 'executorId' } : {}),
+            },
+            ExpressionAttributeValues: marshall({
+              ':status': terminalStatus,
+              ':reason': reason,
+              ':calls': Math.max(current.calls, durableCalls.length),
+              ':input': durableComplete ? current.inputTokens : null,
+              ':output': durableComplete ? current.outputTokens : null,
+              ':reasoning': durableComplete ? current.reasoningTokens : null,
+              ':game': durableComplete ? current.gameTokens : null,
+              ':cacheRead': durableComplete ? current.cacheReadTokens : null,
+              ':cacheWrite': durableComplete ? current.cacheWriteTokens : null,
+              ':presented': !current.animationEnabled || current.sequence === 0,
+              ':complete': durableComplete,
+              ':now': now,
+              ':sequence': current.sequence,
+              ...(executorId
+                ? { ':running': 'running', ':executor': executorId }
+                : { ':pending': 'pending', ':running': 'running' }),
+            }),
           }),
-        }),
-      );
-    } catch (error) {
-      if (!isConditional(error))
-        throw new AttemptStoreError('No se pudo cerrar el intento.', { cause: error });
+        );
+        return this.get(owner, attemptId);
+      } catch (error) {
+        if (!isConditional(error))
+          throw new AttemptStoreError('No se pudo cerrar el intento.', { cause: error });
+        const latest = await this.get(owner, attemptId);
+        if (!latest || (latest.status !== 'pending' && latest.status !== 'running')) return latest;
+        if (
+          (executorId && latest.executorId !== executorId) ||
+          latest.sequence === current.sequence
+        )
+          return latest;
+        if (retry === MAX_CLOSE_CONFLICT_RETRIES - 1)
+          throw new AttemptStoreError('El intento cambió mientras se cerraba.', { cause: error });
+      }
     }
-    return this.get(owner, attemptId);
+    return undefined;
   }
 
   public async closeExpired(
