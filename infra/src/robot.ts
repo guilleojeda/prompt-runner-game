@@ -38,7 +38,7 @@ export interface RobotResources {
 }
 
 /**
- * Resources for the phase 2 draft API. The API is intentionally kept in one
+ * Resources for the authenticated robot API. The API is intentionally kept in one
  * construct so its Lambda, data access, authorizer, routes, and CORS policy
  * stay reviewable together.
  */
@@ -129,7 +129,8 @@ export function createRobotResources(scope: Construct, props: RobotResourcesProp
     authorizationScopes: [ROBOT_SCOPE],
   });
 
-  // Attempt admission, status/history, cancellation, and quota are all
+  // Attempt admission, status/history, replay, presentation state, preference,
+  // cancellation, and quota are all
   // handled by this same identity-checked Lambda. Keeping every route behind
   // the same JWT authorizer prevents an accidental unauthenticated recovery
   // or cancellation endpoint as the API grows.
@@ -141,7 +142,16 @@ export function createRobotResources(scope: Construct, props: RobotResourcesProp
     { path: '/attempts/{attemptId}', methods: [apigatewayv2.HttpMethod.GET] },
     { path: '/attempts/{attemptId}/start', methods: [apigatewayv2.HttpMethod.POST] },
     { path: '/attempts/{attemptId}/cancel', methods: [apigatewayv2.HttpMethod.POST] },
+    { path: '/attempts/{attemptId}/replay', methods: [apigatewayv2.HttpMethod.GET] },
+    {
+      path: '/attempts/{attemptId}/presentation-complete',
+      methods: [apigatewayv2.HttpMethod.POST],
+    },
     { path: '/attempt-requests/{requestKey}', methods: [apigatewayv2.HttpMethod.GET] },
+    {
+      path: '/animation-preference',
+      methods: [apigatewayv2.HttpMethod.GET, apigatewayv2.HttpMethod.PUT],
+    },
     { path: '/quota', methods: [apigatewayv2.HttpMethod.GET] },
   ];
   for (const route of authenticatedRoutes) {

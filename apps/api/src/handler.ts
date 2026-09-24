@@ -14,10 +14,13 @@ import {
 import { DraftValidationError, type RobotDraft, validateDraft } from '../../../shared/robot.js';
 import {
   AdmissionConflictError,
+  AnimationPreferenceConflictError,
+  AttemptNotTerminalError,
   AttemptStoreError,
   IdempotencyConflictError,
   ModelUnavailableError,
   QuotaExceededError,
+  ReplayRecordError,
   createDynamoAttemptStore,
   S3BodyStore,
   type AttemptStore,
@@ -207,13 +210,20 @@ const requestBody = (event: APIGatewayProxyEventV2): unknown => {
 
 const attemptInput = (
   value: unknown,
-): { requestKey: string; expectedVersion: number; draft: RobotDraft } => {
+): {
+  requestKey: string;
+  expectedVersion: number;
+  draft: RobotDraft;
+  animationEnabled: boolean;
+} => {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new ApiError(400, 'invalid', 'La solicitud de intento no es válida.');
   }
   const object = value as Record<string, unknown>;
   if (
-    Object.keys(object).some((key) => !['requestKey', 'expectedVersion', 'draft'].includes(key))
+    Object.keys(object).some(
+      (key) => !['requestKey', 'expectedVersion', 'draft', 'animationEnabled'].includes(key),
+    )
   ) {
     throw new ApiError(400, 'invalid', 'La solicitud de intento no es válida.');
   }
@@ -232,11 +242,16 @@ const attemptInput = (
   ) {
     throw new ApiError(400, 'invalid', 'expectedVersion debe ser un entero no negativo.');
   }
+  if (object.animationEnabled !== undefined && typeof object.animationEnabled !== 'boolean') {
+    throw new ApiError(400, 'invalid', 'animationEnabled debe ser un booleano.');
+  }
   try {
     return {
       requestKey: object.requestKey,
       expectedVersion: object.expectedVersion,
       draft: validateDraft(object.draft, { allowLegacyMetadataOverflow: true }),
+      // Requests from the phase-3 client had no animation field and were off.
+      animationEnabled: object.animationEnabled === true,
     };
   } catch (error) {
     if (error instanceof DraftValidationError)
@@ -245,6 +260,32 @@ const attemptInput = (
       });
     throw error;
   }
+};
+
+const animationPreferenceInput = (
+  value: unknown,
+): { animationEnabled: boolean; expectedVersion: number } => {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.keys(value).some((key) => !['animationEnabled', 'expectedVersion'].includes(key))
+  ) {
+    throw new ApiError(400, 'invalid', 'La preferencia de animación no es válida.');
+  }
+  const object = value as Record<string, unknown>;
+  if (typeof object.animationEnabled !== 'boolean') {
+    throw new ApiError(400, 'invalid', 'animationEnabled debe ser un booleano.');
+  }
+  if (
+    typeof object.expectedVersion !== 'number' ||
+    !Number.isSafeInteger(object.expectedVersion) ||
+    object.expectedVersion < 0 ||
+    object.expectedVersion === Number.MAX_SAFE_INTEGER
+  ) {
+    throw new ApiError(400, 'invalid', 'expectedVersion debe ser un entero no negativo.');
+  }
+  return { animationEnabled: object.animationEnabled, expectedVersion: object.expectedVersion };
 };
 
 const dispatchDefault = async (attemptId: string, owner: string): Promise<void> => {
@@ -357,6 +398,10 @@ export const handleRequest = async (
       parts.length === 3 &&
       parts[0] === 'attempts' &&
       (parts[2] === 'start' || parts[2] === 'cancel');
+    const isAttemptReplay = parts.length === 3 && parts[0] === 'attempts' && parts[2] === 'replay';
+    const isPresentationComplete =
+      parts.length === 3 && parts[0] === 'attempts' && parts[2] === 'presentation-complete';
+    const isAnimationPreference = parts.length === 1 && parts[0] === 'animation-preference';
     const isQuota = parts.length === 1 && parts[0] === 'quota';
     const supported =
       (isDraft && (method === 'GET' || method === 'PUT')) ||
@@ -364,6 +409,9 @@ export const handleRequest = async (
       (isAttemptRequest && method === 'GET') ||
       (isAttemptItem && method === 'GET') ||
       (isAttemptAction && method === 'POST') ||
+      (isAttemptReplay && method === 'GET') ||
+      (isPresentationComplete && method === 'POST') ||
+      (isAnimationPreference && (method === 'GET' || method === 'PUT')) ||
       (isQuota && method === 'GET');
     if (!supported) {
       return respond(event, 404, 'not_found', {
@@ -408,6 +456,22 @@ export const handleRequest = async (
           : false;
       return respond(event, 200, 'ok', { attempt: admitted.attempt, dispatchConfirmed });
     }
+    if (isAnimationPreference && method === 'GET') {
+      return respond(event, 200, 'ok', await attemptStore.getAnimationPreference(identity.sub));
+    }
+    if (isAnimationPreference && method === 'PUT') {
+      const input = animationPreferenceInput(requestBody(event));
+      return respond(
+        event,
+        200,
+        'ok',
+        await attemptStore.putAnimationPreference(
+          identity.sub,
+          input.animationEnabled,
+          input.expectedVersion,
+        ),
+      );
+    }
     if (isAttemptCollection && method === 'GET') {
       const cursor = event.queryStringParameters?.cursor;
       const result = await attemptStore.list(identity.sub, cursor, 20);
@@ -443,6 +507,23 @@ export const handleRequest = async (
         dispatchConfirmed,
       });
     }
+    if (isAttemptReplay) {
+      const attemptId = decodeURIComponent(parts[1]);
+      let attempt = await attemptStore.get(identity.sub, attemptId);
+      if (attempt && (attempt.status === 'pending' || attempt.status === 'running')) {
+        attempt = await attemptStore.closeExpired(identity.sub, attemptId);
+      }
+      if (!attempt) throw new ApiError(404, 'not_found', 'Intento no encontrado.');
+      const record = await attemptStore.getReplayRecord(identity.sub, attemptId);
+      if (!record) throw new ApiError(404, 'not_found', 'Intento no encontrado.');
+      return respond(event, 200, 'ok', { record });
+    }
+    if (isPresentationComplete) {
+      const attemptId = decodeURIComponent(parts[1]);
+      const attempt = await attemptStore.markPresentationComplete(identity.sub, attemptId);
+      if (!attempt) throw new ApiError(404, 'not_found', 'Intento no encontrado.');
+      return respond(event, 200, 'ok', { attempt: summaryOf(attempt) });
+    }
     if (isAttemptItem && method === 'GET') {
       const attemptId = decodeURIComponent(parts[1]);
       const attempt = await attemptStore.closeExpired(identity.sub, attemptId);
@@ -453,6 +534,25 @@ export const handleRequest = async (
   } catch (error) {
     if (error instanceof DraftConflictError) {
       return respond(event, 409, 'conflict', currentConflict(error));
+    }
+    if (error instanceof AnimationPreferenceConflictError) {
+      return respond(event, 409, 'conflict', {
+        code: 'conflict',
+        message: error.message,
+        current: error.current,
+      });
+    }
+    if (error instanceof AttemptNotTerminalError) {
+      return respond(event, 409, 'presentation_pending', {
+        code: 'presentation_pending',
+        message: error.message,
+      });
+    }
+    if (error instanceof ReplayRecordError) {
+      return respond(event, 409, 'replay_unavailable', {
+        code: 'replay_unavailable',
+        message: error.message,
+      });
     }
     if (error instanceof ApiError) {
       return respond(event, error.statusCode, error.code, {

@@ -1,12 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DynamoDBClient, TransactionCanceledException } from '@aws-sdk/client-dynamodb';
 import { marshall } from '@aws-sdk/util-dynamodb';
+import { LEVEL, resolveAction, type GameSnapshot } from '../../../shared/game';
 import { createDefaultDraft, type DraftSnapshot } from '../../../shared/robot';
+import { createClosedAttemptRecordFixture } from '../../../shared/attempt.fixture';
 import {
+  AttemptNotTerminalError,
   DynamoAttemptStore,
+  IdempotencyConflictError,
   MemoryAttemptStore,
   MemoryBodyStore,
-  IdempotencyConflictError,
   ModelUnavailableError,
   QuotaExceededError,
 } from './attempt-store';
@@ -59,6 +62,175 @@ describe('attempt lifecycle store', () => {
         draft: { ...draft, modelKey: 'gpt-5.6-sol' },
       }),
     ).rejects.toBeInstanceOf(IdempotencyConflictError);
+  });
+
+  it('stores preference versions and binds the animation choice into idempotency', async () => {
+    const draft = savedDraft().draft;
+    const store = new MemoryAttemptStore({ draft: savedDraft() });
+    expect(await store.getAnimationPreference('a')).toEqual({ animationEnabled: true, version: 0 });
+    expect(await store.putAnimationPreference('a', false, 0)).toEqual({
+      animationEnabled: false,
+      version: 1,
+    });
+    await expect(store.putAnimationPreference('a', true, 0)).rejects.toMatchObject({
+      current: { animationEnabled: false, version: 1 },
+    });
+    expect(await store.getAnimationPreference('a')).toEqual({
+      animationEnabled: false,
+      version: 1,
+    });
+
+    const oldRequest = await store.admit({
+      owner: 'a',
+      requestKey: 'legacy-presentation',
+      expectedVersion: 1,
+      draft,
+    });
+    expect(oldRequest.attempt.animationEnabled).toBe(false);
+    const recovered = await store.admit({
+      owner: 'a',
+      requestKey: 'legacy-presentation',
+      expectedVersion: 999,
+      draft,
+      animationEnabled: false,
+    });
+    expect(recovered.admitted).toBe(false);
+    expect(recovered.attempt.id).toBe(oldRequest.attempt.id);
+    await expect(
+      store.admit({
+        owner: 'a',
+        requestKey: 'legacy-presentation',
+        expectedVersion: 1,
+        draft,
+        animationEnabled: true,
+      }),
+    ).rejects.toBeInstanceOf(IdempotencyConflictError);
+  });
+
+  it('keeps terminal presentation pending only when animation has published actions', async () => {
+    const draft = savedDraft().draft;
+    const now = () => new Date('2026-09-21T15:00:00.000Z');
+    const makeTerminalRecord = async (animationEnabled: boolean, suffix: string) => {
+      const store = new MemoryAttemptStore({ draft: savedDraft(), now });
+      const { attempt } = await store.admit({
+        owner: 'a',
+        requestKey: suffix,
+        expectedVersion: 1,
+        draft,
+        animationEnabled,
+      });
+      await store.claim('a', attempt.id, 'executor');
+      const before = (await store.getSnapshot('a', attempt.id)) as GameSnapshot;
+      const resolved = resolveAction(before, { kind: 'advance' }, LEVEL);
+      await store.publishAction('a', attempt.id, 'executor', {
+        seq: 1,
+        decisionId: 'decision-1',
+        action: resolved.action,
+        resolution: resolved.resolution,
+        beforeStateId: resolved.before.id,
+        afterStateId: resolved.after.id,
+        beforeSnapshot: resolved.before,
+        afterSnapshot: resolved.after,
+        progress: 0.2,
+        finalSupport: resolved.after.support,
+        turnsUsed: 1,
+      });
+      const terminal = await store.close('a', attempt.id, 'cancelled', 'cancelled_by_user');
+      return { store, attemptId: attempt.id, terminal };
+    };
+
+    const animated = await makeTerminalRecord(true, 'animated');
+    const staticResult = await makeTerminalRecord(false, 'static');
+    expect(animated.terminal?.presentationComplete).toBe(false);
+    expect(staticResult.terminal?.presentationComplete).toBe(true);
+    const animatedRecord = await animated.store.getReplayRecord('a', animated.attemptId);
+    const staticRecord = await staticResult.store.getReplayRecord('a', staticResult.attemptId);
+    expect(animatedRecord).toMatchObject({
+      actions: [{ seq: 1, action: { kind: 'advance' } }],
+      closure: { status: 'cancelled', actionCount: 1 },
+    });
+    expect(staticRecord).toMatchObject({
+      actions: animatedRecord?.actions,
+      metrics: animatedRecord?.metrics,
+    });
+    expect(staticRecord?.snapshots).toEqual(animatedRecord?.snapshots);
+
+    await expect(
+      animated.store.markPresentationComplete('a', animated.attemptId),
+    ).resolves.toMatchObject({ presentationComplete: true });
+    await expect(
+      animated.store.markPresentationComplete('a', animated.attemptId),
+    ).resolves.toMatchObject({ presentationComplete: true });
+    expect(await animated.store.getReplayRecord('a', animated.attemptId)).toEqual(animatedRecord);
+  });
+
+  it('completes zero-action error and cancellation paths without inventing an action', async () => {
+    const store = new MemoryAttemptStore({ draft: savedDraft() });
+    const draft = savedDraft().draft;
+    const { attempt } = await store.admit({
+      owner: 'a',
+      requestKey: 'no-action-error',
+      expectedVersion: 1,
+      draft,
+      animationEnabled: true,
+    });
+    expect(attempt.presentationComplete).toBe(false);
+    const closed = await store.close('a', attempt.id, 'error', 'startup_failure');
+    expect(closed?.presentationComplete).toBe(true);
+    const replay = await store.getReplayRecord('a', attempt.id);
+    expect(replay).toMatchObject({
+      actions: [],
+      snapshots: [{ id: 'state-0' }],
+      closure: { status: 'error', actionCount: 0, recordComplete: true },
+    });
+
+    const { attempt: pending } = await store.admit({
+      owner: 'a',
+      requestKey: 'presentation-before-terminal',
+      expectedVersion: 1,
+      draft,
+      animationEnabled: true,
+    });
+    await expect(store.markPresentationComplete('a', pending.id)).rejects.toBeInstanceOf(
+      AttemptNotTerminalError,
+    );
+  });
+
+  it('leaves a terminal action victory pending until its automatic presentation is marked', async () => {
+    const draft = savedDraft().draft;
+    const fixture = createClosedAttemptRecordFixture();
+    const store = new MemoryAttemptStore({ draft: savedDraft() });
+    const { attempt } = await store.admit({
+      owner: 'a',
+      requestKey: 'animated-victory',
+      expectedVersion: 1,
+      draft,
+      animationEnabled: true,
+    });
+    await store.claim('a', attempt.id, 'executor');
+    for (const action of fixture.actions) {
+      const before = fixture.snapshots.find((snapshot) => snapshot.id === action.beforeStateId);
+      const after = fixture.snapshots.find((snapshot) => snapshot.id === action.afterStateId);
+      if (!before || !after) throw new Error('fixture action is missing its referenced state');
+      await store.publishAction('a', attempt.id, 'executor', {
+        ...action,
+        beforeSnapshot: before,
+        afterSnapshot: after,
+        progress: after.maxSupportReached / LEVEL.segments.length,
+        finalSupport: after.support,
+        turnsUsed: after.turnsUsed,
+        ...(action.seq === fixture.actions.length ? { terminalStatus: 'victory' as const } : {}),
+      });
+    }
+    expect(await store.get('a', attempt.id)).toMatchObject({
+      status: 'victory',
+      turnsUsed: fixture.actions.length,
+      presentationComplete: false,
+    });
+    await expect(store.markPresentationComplete('a', attempt.id)).resolves.toMatchObject({
+      status: 'victory',
+      presentationComplete: true,
+    });
   });
 
   it('allows two keys until the last quota slot and only one concurrent claim', async () => {

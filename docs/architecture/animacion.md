@@ -1,6 +1,6 @@
 # Animación y catálogo visual
 
-**Diseño aprobado. Implementación pendiente.** Define cómo presentar el [registro de ejecución](registro-de-ejecucion.md). La animación avanza automáticamente, a velocidad fija, hacia adelante y sin controles del usuario. Conserva el flujo y las garantías acordadas en [experiencia](../intent/experiencia.md) e [intentos](../intent/intentos.md). Los ejemplos visuales y tiempos de presentación no fijan el arte definitivo.
+**Reproductor del recorrido estático implementado.** Define cómo presentar el [registro de ejecución](registro-de-ejecucion.md). La animación avanza automáticamente, a velocidad fija, hacia adelante y sin controles del usuario. Conserva el flujo y las garantías acordadas en [experiencia](../intent/experiencia.md) e [intentos](../intent/intentos.md). El catálogo visual actual cubre el nivel estático; las mecánicas posteriores requerirán ampliar sus recetas y gráficos.
 
 ## Enfoque elegido
 
@@ -40,6 +40,8 @@ Si todo el nivel entra de forma legible, se dibuja completo. Si no, la cámara d
 | Objeto y salida | Identidad visual por tipo, estado y ancla en el apoyo | Llave presente/recogida; salida bloqueada/habilitada. |
 | Receta | Trayectoria, clips, marcadores y efectos para una acción con su resultado | Desplazar caminando; aproximar al borde y caer; recoger y habilitar salida. |
 | Perfil visual | Versión y formatos/códigos compatibles; geometría, catálogo y recetas coherentes | Interpretación completa de una familia de registros. |
+
+El perfil estático `v1` usa un SVG original con símbolos para robot, terreno, salida y efectos, publicado con URL de asset versionada por el build. Las poses del robot comparten cabeza, torso, extremidades, cara y paleta; transforman esas mismas piezas para caminar, saltar, agacharse, caer, chocar y celebrar. Esta construcción conserva proporciones y ancla de pies entre poses sin generar imágenes independientes para cada frame. El catálogo actual incluye las formas del nivel estático; no representa todavía objetos ni barreras periódicas.
 
 El anclaje del robot está en los pies. Cambiar de frame o de postura conserva ese punto de referencia; así un sprite más alto no desplaza al personaje. La orientación base se refleja para caminar, saltar o agacharse a la izquierda; no se duplica un set completo por dirección. Si algún arte asimétrico necesita variantes, el catálogo puede seleccionarlas sin cambiar los datos del intento.
 
@@ -95,7 +97,7 @@ La pantalla puede informar el turno que se está mostrando, sin controles de tra
 
 ## Integración con Probar y el resultado
 
-Se conserva **Probar → bloqueo → cálculo → animación si estaba habilitada → resultado**. El toggle queda fijado por intento. La animación solo empieza con registro cerrado, secuencia completa, nivel fijo y recursos preparados. Mientras se cargan muestra «Preparando animación», sin adelantar métricas o habilitar el editor. La precarga comprueba carga/decodificación de los recursos que usa ese registro. [Decodificación de imágenes](https://developer.mozilla.org/en-US/docs/Web/API/HTMLImageElement/decode).
+Se conserva **Probar → bloqueo → cálculo → animación si estaba habilitada → resultado**. El toggle queda fijado por intento. La animación solo empieza con registro cerrado, secuencia completa, nivel fijo y recursos preparados. Mientras se cargan muestra «Preparando animación», sin adelantar métricas o habilitar el editor. El perfil estático carga el SVG versionado y comprueba los símbolos requeridos antes de comenzar. Si un perfil posterior usa imágenes raster, su precarga debe comprobar también la [decodificación](https://developer.mozilla.org/en-US/docs/Web/API/HTMLImageElement/decode).
 
 Con Animación apagada, el resultado no espera descarga de sprites ni del detalle de reproducción. Se conserva el registro completo en el servidor para volver a verlo desde el resultado o el historial. Con Animación encendida, el fin automático de la secuencia —incluida reacción o celebración final— libera el resultado. Durante la animación no hay controles operativos, incluido Cancelar; el editor permanece bloqueado hasta que termine.
 

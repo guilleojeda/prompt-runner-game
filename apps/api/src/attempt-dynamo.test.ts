@@ -21,11 +21,15 @@ import {
   type CallRecord,
 } from '../../../shared/server/attempt.js';
 import { createDefaultDraft, validateDraft } from '../../../shared/robot.js';
+import { createClosedAttemptRecordFixture } from '../../../shared/attempt.fixture.js';
 import {
   AdmissionConflictError,
+  AttemptNotTerminalError,
   AttemptStoreError,
   createDynamoAttemptStore,
+  IdempotencyConflictError,
   ModelUnavailableError,
+  ReplayRecordError,
   S3BodyStore,
 } from './attempt-store.js';
 
@@ -62,6 +66,7 @@ const itemKey = (pk: string, sk: string): string => `${pk}\u0000${sk}`;
 class DynamoHarness {
   public readonly items = new Map<string, Record<string, AttributeValue>>();
   public readonly send = vi.fn((command: CommandLike) => this.handle(command));
+  public queryPageSize = Number.POSITIVE_INFINITY;
   public updateBehavior: (input: Record<string, unknown>) => HarnessBehavior = () => undefined;
   public transactionBehavior: (input: Record<string, unknown>) => HarnessBehavior = () => undefined;
 
@@ -117,13 +122,28 @@ class DynamoHarness {
       const values = unmarshall(input.ExpressionAttributeValues as Record<string, AttributeValue>);
       const pk = String(values[':pk']);
       const prefix = String(values[':prefix']);
-      const Items = [...this.items.entries()]
+      const start = input.ExclusiveStartKey
+        ? unmarshall(input.ExclusiveStartKey as Record<string, AttributeValue>).SK
+        : undefined;
+      const matching = [...this.items.entries()]
         .filter(
-          ([key]) => key.startsWith(`${pk}\u0000`) && key.split('\u0000')[1].startsWith(prefix),
+          ([key]) =>
+            key.startsWith(`${pk}\u0000`) &&
+            key.split('\u0000')[1].startsWith(prefix) &&
+            (typeof start !== 'string' || key.split('\u0000')[1] > start),
         )
         .sort(([left], [right]) => left.localeCompare(right))
-        .map(([, value]) => structuredClone(value));
-      return { Items };
+        .map(([itemKeyValue, value]) => ({ itemKeyValue, value }));
+      const commandLimit = typeof input.Limit === 'number' ? input.Limit : Number.POSITIVE_INFINITY;
+      const pageSize = Math.min(this.queryPageSize, commandLimit);
+      const page = matching.slice(0, pageSize);
+      const last = page.at(-1)?.itemKeyValue.split('\u0000')[1];
+      return {
+        Items: page.map(({ value }) => structuredClone(value)),
+        ...(page.length < matching.length && last
+          ? { LastEvaluatedKey: marshall({ PK: pk, SK: last }) }
+          : {}),
+      };
     }
     if (name === 'UpdateItemCommand') {
       const behavior = this.updateBehavior(input);
@@ -201,6 +221,78 @@ const seedAttempt = (
     snapshot: initial,
   });
   return { initial, attemptId };
+};
+
+const seedClosedReplay = (
+  harness: DynamoHarness,
+  overrides: Record<string, unknown> = {},
+): { readonly attemptId: string; readonly actionCount: number; readonly snapshotCount: number } => {
+  const record = createClosedAttemptRecordFixture();
+  const attemptId = 'attempt-replay';
+  const final = record.snapshots.at(-1);
+  const attempt = {
+    PK: 'USER#owner',
+    SK: `ATTEMPT#${attemptId}`,
+    entity: 'attempt',
+    recordVersion: record.recordVersion,
+    id: attemptId,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    status: record.closure.status,
+    cancelRequested: false,
+    levelId: record.config.level.id,
+    turnsUsed: final?.turnsUsed ?? 0,
+    maxTurns: record.config.level.maxTurns,
+    calls: record.metrics.calls,
+    inputTokens: record.metrics.inputTokens,
+    outputTokens: record.metrics.outputTokens,
+    reasoningTokens: record.metrics.reasoningTokens,
+    gameTokens: record.metrics.gameTokens,
+    cacheReadTokens: record.metrics.cacheReadTokens,
+    cacheWriteTokens: record.metrics.cacheWriteTokens,
+    score: record.score,
+    progress: 1,
+    finalSupport: final?.support ?? 0,
+    animationEnabled: false,
+    presentationComplete: true,
+    recordComplete: true,
+    owner: 'owner',
+    requestKey: 'replay-request',
+    draft: { ...createDefaultDraft(), instructions: 'PRIVATE REPLAY PROMPT' },
+    instructions: 'PRIVATE HEADER INSTRUCTIONS',
+    skills: [],
+    config: { ...DEFAULT_ATTEMPT_CONFIG, levelDefinition: record.config.level },
+    sequence: record.actions.length,
+    nextCall: record.actions.length + 1,
+    initialStateId: record.snapshots[0]?.id,
+    currentStateId: record.closure.finalStateId,
+    startDeadline: '2026-09-21T16:00:00.000Z',
+    sessionId: `attempt-${attemptId}`,
+    ...overrides,
+  };
+  harness.put(attempt);
+  for (const snapshot of record.snapshots) {
+    harness.put({
+      PK: `ATTEMPT#${attemptId}`,
+      SK: `STATE#${snapshot.id}`,
+      entity: 'snapshot',
+      stateId: snapshot.id,
+      snapshot,
+    });
+  }
+  for (const action of record.actions) {
+    harness.put({
+      PK: `ATTEMPT#${attemptId}`,
+      SK: `ACTION#${String(action.seq).padStart(8, '0')}`,
+      entity: 'action',
+      ...action,
+    });
+  }
+  return {
+    attemptId,
+    actionCount: record.actions.length,
+    snapshotCount: record.snapshots.length,
+  };
 };
 
 const seedCall = (
@@ -342,6 +434,45 @@ describe('Dynamo attempt admission conditions', () => {
     expect(transaction.TransactItems[4].Update.ConditionExpression).toContain('#used < :limit');
   });
 
+  it('recovers a phase-3 request key as animation-off before reading current draft state', async () => {
+    const harness = new DynamoHarness();
+    const { attemptId } = seedAttempt(harness);
+    const legacyHeader = harness.read('USER#owner', `ATTEMPT#${attemptId}`)!;
+    delete legacyHeader.animationEnabled;
+    delete legacyHeader.presentationComplete;
+    harness.put(legacyHeader);
+    harness.put({
+      PK: 'USER#owner',
+      SK: 'REQUEST#request',
+      entity: 'attempt-request',
+      owner: 'owner',
+      requestKey: 'request',
+      fingerprint: 'legacy-draft-only-fingerprint',
+      attemptId,
+      day: '2026-09-21',
+    });
+    const store = storeFor(harness);
+    const draft = createDefaultDraft();
+    const duplicate = await store.admit({
+      owner: 'owner',
+      requestKey: 'request',
+      expectedVersion: 999,
+      draft,
+    });
+    expect(duplicate.admitted).toBe(false);
+    expect(duplicate.attempt).toMatchObject({ id: attemptId, animationEnabled: false });
+    expect(harness.send.mock.calls.some(([command]) => command.input.TransactItems)).toBe(false);
+    await expect(
+      store.admit({
+        owner: 'owner',
+        requestKey: 'request',
+        expectedVersion: 1,
+        draft,
+        animationEnabled: true,
+      }),
+    ).rejects.toBeInstanceOf(IdempotencyConflictError);
+  });
+
   it('rejects an unchanged legacy v1 draft before creating a new attempt', async () => {
     const harness = new DynamoHarness();
     const current = createDefaultDraft();
@@ -422,6 +553,149 @@ describe('Dynamo attempt admission conditions', () => {
     ).rejects.toBeInstanceOf(AttemptStoreError);
     expect(send).toHaveBeenCalledTimes(6);
     expect(send.mock.calls.filter(([command]) => command.input.TransactItems)).toHaveLength(1);
+  });
+});
+
+describe('Dynamo animation preference and replay projection', () => {
+  it('persists the default-on preference and rejects a stale conditional write', async () => {
+    const harness = new DynamoHarness();
+    const store = storeFor(harness);
+    expect(await store.getAnimationPreference('owner')).toEqual({
+      animationEnabled: true,
+      version: 0,
+    });
+    expect(await store.putAnimationPreference('owner', false, 0)).toEqual({
+      animationEnabled: false,
+      version: 1,
+    });
+    expect(await storeFor(harness).getAnimationPreference('owner')).toEqual({
+      animationEnabled: false,
+      version: 1,
+    });
+    harness.updateBehavior = (input) => {
+      const condition = String(input.ConditionExpression);
+      const current = harness.read('USER#owner', 'PREFERENCE#ANIMATION');
+      if (condition.includes('attribute_not_exists(PK)')) return current ? 'throw' : undefined;
+      if (!condition.includes('#version = :expectedVersion')) return undefined;
+      const values = unmarshall(input.ExpressionAttributeValues as Record<string, AttributeValue>);
+      return current?.version === values[':expectedVersion'] ? undefined : 'throw';
+    };
+    await expect(store.putAnimationPreference('owner', true, 0)).rejects.toMatchObject({
+      current: { animationEnabled: false, version: 1 },
+    });
+    expect(harness.read('USER#owner', 'PREFERENCE#ANIMATION')).toMatchObject({
+      animationEnabled: false,
+      version: 1,
+    });
+  });
+
+  it('marks presentation complete only for the owner of a terminal attempt', async () => {
+    const harness = new DynamoHarness();
+    const pending = seedAttempt(harness, { animationEnabled: true, presentationComplete: false });
+    const store = storeFor(harness);
+    await expect(store.markPresentationComplete('owner', pending.attemptId)).rejects.toBeInstanceOf(
+      AttemptNotTerminalError,
+    );
+
+    const terminal = seedAttempt(harness, {
+      status: 'error',
+      animationEnabled: true,
+      presentationComplete: false,
+    });
+    const completed = await store.markPresentationComplete('owner', terminal.attemptId);
+    expect(completed?.presentationComplete).toBe(true);
+    const markCommand = harness.send.mock.calls
+      .map(([command]) => command)
+      .find((command) =>
+        String(command.input.UpdateExpression ?? '').includes('#presentationComplete = :true'),
+      );
+    expect(markCommand?.input.ConditionExpression).toContain('#status IN');
+    await expect(
+      store.markPresentationComplete('owner', terminal.attemptId),
+    ).resolves.toMatchObject({ presentationComplete: true });
+    expect(await store.markPresentationComplete('other-user', terminal.attemptId)).toBeUndefined();
+  });
+
+  it('reads every action and snapshot page and returns no private header fields', async () => {
+    const harness = new DynamoHarness();
+    harness.queryPageSize = 2;
+    const { attemptId, actionCount, snapshotCount } = seedClosedReplay(harness);
+    const header = harness.read('USER#owner', `ATTEMPT#${attemptId}`)!;
+    const storedConfig = header.config as Record<string, unknown>;
+    const storedLevel = storedConfig.levelDefinition as Record<string, unknown>;
+    header.config = {
+      ...storedConfig,
+      levelDefinition: { ...storedLevel, privateNote: 'PRIVATE NESTED LEVEL' },
+    };
+    harness.put(header);
+    const firstState = harness.read(`ATTEMPT#${attemptId}`, 'STATE#state-0')!;
+    firstState.snapshot = {
+      ...(firstState.snapshot as Record<string, unknown>),
+      privateObservation: 'PRIVATE SNAPSHOT DATA',
+    };
+    harness.put(firstState);
+    const firstAction = harness.read(`ATTEMPT#${attemptId}`, 'ACTION#00000001')!;
+    firstAction.action = {
+      ...(firstAction.action as Record<string, unknown>),
+      privatePrompt: 'PRIVATE ACTION DATA',
+    };
+    harness.put(firstAction);
+    const store = storeFor(harness);
+    const record = await store.getReplayRecord('owner', attemptId);
+    expect(record?.actions).toHaveLength(actionCount);
+    expect(record?.snapshots).toHaveLength(snapshotCount);
+    expect(record?.actions[0]).toMatchObject({
+      seq: 1,
+      before: { id: 'state-0' },
+      after: { id: 'state-1' },
+    });
+    expect(await store.getReplayRecord('another-user', attemptId)).toBeUndefined();
+    const serialized = JSON.stringify(record);
+    expect(serialized).not.toContain('PRIVATE REPLAY PROMPT');
+    expect(serialized).not.toContain('PRIVATE HEADER INSTRUCTIONS');
+    expect(serialized).not.toContain('PRIVATE NESTED LEVEL');
+    expect(serialized).not.toContain('PRIVATE SNAPSHOT DATA');
+    expect(serialized).not.toContain('PRIVATE ACTION DATA');
+    expect(serialized).not.toContain('requestKey');
+    expect(serialized).not.toContain('responseKey');
+    expect(serialized).not.toContain('owner');
+    expect(
+      harness.send.mock.calls.filter(([command]) => command.constructor.name === 'QueryCommand'),
+    ).toHaveLength(6);
+  });
+
+  it('rejects a missing replay action or a broken state reference instead of truncating', async () => {
+    const missingAction = new DynamoHarness();
+    const { attemptId } = seedClosedReplay(missingAction);
+    missingAction.items.delete(itemKey(`ATTEMPT#${attemptId}`, 'ACTION#00000003'));
+    await expect(
+      storeFor(missingAction).getReplayRecord('owner', attemptId),
+    ).rejects.toBeInstanceOf(ReplayRecordError);
+
+    const brokenReference = new DynamoHarness();
+    const broken = seedClosedReplay(brokenReference);
+    const action = brokenReference.read(`ATTEMPT#${broken.attemptId}`, 'ACTION#00000003')!;
+    brokenReference.put({ ...action, beforeStateId: 'state-missing' });
+    await expect(
+      storeFor(brokenReference).getReplayRecord('owner', broken.attemptId),
+    ).rejects.toBeInstanceOf(ReplayRecordError);
+
+    const missingSnapshot = new DynamoHarness();
+    const incomplete = seedClosedReplay(missingSnapshot);
+    missingSnapshot.items.delete(itemKey(`ATTEMPT#${incomplete.attemptId}`, 'STATE#state-3'));
+    await expect(
+      storeFor(missingSnapshot).getReplayRecord('owner', incomplete.attemptId),
+    ).rejects.toBeInstanceOf(ReplayRecordError);
+
+    const incompleteHeader = new DynamoHarness();
+    const partial = seedClosedReplay(incompleteHeader);
+    incompleteHeader.put({
+      ...incompleteHeader.read('USER#owner', `ATTEMPT#${partial.attemptId}`),
+      recordComplete: false,
+    });
+    await expect(
+      storeFor(incompleteHeader).getReplayRecord('owner', partial.attemptId),
+    ).rejects.toBeInstanceOf(ReplayRecordError);
   });
 });
 

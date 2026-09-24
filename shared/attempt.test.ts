@@ -5,6 +5,7 @@ import {
   utf8ByteLength,
 } from './attempt.fixture.js';
 import { ATTEMPT_RECORD_VERSION } from './attempt.js';
+import type { ReplayRecordView } from './attempt.js';
 
 const DYNAMODB_ITEM_LIMIT = 400 * 1024;
 const REQUIRED_ITEM_MARGIN = 16 * 1024;
@@ -49,6 +50,33 @@ describe('durable closed attempt contract fixture', () => {
       actionCount: 5,
       finalStateId: 'state-5',
       recordComplete: true,
+    });
+  });
+
+  it('defines a replay projection with public level/state/action data only', () => {
+    const record = createClosedAttemptRecordFixture();
+    const replay: ReplayRecordView = {
+      recordVersion: record.recordVersion,
+      id: record.id,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+      config: { level: record.config.level },
+      snapshots: record.snapshots,
+      actions: record.actions.map((action, index) => ({
+        ...action,
+        before: record.snapshots[index]!,
+        after: record.snapshots[index + 1]!,
+      })),
+      closure: record.closure,
+      metrics: record.metrics,
+      score: record.score,
+    };
+    expect(replay.config).toEqual({ level: record.config.level });
+    expect(replay.config).not.toHaveProperty('robot');
+    expect(replay.config).not.toHaveProperty('scoreRules');
+    expect(replay.actions[0]).toMatchObject({
+      before: { id: 'state-0' },
+      after: { id: 'state-1' },
     });
   });
 

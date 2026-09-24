@@ -4,7 +4,7 @@ Juego educativo de AWS User Group AI Argentina. El participante configura las ha
 
 **Web publicada:** [Abrir la aplicación](https://d1ilpq1n58tzqo.cloudfront.net).
 
-**Estado del proyecto:** acceso Cognito, configuración persistida y ejecución real de un recorrido estático mediante AgentCore Runtime, Strands y Bedrock. Probar guarda la configuración visible, fija el intento y muestra su resultado, consumo e historial propio. La animación, los obstáculos periódicos, los objetos, la comparación y el segundo recorrido siguen siendo capacidades pendientes del diseño objetivo. El nombre del juego es provisional.
+**Estado del proyecto:** acceso Cognito, configuración persistida y ejecución real de un recorrido estático mediante AgentCore Runtime, Strands y Bedrock. Probar guarda la configuración visible y fija el intento; la animación opcional presenta las acciones guardadas antes del resultado. El historial propio permite volver a verlas sin inferencia. Los obstáculos periódicos, los objetos, la comparación y el segundo recorrido siguen pendientes. El nombre del juego es provisional.
 
 ## Desarrollo local
 
@@ -41,7 +41,7 @@ Después de ingresar, podés habilitar habilidades del catálogo, escribir sus d
 
 Si otra pestaña guardó antes, el editor conserva tus cambios y muestra un conflicto. Podés usar la versión guardada o decidir reemplazarla con tus cambios después de revisarla. Una nueva edición concurrente vuelve a producir un conflicto. Un error de red permite reintentar; si se perdió una respuesta de guardado, se consulta el servidor antes de decidir qué repetir.
 
-El límite de configuración es 65.536 bytes de JSON UTF-8, incluidos los contratos fijos de las habilidades. El editor lo informa y no trunca textos. Las copias pendientes del editor permanecen sólo en memoria: un cierre abrupto puede perder cambios que el servidor no confirmó. Como excepción transitoria, después de **Probar** se guarda en `sessionStorage` el snapshot exacto del intento junto con su clave y versión para poder repetir la misma admisión si la respuesta se pierde; no es una preferencia ni un borrador alternativo y se elimina al resolver el intento, cerrar sesión o cambiar de cuenta.
+El límite de configuración es 65.536 bytes de JSON UTF-8, incluidos los contratos fijos de las habilidades. El editor lo informa y no trunca textos. Las copias pendientes del editor permanecen sólo en memoria: un cierre abrupto puede perder cambios que el servidor no confirmó. Como excepción transitoria, después de **Probar** se guarda en `sessionStorage` la clave de admisión, su versión, el snapshot exacto y la elección de Animación para recuperar una respuesta perdida; después puede conservar sólo el identificador del intento mientras queda una presentación automática pendiente. No es una preferencia ni un borrador alternativo y se elimina al terminar esa presentación, cerrar sesión o cambiar de cuenta.
 
 **Probar** confirma el guardado del contenido visible y fija una copia inmutable para ese intento. No hace falta esperar el autosave ni aplicar cambios por separado. Si hay conflicto, configuración inválida o ninguna habilidad habilitada, se informa la causa y no se admite un intento. Los detalles están en [datos](docs/architecture/datos.md).
 
@@ -53,11 +53,13 @@ Sonnet 4.6 cuenta con verificación de inferencia nativa, victoria, continuidad 
 
 El recorrido inicial tiene cinco tramos: suelo, pozo, suelo, rama baja y suelo, con la salida al final y hasta doce acciones. Avanzar y Retroceder caminan; Saltar y Agacharse y avanzar reciben dirección; Nadar consume un turno sin mover al robot. Las descripciones explican las habilidades al agente, pero no cambian la física.
 
-Desde Probar hasta el resultado se bloquean edición, nuevos intentos, historial y cierre de sesión. Durante el cálculo podés cancelar; si una llamada ya estaba en vuelo, su consumo se conserva aunque no se publique otra acción. Cerrar el navegador no cancela el trabajo del servidor. Al volver, recuperás el estado o el resultado guardado; el historial permite consultar los intentos propios sin nueva inferencia.
+**Animación** comienza activada y su preferencia se guarda para la cuenta. Podés apagarla antes de Probar; el valor visible queda fijo para ese intento. Encendida, la web reproduce las acciones guardadas a velocidad fija antes de revelar el resultado. Apagada, muestra el resultado al terminar el cálculo. Desde el resultado o el historial podés iniciar otra reproducción completa sin llamadas al modelo.
+
+Desde Probar hasta el resultado se bloquean edición, nuevos intentos, historial y cierre de sesión. Durante el cálculo podés cancelar; durante la reproducción no hay controles de pausa, avance, retroceso o salto. Si una llamada ya estaba en vuelo, su consumo se conserva aunque no se publique otra acción. Cerrar el navegador no cancela el trabajo del servidor. Al volver, recuperás el cálculo o la presentación pendiente sin crear otro intento.
 
 La cuota inicial es de cien intentos por día y cuenta al admitir, con reinicio a medianoche de Argentina. Un duplicado o rechazo previo no consume otra unidad; un error o cancelación posterior no devuelve la consumida. El resultado distingue victoria, derrota, límite, cancelación y error técnico, con turnos, llamadas y tokens reales. Un uso desconocido se muestra como tal y no produce un puntaje aparentemente exacto. Sólo las victorias con uso completo tienen puntos.
 
-Esta versión presenta el resultado directamente. Conserva estados, acciones y cuerpos de inferencia para reproducción e inspección posteriores; todavía no ofrece animación ni diagnóstico detallado.
+Los intentos anteriores también se pueden reproducir desde su registro. La vista de animación usa estados y acciones; las observaciones, prompts y cuerpos de inferencia permanecen privados y el diagnóstico detallado sigue pendiente.
 
 ## Publicación
 
@@ -94,7 +96,7 @@ Las consultas de servicios se conservan por tema, con fecha, fuentes y límites 
 
 ## Arquitectura
 
-**Decisión final de ejecución:** AgentCore Runtime con Strands TypeScript y el proveedor nativo de Amazon Bedrock, con un catálogo finito de OpenAI y Claude mediante Converse sin streaming. Los perfiles y sus parámetros están en [ejecución](docs/architecture/ejecucion.md#inferencia). No se usa Mantle. El registro conserva snapshots y resoluciones, y React/SVG compone la animación a partir de esos datos. El flujo acordado es Probar → cálculo con controles bloqueados → animación opcional a velocidad fija, hacia adelante y sin controles → resultado. La ejecución estática y su registro están implementados; el renderer y las mecánicas posteriores siguen pendientes.
+**Decisión final de ejecución:** AgentCore Runtime con Strands TypeScript y el proveedor nativo de Amazon Bedrock, con un catálogo finito de OpenAI y Claude mediante Converse sin streaming. Los perfiles y sus parámetros están en [ejecución](docs/architecture/ejecucion.md#inferencia). No se usa Mantle. El registro conserva snapshots y resoluciones, y React/SVG compone la animación a partir de esos datos. El flujo publicado es Probar → cálculo con controles bloqueados → animación opcional a velocidad fija, hacia adelante y sin controles → resultado. Las mecánicas posteriores siguen pendientes.
 
 Están aprobados el contrato de registro, el reproductor, DynamoDB on-demand con S3 privado para cuerpos de inferencia, un único ambiente, la política diaria de cuota y Cognito Essentials con Managed Login. La primera versión usa el correo predeterminado de Cognito, aceptando sus 50 emails diarios y mensajes estándar; SES se incorporará en una fase posterior sobre el mismo user pool. El frontend React estático está publicado en S3 privado mediante CloudFront con Origin Access Control, usando CDK y GitHub Actions.
 

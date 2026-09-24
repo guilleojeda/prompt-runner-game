@@ -1,6 +1,6 @@
 # Experiencia y alcance
 
-Especificación vigente de la experiencia. El acceso, la preparación persistida y los intentos reales del recorrido estático están implementados, con resultado directo, cancelación e historial. La animación y las demás capacidades posteriores siguen pendientes. Se relaciona con [intentos](intentos.md), [agente](agente.md), [reglas del juego](juego.md), [consumo y puntaje](consumo-y-puntaje.md) y [plataforma](plataforma.md).
+Especificación vigente de la experiencia. El acceso, la preparación persistida y los intentos reales del recorrido estático están implementados, con animación opcional, resultado directo, cancelación, historial y reproducción. Las mecánicas y capacidades posteriores siguen pendientes. Se relaciona con [intentos](intentos.md), [agente](agente.md), [reglas del juego](juego.md), [consumo y puntaje](consumo-y-puntaje.md) y [plataforma](plataforma.md).
 
 ## Propósito y participantes
 
@@ -25,7 +25,7 @@ Un conflicto conserva el texto local y permite revisar la versión guardada ante
 
 La pantalla está en español y se opera con teclado. Probar congela lo visible, confirma su guardado y admite un intento con control de versión. Se bloquean los controles, incluido cerrar sesión, hasta presentar el resultado; durante cálculo sólo Cancelar es operativo. Los errores de acceso o red permiten recuperar la sesión o consulta sin crear otro intento. El historial propio es paginado y abre resultados conservados. Si hay varios intentos activos desde otras sesiones, se elige cuál retomar antes de entrar en su cálculo; no se impone una exclusión global por usuario.
 
-Por ahora no hay selector de nivel ni Animación: el recorrido estático presenta el resultado directamente y conserva `animation_enabled=false`, sin cambiar una preferencia personal. Las referencias de recuperación de la pestaña no sustituyen el registro del servidor. Durante una admisión ya iniciada, la pestaña puede conservar transitoriamente la clave, versión y snapshot exactos en `sessionStorage` para reintentar la misma solicitud tras una respuesta perdida; no conserva preferencias ni un borrador alternativo y los elimina al resolver el intento, cerrar sesión o cambiar de cuenta. El circuito objetivo completo se mantiene a continuación; sus estados de animación y comparación siguen pendientes.
+Por ahora no hay selector de nivel: se juega el recorrido estático. El toggle **Animación** está disponible y su preferencia se guarda en el servidor por usuario; cada intento conserva el valor elegido. Las referencias de recuperación de la pestaña no sustituyen el registro del servidor. Durante una admisión ya iniciada, la pestaña puede conservar transitoriamente la clave, versión, elección de Animación y snapshot exactos en `sessionStorage` para reintentar la misma solicitud tras una respuesta perdida. Después puede conservar el identificador del intento mientras su presentación automática está pendiente. No guarda un borrador alternativo ni usa esa referencia como preferencia.
 
 ## Circuito de una partida
 

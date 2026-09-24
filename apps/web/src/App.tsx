@@ -272,6 +272,7 @@ export function App({
   const [runnerApi, setRunnerApi] = useState<AttemptApi | null>(attemptApi ?? null);
   const [editorConfig, setEditorConfig] = useState<AuthConfig | null>(null);
   const [attemptBusy, setAttemptBusy] = useState(false);
+  const [attemptPreferenceReady, setAttemptPreferenceReady] = useState(false);
   const clientRef = useRef<AuthClient | null>(authClient ?? null);
   const configRef = useRef<AuthConfig | null>(null);
   const draftApiRef = useRef<DraftApi | null>(draftApi ?? null);
@@ -660,7 +661,7 @@ export function App({
                 api={editorApi}
                 session={session}
                 paused={renewing || phase !== 'account' || apiAuthError}
-                locked={attemptBusy}
+                locked={attemptBusy || !attemptPreferenceReady}
                 onTry={runnerApi ? () => attemptWorkspaceRef.current?.start() : undefined}
                 onAuthRequired={handleApiAuthRequired}
               />
@@ -676,6 +677,7 @@ export function App({
                   session={session}
                   authPaused={renewing || phase !== 'account' || apiAuthError}
                   onBusyChange={handleAttemptBusyChange}
+                  onPreferenceReadyChange={setAttemptPreferenceReady}
                   onAuthRequired={handleApiAuthRequired}
                 />
               )}

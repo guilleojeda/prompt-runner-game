@@ -27,9 +27,17 @@ import {
 } from '../../../shared/models.js';
 import { createInitialState, LEVEL, scoreAttempt } from '../../../shared/game.js';
 import { usageFromBedrockResponseBytes } from '../../runner/src/usage.js';
-import { ATTEMPT_RECORD_VERSION } from '../../../shared/attempt.js';
 import {
+  ATTEMPT_RECORD_VERSION,
+  type AnimationPreference,
+  type ReplayRecordView,
+} from '../../../shared/attempt.js';
+import {
+  AnimationPreferenceConflictError,
+  AttemptNotTerminalError,
   DEFAULT_ATTEMPT_CONFIG,
+  ReplayRecordError,
+  replayRecordViewOf,
   summaryOf,
   type ActionPublication,
   type AdmitInput,
@@ -43,6 +51,11 @@ import {
   type Usage,
 } from '../../../shared/server/attempt.js';
 export type { AttemptStore, BodyStore } from '../../../shared/server/attempt.js';
+export {
+  AnimationPreferenceConflictError,
+  AttemptNotTerminalError,
+  ReplayRecordError,
+} from '../../../shared/server/attempt.js';
 
 export class AttemptStoreError extends Error {
   public constructor(message: string, options?: ErrorOptions) {
@@ -91,7 +104,7 @@ const DEFAULT_QUOTA = 100;
 const sha256 = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
 const utf8 = (value: unknown): Uint8Array => new TextEncoder().encode(JSON.stringify(value));
 
-/** Stable JSON for the request fingerprint. Object key order is fixed by the draft validator. */
+/** Stable draft encoding used by the request fingerprint. */
 export const canonicalDraft = (draft: RobotDraft | LegacyRobotDraft): string =>
   JSON.stringify({
     schemaVersion: 2,
@@ -105,8 +118,10 @@ export const canonicalDraft = (draft: RobotDraft | LegacyRobotDraft): string =>
     })),
   });
 
-export const fingerprintOf = (draft: RobotDraft | LegacyRobotDraft): string =>
-  sha256(utf8(canonicalDraft(draft)));
+export const fingerprintOf = (
+  draft: RobotDraft | LegacyRobotDraft,
+  animationEnabled = false,
+): string => sha256(utf8(JSON.stringify({ draft: canonicalDraft(draft), animationEnabled })));
 
 export const calendarDay = (date: Date): string =>
   new Intl.DateTimeFormat('en-CA', {
@@ -312,6 +327,10 @@ const toRecord = (item: Record<string, unknown>): PersistedAttempt => {
   }
   return {
     ...record,
+    // Phase-3 rows predate the preference. Their behavior was animation-off,
+    // with presentation already complete; do not reinterpret them on read.
+    animationEnabled: item.animationEnabled === true,
+    presentationComplete: item.presentationComplete === false ? false : true,
     config,
     draft,
     skills: item.skills as AttemptSkill[],
@@ -344,6 +363,21 @@ const withoutSnapshots = (record: PersistedAttempt): Record<string, unknown> => 
   };
 };
 
+const animationPreferenceOf = (item: Record<string, unknown>): AnimationPreference => {
+  if (
+    typeof item.animationEnabled !== 'boolean' ||
+    typeof item.version !== 'number' ||
+    !Number.isSafeInteger(item.version) ||
+    item.version < 1
+  ) {
+    throw new AttemptStoreError('La preferencia de animación guardada no es válida.');
+  }
+  return { animationEnabled: item.animationEnabled, version: item.version };
+};
+
+const terminalAttempt = (attempt: PersistedAttempt): boolean =>
+  attempt.status !== 'pending' && attempt.status !== 'running';
+
 export type DynamoAttemptStoreOptions = {
   readonly client?: DynamoDBClient;
   readonly tableName?: string;
@@ -373,10 +407,11 @@ export class DynamoAttemptStore implements AttemptStore {
   public async admit(input: AdmitInput): Promise<AdmitResult> {
     if (!input.requestKey || input.requestKey.length > 256)
       throw new AttemptStoreError('La clave de solicitud no es válida.');
-    const fingerprint = fingerprintOf(input.draft);
+    const animationEnabled = input.animationEnabled === true;
+    const fingerprint = fingerprintOf(input.draft, animationEnabled);
     const existing = await this.getByRequest(input.owner, input.requestKey);
     if (existing) {
-      if (existing.requestKey && fingerprintOf(existing.draft) !== fingerprint)
+      if (fingerprintOf(existing.draft, existing.animationEnabled) !== fingerprint)
         throw new IdempotencyConflictError();
       return { attempt: summaryOf(existing), admitted: false };
     }
@@ -433,8 +468,8 @@ export class DynamoAttemptStore implements AttemptStore {
       score: null,
       progress: 0,
       finalSupport: 0,
-      animationEnabled: false,
-      presentationComplete: true,
+      animationEnabled,
+      presentationComplete: !animationEnabled,
       recordComplete: true,
       owner: input.owner,
       requestKey: input.requestKey,
@@ -558,7 +593,8 @@ export class DynamoAttemptStore implements AttemptStore {
         }
       }
       if (winner) {
-        if (fingerprintOf(winner.draft) !== fingerprint) throw new IdempotencyConflictError();
+        if (fingerprintOf(winner.draft, winner.animationEnabled) !== fingerprint)
+          throw new IdempotencyConflictError();
         return { attempt: summaryOf(winner), admitted: false };
       }
       if (isConditional(error)) throw new AdmissionConflictError();
@@ -634,6 +670,124 @@ export class DynamoAttemptStore implements AttemptStore {
           ? unmarshall(initial.Item).snapshot
           : undefined;
     return toRecord({ ...item, initialSnapshot, currentSnapshot });
+  }
+
+  public async getAnimationPreference(owner: string): Promise<AnimationPreference> {
+    const response = await this.client.send(
+      new GetItemCommand({
+        TableName: this.tableName,
+        Key: key(`USER#${owner}`, 'PREFERENCE#ANIMATION'),
+        ConsistentRead: true,
+      }),
+    );
+    return response.Item
+      ? animationPreferenceOf(unmarshall(response.Item))
+      : { animationEnabled: true, version: 0 };
+  }
+
+  public async putAnimationPreference(
+    owner: string,
+    animationEnabled: boolean,
+    expectedVersion: number,
+  ): Promise<AnimationPreference> {
+    const nextVersion = expectedVersion + 1;
+    try {
+      await this.client.send(
+        new UpdateItemCommand({
+          TableName: this.tableName,
+          Key: key(`USER#${owner}`, 'PREFERENCE#ANIMATION'),
+          UpdateExpression:
+            'SET #entity = :entity, #owner = :owner, #animationEnabled = :animationEnabled, #version = :version, #updatedAt = :updatedAt',
+          ConditionExpression:
+            expectedVersion === 0 ? 'attribute_not_exists(PK)' : '#version = :expectedVersion',
+          ExpressionAttributeNames: {
+            '#entity': 'entity',
+            '#owner': 'owner',
+            '#animationEnabled': 'animationEnabled',
+            '#version': 'version',
+            '#updatedAt': 'updatedAt',
+          },
+          ExpressionAttributeValues: marshall({
+            ':entity': 'animation-preference',
+            ':owner': owner,
+            ':animationEnabled': animationEnabled,
+            ':version': nextVersion,
+            ':expectedVersion': expectedVersion,
+            ':updatedAt': this.now().toISOString(),
+          }),
+        }),
+      );
+      return { animationEnabled, version: nextVersion };
+    } catch (error) {
+      if (isConditional(error))
+        throw new AnimationPreferenceConflictError(await this.getAnimationPreference(owner));
+      throw new AttemptStoreError('No se pudo guardar la preferencia de animación.', {
+        cause: error,
+      });
+    }
+  }
+
+  public async getReplayRecord(
+    owner: string,
+    attemptId: string,
+  ): Promise<ReplayRecordView | undefined> {
+    const attempt = await this.get(owner, attemptId);
+    if (!attempt) return undefined;
+    if (!terminalAttempt(attempt) || !attempt.recordComplete) throw new ReplayRecordError();
+    const [actionItems, snapshotItems] = await Promise.all([
+      this.queryAttemptItems(attemptId, 'ACTION#'),
+      this.queryAttemptItems(attemptId, 'STATE#'),
+    ]);
+    return replayRecordViewOf(
+      attempt,
+      actionItems.map((item) => unmarshall(item)),
+      snapshotItems.map((item) => unmarshall(item)),
+    );
+  }
+
+  public async markPresentationComplete(
+    owner: string,
+    attemptId: string,
+  ): Promise<PersistedAttempt | undefined> {
+    const current = await this.get(owner, attemptId);
+    if (!current) return undefined;
+    if (!terminalAttempt(current)) throw new AttemptNotTerminalError();
+    if (current.presentationComplete) return current;
+    try {
+      await this.client.send(
+        new UpdateItemCommand({
+          TableName: this.tableName,
+          Key: key(`USER#${owner}`, `ATTEMPT#${attemptId}`),
+          UpdateExpression: 'SET #presentationComplete = :true, #updatedAt = :updatedAt',
+          ConditionExpression:
+            '#presentationComplete = :false AND #status IN (:victory, :defeat, :incomplete, :cancelled, :error)',
+          ExpressionAttributeNames: {
+            '#presentationComplete': 'presentationComplete',
+            '#updatedAt': 'updatedAt',
+            '#status': 'status',
+          },
+          ExpressionAttributeValues: marshall({
+            ':true': true,
+            ':false': false,
+            ':updatedAt': this.now().toISOString(),
+            ':victory': 'victory',
+            ':defeat': 'defeat',
+            ':incomplete': 'incomplete',
+            ':cancelled': 'cancelled',
+            ':error': 'error',
+          }),
+        }),
+      );
+    } catch (error) {
+      if (!isConditional(error))
+        throw new AttemptStoreError('No se pudo completar la presentación.', { cause: error });
+      const latest = await this.get(owner, attemptId);
+      if (!latest) return undefined;
+      if (!terminalAttempt(latest)) throw new AttemptNotTerminalError();
+      if (latest.presentationComplete) return latest;
+      throw new AttemptStoreError('No se pudo completar la presentación.', { cause: error });
+    }
+    return this.get(owner, attemptId);
   }
 
   public async getByRequest(
@@ -774,12 +928,13 @@ export class DynamoAttemptStore implements AttemptStore {
             TableName: this.tableName,
             Key: key(`USER#${owner}`, `ATTEMPT#${attemptId}`),
             UpdateExpression:
-              'SET #status = :cancelled, #cancelRequested = :true, #reason = :reason, #updatedAt = :now',
+              'SET #status = :cancelled, #cancelRequested = :true, #reason = :reason, #presentationComplete = :presented, #updatedAt = :now',
             ConditionExpression: '#status = :pending AND #cancelRequested = :false',
             ExpressionAttributeNames: {
               '#status': 'status',
               '#cancelRequested': 'cancelRequested',
               '#reason': 'reason',
+              '#presentationComplete': 'presentationComplete',
               '#updatedAt': 'updatedAt',
             },
             ExpressionAttributeValues: marshall({
@@ -788,6 +943,7 @@ export class DynamoAttemptStore implements AttemptStore {
               ':cancelled': 'cancelled',
               ':true': true,
               ':reason': 'cancelled_before_start',
+              ':presented': true,
               ':now': now,
             }),
           }),
@@ -1189,7 +1345,7 @@ export class DynamoAttemptStore implements AttemptStore {
                   ':status': status,
                   ':score': score,
                   ':reason': publication.reason ?? null,
-                  ':presented': Boolean(publication.terminalStatus),
+                  ':presented': !current.animationEnabled,
                   ':now': this.now().toISOString(),
                   ':executor': executorId,
                   ':running': 'running',
@@ -1267,7 +1423,7 @@ export class DynamoAttemptStore implements AttemptStore {
             ':game': durableComplete ? current.gameTokens : null,
             ':cacheRead': durableComplete ? current.cacheReadTokens : null,
             ':cacheWrite': durableComplete ? current.cacheWriteTokens : null,
-            ':presented': true,
+            ':presented': !current.animationEnabled || current.sequence === 0,
             ':complete': durableComplete,
             ':now': now,
             ...(executorId
@@ -1554,6 +1710,29 @@ export class DynamoAttemptStore implements AttemptStore {
     return sameAction && sameState ? current : undefined;
   }
 
+  private async queryAttemptItems(
+    attemptId: string,
+    prefix: 'ACTION#' | 'STATE#',
+  ): Promise<Record<string, AttributeValue>[]> {
+    const rows: Record<string, AttributeValue>[] = [];
+    let exclusiveStartKey: Record<string, AttributeValue> | undefined;
+    do {
+      const response = await this.client.send(
+        new QueryCommand({
+          TableName: this.tableName,
+          KeyConditionExpression: 'PK = :pk AND begins_with(SK, :prefix)',
+          ExpressionAttributeValues: marshall({ ':pk': `ATTEMPT#${attemptId}`, ':prefix': prefix }),
+          ExclusiveStartKey: exclusiveStartKey,
+          ScanIndexForward: true,
+          ConsistentRead: true,
+        }),
+      );
+      rows.push(...(response.Items ?? []));
+      exclusiveStartKey = response.LastEvaluatedKey;
+    } while (exclusiveStartKey);
+    return rows;
+  }
+
   private encodeCursor(owner: string, keyValue: Record<string, AttributeValue>): string {
     return Buffer.from(JSON.stringify({ owner, key: keyValue }), 'utf8').toString('base64url');
   }
@@ -1637,8 +1816,10 @@ export class MemoryAttemptStore implements AttemptStore {
   private readonly records = new Map<string, PersistedAttempt>();
   private readonly requests = new Map<string, { fingerprint: string; attemptId: string }>();
   private readonly calls = new Map<string, CallRecord[]>();
+  private readonly actions = new Map<string, unknown[]>();
   private readonly snapshots = new Map<string, Map<string, unknown>>();
   private readonly quotaUsed = new Map<string, number>();
+  private readonly animationPreferences = new Map<string, AnimationPreference>();
   private readonly now: () => Date;
   private readonly quotaLimit: number;
   private draftSnapshot: DraftSnapshot;
@@ -1655,7 +1836,8 @@ export class MemoryAttemptStore implements AttemptStore {
 
   public async admit(input: AdmitInput): Promise<AdmitResult> {
     const requestMapKey = `${input.owner}\u0000${input.requestKey}`;
-    const fingerprint = fingerprintOf(input.draft);
+    const animationEnabled = input.animationEnabled === true;
+    const fingerprint = fingerprintOf(input.draft, animationEnabled);
     const existing = this.requests.get(requestMapKey);
     if (existing) {
       if (existing.fingerprint !== fingerprint) throw new IdempotencyConflictError();
@@ -1707,8 +1889,8 @@ export class MemoryAttemptStore implements AttemptStore {
         score: null,
         progress: 0,
         finalSupport: 0,
-        animationEnabled: false,
-        presentationComplete: true,
+        animationEnabled,
+        presentationComplete: !animationEnabled,
         recordComplete: true,
         requestKey: input.requestKey,
         owner: input.owner,
@@ -1740,12 +1922,59 @@ export class MemoryAttemptStore implements AttemptStore {
     this.requests.set(requestMapKey, { fingerprint, attemptId: id });
     this.quotaUsed.set(`${input.owner}\u0000${day}`, used + 1);
     this.snapshots.set(id, new Map([['state-0', clone(initial)]]));
+    this.actions.set(id, []);
     return { attempt: summaryOf(clone(record)), admitted: true };
   }
 
   public async get(owner: string, attemptId: string): Promise<PersistedAttempt | undefined> {
     const record = this.records.get(attemptId);
     return record?.owner === owner ? clone(record) : undefined;
+  }
+
+  public async getAnimationPreference(owner: string): Promise<AnimationPreference> {
+    return clone(this.animationPreferences.get(owner) ?? { animationEnabled: true, version: 0 });
+  }
+
+  public async putAnimationPreference(
+    owner: string,
+    animationEnabled: boolean,
+    expectedVersion: number,
+  ): Promise<AnimationPreference> {
+    const current = this.animationPreferences.get(owner) ?? { animationEnabled: true, version: 0 };
+    if (current.version !== expectedVersion) throw new AnimationPreferenceConflictError(current);
+    const next = { animationEnabled, version: expectedVersion + 1 };
+    this.animationPreferences.set(owner, next);
+    return clone(next);
+  }
+
+  public async getReplayRecord(
+    owner: string,
+    attemptId: string,
+  ): Promise<ReplayRecordView | undefined> {
+    const attempt = await this.get(owner, attemptId);
+    if (!attempt) return undefined;
+    if (!terminalAttempt(attempt) || !attempt.recordComplete) throw new ReplayRecordError();
+    const snapshots = this.snapshots.get(attemptId);
+    return replayRecordViewOf(
+      attempt,
+      clone(this.actions.get(attemptId) ?? []),
+      [...(snapshots ?? new Map())].map(([stateId, snapshot]) => ({
+        stateId,
+        snapshot: clone(snapshot),
+      })),
+    );
+  }
+
+  public async markPresentationComplete(
+    owner: string,
+    attemptId: string,
+  ): Promise<PersistedAttempt | undefined> {
+    const record = this.owned(attemptId, owner);
+    if (!record) return undefined;
+    if (!terminalAttempt(record)) throw new AttemptNotTerminalError();
+    if (record.presentationComplete) return clone(record);
+    this.replace(record, { presentationComplete: true, updatedAt: this.now().toISOString() });
+    return clone(this.records.get(attemptId)!);
   }
 
   public async getByRequest(
@@ -1839,6 +2068,7 @@ export class MemoryAttemptStore implements AttemptStore {
         reason: 'cancelled_before_start',
         updatedAt: now,
         cancelRequested: true,
+        presentationComplete: true,
       });
       return clone(this.records.get(attemptId)!);
     }
@@ -1960,6 +2190,16 @@ export class MemoryAttemptStore implements AttemptStore {
     if (snapshots.has(publication.afterStateId)) return clone(record);
     snapshots.set(publication.afterStateId, clone(publication.afterSnapshot));
     this.snapshots.set(attemptId, snapshots);
+    const actionItems = this.actions.get(attemptId) ?? [];
+    actionItems.push({
+      seq: publication.seq,
+      decisionId: publication.decisionId,
+      beforeStateId: publication.beforeStateId,
+      afterStateId: publication.afterStateId,
+      action: clone(publication.action),
+      resolution: clone(publication.resolution),
+    });
+    this.actions.set(attemptId, actionItems);
     const changes: Record<string, unknown> = {
       sequence: publication.seq,
       currentSnapshot: clone(publication.afterSnapshot),
@@ -1971,7 +2211,7 @@ export class MemoryAttemptStore implements AttemptStore {
     if (publication.terminalStatus) {
       changes.status = publication.terminalStatus;
       changes.reason = publication.reason;
-      changes.presentationComplete = true;
+      changes.presentationComplete = !record.animationEnabled;
       const current = this.records.get(attemptId)!;
       const params = current.config.scoreParameters;
       changes.score = scoreAttempt(
@@ -2015,7 +2255,7 @@ export class MemoryAttemptStore implements AttemptStore {
     this.replace(record, {
       status: terminalStatus,
       reason,
-      presentationComplete: true,
+      presentationComplete: !record.animationEnabled || record.sequence === 0,
       updatedAt: now,
       calls: Math.max(record.calls, durableCalls.length),
       inputTokens: durableComplete ? record.inputTokens : null,

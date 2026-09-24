@@ -1,6 +1,6 @@
 # Ejecución del juego y del agente
 
-**Ejecución estática con Sonnet 4.6.** AgentCore Runtime con Strands en TypeScript y Amazon Bedrock mediante su integración nativa reúne la coordinación del intento, el motor estático y el registro. La fase 3 ejecuta el nivel `principal-estatico-v1`, conserva el resultado y permite consultar intentos propios. `animationEnabled` es `false` y `presentationComplete` empieza en `true`: el renderer, la animación y el replay son capacidades posteriores. Este documento distingue el circuito actual del diseño aprobado para esas fases. Sonnet 4.6 es el único modelo disponible para intentos nuevos; los perfiles históricos conservan su identidad y parámetros. Los requisitos están en [la especificación](../../README.md#documentación-del-producto); Cognito usa su correo predeterminado inicialmente y SES se incorpora después; el frontend se publica en S3 privado mediante CloudFront con Origin Access Control, según [acceso y entrega](acceso-y-entrega.md).
+**Ejecución estática con Sonnet 4.6.** AgentCore Runtime con Strands en TypeScript y Amazon Bedrock mediante su integración nativa reúne la coordinación del intento, el motor estático y el registro. El nivel `principal-estatico-v1` conserva el resultado y permite consultar intentos propios. La fase 4 agrega preferencia persistida de Animación, reproducción desde el registro cerrado y cierre explícito de la presentación. Sonnet 4.6 es el único modelo disponible para intentos nuevos; los perfiles históricos conservan su identidad y parámetros. Los requisitos están en [la especificación](../../README.md#documentación-del-producto); Cognito usa su correo predeterminado inicialmente y SES se incorpora después; el frontend se publica en S3 privado mediante CloudFront con Origin Access Control, según [acceso y entrega](acceso-y-entrega.md).
 
 ## Componentes y responsabilidades
 
@@ -17,9 +17,9 @@ flowchart LR
   W -->|lectura autorizada de metadatos| D
 ```
 
-En la fase 3, React sirve el editor, el estado del intento, su resultado y el historial básico; todavía no dibuja un replay. Lambda autentica solicitudes, controla pertenencia y cuota, guarda configuraciones y expone las consultas del intento. AgentCore Runtime ejecuta el motor determinista, construye observaciones, llama a Bedrock y guarda el resultado. DynamoDB es la autoridad del estado del intento; el navegador nunca decide movimientos, consumo ni puntos. Los cuerpos de inferencia se conservan en S3 privado según [datos](datos.md). La API no expone todavía un endpoint de bodies o diagnóstico detallado. Para recuperar el uso, su rol puede leer objetos y comprobar su existencia únicamente en el bucket privado de inferencias. Una consulta no intenta recuperar la respuesta de una llamada aún activa; después del cierre o del vencimiento, un objeto ausente conserva el registro incompleto y un error real de S3 se informa como fallo de dependencia.
+React sirve el editor, el estado del intento, su resultado, el historial y la reproducción con SVG. Lambda autentica solicitudes, controla pertenencia y cuota, guarda configuraciones y expone las consultas del intento y su proyección pública para replay. AgentCore Runtime ejecuta el motor determinista, construye observaciones, llama a Bedrock y guarda el resultado. DynamoDB es la autoridad del estado del intento; el navegador nunca decide movimientos, consumo ni puntos. Los cuerpos de inferencia se conservan en S3 privado según [datos](datos.md). La API no expone un endpoint de bodies o diagnóstico detallado. Para recuperar el uso, su rol puede leer objetos y comprobar su existencia únicamente en el bucket privado de inferencias. Una consulta no intenta recuperar la respuesta de una llamada aún activa; después del cierre o del vencimiento, un objeto ausente conserva el registro incompleto y un error real de S3 se informa como fallo de dependencia.
 
-El [registro de ejecución](registro-de-ejecucion.md) define estados y resoluciones para que una fase posterior pueda reproducir sin importar el motor en el navegador. La [animación](animacion.md) y el renderer React/SVG siguen siendo el diseño aprobado de fase 4; no forman parte de la implementación de fase 3.
+El [registro de ejecución](registro-de-ejecucion.md) define estados y resoluciones para reproducir sin importar el motor en el navegador. La [animación](animacion.md) y el renderer React/SVG presentan las acciones cerradas sin volver a llamar al modelo.
 
 Esas responsabilidades son módulos TypeScript del mismo repositorio, no servicios por habilidad. El motor es una función determinista sin acceso a red. El catálogo tiene identidades internas, etiquetas humanas y herramientas opacas separadas. El adaptador de inferencia tiene una implementación Bedrock y un sustituto explícito para pruebas; no necesita una plataforma de proveedores intercambiables.
 
@@ -33,7 +33,7 @@ Se mantienen dos fundamentos de la selección: Harness con una invocación por d
 
 CodeZip Node.js y el SDK de Runtime alojan el ejecutor y su tarea de background. Strands es una librería dentro de ese proceso; no requiere desplegar otro servicio. La Lambda web conserva sus responsabilidades de API, identidad y cuota.
 
-### Contrato operativo vigente de fase 3
+### Contrato operativo vigente del nivel estático
 
 El nivel publicado en el código es `principal-estatico-v1`, con tramos `ground`, `pit`, `ground`, `branch`, `ground`, salida en el apoyo 5 y límite de 12 acciones. No hay objetos, inventario, espera ni terreno periódico. Las cinco entradas del catálogo conservan sus IDs opacos: `tool_1` Avanzar, `tool_2` Retroceder, `tool_3` Saltar, `tool_4` Agacharse y avanzar y `tool_5` Nadar. Nadar es un no-op; la observación sólo contiene el apoyo local, el tramo inmediato a cada lado o un límite y la salida/objetos del apoyo actual.
 
@@ -47,19 +47,19 @@ Para iniciar, una **Lambda breve invocada asíncronamente** llama a Runtime y es
 
 El circuito actualmente implementado es:
 
-1. El usuario recupera su borrador, elige modelo, edita habilidades e instrucciones y pulsa «Probar». No hay selector de nivel ni toggle de Animación en esta fase; se usa el nivel estático publicado y `animationEnabled=false`.
+1. El usuario recupera su borrador, elige modelo, edita habilidades e instrucciones, ajusta la preferencia de Animación y pulsa «Probar». No hay selector de nivel; se usa el nivel estático publicado. La admisión fija el valor vigente de `animationEnabled` para ese intento.
 2. La interfaz captura el borrador visible y la versión confirmada. La API valida identidad, versión, catálogo, tamaño y al menos una habilidad habilitada. Un rechazo previo conserva el borrador y no consume cuota.
 3. Una transacción de DynamoDB crea el intento pendiente, guarda el snapshot inicial, la configuración completa del nivel/modelo/puntaje y el contador diario. La admisión y el despacho del starter no son una transacción atómica.
 4. La API invoca asíncronamente la Lambda de starter. El starter valida el intento pendiente, invoca el Runtime y devuelve sólo el reconocimiento del despacho. Runtime reclama el intento con un ejecutor y crea su tarea asíncrona.
 5. Cada decisión construye una observación local nueva, persiste el request antes del envío, ejecuta una llamada Bedrock, persiste el response completo y su uso, valida una única herramienta y aplica el motor estático. La acción y el snapshot posterior se publican con condiciones de ejecutor y secuencia.
 6. El cierre conserva resultado, causa, último snapshot, llamadas y métricas. La puntuación sólo se calcula para una victoria con `gameTokens` conocido; los demás estados conservan avance y métricas sin puntaje.
-7. React consulta el resumen del intento, muestra estado/resultados e historial propio y permite cancelar. No anima ni reproduce el registro en esta fase. Al cerrar o recargar, el navegador vuelve a consultar el mismo intento; no crea una inferencia nueva.
+7. React consulta el resumen del intento y permite cancelar mientras calcula. Cuando cierra, muestra el resultado directamente si Animación estaba desactivada o si no hubo acciones; en caso contrario reproduce el registro con un único reloj y después marca la presentación terminada. El resultado y el historial ofrecen replay manual de intentos con acciones. Al cerrar o recargar, el navegador vuelve a consultar el mismo intento; el replay no crea una inferencia nueva.
 
 La aprobación de una cancelación o el cierre por error impide nuevas acciones. Una llamada ya autorizada puede terminar y conservar su uso antes del cierre; DynamoDB, S3 y Bedrock no comparten una transacción. Una escritura tardía no reabre un intento cerrado. La definición de autorización, pertenencia y transiciones está en [experiencia](../intent/experiencia.md) e [intentos](../intent/intentos.md).
 
 ### Diseño aprobado para fases posteriores
 
-Fase 4 agregará el toggle de Animación, sprites SVG, replay desde el registro cerrado y la marca de presentación terminada. Fase 5 agregará terrenos periódicos y Esperar; fase 6 objetos y recompensas; fase 7 llaves y salidas bloqueadas; fase 8 diagnóstico de prompts/responses; fases 9 y 10 comparación y segundo recorrido. Esas capacidades siguen siendo compromisos del diseño general, pero no describen el comportamiento disponible en fase 3.
+Fase 5 agregará terrenos periódicos y Esperar; fase 6 objetos y recompensas; fase 7 llaves y salidas bloqueadas; fase 8 diagnóstico de prompts/responses; fases 9 y 10 comparación y segundo recorrido. Esas capacidades siguen siendo compromisos del diseño general y no forman parte del nivel estático actual.
 
 ## Inferencia
 
@@ -87,7 +87,7 @@ El acceso, la cuota y el acuerdo del modelo siguen requiriendo comprobación del
 
 ## Duplicados, fallos y continuidad
 
-La clave de idempotencia se crea antes del primer envío. Repetirla con el mismo contenido recupera el mismo intento; usarla con otro contenido, incluido sólo un cambio de modelo, produce conflicto. La recuperación de una clave existente precede a nueva cuota o disponibilidad del catálogo; no vuelve a resolver el perfil contra defaults actuales. La asociación se conserva con los datos, no depende de los diez minutos de deduplicación del token transaccional de DynamoDB. Duplicados de HTTP, Lambda o Runtime convergen en el mismo claim. No se transfiere el claim ni se reanuda automáticamente un proceso perdido.
+La clave de idempotencia se crea antes del primer envío. Repetirla con el mismo contenido recupera el mismo intento; usarla con otro contenido, incluido sólo un cambio de modelo o de Animación, produce conflicto. La recuperación de una clave existente precede a nueva cuota o disponibilidad del catálogo; no vuelve a resolver el perfil contra defaults actuales. La asociación se conserva con los datos, no depende de los diez minutos de deduplicación del token transaccional de DynamoDB. Duplicados de HTTP, Lambda o Runtime convergen en el mismo claim. No se transfiere el claim ni se reanuda automáticamente un proceso perdido.
 
 Guardar la admisión y despachar Lambda **no es atómico**. Si se pierde un reconocimiento, la UI puede reenviar el inicio del mismo intento sin otra cuota. Hay una fecha límite de inicio documentada y configurable: al vencer, una transición condicional cierra un pendiente como error y bloquea arranques tardíos. El backend distingue un despacho no confirmado de un rechazo anterior a la admisión. No promete que toda admisión sobrevivirá cualquier caída sin intervención.
 
@@ -111,4 +111,4 @@ Cada intento tiene un único ejecutor, pero no se impone un nuevo límite de un 
 
 El consumo por intento depende de llamadas, entrada reenviada y salida real. Se conserva uso original y componentes normalizados sin duplicar caché. La tarifa opcional de inferencia se versiona; no se promete gasto mensual ni costo cero de infraestructura. Los límites de turnos y salida, la cuota y la ausencia de llamadas durante replay acotan trabajo concreto sin agregar un corte global de gasto no solicitado.
 
-La verificación de esta fase debe cubrir payload sin memoria ni filtrado de tools, acciones estáticas deterministas, estados terminales, duplicados, cancelación, continuidad al cerrar el navegador y persistencia de cuerpos. Replay sin proveedor, animación y carga de cien usuarios pertenecen a fases posteriores. La comprobación desplegada de Bedrock, Runtime, cuota y continuidad todavía debe enlazarse con evidencia del ambiente; no se infiere capacidad a partir de una tabla AWS ni se inventa una latencia objetivo.
+La verificación de fase 4 cubre además la preferencia entre sesiones, la presentación opcional, la reproducción de registros anteriores, el cierre sin acciones y la ausencia de llamadas al modelo durante replay. La carga de cien usuarios pertenece a una fase posterior. La comprobación desplegada debe vincular versión, ambiente, intentos y cuota; no se infiere capacidad a partir de una tabla AWS ni se inventa una latencia objetivo.

@@ -10,6 +10,21 @@ import { DraftApiClient, type DraftApi } from './draft-api.js';
 import { AttemptApiFailure, type AttemptApi, type AttemptSummary } from './attempt-api.js';
 import type { PendingConfirmationClient } from './pending-confirmation.js';
 import { createDefaultDraft, type DraftSnapshot } from '../../../shared/robot.js';
+import { createClosedAttemptRecordFixture } from '../../../shared/attempt.fixture.js';
+import type { ReplayRecordView } from '../../../shared/attempt.js';
+
+vi.mock('./replay/ReplayScene.js', () => ({
+  ReplayScene: ({ onReady, onComplete }: { onReady: () => void; onComplete: () => void }) => (
+    <div>
+      <button type="button" onClick={onReady}>
+        Escena lista
+      </button>
+      <button type="button" onClick={onComplete}>
+        Terminar escena
+      </button>
+    </div>
+  ),
+}));
 
 const config: AuthConfig = {
   issuer: 'https://cognito-idp.us-east-1.amazonaws.com/us-east-1_test',
@@ -70,6 +85,15 @@ function emptyAttemptApi(): AttemptApi {
     listAttempts: vi.fn().mockResolvedValue({ attempts: [] }),
     startAttempt: vi.fn(),
     cancelAttempt: vi.fn(),
+    getAnimationPreference: vi.fn().mockResolvedValue({ animationEnabled: true, version: 0 }),
+    putAnimationPreference: vi
+      .fn()
+      .mockImplementation(async (animationEnabled, expectedVersion) => ({
+        animationEnabled,
+        version: expectedVersion + 1,
+      })),
+    getReplay: vi.fn(),
+    completePresentation: vi.fn(),
     getQuota: vi.fn().mockResolvedValue({
       day: '2026-09-21',
       used: 0,
@@ -77,6 +101,27 @@ function emptyAttemptApi(): AttemptApi {
       remaining: 100,
       resetsAt: '2026-09-22T03:00:00.000Z',
     }),
+  };
+}
+
+function replayRecord(id: string): ReplayRecordView {
+  const source = createClosedAttemptRecordFixture();
+  const states = new Map(source.snapshots.map((snapshot) => [snapshot.id, snapshot]));
+  return {
+    recordVersion: source.recordVersion,
+    id,
+    createdAt: source.createdAt,
+    updatedAt: source.updatedAt,
+    config: { level: source.config.level },
+    snapshots: source.snapshots,
+    actions: source.actions.map((action) => ({
+      ...action,
+      before: states.get(action.beforeStateId)!,
+      after: states.get(action.afterStateId)!,
+    })),
+    closure: source.closure,
+    metrics: source.metrics,
+    score: source.score,
   };
 }
 
@@ -540,6 +585,123 @@ describe('access screen', () => {
     expect(
       (screen.getByRole('button', { name: 'Cerrar sesión' }) as HTMLButtonElement).disabled,
     ).toBe(true);
+  });
+
+  it('locks editor, history, and logout through automatic replay, then releases them at the result', async () => {
+    window.sessionStorage.clear();
+    const authClient = client({ initialize: vi.fn().mockResolvedValue(session()) });
+    const draftApi: DraftApi = {
+      getDraft: vi.fn().mockResolvedValue({ version: 0, draft: createDefaultDraft() }),
+      putDraft: vi.fn().mockResolvedValue({ version: 1, draft: createDefaultDraft() }),
+    };
+    const attemptId = 'attempt-presentation-lock';
+    const pending: AttemptSummary = {
+      id: attemptId,
+      createdAt: '2026-09-21T12:00:00.000Z',
+      updatedAt: '2026-09-21T12:00:01.000Z',
+      status: 'victory',
+      cancelRequested: false,
+      levelId: 'principal-estatico-v1',
+      modelKey: 'claude-sonnet-4.6',
+      modelLabel: 'Claude Sonnet 4.6',
+      modelId: 'global.anthropic.claude-sonnet-4-6',
+      turnsUsed: 5,
+      maxTurns: 12,
+      calls: 5,
+      inputTokens: null,
+      outputTokens: null,
+      reasoningTokens: null,
+      gameTokens: null,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+      score: null,
+      progress: 1,
+      finalSupport: 5,
+      animationEnabled: true,
+      presentationComplete: false,
+      recordComplete: true,
+    };
+    window.sessionStorage.setItem(
+      'prompt-runner:attempt-recovery',
+      JSON.stringify({ sub: 'subject-a', attemptId }),
+    );
+    const attemptApi = {
+      ...emptyAttemptApi(),
+      getAttempt: vi.fn().mockResolvedValue(pending),
+      getReplay: vi.fn().mockResolvedValue(replayRecord(attemptId)),
+      completePresentation: vi.fn().mockResolvedValue({ ...pending, presentationComplete: true }),
+    };
+    render(
+      <App
+        authClient={authClient}
+        draftApi={draftApi}
+        attemptApi={attemptApi}
+        configLoader={async () => config}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Escena lista' }));
+    expect((screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    expect((screen.getByRole('checkbox', { name: 'Animación' }) as HTMLInputElement).disabled).toBe(
+      true,
+    );
+    expect(
+      (screen.getByRole('button', { name: 'Cerrar sesión' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(screen.queryByRole('heading', { name: 'Historial' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Victoria' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Terminar escena' }));
+    expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
+    await waitFor(() =>
+      expect(
+        (screen.getByRole('button', { name: 'Cerrar sesión' }) as HTMLButtonElement).disabled,
+      ).toBe(false),
+    );
+    expect(screen.getByRole('heading', { name: 'Historial' })).toBeTruthy();
+    expect(attemptApi.createAttempt).not.toHaveBeenCalled();
+  });
+
+  it('keeps Probar locked after preference loading fails and restores the server value on retry', async () => {
+    const authClient = client({ initialize: vi.fn().mockResolvedValue(session()) });
+    const draftApi: DraftApi = {
+      getDraft: vi.fn().mockResolvedValue({ version: 0, draft: createDefaultDraft() }),
+      putDraft: vi.fn().mockResolvedValue({ version: 1, draft: createDefaultDraft() }),
+    };
+    const getAnimationPreference = vi
+      .fn()
+      .mockRejectedValueOnce(new AttemptApiFailure('server', 'Preference unavailable', 500))
+      .mockResolvedValueOnce({ animationEnabled: false, version: 1 });
+    const attemptApi = {
+      ...emptyAttemptApi(),
+      getAnimationPreference,
+    };
+    render(
+      <App
+        authClient={authClient}
+        draftApi={draftApi}
+        attemptApi={attemptApi}
+        configLoader={async () => config}
+      />,
+    );
+
+    expect(await screen.findByRole('heading', { name: 'Historial' })).toBeTruthy();
+    const tryButton = screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement;
+    expect(tryButton.disabled).toBe(true);
+    await waitFor(() =>
+      expect(
+        (screen.getByRole('button', { name: 'Cerrar sesión' }) as HTMLButtonElement).disabled,
+      ).toBe(false),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reintentar preferencia' }));
+    await waitFor(() => expect(getAnimationPreference).toHaveBeenCalledTimes(2));
+    expect((screen.getByRole('checkbox', { name: 'Animación' }) as HTMLInputElement).checked).toBe(
+      false,
+    );
+    await waitFor(() => expect(tryButton.disabled).toBe(false));
   });
 
   it('settles attempt discovery when the authenticated App rerenders for workspace busy state', async () => {

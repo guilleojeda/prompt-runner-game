@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createDefaultDraft } from '../../../shared/robot.js';
+import { createClosedAttemptRecordFixture } from '../../../shared/attempt.fixture.js';
 import { AttemptApiClient } from './attempt-api.js';
 
 const config = { apiBaseUrl: 'https://api.example.test/', apiScope: 'prompt-runner/robot' };
@@ -46,7 +47,7 @@ describe('AttemptApiClient', () => {
     });
     const draft = createDefaultDraft();
 
-    const result = await client.createAttempt('request-key', 0, draft);
+    const result = await client.createAttempt('request-key', 0, draft, true);
 
     expect(result.attempt.id).toBe('attempt-1');
     expect(result.attempt.modelKey).toBe('claude-sonnet-5');
@@ -58,7 +59,12 @@ describe('AttemptApiClient', () => {
       expect.objectContaining({
         method: 'POST',
         headers: expect.objectContaining({ Authorization: 'Bearer access-token' }),
-        body: JSON.stringify({ requestKey: 'request-key', expectedVersion: 0, draft }),
+        body: JSON.stringify({
+          requestKey: 'request-key',
+          expectedVersion: 0,
+          draft,
+          animationEnabled: true,
+        }),
       }),
     );
   });
@@ -113,11 +119,13 @@ describe('AttemptApiClient', () => {
     );
     const client = new AttemptApiClient(config, { tokenProvider: () => 'token', fetch: fetchImpl });
 
-    await expect(client.createAttempt('key', 1, createDefaultDraft())).rejects.toMatchObject({
-      code: 'quota_exceeded',
-      status: 429,
-      ambiguous: false,
-    });
+    await expect(client.createAttempt('key', 1, createDefaultDraft(), false)).rejects.toMatchObject(
+      {
+        code: 'quota_exceeded',
+        status: 429,
+        ambiguous: false,
+      },
+    );
   });
 
   it('uses the request lookup route for an ambiguous admission recovery', async () => {
@@ -142,5 +150,85 @@ describe('AttemptApiClient', () => {
     const client = new AttemptApiClient(config, { tokenProvider: () => 'token', fetch: fetchImpl });
 
     await expect(client.getAttempt('attempt-1')).rejects.toMatchObject({ code: 'server' });
+  });
+
+  it('reads and version-saves the per-user animation preference', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ animationEnabled: true, version: 0 }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ animationEnabled: false, version: 1 }), { status: 200 }),
+      );
+    const client = new AttemptApiClient(config, {
+      tokenProvider: () => 'token',
+      fetch: fetchImpl,
+    });
+
+    await expect(client.getAnimationPreference()).resolves.toEqual({
+      animationEnabled: true,
+      version: 0,
+    });
+    await expect(client.putAnimationPreference(false, 0)).resolves.toEqual({
+      animationEnabled: false,
+      version: 1,
+    });
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe('https://api.example.test/animation-preference');
+    expect(fetchImpl.mock.calls[1]?.[1]).toMatchObject({
+      method: 'PUT',
+      body: JSON.stringify({ animationEnabled: false, expectedVersion: 0 }),
+    });
+  });
+
+  it('loads a narrow replay view and marks presentation complete without another admission', async () => {
+    const source = createClosedAttemptRecordFixture();
+    const states = new Map(source.snapshots.map((snapshot) => [snapshot.id, snapshot]));
+    const record = {
+      recordVersion: source.recordVersion,
+      id: source.id,
+      createdAt: source.createdAt,
+      updatedAt: source.updatedAt,
+      config: { level: source.config.level },
+      snapshots: source.snapshots,
+      actions: source.actions.map((action) => ({
+        ...action,
+        before: states.get(action.beforeStateId),
+        after: states.get(action.afterStateId),
+      })),
+      closure: source.closure,
+      metrics: source.metrics,
+      score: source.score,
+    };
+    const completedAttempt = { ...summary, animationEnabled: true, presentationComplete: true };
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ record }), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ attempt: completedAttempt }), { status: 200 }),
+      );
+    const client = new AttemptApiClient(config, {
+      tokenProvider: () => 'token',
+      fetch: fetchImpl,
+    });
+
+    const view = await client.getReplay(source.id);
+    expect(view.id).toBe(source.id);
+    expect(view.actions[0]).toMatchObject({
+      before: { id: 'state-0' },
+      after: { id: 'state-1' },
+    });
+    await expect(client.completePresentation('attempt / one')).resolves.toMatchObject({
+      id: 'attempt-1',
+      animationEnabled: true,
+      presentationComplete: true,
+    });
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe(
+      `https://api.example.test/attempts/${source.id}/replay`,
+    );
+    expect(fetchImpl.mock.calls[1]?.[0]).toBe(
+      'https://api.example.test/attempts/attempt%20%2F%20one/presentation-complete',
+    );
+    expect(fetchImpl.mock.calls[1]?.[1]).toMatchObject({ method: 'POST' });
   });
 });

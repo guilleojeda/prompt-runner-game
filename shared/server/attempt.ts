@@ -1,12 +1,25 @@
 import type { RobotDraft } from '../robot.js';
 import { DEFAULT_MODEL_KEY, resolveModelProfile, type ModelProfile } from '../models.js';
 import type {
+  AnimationPreference,
+  AttemptActionRecord,
+  AttemptActionView,
+  AttemptClosure,
+  AttemptMetrics,
+  ReplayRecordView,
   AttemptStatus as SharedAttemptStatus,
   AttemptSummary as SharedAttemptSummary,
 } from '../attempt.js';
-import { LEVEL } from '../game.js';
-import type { LevelDefinition } from '../game.js';
 import { ATTEMPT_RECORD_VERSION } from '../attempt.js';
+import type {
+  ActionResolution,
+  GameSnapshot,
+  LevelDefinition,
+  LevelObject,
+  LevelSegment,
+  NormalizedAction,
+} from '../game.js';
+import { LEVEL } from '../game.js';
 
 /** API summaries use the authoritative attempt contract from shared/attempt.ts. */
 export type AttemptStatus = SharedAttemptStatus;
@@ -77,6 +90,8 @@ export type AdmitInput = {
   readonly requestKey: string;
   readonly expectedVersion: number;
   readonly draft: RobotDraft;
+  /** Missing only on pre-phase-4 duplicate submissions; those historically mean false. */
+  readonly animationEnabled?: boolean;
   readonly now?: string;
   readonly config?: Partial<AttemptConfig>;
 };
@@ -130,6 +145,14 @@ export type ActionPublication = {
 export type AttemptStore = {
   admit(input: AdmitInput): Promise<AdmitResult>;
   get(owner: string, attemptId: string): Promise<PersistedAttempt | undefined>;
+  getReplayRecord(owner: string, attemptId: string): Promise<ReplayRecordView | undefined>;
+  getAnimationPreference(owner: string): Promise<AnimationPreference>;
+  putAnimationPreference(
+    owner: string,
+    animationEnabled: boolean,
+    expectedVersion: number,
+  ): Promise<AnimationPreference>;
+  markPresentationComplete(owner: string, attemptId: string): Promise<PersistedAttempt | undefined>;
   getByRequest(owner: string, requestKey: string): Promise<PersistedAttempt | undefined>;
   list(
     owner: string,
@@ -192,6 +215,337 @@ export type BodyStore = {
   get(key: string): Promise<Uint8Array | undefined>;
 };
 
+export class ReplayRecordError extends Error {
+  public constructor(message = 'El registro no está disponible para reproducir.') {
+    super(message);
+    this.name = 'ReplayRecordError';
+  }
+}
+
+export class AnimationPreferenceConflictError extends Error {
+  public readonly current: AnimationPreference;
+
+  public constructor(current: AnimationPreference) {
+    super('La preferencia cambió en otra pestaña.');
+    this.name = 'AnimationPreferenceConflictError';
+    this.current = current;
+  }
+}
+
+export class AttemptNotTerminalError extends Error {
+  public constructor() {
+    super('La presentación solo se puede completar para un intento cerrado.');
+    this.name = 'AttemptNotTerminalError';
+  }
+}
+
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+const isInteger = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+const isFiniteValue = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value);
+const isTerrain = (value: unknown): value is GameSnapshot['terrain'][number] =>
+  value === 'ground' || value === 'pit' || value === 'branch';
+const isResolutionReason = (value: unknown): value is ActionResolution['reason'] =>
+  value === 'moved' ||
+  value === 'left_boundary' ||
+  value === 'right_boundary' ||
+  value === 'swim_no_effect' ||
+  value === 'walk_into_pit' ||
+  value === 'crouch_into_pit' ||
+  value === 'walk_into_branch' ||
+  value === 'jump_into_branch';
+const isTerminal = (status: AttemptStatus): boolean =>
+  status === 'victory' ||
+  status === 'defeat' ||
+  status === 'incomplete' ||
+  status === 'cancelled' ||
+  status === 'error';
+
+const readSnapshot = (value: unknown): GameSnapshot => {
+  if (
+    !isObject(value) ||
+    typeof value.id !== 'string' ||
+    !isInteger(value.support) ||
+    !isInteger(value.turnsUsed) ||
+    !isInteger(value.phaseTurn) ||
+    !Array.isArray(value.terrain) ||
+    !value.terrain.every(isTerrain) ||
+    !Array.isArray(value.remainingObjects) ||
+    !value.remainingObjects.every((item) => typeof item === 'string') ||
+    !Array.isArray(value.inventory) ||
+    !value.inventory.every((item) => typeof item === 'string') ||
+    typeof value.exitEnabled !== 'boolean' ||
+    (value.status !== 'running' &&
+      value.status !== 'victory' &&
+      value.status !== 'defeat' &&
+      value.status !== 'incomplete') ||
+    !isInteger(value.maxSupportReached)
+  ) {
+    throw new ReplayRecordError('El registro contiene un estado inválido.');
+  }
+  const terrain = value.terrain.map((item) => {
+    if (!isTerrain(item)) throw new ReplayRecordError('El estado contiene un terreno inválido.');
+    return item;
+  });
+  const remainingObjects = value.remainingObjects.map((item) => {
+    if (typeof item !== 'string')
+      throw new ReplayRecordError('El estado contiene un objeto inválido.');
+    return item;
+  });
+  const inventory = value.inventory.map((item) => {
+    if (typeof item !== 'string')
+      throw new ReplayRecordError('El estado contiene un objeto inválido.');
+    return item;
+  });
+  return {
+    id: value.id,
+    support: value.support,
+    turnsUsed: value.turnsUsed,
+    phaseTurn: value.phaseTurn,
+    terrain,
+    remainingObjects,
+    inventory,
+    exitEnabled: value.exitEnabled,
+    status: value.status,
+    maxSupportReached: value.maxSupportReached,
+  };
+};
+
+const readAction = (value: unknown): AttemptActionRecord => {
+  if (
+    !isObject(value) ||
+    !isInteger(value.seq) ||
+    value.seq === 0 ||
+    typeof value.decisionId !== 'string' ||
+    typeof value.beforeStateId !== 'string' ||
+    typeof value.afterStateId !== 'string'
+  ) {
+    throw new ReplayRecordError('El registro contiene una acción inválida.');
+  }
+  const rawAction = value.action;
+  if (!isObject(rawAction))
+    throw new ReplayRecordError('El registro contiene una acción inválida.');
+  let action: NormalizedAction | undefined;
+  if (rawAction.kind === 'advance') action = { kind: 'advance' };
+  else if (rawAction.kind === 'retreat') action = { kind: 'retreat' };
+  else if (rawAction.kind === 'swim') action = { kind: 'swim' };
+  else if (
+    (rawAction.kind === 'jump' || rawAction.kind === 'crouch') &&
+    (rawAction.direction === 'left' || rawAction.direction === 'right')
+  ) {
+    action = { kind: rawAction.kind, direction: rawAction.direction };
+  }
+  if (!action) throw new ReplayRecordError('El registro contiene una acción no compatible.');
+
+  const rawResolution = value.resolution;
+  if (!isObject(rawResolution)) {
+    throw new ReplayRecordError('El registro contiene una resolución inválida.');
+  }
+  const reason = isResolutionReason(rawResolution.reason) ? rawResolution.reason : undefined;
+  if (!reason) throw new ReplayRecordError('El registro contiene una resolución no compatible.');
+  let resolution: ActionResolution | undefined;
+  if (rawResolution.outcome === 'no_op') {
+    resolution = { outcome: 'no_op', reason };
+  } else if (
+    (rawResolution.outcome === 'moved' ||
+      rawResolution.outcome === 'fall' ||
+      rawResolution.outcome === 'collision') &&
+    isInteger(rawResolution.segment) &&
+    isInteger(rawResolution.targetSupport)
+  ) {
+    resolution = {
+      outcome: rawResolution.outcome,
+      reason,
+      segment: rawResolution.segment,
+      targetSupport: rawResolution.targetSupport,
+    };
+  }
+  if (!resolution)
+    throw new ReplayRecordError('El registro contiene una resolución no compatible.');
+  return {
+    seq: value.seq,
+    decisionId: value.decisionId,
+    beforeStateId: value.beforeStateId,
+    afterStateId: value.afterStateId,
+    action,
+    resolution,
+  };
+};
+
+const readLevel = (value: unknown): LevelDefinition => {
+  if (
+    !isObject(value) ||
+    typeof value.id !== 'string' ||
+    !isInteger(value.version) ||
+    value.version === 0 ||
+    value.rulesVersion !== 1 ||
+    !isInteger(value.maxTurns) ||
+    value.maxTurns === 0 ||
+    !Array.isArray(value.segments) ||
+    !Array.isArray(value.objects) ||
+    !isObject(value.exit)
+  ) {
+    throw new ReplayRecordError('El nivel guardado no es compatible con la reproducción.');
+  }
+  const segments: LevelSegment[] = value.segments.map((segment): LevelSegment => {
+    if (!isObject(segment) || !isTerrain(segment.type))
+      throw new ReplayRecordError('El nivel contiene un tramo no compatible.');
+    return { type: segment.type };
+  });
+  const objects: LevelObject[] = value.objects.map((item): LevelObject => {
+    if (
+      !isObject(item) ||
+      typeof item.id !== 'string' ||
+      !isInteger(item.support) ||
+      !isFiniteValue(item.scoreValue) ||
+      (item.requiredForExit !== undefined && typeof item.requiredForExit !== 'boolean')
+    ) {
+      throw new ReplayRecordError('El nivel contiene un objeto no compatible.');
+    }
+    return {
+      id: item.id,
+      support: item.support,
+      scoreValue: item.scoreValue,
+      ...(item.requiredForExit === undefined ? {} : { requiredForExit: item.requiredForExit }),
+    };
+  });
+  const exit = value.exit;
+  if (
+    !isInteger(exit.support) ||
+    !Array.isArray(exit.requiredObjectIds) ||
+    !exit.requiredObjectIds.every((item) => typeof item === 'string')
+  ) {
+    throw new ReplayRecordError('La salida guardada no es compatible con la reproducción.');
+  }
+  const requiredObjectIds = exit.requiredObjectIds.map((item) => {
+    if (typeof item !== 'string')
+      throw new ReplayRecordError('La salida contiene un objeto inválido.');
+    return item;
+  });
+  return {
+    id: value.id,
+    version: value.version,
+    rulesVersion: 1,
+    maxTurns: value.maxTurns,
+    segments,
+    objects,
+    exit: {
+      support: exit.support,
+      requiredObjectIds,
+    },
+  };
+};
+
+/** Validates durable rows and returns only the public data needed by the visual replay. */
+export const replayRecordViewOf = (
+  attempt: PersistedAttempt,
+  rawActions: readonly unknown[],
+  rawSnapshots: readonly unknown[],
+): ReplayRecordView => {
+  if (
+    attempt.recordVersion !== ATTEMPT_RECORD_VERSION ||
+    !isTerminal(attempt.status) ||
+    !attempt.recordComplete ||
+    !isInteger(attempt.sequence) ||
+    rawActions.length !== attempt.sequence ||
+    rawSnapshots.length !== rawActions.length + 1
+  ) {
+    throw new ReplayRecordError();
+  }
+  const level = readLevel(attempt.config.levelDefinition);
+  const storedSnapshots = rawSnapshots.map((entry) => {
+    if (!isObject(entry) || typeof entry.stateId !== 'string')
+      throw new ReplayRecordError('El registro contiene una referencia de estado inválida.');
+    const snapshot = readSnapshot(entry.snapshot);
+    if (snapshot.id !== entry.stateId)
+      throw new ReplayRecordError('La referencia del estado no coincide con el snapshot.');
+    return snapshot;
+  });
+  const snapshotsById = new Map(storedSnapshots.map((snapshot) => [snapshot.id, snapshot]));
+  if (snapshotsById.size !== storedSnapshots.length)
+    throw new ReplayRecordError('El registro contiene estados repetidos.');
+
+  const actionRecords = rawActions.map(readAction).sort((left, right) => left.seq - right.seq);
+  const expectedStateIds = ['state-0', ...actionRecords.map((action) => action.afterStateId)];
+  if (
+    new Set(expectedStateIds).size !== expectedStateIds.length ||
+    expectedStateIds.length !== storedSnapshots.length ||
+    expectedStateIds.some((stateId) => !snapshotsById.has(stateId))
+  ) {
+    throw new ReplayRecordError('Falta un estado o hay una referencia repetida.');
+  }
+  const snapshots = expectedStateIds.map((stateId) => snapshotsById.get(stateId)!);
+  if (
+    !isObject(attempt.initialSnapshot) ||
+    attempt.initialSnapshot.id !== snapshots[0]?.id ||
+    snapshots.some((snapshot) => snapshot.terrain.length !== level.segments.length)
+  ) {
+    throw new ReplayRecordError(
+      'El estado inicial o el terreno no coincide con el nivel guardado.',
+    );
+  }
+
+  const actions = actionRecords.map((action, index): AttemptActionView => {
+    const before = snapshotsById.get(action.beforeStateId);
+    const after = snapshotsById.get(action.afterStateId);
+    if (
+      action.seq !== index + 1 ||
+      !before ||
+      !after ||
+      before.id !== snapshots[index]?.id ||
+      after.id !== snapshots[index + 1]?.id ||
+      after.turnsUsed !== before.turnsUsed + 1
+    ) {
+      throw new ReplayRecordError('La secuencia de acciones o estados está incompleta.');
+    }
+    return { ...action, before, after };
+  });
+
+  const finalSnapshot = snapshots.at(-1);
+  if (
+    !finalSnapshot ||
+    !isObject(attempt.currentSnapshot) ||
+    attempt.currentSnapshot.id !== finalSnapshot.id ||
+    attempt.turnsUsed !== finalSnapshot.turnsUsed ||
+    ((attempt.status === 'victory' ||
+      attempt.status === 'defeat' ||
+      attempt.status === 'incomplete') &&
+      finalSnapshot.status !== attempt.status)
+  ) {
+    throw new ReplayRecordError('El cierre no coincide con el último estado guardado.');
+  }
+  const closure: AttemptClosure = {
+    status: attempt.status,
+    ...(attempt.reason === undefined ? {} : { reason: attempt.reason }),
+    actionCount: actions.length,
+    finalStateId: finalSnapshot.id,
+    recordComplete: true,
+  };
+  const metrics: AttemptMetrics = {
+    calls: attempt.calls,
+    inputTokens: attempt.inputTokens,
+    outputTokens: attempt.outputTokens,
+    reasoningTokens: attempt.reasoningTokens,
+    gameTokens: attempt.gameTokens,
+    cacheReadTokens: attempt.cacheReadTokens,
+    cacheWriteTokens: attempt.cacheWriteTokens,
+  };
+  return {
+    recordVersion: ATTEMPT_RECORD_VERSION,
+    id: attempt.id,
+    createdAt: attempt.createdAt,
+    updatedAt: attempt.updatedAt,
+    config: { level },
+    snapshots,
+    actions,
+    closure,
+    metrics,
+    score: attempt.score,
+  };
+};
+
 export const DEFAULT_ATTEMPT_CONFIG: AttemptConfig = {
   levelId: 'principal-estatico-v1',
   levelVersion: 'principal-estatico-v1',
@@ -243,7 +597,7 @@ export const summaryOf = (record: PersistedAttempt): AttemptSummary => ({
   score: record.score,
   progress: record.progress,
   finalSupport: record.finalSupport,
-  animationEnabled: false,
+  animationEnabled: record.animationEnabled,
   presentationComplete: record.presentationComplete,
   recordComplete: record.recordComplete,
 });

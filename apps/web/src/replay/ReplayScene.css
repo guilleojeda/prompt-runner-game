@@ -1,0 +1,27 @@
+.replay-scene__canvas {
+  display: block;
+  width: 100%;
+  max-height: 32rem;
+  border: 1px solid rgba(242, 239, 232, 0.2);
+  border-radius: 0.85rem;
+  background: #eaf8fc;
+  box-shadow: 0 0.8rem 2.4rem rgba(0, 0, 0, 0.22);
+}
+
+.replay-scene__preparing,
+.replay-scene__error {
+  display: grid;
+  min-height: 14rem;
+  place-items: center;
+  padding: 1.5rem;
+  border: 1px solid rgba(242, 239, 232, 0.2);
+  border-radius: 0.85rem;
+  background: rgba(242, 239, 232, 0.08);
+  color: #f2efe8;
+  text-align: center;
+}
+
+.replay-scene__error {
+  border-color: rgba(232, 139, 111, 0.5);
+  color: #ffd2c3;
+}
