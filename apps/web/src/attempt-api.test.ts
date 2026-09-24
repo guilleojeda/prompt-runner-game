@@ -11,13 +11,13 @@ const summary = {
   updatedAt: '2026-09-21T12:00:01.000Z',
   status: 'victory',
   cancelRequested: false,
-  levelId: 'principal-estatico-v1',
-  modelKey: 'claude-sonnet-5',
-  modelLabel: 'Claude Sonnet 5',
-  modelId: 'global.anthropic.claude-sonnet-5',
-  turnsUsed: 5,
-  maxTurns: 12,
-  calls: 5,
+  levelId: 'principal-periodico-v2',
+  modelKey: 'claude-sonnet-4.6',
+  modelLabel: 'Claude Sonnet 4.6',
+  modelId: 'global.anthropic.claude-sonnet-4-6',
+  turnsUsed: 7,
+  maxTurns: 16,
+  calls: 7,
   inputTokens: null,
   outputTokens: null,
   reasoningTokens: null,
@@ -26,7 +26,7 @@ const summary = {
   cacheWriteTokens: null,
   score: null,
   progress: 1,
-  finalSupport: 5,
+  finalSupport: 7,
   animationEnabled: false,
   presentationComplete: true,
   recordComplete: true,
@@ -50,8 +50,8 @@ describe('AttemptApiClient', () => {
     const result = await client.createAttempt('request-key', 0, draft, true);
 
     expect(result.attempt.id).toBe('attempt-1');
-    expect(result.attempt.modelKey).toBe('claude-sonnet-5');
-    expect(result.attempt.modelLabel).toBe('Claude Sonnet 5');
+    expect(result.attempt.modelKey).toBe('claude-sonnet-4.6');
+    expect(result.attempt.modelLabel).toBe('Claude Sonnet 4.6');
     expect(result.attempt.reasoningTokens).toBeNull();
     expect(result.dispatchConfirmed).toBe(false);
     expect(fetchImpl).toHaveBeenCalledWith(
@@ -69,15 +69,12 @@ describe('AttemptApiClient', () => {
     );
   });
 
-  it('keeps the attempt model identity returned by the server', async () => {
+  it('keeps the current server-normalized model identity on an attempt summary', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(
         JSON.stringify({
           attempt: {
             ...summary,
-            modelKey: 'claude-opus-5',
-            modelLabel: 'Claude Opus 5',
-            modelId: 'global.anthropic.claude-opus-5',
             reasoningTokens: 17,
           },
         }),
@@ -91,10 +88,35 @@ describe('AttemptApiClient', () => {
 
     const result = await client.getAttempt('attempt-1');
 
-    expect(result.modelKey).toBe('claude-opus-5');
-    expect(result.modelLabel).toBe('Claude Opus 5');
-    expect(result.modelId).toBe('global.anthropic.claude-opus-5');
+    expect(result.modelKey).toBe('claude-sonnet-4.6');
+    expect(result.modelLabel).toBe('Claude Sonnet 4.6');
+    expect(result.modelId).toBe('global.anthropic.claude-sonnet-4-6');
     expect(result.reasoningTokens).toBe(17);
+  });
+
+  it('rejects an attempt summary with an obsolete model profile', async () => {
+    const obsolete = {
+      ...summary,
+      modelKey: 'claude-sonnet-5',
+      modelLabel: 'Claude Sonnet 5',
+      modelId: 'global.anthropic.claude-sonnet-5',
+    };
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(JSON.stringify({ attempt: obsolete }), { status: 200 }));
+    const client = new AttemptApiClient(config, { tokenProvider: () => 'token', fetch: fetchImpl });
+
+    await expect(client.getAttempt('attempt-1')).rejects.toMatchObject({ code: 'server' });
+  });
+
+  it('rejects an attempt summary from the retired static level', async () => {
+    const obsolete = { ...summary, levelId: 'principal-estatico-v1', maxTurns: 12 };
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(JSON.stringify({ attempt: obsolete }), { status: 200 }));
+    const client = new AttemptApiClient(config, { tokenProvider: () => 'token', fetch: fetchImpl });
+
+    await expect(client.getAttempt('attempt-old')).rejects.toMatchObject({ code: 'server' });
   });
 
   it('rejects an attempt response without the server-normalized model identity', async () => {

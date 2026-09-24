@@ -85,27 +85,27 @@ describe('Dynamo draft store', () => {
     expect(send.mock.calls[1][0].input.Item.PK).toEqual({ S: 'USER#user-b' });
   });
 
-  it('reads a valid v1 draft as Sonnet 5 without writing a migration', async () => {
+  it('rejects the previous draft contract without writing a migration', async () => {
     const current = createDefaultDraft();
-    const legacy = Object.fromEntries(
-      Object.entries(current).filter(([key]) => key !== 'modelKey'),
-    );
+    const previous = {
+      schemaVersion: 2,
+      catalogVersion: 1,
+      modelKey: 'claude-sonnet-5',
+      instructions: current.instructions,
+      skills: current.skills.filter((skill) => skill.id !== 'wait'),
+    };
     const send = vi.fn().mockResolvedValue({
       Item: marshall({
         PK: 'USER#user-a',
         SK: 'DRAFT',
         version: 7,
         updatedAt: '2026-09-21T00:00:00.000Z',
-        draft: { ...legacy, schemaVersion: 1 },
+        draft: previous,
       }),
     });
     const store = createDynamoDraftStore({ client: commandClient(send), tableName: 'Drafts' });
 
-    const snapshot = await store.get('user-a');
-
-    expect(snapshot.version).toBe(7);
-    expect(snapshot.draft.modelKey).toBe('claude-sonnet-5');
-    expect(snapshot.draft.instructions).toBe(current.instructions);
+    await expect(store.get('user-a')).rejects.toBeInstanceOf(DraftIncompatibleError);
     expect(send).toHaveBeenCalledTimes(1);
     expect(send.mock.calls[0][0].constructor.name).toBe('GetItemCommand');
   });

@@ -1,6 +1,6 @@
 # Plataforma y operación
 
-Especificación acordada del producto. El código disponible implementa acceso Cognito, editor y API Lambda, ejecución estática con Runtime/Strands/Bedrock, intentos en DynamoDB y cuerpos privados en S3, más publicación mediante CDK y GitHub Actions. La URL pública está en [README](../../README.md). El objetivo completo incluye animación, mecánicas y capacidad de cien usuarios cuya implementación o comprobación siguen pendientes. [Índice de documentación](../../README.md).
+Especificación acordada del producto. El código disponible implementa acceso Cognito, editor y API Lambda, ejecución periódica del nivel principal con Runtime/Strands/Bedrock, intentos en DynamoDB y cuerpos privados en S3, más publicación mediante CDK y GitHub Actions. La URL pública está en [README](../../README.md). La capacidad de cien usuarios aún requiere comprobación; objetos, comparación y recorrido de transferencia pertenecen a fases posteriores. [Índice de documentación](../../README.md).
 
 ## Tecnologías y restricciones confirmadas
 
@@ -10,7 +10,7 @@ Especificación acordada del producto. El código disponible implementa acceso C
 | Backend web | TypeScript en AWS Lambda. |
 | Ejecución del agente | AgentCore Runtime con Strands en TypeScript. El ejecutor reúne coordinación del intento, motor y registro. |
 | Infraestructura como código | AWS CDK en TypeScript. |
-| Inferencia | Amazon Bedrock mediante el proveedor nativo `BedrockModel` de Strands y Converse sin streaming. Sonnet 4.6 es el predeterminado y único modelo admitido para intentos nuevos. Los perfiles finitos de GPT-5.6 Sol, Sonnet 5 y Opus 5/5.5 se conservan para compatibilidad; su uso nuevo está diferido. No se usa Mantle ni APIs directas. GPT-6 Luna/Sol se difieren hasta confirmar disponibilidad en Bedrock. |
+| Inferencia | Amazon Bedrock mediante el proveedor nativo `BedrockModel` de Strands y Converse sin streaming. Sonnet 4.6 es el único perfil operativo para intentos nuevos. Sonnet 5, GPT-5.6 Sol y Opus 5/5.5 se implementarán en fase 12, después de SES; GPT-6 Luna/Sol siguen diferidos. No se usa Mantle ni APIs directas. |
 | Almacenamiento | DynamoDB en modo on-demand para datos estructurados y S3 privado para conservar completos los requests y responses de inferencia. |
 | Identidad y correo | Amazon Cognito User Pool con Managed Login Essentials en español, email y contraseña, confirmación por código y recuperación administrada. La primera versión usa el correo predeterminado de Cognito y mensajes estándar, con el límite publicado de 50 correos diarios; SES propio y `SourceArn` quedan para una fase posterior. |
 | Hosting | React estático en un bucket S3 privado, servido por CloudFront con Origin Access Control (OAC). El build y la publicación se integran con CDK en TypeScript y GitHub Actions. Puede comenzar con URLs AWS para web, identidad y API; no se exige dominio propio en esta fase. |
@@ -34,11 +34,11 @@ El jugador accede a sus propias configuraciones, objetos, intentos, resultados y
 
 ## Información conservada
 
-Toda la información de la aplicación se conserva en el servidor, incluida la configuración del robot, sus versiones, los niveles asociados a cada intento, los eventos, observaciones, llamadas, resultados y métricas. Un usuario puede volver a ingresar desde otro navegador de escritorio y recuperar sus configuraciones e historial reproducible.
+La información del contrato vigente se conserva en el servidor, incluida la configuración del robot, el nivel asociado a cada intento, los eventos, observaciones, llamadas, resultados y métricas. Los intentos vigentes no caducan automáticamente mientras ese contrato siga operativo. Los datos de prueba de contratos anteriores pueden borrarse o quedar sin uso si no interfieren; no se exige migrarlos ni conservar lectores antiguos.
 
 Se conserva también la preferencia de Animación y su valor fijado al pulsar Probar para cada intento. Desactivarla solo omite la reproducción automática: el servidor calcula y guarda el mismo registro completo. El flujo de bloqueo, animación opcional y resultado se define en [experiencia](experiencia.md).
 
-No se definió una duración de conservación ni se requiere caducidad automática. La persistencia del producto no se reduce a la memoria del navegador o a la vida de una ejecución del agente. El registro necesario para que una reproducción anterior siga siendo fiel se define en [intentos](intentos.md).
+Los datos del contrato vigente no caducan automáticamente mientras ese contrato siga operativo. La persistencia del producto no se reduce a la memoria del navegador o a la vida de una ejecución del agente. Los registros de contratos reemplazados no requieren lectores ni conservación; los datos de prueba pueden quedar sin uso o eliminarse.
 
 El cálculo continúa al cerrar o recargar la página mediante la tarea de background de Runtime. Al volver, la interfaz recupera el intento y el valor de Animación fijado al pulsar Probar. Una caída del ejecutor conserva lo ya registrado y se informa como error; no hay reanudación automática del juego tras una falla de infraestructura. Los límites y la coordinación están en [ejecución](../architecture/ejecucion.md).
 
@@ -67,10 +67,10 @@ Las capacidades publicadas y sus límites se conservan en referencias técnicas.
 | Tema | Base factual | Comportamiento y límites |
 |---|---|---|
 | Runtime + Strands | [AgentCore](../reference/agentcore.md) | Decisiones con contexto independiente, herramienta validada y registro durable implementados según [ejecución](../architecture/ejecucion.md). |
-| Bedrock | [APIs, métricas y tarifas](../reference/bedrock.md) | Verificar acceso, cuotas e inferencia nativa para cada modelo del catálogo. Parámetros y ruta están definidos en [ejecución](../architecture/ejecucion.md#inferencia). |
+| Bedrock | [APIs, métricas y tarifas](../reference/bedrock.md) | Verificar acceso, cuotas e inferencia nativa de Sonnet 4.6. Los modelos de fase 12 requieren su propia verificación. Parámetros y ruta están definidos en [ejecución](../architecture/ejecucion.md#inferencia). |
 | Acceso por email | [Identidad y correo](../reference/identidad.md) | Cognito Managed Login Essentials con correo predeterminado, confirmación y recuperación. SES propio queda para una fase posterior sobre el mismo pool. |
 | Cálculo independiente del navegador | [Tareas y sesiones](../reference/agentcore.md#continuidad-sesión-y-almacenamiento) | El cálculo continúa en el servidor al cerrar la pestaña; una nueva sesión recupera el estado y el resultado. Un proceso perdido no se reanuda automáticamente. |
-| DynamoDB y registros | [Contrato de registro](../architecture/registro-de-ejecucion.md) y [datos](../architecture/datos.md) | Borradores e intentos en DynamoDB on-demand; cuerpos de inferencia en S3 privado. La lectura conserva los formatos históricos conocidos. |
+| DynamoDB y registros | [Contrato de registro](../architecture/registro-de-ejecucion.md) y [datos](../architecture/datos.md) | Borradores e intentos del contrato vigente en DynamoDB on-demand; cuerpos de inferencia en S3 privado. Los formatos anteriores no se leen ni convierten. |
 | Despliegue | [CDK y GitHub Actions](../reference/datos-y-entrega.md) | Hosting y workflow operativos mediante OIDC; [URL pública](../../README.md) y preparación AWS documentadas. El ambiente inicial es único. |
 
 El estado observado mediante lecturas de la cuenta se documenta por separado en [cuenta AWS](../reference/cuenta-aws.md). Una consulta de cuota o disponibilidad no prueba la capacidad de la aplicación ni una inferencia exitosa.

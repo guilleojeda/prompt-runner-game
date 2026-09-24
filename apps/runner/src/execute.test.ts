@@ -24,12 +24,15 @@ describe('Runtime attempt coordinator', () => {
       requestKey: 'run',
       expectedVersion: 1,
       draft,
+      animationEnabled: false,
     });
     const actions = [
       { name: 'tool_1', input: {} },
       { name: 'tool_3', input: { direction: 'derecha' } },
       { name: 'tool_1', input: {} },
       { name: 'tool_4', input: { direction: 'derecha' } },
+      { name: 'tool_3', input: { direction: 'derecha' } },
+      { name: 'tool_3', input: { direction: 'derecha' } },
       { name: 'tool_1', input: {} },
     ];
     let index = 0;
@@ -66,11 +69,11 @@ describe('Runtime attempt coordinator', () => {
     );
     const record = await store.get('a', admitted.attempt.id);
     expect(record?.status).toBe('victory');
-    expect(record?.turnsUsed).toBe(5);
-    expect(record?.calls).toBe(5);
-    expect(record?.gameTokens).toBe(10);
-    expect(record?.score).toBe(949.99);
-    expect(await store.getCalls('a', admitted.attempt.id)).toHaveLength(5);
+    expect(record?.turnsUsed).toBe(7);
+    expect(record?.calls).toBe(7);
+    expect(record?.gameTokens).toBe(14);
+    expect(record?.score).toBe(929.99);
+    expect(await store.getCalls('a', admitted.attempt.id)).toHaveLength(7);
     expect(await store.getCalls('a', admitted.attempt.id)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -89,6 +92,98 @@ describe('Runtime attempt coordinator', () => {
     expect(record?.recordComplete).toBe(true);
   });
 
+  it('executes one tool_6 wait, advances the periodic phase, and stops at the terminal action', async () => {
+    const base = createDefaultDraft();
+    const draft = {
+      ...base,
+      skills: base.skills.map((skill) => ({
+        ...skill,
+        enabled: skill.id === 'advance' || skill.id === 'wait',
+      })),
+    };
+    const store = new MemoryAttemptStore({
+      draft: { version: 1, draft },
+      now: () => new Date('2026-09-21T15:00:00.000Z'),
+    });
+    const bodies = new MemoryBodyStore();
+    const admitted = await store.admit({
+      owner: 'a',
+      requestKey: 'wait-decision',
+      expectedVersion: 1,
+      draft,
+      animationEnabled: false,
+    });
+    const selectedActions = [
+      { name: 'tool_6', input: {} },
+      { name: 'tool_1', input: {} },
+      { name: 'tool_1', input: {} },
+    ] as const;
+    const observations: unknown[] = [];
+    let calls = 0;
+    const infer: InferenceAdapter = async ({ audit, observation, tools }) => {
+      const action = selectedActions[calls];
+      if (!action) throw new Error('inference ran after the game was already terminal');
+      observations.push(observation);
+      if (calls === 0) {
+        expect(tools).toContainEqual({
+          name: 'tool_6',
+          description: expect.any(String),
+          inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+        });
+      }
+      await audit.beforeSend(new TextEncoder().encode(`request-${calls}`));
+      await audit.afterReceive({
+        bytes: new TextEncoder().encode('{"usage":{"inputTokens":1,"outputTokens":1}}'),
+        statusCode: 200,
+        requestId: `request-${calls}`,
+        complete: true,
+      });
+      calls += 1;
+      return {
+        action,
+        usage: {
+          inputTokens: 1,
+          outputTokens: 1,
+          gameTokens: 2,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+        },
+      };
+    };
+
+    await executeAttempt(
+      { owner: 'a', attemptId: admitted.attempt.id, executorId: 'executor' },
+      {
+        store,
+        bodies,
+        infer,
+        engine: createGameEngine(),
+        now: () => new Date('2026-09-21T15:00:00.000Z'),
+      },
+    );
+
+    const record = await store.get('a', admitted.attempt.id);
+    const replay = await store.getReplayRecord('a', admitted.attempt.id);
+    const callRecords = await store.getCalls('a', admitted.attempt.id);
+    expect(calls).toBe(3);
+    expect(record).toMatchObject({ status: 'defeat', reason: 'walk_into_pit', turnsUsed: 3 });
+    expect(record?.sequence).toBe(3);
+    expect(record?.calls).toBe(3);
+    expect(callRecords.map((call) => call.seq)).toEqual([1, 2, 3]);
+    expect(replay?.actions).toHaveLength(3);
+    expect(replay?.actions[0]).toMatchObject({
+      action: { kind: 'wait' },
+      resolution: { outcome: 'no_op', reason: 'wait' },
+      before: { phaseTurn: 0 },
+      after: { phaseTurn: 1, terrain: expect.arrayContaining(['barrier_high', 'pit']) },
+    });
+    expect(replay?.actions[2]).toMatchObject({
+      resolution: { outcome: 'fall', reason: 'walk_into_pit' },
+      after: { status: 'defeat', phaseTurn: 2 },
+    });
+    expect(observations).toHaveLength(3);
+  });
+
   it('does not infer after cancellation wins before call authorization', async () => {
     const draft = createDefaultDraft();
     const store = new MemoryAttemptStore({
@@ -100,6 +195,7 @@ describe('Runtime attempt coordinator', () => {
       requestKey: 'cancel',
       expectedVersion: 1,
       draft,
+      animationEnabled: false,
     });
     await store.requestCancel('a', admitted.attempt.id);
     let invoked = false;
@@ -127,6 +223,7 @@ describe('Runtime attempt coordinator', () => {
       requestKey: 'throttle',
       expectedVersion: 1,
       draft,
+      animationEnabled: false,
     });
     let attempts = 0;
     const delays: number[] = [];
@@ -211,6 +308,7 @@ describe('Runtime attempt coordinator', () => {
       requestKey: 'invalid',
       expectedVersion: 1,
       draft,
+      animationEnabled: false,
     });
     const infer: InferenceAdapter = async ({ audit }) => {
       await audit.beforeSend(new TextEncoder().encode('request'));

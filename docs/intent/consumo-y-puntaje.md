@@ -1,6 +1,6 @@
 # Consumo y puntaje
 
-Estado: consumo por llamada y puntaje de victorias implementados para el recorrido estático, con parámetros guardados. La clasificación entre soluciones y la calibración educativa siguen pendientes.
+Estado: consumo por llamada y puntaje de victorias implementados para `principal-periodico-v2`, con parámetros guardados. La clasificación entre soluciones y la calibración educativa siguen pendientes.
 
 Esta página define qué uso se mide, cómo se diferencia el volumen de tokens del costo monetario y cómo se calcula y compara el puntaje. Se relaciona con [la experiencia](experiencia.md), [las reglas del juego](juego.md), [el agente](agente.md) y [la plataforma](plataforma.md). El ciclo y el registro de cada intento están en [intentos](intentos.md).
 
@@ -8,7 +8,7 @@ Esta página define qué uso se mide, cómo se diferencia el volumen de tokens d
 
 El consumo se mide con los datos reales que informa el proveedor en cada llamada de inferencia. No se estima a partir de caracteres, longitud de textos ni una tarifa fija por herramienta. La reproducción de un intento ya calculado no realiza llamadas nuevas y, por tanto, no incrementa su uso.
 
-Las métricas se guardan junto al intento en el servidor, sin una caducidad automática requerida, y quedan aisladas por usuario. Deben poder consultarse después desde otro navegador de escritorio. Una configuración editada o una nueva ejecución nunca reescribe el consumo de un intento anterior.
+Las métricas del contrato vigente se guardan junto al intento en el servidor, sin caducidad automática mientras ese contrato siga operativo, y quedan aisladas por usuario. Una configuración editada o una nueva ejecución nunca reescribe el consumo de un intento anterior. Los datos de prueba de contratos reemplazados pueden borrarse o quedar sin uso si no interfieren; no requieren lectores anteriores.
 
 Las herramientas deshabilitadas no se incluyen en la solicitud al modelo y no suman contexto ni consumo. Las herramientas habilitadas se envían todas, aunque el obstáculo de ese turno haga que algunas no parezcan útiles.
 
@@ -88,7 +88,7 @@ El valor de un objeto debe calibrarse para que una recompensa pueda compensar lo
 
 ## Parámetros disponibles
 
-El recorrido estático usa base 1000, peso de turno 10, peso de tokens 1 y unidad de tokens 1000. Redondea el resultado final a dos decimales y permite puntajes negativos. El aporte de objetos es cero porque ese contenido todavía no está publicado. Estos parámetros se guardan con el intento y son defaults técnicos ajustables, no una calibración educativa acreditada.
+El nivel principal vigente usa base 1000, peso de turno 10, peso de tokens 1 y unidad de tokens 1000. Redondea el resultado final a dos decimales y permite puntajes negativos. El aporte de objetos es cero porque el nivel no contiene objetos. Estos parámetros se guardan con el intento y son defaults técnicos ajustables, no una calibración educativa acreditada.
 
 La interfaz muestra turnos, llamadas y uso reportado, con desconocidos explícitos. No ofrece ranking ni costo monetario por ahora. Sólo una victoria con el total de tokens conocido obtiene puntaje; ninguna falla técnica se presenta como derrota para asignarle puntos.
 
@@ -126,7 +126,7 @@ Si se necesitan desempates, todavía no hay una regla numérica aprobada. La imp
 
 Dos cálculos nuevos con la misma configuración pueden elegir acciones distintas por la variabilidad del modelo o del proveedor. Registrar modelo y parámetros permite contextualizar la comparación, pero no promete decisiones idénticas al repetir una inferencia.
 
-Una reproducción usa un registro cerrado, por lo que debe conservar la misma secuencia de acciones y estados, las mismas causas, el mismo resultado, el mismo consumo y el mismo puntaje. La representación gráfica puede usar otros frames o recursos compatibles, manteniendo una velocidad fija y avance continuo sin controles del usuario. Iniciar otra visualización completa después del resultado no vuelve a inferir ni recalcula métricas.
+La reproducción de un registro del contrato vigente conserva la misma secuencia de acciones y estados, las mismas causas, el mismo resultado, el mismo consumo y el mismo puntaje. La representación gráfica puede usar otros frames o recursos para ese contrato, manteniendo una velocidad fija y avance continuo sin controles del usuario. Iniciar otra visualización completa después del resultado no vuelve a inferir ni recalcula métricas. No se mantienen lectores para contratos reemplazados.
 
 ## Comprobaciones compactas
 

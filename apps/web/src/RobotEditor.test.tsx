@@ -66,42 +66,50 @@ describe('RobotEditor', () => {
     expect((screen.getByRole('checkbox', { name: 'Retroceder' }) as HTMLInputElement).checked).toBe(
       false,
     );
+    expect((screen.getByRole('checkbox', { name: 'Esperar' }) as HTMLInputElement).checked).toBe(
+      false,
+    );
     expect(
       (screen.getByLabelText('Modelo para el próximo intento') as HTMLSelectElement).value,
     ).toBe('claude-sonnet-4.6');
+    expect(screen.getAllByRole('option')).toHaveLength(1);
     expect(screen.getByText('Guardado')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /Probar/i })).toBeNull();
   });
 
-  it('persists a changed model key and disables the selector as soon as an attempt starts', async () => {
-    const putDraft = vi.fn().mockResolvedValue(snapshot(1));
+  it('lets the player enable and describe Esperar', async () => {
+    const putDraft = vi.fn().mockImplementation(async (version: number, draft: RobotDraft) => ({
+      version: version + 1,
+      draft,
+    }));
+    const { container } = render(<RobotEditor api={api({ putDraft })} session={session()} />);
+
+    const waitToggle = (await screen.findByRole('checkbox', {
+      name: 'Esperar',
+    })) as HTMLInputElement;
+    expect(waitToggle.checked).toBe(false);
+    fireEvent.click(waitToggle);
+    fireEvent.change(container.querySelector('#skill-description-wait') as HTMLTextAreaElement, {
+      target: { value: 'Avanzá cuando convenga; esperá si el terreno va a cambiar.' },
+    });
+
+    await waitFor(() => expect(putDraft).toHaveBeenCalledOnce(), { timeout: 2_000 });
+    const sent = putDraft.mock.calls[0]?.[1] as RobotDraft;
+    expect(sent.skills.find((skill) => skill.id === 'wait')).toMatchObject({
+      enabled: true,
+      description: 'Avanzá cuando convenga; esperá si el terreno va a cambiar.',
+    });
+  });
+
+  it('keeps the current model fixed and disables the selector as an attempt starts', async () => {
     const editorRef = createRef<RobotEditorHandle>();
     const onTry = vi.fn();
-    const blockedDraft = { ...createDefaultDraft(), modelKey: 'claude-sonnet-5' as const };
-    render(
-      <RobotEditor
-        ref={editorRef}
-        api={api({ getDraft: vi.fn().mockResolvedValue(snapshot(0, blockedDraft)), putDraft })}
-        session={session()}
-        onTry={onTry}
-      />,
-    );
+    render(<RobotEditor ref={editorRef} api={api()} session={session()} onTry={onTry} />);
     const selector = await screen.findByLabelText('Modelo para el próximo intento');
-    expect(screen.getByText(/no está disponible para nuevos intentos/)).toBeTruthy();
-    expect(screen.getAllByRole('option')).toHaveLength(2);
-    expect(
-      (screen.getByRole('option', { name: /Claude Sonnet 5/ }) as HTMLOptionElement).disabled,
-    ).toBe(true);
+    expect((selector as HTMLSelectElement).value).toBe('claude-sonnet-4.6');
     expect((screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement).disabled).toBe(
-      true,
+      false,
     );
-    fireEvent.change(selector, { target: { value: 'claude-sonnet-4.6' } });
-    await waitFor(() => expect(putDraft).toHaveBeenCalledOnce(), { timeout: 2_000 });
-    expect(putDraft).toHaveBeenCalledOnce();
-    expect(putDraft.mock.calls[0]?.[1]).toEqual({
-      ...blockedDraft,
-      modelKey: 'claude-sonnet-4.6',
-    });
 
     fireEvent.click(screen.getByRole('button', { name: 'Probar' }));
     expect(onTry).toHaveBeenCalledOnce();

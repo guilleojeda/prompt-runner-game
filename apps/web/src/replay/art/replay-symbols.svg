@@ -113,6 +113,31 @@
     <path d="M0 28h120" stroke="#8bc18e" stroke-width="3" />
     <path d="M14 40h23m15 13h17m15-14h23" stroke="#588b70" stroke-linecap="round" stroke-width="3" opacity=".8" />
   </symbol>
+  <symbol id="terrain-platform-ground" viewBox="0 0 120 70" preserveAspectRatio="none">
+    <path d="M0 14H120V70H0z" fill="#5a9ca1" />
+    <path d="M0 14H120" stroke="#245c67" stroke-linecap="round" stroke-width="8" />
+    <rect x="9" y="26" width="102" height="11" rx="4" fill="#a6e0d2" stroke="#245c67" stroke-width="3" />
+    <path d="M19 28v7m82-7v7" stroke="#f6d079" stroke-linecap="round" stroke-width="3" />
+    <path d="M15 50h25m15 0h25m15 0h10" stroke="#78b8b1" stroke-linecap="round" stroke-width="3" opacity=".9" />
+  </symbol>
+  <symbol id="terrain-platform-frame" viewBox="0 0 120 100" preserveAspectRatio="none">
+    <path d="M12 5v79m96-79v79" fill="none" stroke="#245c67" stroke-linecap="round" stroke-width="8" />
+    <path d="M12 13h96M12 22h96" fill="none" stroke="#5a9ca1" stroke-linecap="round" stroke-width="3" stroke-dasharray="5 8" />
+    <path d="M0 18h24m72 0h24" stroke="#f6d079" stroke-linecap="round" stroke-width="5" />
+    <circle cx="12" cy="9" r="7" fill="#a6e0d2" stroke="#245c67" stroke-width="3" />
+    <circle cx="108" cy="9" r="7" fill="#a6e0d2" stroke="#245c67" stroke-width="3" />
+    <path d="M24 57h72" stroke="#78b8b1" stroke-linecap="round" stroke-width="4" stroke-dasharray="5 7" opacity=".9" />
+  </symbol>
+  <symbol id="terrain-barrier-low" viewBox="0 0 120 100" preserveAspectRatio="none">
+    <path d="M21 59h78v37H21z" fill="#dc8060" stroke="#773f38" stroke-linejoin="round" stroke-width="5" />
+    <path d="M23 67h74M23 82h74" stroke="#f7b16a" stroke-linecap="round" stroke-width="5" />
+    <path d="m31 58 13-18 13 18m6 0 13-18 13 18" fill="#efaa65" stroke="#773f38" stroke-linejoin="round" stroke-width="4" />
+  </symbol>
+  <symbol id="terrain-barrier-high" viewBox="0 0 120 100" preserveAspectRatio="none">
+    <path d="M21 18h78v78H21z" fill="#bd6258" stroke="#693b42" stroke-linejoin="round" stroke-width="5" />
+    <path d="M23 29h74M23 45h74M23 61h74M23 77h74" stroke="#e99a61" stroke-linecap="round" stroke-width="5" />
+    <path d="M35 19V7h50v12" fill="none" stroke="#693b42" stroke-linejoin="round" stroke-width="5" />
+  </symbol>
   <symbol id="terrain-pit-edge" viewBox="0 0 24 70" preserveAspectRatio="none">
     <path d="M0 14h24v8H0z" fill="#6eaa80" />
     <path d="M0 14h24" stroke="#2b735b" stroke-linecap="round" stroke-width="8" />

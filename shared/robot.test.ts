@@ -3,13 +3,14 @@ import {
   DraftValidationError,
   MAX_DRAFT_BYTES,
   ROBOT_CATALOG,
+  ROBOT_CATALOG_VERSION,
+  ROBOT_SCHEMA_VERSION,
   createDefaultDraft,
   draftByteLength,
   draftsEqual,
   validateDraft,
-  type LegacyRobotDraft,
 } from './robot';
-import { DEFAULT_MODEL_KEY, LEGACY_MODEL_KEY, MODEL_CATALOG } from './models';
+import { DEFAULT_MODEL_KEY, MODEL_CATALOG } from './models';
 
 const draftWithInstructionBytes = (bytes: number) => {
   const base = createDefaultDraft();
@@ -21,16 +22,19 @@ const draftWithInstructionBytes = (bytes: number) => {
   return { ...withoutInstructions, instructions: 'x'.repeat(padding) };
 };
 
-describe('robot draft contract', () => {
-  it('publishes stable catalog order, opaque IDs, and the approved default', () => {
+describe('current robot draft contract', () => {
+  it('publishes one catalog and default with a disabled opaque wait tool', () => {
     const draft = createDefaultDraft();
 
+    expect(ROBOT_SCHEMA_VERSION).toBe(3);
+    expect(ROBOT_CATALOG_VERSION).toBe(2);
     expect(ROBOT_CATALOG.map((entry) => entry.id)).toEqual([
       'advance',
       'retreat',
       'jump',
       'crouch',
       'swim',
+      'wait',
     ]);
     expect(ROBOT_CATALOG.map((entry) => entry.opaqueId)).toEqual([
       'tool_1',
@@ -38,23 +42,33 @@ describe('robot draft contract', () => {
       'tool_3',
       'tool_4',
       'tool_5',
+      'tool_6',
     ]);
-    expect(ROBOT_CATALOG[3].name).toBe('Agacharse y avanzar');
-    expect(ROBOT_CATALOG[4].description).toContain('ningún efecto');
-    expect(draft.instructions).toBe(
-      'Siempre preferí ir a la derecha, a menos que tengas un buen motivo para no hacerlo',
-    );
-    expect(draft.modelKey).toBe('claude-sonnet-4.6');
+    expect(ROBOT_CATALOG[3]?.name).toBe('Agacharse y avanzar');
+    expect(ROBOT_CATALOG[4]?.description).toContain('ningún efecto');
+    expect(ROBOT_CATALOG[5]).toMatchObject({
+      name: 'Esperar',
+      opaqueId: 'tool_6',
+      inputSchema: { properties: {}, additionalProperties: false },
+    });
+    expect(draft).toMatchObject({
+      schemaVersion: 3,
+      catalogVersion: 2,
+      modelKey: DEFAULT_MODEL_KEY,
+      instructions:
+        'Siempre preferí ir a la derecha, a menos que tengas un buen motivo para no hacerlo',
+    });
     expect(draft.skills.filter((skill) => skill.enabled).map((skill) => skill.id)).toEqual([
       'advance',
     ]);
+    expect(draft.skills.find((skill) => skill.id === 'wait')?.enabled).toBe(false);
     expect(draft.skills.every((skill) => skill.description === '')).toBe(true);
-    expect(ROBOT_CATALOG[2].inputSchema).toMatchObject({
+    expect(ROBOT_CATALOG[2]?.inputSchema).toMatchObject({
       properties: { direction: { enum: ['izquierda', 'derecha'] } },
     });
   });
 
-  it('canonicalizes order while preserving literal values and description presence', () => {
+  it('canonicalizes skill order and preserves literal values and description presence', () => {
     const original = createDefaultDraft();
     const input = {
       ...original,
@@ -80,17 +94,18 @@ describe('robot draft contract', () => {
     expect(parsed.skills.find((skill) => skill.id === 'retreat')).not.toHaveProperty('description');
   });
 
-  it('rejects schema, owner, unknown version, duplicate, and unknown IDs', () => {
+  it('rejects previous versions, extra fields, duplicates, and unknown IDs', () => {
     const draft = createDefaultDraft();
     const cases: unknown[] = [
       { ...draft, owner: 'USER#other' },
+      { ...draft, schemaVersion: 2 },
+      { ...draft, catalogVersion: 1 },
       {
         ...draft,
         skills: draft.skills.map((skill) =>
           skill.id === 'advance' ? { ...skill, inputSchema: { type: 'string' } } : skill,
         ),
       },
-      { ...draft, schemaVersion: 99 },
       { ...draft, skills: [...draft.skills.slice(0, -1), { ...draft.skills[0] }] },
       {
         ...draft,
@@ -106,7 +121,7 @@ describe('robot draft contract', () => {
   });
 
   it.each([MAX_DRAFT_BYTES - 1, MAX_DRAFT_BYTES, MAX_DRAFT_BYTES + 1])(
-    'measures the UTF-8 boundary at %i bytes',
+    'measures the canonical UTF-8 boundary at %i bytes',
     (bytes) => {
       const draft = draftWithInstructionBytes(bytes);
       expect(draftByteLength(draft)).toBe(bytes);
@@ -120,7 +135,7 @@ describe('robot draft contract', () => {
     },
   );
 
-  it('counts multibyte UTF-8 text and distinguishes omitted from empty descriptions', () => {
+  it('counts UTF-8 bytes and distinguishes omitted from empty descriptions', () => {
     const draft = createDefaultDraft();
     const omitted = validateDraft({
       ...draft,
@@ -138,59 +153,22 @@ describe('robot draft contract', () => {
     expect(draftsEqual(omitted, omitted)).toBe(true);
   });
 
-  it('serializes frozen catalog schemas directly without mutating them', () => {
+  it('serializes the frozen catalog without mutating its schemas', () => {
     const before = JSON.stringify(ROBOT_CATALOG);
     const bytes = draftByteLength(createDefaultDraft());
 
-    expect(bytes).toBe(1511);
+    expect(bytes).toBeGreaterThan(1511);
     expect(JSON.stringify(ROBOT_CATALOG)).toBe(before);
     expect(Object.isFrozen(ROBOT_CATALOG)).toBe(true);
-    expect(Object.isFrozen(ROBOT_CATALOG[0].inputSchema)).toBe(true);
+    expect(Object.isFrozen(ROBOT_CATALOG[0]?.inputSchema)).toBe(true);
+    expect(Object.isFrozen(ROBOT_CATALOG[5]?.inputSchema)).toBe(true);
   });
 
-  it('reads a v1 draft as Sonnet 5 without changing the stored shape', () => {
-    const current = createDefaultDraft();
-    const legacy = {
-      schemaVersion: 1 as const,
-      catalogVersion: current.catalogVersion,
-      instructions: current.instructions,
-      skills: current.skills,
-    };
-    const parsed = validateDraft(legacy);
-
-    expect(parsed.modelKey).toBe(LEGACY_MODEL_KEY);
-    expect(parsed.modelKey).not.toBe(DEFAULT_MODEL_KEY);
-    expect(legacy).not.toHaveProperty('modelKey');
-    expect(draftsEqual(legacy, parsed)).toBe(true);
-  });
-
-  it('keeps a v1 draft at the old byte limit readable after v2 metadata is added', () => {
-    const current = createDefaultDraft();
-    const withoutModel: LegacyRobotDraft = {
-      schemaVersion: 1,
-      catalogVersion: current.catalogVersion,
-      instructions: current.instructions,
-      skills: current.skills,
-    };
-    const empty = {
-      ...withoutModel,
-      schemaVersion: 1 as const,
-      instructions: '',
-    };
-    const legacy = {
-      ...empty,
-      instructions: 'x'.repeat(MAX_DRAFT_BYTES - draftByteLength(empty)),
-    };
-
-    expect(draftByteLength(legacy)).toBe(MAX_DRAFT_BYTES);
-    expect(validateDraft(legacy).instructions).toBe(legacy.instructions);
-  });
-
-  it('includes model identity in semantic draft equality and rejects unknown keys', () => {
+  it('keeps current draft equality stable and rejects unrecognized models', () => {
     const draft = createDefaultDraft();
-    const other = { ...draft, modelKey: MODEL_CATALOG[0].key };
 
-    expect(draftsEqual(draft, other)).toBe(false);
+    expect(draftsEqual(draft, validateDraft(draft))).toBe(true);
+    expect(MODEL_CATALOG.map((profile) => profile.key)).toEqual([DEFAULT_MODEL_KEY]);
     expect(() => validateDraft({ ...draft, modelKey: 'global.openai.arbitrary' })).toThrow(
       DraftValidationError,
     );

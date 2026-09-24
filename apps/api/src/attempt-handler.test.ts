@@ -49,6 +49,7 @@ describe('attempt API projection and dispatch recovery', () => {
       requestKey: 'default-store',
       expectedVersion: 1,
       draft,
+      animationEnabled: false,
     });
     const factory = vi
       .spyOn(attemptStoreModule, 'createDynamoAttemptStore')
@@ -99,7 +100,12 @@ describe('attempt API projection and dispatch recovery', () => {
       clientId: 'client',
       userInfoUrl: 'https://cognito.example.test/userinfo',
     };
-    const input = { requestKey: 'request', expectedVersion: 1, draft };
+    const input = {
+      requestKey: 'request',
+      expectedVersion: 1,
+      draft,
+      animationEnabled: false,
+    };
     const first = await handleRequest(eventFor('POST', '/attempts', input), dependencies);
     expect(first.statusCode).toBe(200);
     expect(responseBody(first).dispatchConfirmed).toBe(false);
@@ -224,7 +230,7 @@ describe('attempt API projection and dispatch recovery', () => {
     expect(otherUser.statusCode).toBe(404);
   });
 
-  it('keeps old admission requests off and recovers their duplicate before dispatch', async () => {
+  it('recovers duplicate current admissions before dispatching another inference', async () => {
     const draft = createDefaultDraft();
     const attemptStore = new MemoryAttemptStore({ draft: { version: 1, draft } });
     const dispatch = vi.fn().mockResolvedValue(undefined);
@@ -238,9 +244,14 @@ describe('attempt API projection and dispatch recovery', () => {
       clientId: 'client',
       userInfoUrl: 'https://cognito.example.test/userinfo',
     };
-    const oldBody = { requestKey: 'old-client', expectedVersion: 1, draft };
-    const first = await handleRequest(eventFor('POST', '/attempts', oldBody), dependencies);
-    const duplicate = await handleRequest(eventFor('POST', '/attempts', oldBody), dependencies);
+    const body = {
+      requestKey: 'same-request',
+      expectedVersion: 1,
+      draft,
+      animationEnabled: false,
+    };
+    const first = await handleRequest(eventFor('POST', '/attempts', body), dependencies);
+    const duplicate = await handleRequest(eventFor('POST', '/attempts', body), dependencies);
     expect(responseBody(first).attempt).toMatchObject({ animationEnabled: false });
     expect((responseBody(duplicate).attempt as { id: string }).id).toBe(
       (responseBody(first).attempt as { id: string }).id,
@@ -248,7 +259,7 @@ describe('attempt API projection and dispatch recovery', () => {
     expect(dispatch).toHaveBeenCalledTimes(2);
 
     const changedChoice = await handleRequest(
-      eventFor('POST', '/attempts', { ...oldBody, animationEnabled: true }),
+      eventFor('POST', '/attempts', { ...body, animationEnabled: true }),
       dependencies,
     );
     expect(changedChoice.statusCode).toBe(409);

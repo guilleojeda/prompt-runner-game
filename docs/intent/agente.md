@@ -1,10 +1,10 @@
 # Agente, herramientas y observación
 
-Este documento es canónico para el contrato de decisión del agente, sus herramientas, la información que recibe y la captura de configuraciones. El editor, los snapshots y la ejecución independiente por decisión están implementados para el recorrido estático. La inspección detallada en la interfaz sigue pendiente; sus datos se conservan desde la ejecución. Se relaciona con [experiencia](experiencia.md), [intentos](intentos.md), [juego](juego.md), [consumo y puntaje](consumo-y-puntaje.md) y [plataforma](plataforma.md).
+Este documento es canónico para el contrato de decisión del agente, sus herramientas, la información que recibe y la captura de configuraciones. El editor, los snapshots y la ejecución independiente por decisión usan el nivel periódico vigente. La inspección detallada en la interfaz sigue pendiente; sus datos se conservan desde la ejecución. Se relaciona con [experiencia](experiencia.md), [intentos](intentos.md), [juego](juego.md), [consumo y puntaje](consumo-y-puntaje.md) y [plataforma](plataforma.md).
 
 ## Configuración disponible
 
-El catálogo inicial permite preparar Avanzar, Retroceder, Saltar, Agacharse y avanzar, y Nadar. Sólo Avanzar comienza habilitado; las descripciones empiezan vacías y las instrucciones muestran la frase de orientación acordada. La ayuda sobre el efecto de una habilidad se presenta separada del campo editable y no completa el texto del usuario. Esperar y Agarrar objeto se incorporarán junto con las mecánicas que los utilizan. Probar ejecuta estas acciones en el recorrido estático.
+El catálogo permite preparar Avanzar (`tool_1`), Retroceder (`tool_2`), Saltar (`tool_3`), Agacharse y avanzar (`tool_4`), Nadar (`tool_5`) y Esperar (`tool_6`). Sólo Avanzar comienza habilitado; Esperar comienza deshabilitada. Las descripciones empiezan vacías y las instrucciones muestran la frase de orientación acordada. La ayuda sobre el efecto de una habilidad se presenta separada del campo editable y no completa el texto del usuario. Agarrar objeto se incorporará junto con la mecánica de objetos. Probar ejecuta estas acciones en el nivel `principal-periodico-v2`.
 
 Las referencias internas, IDs opacos y schemas pertenecen al catálogo versionado. Deshabilitar/reactivar no cambia el ID ni borra la descripción. El servidor rechaza referencias o versiones desconocidas e intentos de editar los contratos fijos. El borrador conserva textos literales y puede tener cero habilidades; Probar exige al menos una habilidad conforme a las reglas siguientes. [Guardado y concurrencia](../architecture/datos.md#borrador-disponible).
 
@@ -28,7 +28,7 @@ El payload debe construirse desde una lista explícita de campos permitidos:
 - **Protocolo:** elegir una única herramienta habilitada, respetar su esquema y decidir para la observación presente. No contiene la solución del nivel, equivalencias entre nombres e identificadores, reglas de obstáculos, ciclos ni una estrategia ganadora.
 - **Instrucciones generales:** texto escrito y aplicado por el humano. Se conserva exactamente, incluida una descripción ambigua o equivocada.
 - **Herramientas habilitadas:** todas las capacidades seleccionadas para el intento, aunque ninguna sea compatible con el obstáculo actual. Cada una lleva su identificador opaco, esquema fijo y descripción editable.
-- **Observación local:** objetos disponibles en el apoyo actual y estado de la salida si corresponde; estado presente del tramo inmediato a la izquierda o un límite; y estado presente del tramo inmediato a la derecha o un límite.
+- **Observación local:** objetos disponibles en el apoyo actual y estado de la salida si corresponde (el nivel vigente no tiene objetos y la salida siempre está habilitada); estado presente del tramo inmediato a la izquierda o un límite; y estado presente del tramo inmediato a la derecha o un límite.
 
 Los nombres de campos son una decisión de implementación. Los estados pueden usar términos comprensibles como `suelo`, `pozo`, `rama baja`, `barrera baja` y `barrera alta`. La observación no debe decir qué herramienta resuelve el estado ni entregar una lista de movimientos válidos.
 
@@ -87,7 +87,7 @@ Si no hay herramientas habilitadas, la interfaz debe pedir que se agregue al men
 
 ## Capturar configuraciones y snapshots
 
-El editor ofrece Sonnet 4.6 como modelo predeterminado y único disponible para intentos nuevos. Un borrador guardado con otro modelo conserva su elección y exige elegir explícitamente Sonnet 4.6 antes de Probar. La elección se guarda junto con instrucciones y habilidades, y usa parámetros propios del perfil; no permite introducir endpoints o parámetros arbitrarios. Los fallos de acceso o cuota se informan sin sustituir el modelo.
+Sonnet 4.6 es el único modelo operativo. Los intentos nuevos usan ese perfil y sus parámetros de Bedrock; el editor no ofrece otros modelos ni endpoints o parámetros arbitrarios. Los fallos de acceso o cuota se informan sin sustituir el modelo. Un borrador con una clave o formato retirado no se convierte ni se resuelve mediante un fallback.
 
 El clic en **Probar** valida y guarda directamente el borrador. Cada intento admitido toma una copia fija de esa configuración y del nivel seleccionado antes de su primer turno. La copia incluye, como mínimo, instrucciones, herramientas habilitadas, identificadores opacos, descripciones, esquemas aplicables y la configuración de inferencia elegida. El valor de `animation_enabled` se guarda en el intento como preferencia de presentación y no se incluye en el payload del modelo.
 

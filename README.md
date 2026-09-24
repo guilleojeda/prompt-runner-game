@@ -4,7 +4,7 @@ Juego educativo de AWS User Group AI Argentina. El participante configura las ha
 
 **Web publicada:** [Abrir la aplicación](https://d1ilpq1n58tzqo.cloudfront.net).
 
-**Estado del proyecto:** acceso Cognito, configuración persistida y ejecución real de un recorrido estático mediante AgentCore Runtime, Strands y Bedrock. Probar guarda la configuración visible y fija el intento; la animación opcional presenta las acciones guardadas antes del resultado. El historial propio permite volver a verlas sin inferencia. Los obstáculos periódicos, los objetos, la comparación y el segundo recorrido siguen pendientes. El nombre del juego es provisional.
+**Estado del proyecto:** acceso Cognito, configuración persistida y ejecución real del nivel principal periódico mediante AgentCore Runtime, Strands y Bedrock. Probar guarda la configuración visible y fija el intento; la animación opcional presenta las acciones guardadas antes del resultado. El historial propio permite volver a ver los intentos del contrato vigente sin inferencia. Los objetos, la comparación y el segundo recorrido corresponden a fases posteriores. El nombre del juego es provisional.
 
 ## Desarrollo local
 
@@ -47,11 +47,11 @@ El límite de configuración es 65.536 bytes de JSON UTF-8, incluidos los contra
 
 ## Probar y consultar resultados
 
-Claude Sonnet 4.6 es el modelo predeterminado y el único disponible para intentos nuevos, exclusivamente mediante Bedrock. Si un borrador guardado usa otro modelo, el editor lo informa y permite elegir Sonnet 4.6 antes de Probar; no cambia la elección ni los textos silenciosamente. Cada intento conserva su modelo y parámetros originales, también al recuperar el historial.
+Claude Sonnet 4.6 es el único modelo disponible para intentos nuevos, exclusivamente mediante Bedrock. Cada intento vigente conserva ese modelo y sus parámetros. Sonnet 5, GPT-5.6 Sol, Opus 5 y Opus 5.5 se implementarán en fase 12, después de SES; GPT-6 Luna y Sol siguen diferidos.
 
-Sonnet 4.6 cuenta con verificación de inferencia nativa, victoria, continuidad y cancelación. Los errores conservan el intento y no cambian de modelo. GPT-5.6 Sol, Sonnet 5 y Opus 5/5.5 quedan fuera de nuevas ejecuciones hasta completar su habilitación y verificación. La capacidad de uso concurrente y la integración de GPT-6 Luna/Sol siguen pendientes.
+Sonnet 4.6 cuenta con verificación de inferencia nativa, victoria, continuidad y cancelación. Los errores conservan el intento y no cambian de modelo. La capacidad de uso concurrente sigue pendiente de comprobación.
 
-El recorrido inicial tiene cinco tramos: suelo, pozo, suelo, rama baja y suelo, con la salida al final y hasta doce acciones. Avanzar y Retroceder caminan; Saltar y Agacharse y avanzar reciben dirección; Nadar consume un turno sin mover al robot. Las descripciones explican las habilidades al agente, pero no cambian la física.
+El único nivel vigente, `principal-periodico-v2` (versión 2), tiene siete tramos: suelo, pozo, suelo, rama, barrera, plataforma y suelo. La salida está en el apoyo 7 y el límite es de 16 acciones. La barrera está baja en turnos pares y alta en impares; la plataforma es suelo cuando el turno es múltiplo de tres y pozo en los demás. Avanzar y Retroceder caminan; Saltar y Agacharse y avanzar reciben dirección; Nadar consume un turno sin mover al robot. Esperar deja pasar un turno sin moverse y permite que cambie el terreno periódico. Las descripciones explican las habilidades al agente, pero no cambian la física.
 
 **Animación** comienza activada y su preferencia se guarda para la cuenta. Podés apagarla antes de Probar; el valor visible queda fijo para ese intento. Encendida, la web reproduce las acciones guardadas a velocidad fija antes de revelar el resultado. Apagada, muestra el resultado al terminar el cálculo. Desde el resultado o el historial podés iniciar otra reproducción completa sin llamadas al modelo.
 
@@ -59,7 +59,7 @@ Desde Probar hasta el resultado se bloquean edición, nuevos intentos, historial
 
 La cuota inicial es de cien intentos por día y cuenta al admitir, con reinicio a medianoche de Argentina. Un duplicado o rechazo previo no consume otra unidad; un error o cancelación posterior no devuelve la consumida. El resultado distingue victoria, derrota, límite, cancelación y error técnico, con turnos, llamadas y tokens reales. Un uso desconocido se muestra como tal y no produce un puntaje aparentemente exacto. Sólo las victorias con uso completo tienen puntos.
 
-Los intentos anteriores también se pueden reproducir desde su registro. La vista de animación usa estados y acciones; las observaciones, prompts y cuerpos de inferencia permanecen privados y el diagnóstico detallado sigue pendiente.
+Los intentos del contrato vigente se pueden reproducir desde su registro. La vista de animación usa estados y acciones; las observaciones, prompts y cuerpos de inferencia permanecen privados y el diagnóstico detallado sigue pendiente.
 
 ## Publicación
 
@@ -80,7 +80,7 @@ La especificación vigente se organiza por responsabilidad. Incluye las decision
 | [Consumo y puntuación](docs/intent/consumo-y-puntaje.md) | Tokens reales, costo, fórmula de puntos y comparación de resultados. |
 | [Plataforma y operación](docs/intent/plataforma.md) | Cuentas, cuota, capacidad, tecnologías, AWS y entrega automática. |
 
-Cada documento describe el comportamiento solicitado y las comprobaciones pertinentes. No afirma que ese comportamiento ya esté implementado o verificado. Los detalles técnicos pendientes no son decisiones aprobadas por aparecer enumerados.
+Cada documento describe el comportamiento vigente y señala por separado las capacidades de fases posteriores. Los detalles técnicos pendientes no son decisiones aprobadas por aparecer enumerados.
 
 ## Referencias técnicas
 
@@ -96,7 +96,7 @@ Las consultas de servicios se conservan por tema, con fecha, fuentes y límites 
 
 ## Arquitectura
 
-**Decisión final de ejecución:** AgentCore Runtime con Strands TypeScript y el proveedor nativo de Amazon Bedrock, con un catálogo finito de OpenAI y Claude mediante Converse sin streaming. Los perfiles y sus parámetros están en [ejecución](docs/architecture/ejecucion.md#inferencia). No se usa Mantle. El registro conserva snapshots y resoluciones, y React/SVG compone la animación a partir de esos datos. El flujo publicado es Probar → cálculo con controles bloqueados → animación opcional a velocidad fija, hacia adelante y sin controles → resultado. Las mecánicas posteriores siguen pendientes.
+**Decisión final de ejecución:** AgentCore Runtime con Strands TypeScript y el proveedor nativo de Amazon Bedrock, mediante Converse sin streaming. Sonnet 4.6 es el único perfil operativo. No se usa Mantle. El registro conserva snapshots y resoluciones, y React/SVG compone la animación a partir de esos datos. El flujo publicado es Probar → cálculo con controles bloqueados → animación opcional a velocidad fija, hacia adelante y sin controles → resultado. Las mecánicas de objetos, comparación y segundo recorrido quedan para fases posteriores.
 
 Están aprobados el contrato de registro, el reproductor, DynamoDB on-demand con S3 privado para cuerpos de inferencia, un único ambiente, la política diaria de cuota y Cognito Essentials con Managed Login. La primera versión usa el correo predeterminado de Cognito, aceptando sus 50 emails diarios y mensajes estándar; SES se incorporará en una fase posterior sobre el mismo user pool. El frontend React estático está publicado en S3 privado mediante CloudFront con Origin Access Control, usando CDK y GitHub Actions.
 
@@ -105,7 +105,7 @@ Están aprobados el contrato de registro, el reproductor, DynamoDB on-demand con
 | [Ejecución del juego y agente](docs/architecture/ejecucion.md) | Decisión Runtime/Strands/Bedrock, flujo de pantalla, continuidad, concurrencia y fallos. |
 | [Persistencia y cuota](docs/architecture/datos.md) | DynamoDB/S3, registro completo, historial y política diaria aprobados. |
 | [Registro de ejecución](docs/architecture/registro-de-ejecucion.md) | Snapshots, acciones y resultados, fases, cierre y datos necesarios para reproducir. |
-| [Animación](docs/architecture/animacion.md) | Sprites por capas, clips y reacciones, reproducción continua a velocidad fija, compatibilidad y extensión. |
+| [Animación](docs/architecture/animacion.md) | Sprites por capas, clips y reacciones, reproducción continua a velocidad fija y extensión del perfil vigente. |
 | [Acceso y entrega](docs/architecture/acceso-y-entrega.md) | Cognito inicialmente, SES posterior, publicación en S3 privado con CloudFront, un ambiente y CI/CD automático. |
 
 ## Cómo mantener esta documentación
@@ -113,5 +113,3 @@ Están aprobados el contrato de registro, el reproductor, DynamoDB on-demand con
 Actualizar el documento que corresponde cuando se acuerda un cambio de comportamiento o una restricción. Enlazar otras áreas cuando haga falta, sin mantener copias completas de la misma regla. Al implementar, documentar allí los detalles configurables elegidos y el fundamento de las limitaciones importantes; agregar las instrucciones de ejecución y operación cuando existan comandos y recursos reales.
 
 Los documentos de `.work/` organizan objetivo, investigación y diseño vigentes. Referencian esta especificación y no son el único lugar donde se documentan decisiones. Conservar únicamente decisiones finales, puntos realmente pendientes y fundamentos técnicos útiles; no guardar cronologías de propuestas, conversaciones o revisiones.
-
-[idea-inicial.md](idea-inicial.md) se conserva como antecedente de la propuesta. Sus decisiones abiertas y exclusiones antiguas no reemplazan esta especificación vigente. No es necesario leerlo para entender los requisitos actuales.

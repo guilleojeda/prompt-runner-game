@@ -5,11 +5,11 @@ import type {
   NormalizedAction,
   ScoreRules,
 } from './game.js';
-import type { RobotSkillId } from './robot.js';
+import { ROBOT_CATALOG_VERSION, ROBOT_SCHEMA_VERSION, type RobotSkillId } from './robot.js';
 import type { ModelKey } from './models.js';
 
 /** Version of the durable attempt record, independent of game rules versions. */
-export const ATTEMPT_RECORD_VERSION = 1 as const;
+export const ATTEMPT_RECORD_VERSION = 2 as const;
 
 export type AttemptStatus =
   'pending' | 'running' | 'victory' | 'defeat' | 'incomplete' | 'cancelled' | 'error';
@@ -57,8 +57,8 @@ export interface AttemptRobotSkillSnapshot {
 }
 
 export interface AttemptRobotSnapshot {
-  readonly schemaVersion: number;
-  readonly catalogVersion: number;
+  readonly schemaVersion: typeof ROBOT_SCHEMA_VERSION;
+  readonly catalogVersion: typeof ROBOT_CATALOG_VERSION;
   readonly instructions: string;
   readonly skills: readonly AttemptRobotSkillSnapshot[];
 }

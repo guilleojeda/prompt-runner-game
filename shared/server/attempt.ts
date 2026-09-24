@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import type { RobotDraft } from '../robot.js';
 import { DEFAULT_MODEL_KEY, resolveModelProfile, type ModelProfile } from '../models.js';
 import type {
@@ -18,8 +19,9 @@ import type {
   LevelObject,
   LevelSegment,
   NormalizedAction,
+  TerrainState,
 } from '../game.js';
-import { LEVEL } from '../game.js';
+import { LEVEL, RULES_VERSION } from '../game.js';
 
 /** API summaries use the authoritative attempt contract from shared/attempt.ts. */
 export type AttemptStatus = SharedAttemptStatus;
@@ -90,8 +92,7 @@ export type AdmitInput = {
   readonly requestKey: string;
   readonly expectedVersion: number;
   readonly draft: RobotDraft;
-  /** Missing only on pre-phase-4 duplicate submissions; those historically mean false. */
-  readonly animationEnabled?: boolean;
+  readonly animationEnabled: boolean;
   readonly now?: string;
   readonly config?: Partial<AttemptConfig>;
 };
@@ -117,11 +118,11 @@ export type CallRecord = {
   readonly requestId?: string;
   readonly responseStatus?: number;
   readonly errorCode?: string;
-  /** Effective identity copied at beginCall; omitted only on legacy records. */
-  readonly modelKey?: ModelProfile['key'];
-  readonly modelId?: string;
-  readonly region?: string;
-  readonly profileVersion?: string;
+  /** Effective identity copied from the admitted model profile. */
+  readonly modelKey: ModelProfile['key'];
+  readonly modelId: string;
+  readonly region: string;
+  readonly profileVersion: string;
   readonly createdAt: string;
   readonly updatedAt: string;
 };
@@ -245,17 +246,25 @@ const isInteger = (value: unknown): value is number =>
   typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 const isFiniteValue = (value: unknown): value is number =>
   typeof value === 'number' && Number.isFinite(value);
-const isTerrain = (value: unknown): value is GameSnapshot['terrain'][number] =>
-  value === 'ground' || value === 'pit' || value === 'branch';
+const isTerrain = (value: unknown): value is TerrainState =>
+  value === 'ground' ||
+  value === 'pit' ||
+  value === 'branch' ||
+  value === 'barrier_low' ||
+  value === 'barrier_high';
 const isResolutionReason = (value: unknown): value is ActionResolution['reason'] =>
   value === 'moved' ||
   value === 'left_boundary' ||
   value === 'right_boundary' ||
   value === 'swim_no_effect' ||
+  value === 'wait' ||
   value === 'walk_into_pit' ||
   value === 'crouch_into_pit' ||
   value === 'walk_into_branch' ||
-  value === 'jump_into_branch';
+  value === 'jump_into_branch' ||
+  value === 'walk_into_barrier' ||
+  value === 'crouch_into_low_barrier' ||
+  value === 'jump_into_high_barrier';
 const isTerminal = (status: AttemptStatus): boolean =>
   status === 'victory' ||
   status === 'defeat' ||
@@ -331,6 +340,7 @@ const readAction = (value: unknown): AttemptActionRecord => {
   if (rawAction.kind === 'advance') action = { kind: 'advance' };
   else if (rawAction.kind === 'retreat') action = { kind: 'retreat' };
   else if (rawAction.kind === 'swim') action = { kind: 'swim' };
+  else if (rawAction.kind === 'wait') action = { kind: 'wait' };
   else if (
     (rawAction.kind === 'jump' || rawAction.kind === 'crouch') &&
     (rawAction.direction === 'left' || rawAction.direction === 'right')
@@ -374,13 +384,13 @@ const readAction = (value: unknown): AttemptActionRecord => {
   };
 };
 
-const readLevel = (value: unknown): LevelDefinition => {
+const readCurrentLevel = (value: unknown): LevelDefinition => {
   if (
     !isObject(value) ||
     typeof value.id !== 'string' ||
     !isInteger(value.version) ||
     value.version === 0 ||
-    value.rulesVersion !== 1 ||
+    value.rulesVersion !== RULES_VERSION ||
     !isInteger(value.maxTurns) ||
     value.maxTurns === 0 ||
     !Array.isArray(value.segments) ||
@@ -390,9 +400,33 @@ const readLevel = (value: unknown): LevelDefinition => {
     throw new ReplayRecordError('El nivel guardado no es compatible con la reproducción.');
   }
   const segments: LevelSegment[] = value.segments.map((segment): LevelSegment => {
-    if (!isObject(segment) || !isTerrain(segment.type))
+    if (!isObject(segment))
       throw new ReplayRecordError('El nivel contiene un tramo no compatible.');
-    return { type: segment.type };
+    if (segment.type === 'ground' || segment.type === 'pit' || segment.type === 'branch') {
+      return { type: segment.type };
+    }
+    if (
+      (segment.type !== 'barrier' && segment.type !== 'platform') ||
+      !Array.isArray(segment.phases) ||
+      segment.phases.length === 0 ||
+      !segment.phases.every(isTerrain) ||
+      !isInteger(segment.offset)
+    ) {
+      throw new ReplayRecordError('El nivel contiene un tramo periódico no compatible.');
+    }
+    if (
+      (segment.type === 'barrier' &&
+        segment.phases.some((phase) => phase !== 'barrier_low' && phase !== 'barrier_high')) ||
+      (segment.type === 'platform' &&
+        segment.phases.some((phase) => phase !== 'ground' && phase !== 'pit'))
+    ) {
+      throw new ReplayRecordError('El nivel contiene fases no compatibles.');
+    }
+    return {
+      type: segment.type,
+      phases: [...segment.phases] as TerrainState[],
+      offset: segment.offset,
+    };
   });
   const objects: LevelObject[] = value.objects.map((item): LevelObject => {
     if (
@@ -424,10 +458,10 @@ const readLevel = (value: unknown): LevelDefinition => {
       throw new ReplayRecordError('La salida contiene un objeto inválido.');
     return item;
   });
-  return {
+  const level: LevelDefinition = {
     id: value.id,
     version: value.version,
-    rulesVersion: 1,
+    rulesVersion: RULES_VERSION,
     maxTurns: value.maxTurns,
     segments,
     objects,
@@ -436,7 +470,14 @@ const readLevel = (value: unknown): LevelDefinition => {
       requiredObjectIds,
     },
   };
+  if (!isDeepStrictEqual(level, LEVEL)) {
+    throw new ReplayRecordError('El nivel guardado no es el único nivel vigente.');
+  }
+  return level;
 };
+
+/** Read a level snapshot only when it is the code-owned periodic level. */
+export { readCurrentLevel };
 
 /** Validates durable rows and returns only the public data needed by the visual replay. */
 export const replayRecordViewOf = (
@@ -454,7 +495,7 @@ export const replayRecordViewOf = (
   ) {
     throw new ReplayRecordError();
   }
-  const level = readLevel(attempt.config.levelDefinition);
+  const level = readCurrentLevel(attempt.config.levelDefinition);
   const storedSnapshots = rawSnapshots.map((entry) => {
     if (!isObject(entry) || typeof entry.stateId !== 'string')
       throw new ReplayRecordError('El registro contiene una referencia de estado inválida.');
@@ -547,16 +588,16 @@ export const replayRecordViewOf = (
 };
 
 export const DEFAULT_ATTEMPT_CONFIG: AttemptConfig = {
-  levelId: 'principal-estatico-v1',
-  levelVersion: 'principal-estatico-v1',
+  levelId: LEVEL.id,
+  levelVersion: String(LEVEL.version),
   levelDefinition: LEVEL,
-  engineVersion: 'static-engine-v1',
-  protocolVersion: 'tool-protocol-v1',
+  engineVersion: 'periodic-engine-v2',
+  protocolVersion: 'tool-protocol-v2',
   protocol: { api: 'converse', stream: false },
   inferenceVersion: 'claude-sonnet-4.6-global-v1',
   model: resolveModelProfile(DEFAULT_MODEL_KEY),
   scoreVersion: 'score-v1',
-  maxTurns: 12,
+  maxTurns: LEVEL.maxTurns,
   startTimeoutMs: 5 * 60_000,
   starterTimeoutMs: 120_000,
   eventMaxAgeMs: 5 * 60_000,

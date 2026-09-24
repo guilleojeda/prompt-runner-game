@@ -17,12 +17,7 @@ import {
   type RobotDraft,
   type RobotSkillId,
 } from '../../../shared/robot.js';
-import {
-  AVAILABLE_MODEL_CATALOG,
-  isAvailableModelKey,
-  isModelKey,
-  modelByKey,
-} from '../../../shared/models.js';
+import { isModelKey, MODEL_CATALOG } from '../../../shared/models.js';
 import type { AuthSession } from './auth.js';
 import { DraftApiFailure, type DraftApi } from './draft-api.js';
 
@@ -596,13 +591,6 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
 
   const disabled = paused || locked || attemptClickLocked || status === 'loading';
   const byteCount = draft ? draftByteLength(draft) : 0;
-  const selectedModel = draft ? modelByKey(draft.modelKey) : undefined;
-  const modelAvailable = draft ? isAvailableModelKey(draft.modelKey) : false;
-  const modelOptions =
-    selectedModel && !modelAvailable
-      ? [selectedModel, ...AVAILABLE_MODEL_CATALOG]
-      : AVAILABLE_MODEL_CATALOG;
-
   return (
     <section
       className="robot-editor"
@@ -655,26 +643,14 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
               onChange={onModelChange}
               disabled={disabled}
             >
-              {modelOptions.map((model) => (
-                <option
-                  key={model.key}
-                  value={model.key}
-                  disabled={!isAvailableModelKey(model.key)}
-                >
+              {MODEL_CATALOG.map((model) => (
+                <option key={model.key} value={model.key}>
                   {model.label}
-                  {!isAvailableModelKey(model.key) ? ' (no disponible para nuevos intentos)' : ''}
                 </option>
               ))}
             </select>
-            {!modelAvailable && selectedModel && (
-              <p className="field-help" role="status">
-                {selectedModel.label} no está disponible para nuevos intentos. Elegí{' '}
-                {AVAILABLE_MODEL_CATALOG[0]?.label ?? 'un modelo disponible'} para continuar.
-              </p>
-            )}
             <p className="field-help">
-              Esta elección se guarda con la configuración y queda fija al pulsar «Probar». Sólo se
-              ofrecen modelos disponibles para nuevos intentos.
+              El modelo se guarda con la configuración y queda fijo al pulsar «Probar».
             </p>
           </fieldset>
           <fieldset disabled={disabled}>
@@ -755,7 +731,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
                   setAttemptClickLocked(true);
                   onTry();
                 }}
-                disabled={disabled || status === 'conflict' || !modelAvailable}
+                disabled={disabled || status === 'conflict'}
               >
                 Probar
               </button>

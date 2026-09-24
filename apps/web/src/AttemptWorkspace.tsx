@@ -52,15 +52,19 @@ interface FrozenAdmission {
 function frozenAdmissionFromRecovery(
   reference: ReturnType<typeof readAttemptRecovery>,
 ): FrozenAdmission | null {
-  if (!reference?.requestKey || reference.expectedVersion === undefined || !reference.draft) {
+  if (
+    !reference?.requestKey ||
+    reference.expectedVersion === undefined ||
+    !reference.draft ||
+    reference.animationEnabled === undefined
+  ) {
     return null;
   }
   return {
     requestKey: reference.requestKey,
     expectedVersion: reference.expectedVersion,
     draft: reference.draft,
-    // Phase-three clients froze the same presentation contract as animation off.
-    animationEnabled: reference.animationEnabled ?? false,
+    animationEnabled: reference.animationEnabled,
   };
 }
 
@@ -140,6 +144,9 @@ function reasonLabel(reason: string): string {
     crouch_into_pit: 'El robot intentó cruzar un pozo agachado y cayó.',
     walk_into_branch: 'El robot intentó caminar bajo una rama y chocó.',
     jump_into_branch: 'El robot saltó contra una rama y chocó.',
+    walk_into_barrier: 'El robot intentó atravesar una barrera y chocó.',
+    crouch_into_low_barrier: 'El robot pasó agachado por una barrera baja y chocó.',
+    jump_into_high_barrier: 'El robot saltó contra una barrera alta y chocó.',
     start_deadline_expired: 'El cálculo no pudo comenzar dentro del tiempo disponible.',
     runtime_deadline_expired: 'La ejecución no terminó dentro del tiempo disponible.',
     runtime_deadline_exceeded: 'No quedaba tiempo suficiente para otra decisión.',
@@ -180,7 +187,7 @@ function statusDescription(status: AttemptStatus): string {
     case 'running':
       return 'El agente está tomando decisiones. Podés cancelar el cálculo.';
     case 'victory':
-      return 'El robot llegó a la salida del recorrido estático.';
+      return 'El robot llegó a la salida del recorrido.';
     case 'defeat':
       return 'El robot encontró un obstáculo incompatible.';
     case 'incomplete':
@@ -1618,9 +1625,12 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       <section className="attempt-workspace" aria-labelledby="attempt-workspace-title">
         <div className="attempt-heading">
           <div>
-            <p className="card-kicker">Recorrido estático</p>
+            <p className="card-kicker">Terreno periódico</p>
             <h2 id="attempt-workspace-title">Probar al agente</h2>
-            <p>El robot recorre suelo, pozo, suelo, rama y suelo en hasta 12 acciones.</p>
+            <p>
+              El terreno cambia entre suelo, pozo, rama, barrera y plataforma. Llegá a la salida en
+              hasta 16 acciones.
+            </p>
           </div>
           {quota && (
             <div

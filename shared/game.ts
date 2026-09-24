@@ -1,15 +1,25 @@
 import type { RobotSkillId } from './robot.js';
 
 /** Version of the deterministic rules used by the published level. */
-export const RULES_VERSION = 1 as const;
+export const RULES_VERSION = 2 as const;
 
 export type GameStatus = 'running' | 'victory' | 'defeat' | 'incomplete';
 export type Direction = 'left' | 'right';
-export type TerrainState = 'ground' | 'pit' | 'branch';
+export type TerrainState = 'ground' | 'pit' | 'branch' | 'barrier_low' | 'barrier_high';
 
-export interface LevelSegment {
-  readonly type: TerrainState;
+export type StaticTerrainState = 'ground' | 'pit' | 'branch';
+
+export interface StaticLevelSegment {
+  readonly type: StaticTerrainState;
 }
+
+export interface PeriodicLevelSegment {
+  readonly type: 'barrier' | 'platform';
+  readonly phases: readonly TerrainState[];
+  readonly offset: number;
+}
+
+export type LevelSegment = StaticLevelSegment | PeriodicLevelSegment;
 
 export interface LevelObject {
   readonly id: string;
@@ -61,14 +71,14 @@ export interface GameRules {
 
 export const RULES: GameRules = Object.freeze({
   version: RULES_VERSION,
-  maxTurns: 12,
+  maxTurns: 16,
   score: DEFAULT_SCORE_RULES,
 });
 
-/** The phase-three level: ground, pit, ground, branch, ground. */
+/** The single current level: ground, pit, ground, branch, barrier, platform, ground. */
 export const LEVEL: LevelDefinition = Object.freeze({
-  id: 'principal-estatico-v1',
-  version: 1,
+  id: 'principal-periodico-v2',
+  version: 2,
   rulesVersion: RULES_VERSION,
   maxTurns: RULES.maxTurns,
   segments: Object.freeze([
@@ -76,10 +86,20 @@ export const LEVEL: LevelDefinition = Object.freeze({
     Object.freeze({ type: 'pit' as const }),
     Object.freeze({ type: 'ground' as const }),
     Object.freeze({ type: 'branch' as const }),
+    Object.freeze({
+      type: 'barrier' as const,
+      phases: Object.freeze(['barrier_low', 'barrier_high'] as const),
+      offset: 0,
+    }),
+    Object.freeze({
+      type: 'platform' as const,
+      phases: Object.freeze(['ground', 'pit', 'pit'] as const),
+      offset: 0,
+    }),
     Object.freeze({ type: 'ground' as const }),
   ]),
   objects: Object.freeze([]),
-  exit: Object.freeze({ support: 5, requiredObjectIds: Object.freeze([]) }),
+  exit: Object.freeze({ support: 7, requiredObjectIds: Object.freeze([]) }),
 });
 
 export interface GameSnapshot {
@@ -104,7 +124,8 @@ export type NormalizedAction =
   | { readonly kind: 'retreat' }
   | { readonly kind: 'jump'; readonly direction: Direction }
   | { readonly kind: 'crouch'; readonly direction: Direction }
-  | { readonly kind: 'swim' };
+  | { readonly kind: 'swim' }
+  | { readonly kind: 'wait' };
 
 export type ResolutionOutcome = 'moved' | 'no_op' | 'fall' | 'collision';
 
@@ -113,10 +134,14 @@ export type ResolutionReason =
   | 'left_boundary'
   | 'right_boundary'
   | 'swim_no_effect'
+  | 'wait'
   | 'walk_into_pit'
   | 'crouch_into_pit'
   | 'walk_into_branch'
-  | 'jump_into_branch';
+  | 'jump_into_branch'
+  | 'walk_into_barrier'
+  | 'crouch_into_low_barrier'
+  | 'jump_into_high_barrier';
 
 export interface ActionResolutionBase {
   readonly outcome: ResolutionOutcome;
@@ -210,17 +235,31 @@ const deepFreeze = <T>(value: T): T => {
 const cloneAndFreeze = <T extends object>(value: T): Readonly<T> => deepFreeze(value);
 
 const validTerrain = (value: unknown): value is TerrainState =>
+  value === 'ground' ||
+  value === 'pit' ||
+  value === 'branch' ||
+  value === 'barrier_low' ||
+  value === 'barrier_high';
+
+const validStaticTerrain = (value: unknown): value is StaticTerrainState =>
   value === 'ground' || value === 'pit' || value === 'branch';
 
 export const effectiveTerrain = (
   level: LevelDefinition,
   phaseTurn: number,
 ): readonly TerrainState[] => {
-  // phaseTurn is intentionally accepted even while phase 3 uses static terrain.
-  // Keeping this projection as a pure function makes the phase transition in
-  // snapshots explicit without adding periodic mechanics to this level.
-  void phaseTurn;
-  return Object.freeze(level.segments.map((segment) => segment.type));
+  if (!Number.isInteger(phaseTurn) || phaseTurn < 0) {
+    throw new GameStateError('The phase turn must be a non-negative integer.');
+  }
+  return Object.freeze(
+    level.segments.map((segment) => {
+      if (segment.type !== 'barrier' && segment.type !== 'platform') return segment.type;
+      const phaseIndex =
+        (((phaseTurn + segment.offset) % segment.phases.length) + segment.phases.length) %
+        segment.phases.length;
+      return segment.phases[phaseIndex] as TerrainState;
+    }),
+  );
 };
 
 const validateLevel = (level: LevelDefinition): void => {
@@ -238,8 +277,28 @@ const validateLevel = (level: LevelDefinition): void => {
     throw new GameStateError('The level definition is invalid.');
   }
   for (const segment of level.segments) {
-    if (!validTerrain(segment.type)) {
+    if (
+      !segment ||
+      (segment.type !== 'barrier' &&
+        segment.type !== 'platform' &&
+        !validStaticTerrain(segment.type))
+    ) {
       throw new GameStateError('The level contains an invalid terrain type.');
+    }
+    if (segment.type === 'barrier' || segment.type === 'platform') {
+      if (
+        !Array.isArray(segment.phases) ||
+        segment.phases.length === 0 ||
+        !Number.isInteger(segment.offset) ||
+        segment.phases.some((phase: unknown) => {
+          if (!validTerrain(phase)) return true;
+          return segment.type === 'barrier'
+            ? phase !== 'barrier_low' && phase !== 'barrier_high'
+            : phase !== 'ground' && phase !== 'pit';
+        })
+      ) {
+        throw new GameStateError('The level contains an invalid periodic segment.');
+      }
     }
   }
   const objectIds = new Set<string>();
@@ -331,7 +390,12 @@ export const normalizeSelection = (
     throw new SelectionValidationError('invalid_arguments', 'Tool arguments must be an object.');
   }
 
-  if (entry.id === 'advance' || entry.id === 'retreat' || entry.id === 'swim') {
+  if (
+    entry.id === 'advance' ||
+    entry.id === 'retreat' ||
+    entry.id === 'swim' ||
+    entry.id === 'wait'
+  ) {
     if (!exactArgumentKeys(args, [])) {
       throw new SelectionValidationError('invalid_arguments', 'This tool takes no arguments.');
     }
@@ -357,9 +421,15 @@ const isMovementAction = (
   | { readonly kind: 'advance' }
   | { readonly kind: 'retreat' }
   | { readonly kind: 'jump'; readonly direction: Direction }
-  | { readonly kind: 'crouch'; readonly direction: Direction } => action.kind !== 'swim';
+  | { readonly kind: 'crouch'; readonly direction: Direction } =>
+  action.kind === 'advance' ||
+  action.kind === 'retreat' ||
+  action.kind === 'jump' ||
+  action.kind === 'crouch';
 
-const modeForAction = (action: NormalizedAction): 'walk' | 'jump' | 'crouch' | 'swim' => {
+const modeForAction = (
+  action: Exclude<NormalizedAction, { readonly kind: 'wait' }>,
+): 'walk' | 'jump' | 'crouch' | 'swim' => {
   if (action.kind === 'jump') return 'jump';
   if (action.kind === 'crouch') return 'crouch';
   if (action.kind === 'swim') return 'swim';
@@ -392,6 +462,20 @@ const movementCompatibility = (
         ? { outcome: 'collision', reason: 'jump_into_branch' }
         : { outcome: 'collision', reason: 'walk_into_branch' };
   }
+  if (terrain === 'barrier_low') {
+    return mode === 'jump'
+      ? { outcome: 'moved', reason: 'moved' }
+      : mode === 'walk'
+        ? { outcome: 'collision', reason: 'walk_into_barrier' }
+        : { outcome: 'collision', reason: 'crouch_into_low_barrier' };
+  }
+  if (terrain === 'barrier_high') {
+    return mode === 'crouch'
+      ? { outcome: 'moved', reason: 'moved' }
+      : mode === 'walk'
+        ? { outcome: 'collision', reason: 'walk_into_barrier' }
+        : { outcome: 'collision', reason: 'jump_into_high_barrier' };
+  }
   throw new GameStateError(`Unsupported static terrain: ${terrain}`);
 };
 
@@ -404,7 +488,8 @@ const validateAction = (action: NormalizedAction): void => {
     action.kind !== 'retreat' &&
     action.kind !== 'jump' &&
     action.kind !== 'crouch' &&
-    action.kind !== 'swim'
+    action.kind !== 'swim' &&
+    action.kind !== 'wait'
   ) {
     throw new GameStateError('The action kind is unknown.');
   }
@@ -416,7 +501,10 @@ const validateAction = (action: NormalizedAction): void => {
     throw new GameStateError('A directional action requires a valid direction.');
   }
   if (
-    (action.kind === 'advance' || action.kind === 'retreat' || action.kind === 'swim') &&
+    (action.kind === 'advance' ||
+      action.kind === 'retreat' ||
+      action.kind === 'swim' ||
+      action.kind === 'wait') &&
     hasOwn(action, 'direction')
   ) {
     throw new GameStateError('This action does not accept a direction.');
@@ -465,6 +553,23 @@ export const resolveAction = (
   // The caller's snapshot is immutable by contract. Returning this exact
   // object keeps before/after references chainable without mutating it.
   const before = state;
+  if (action.kind === 'wait') {
+    const resolution: NoOpResolution = { outcome: 'no_op', reason: 'wait' };
+    const status: GameStatus = before.turnsUsed + 1 >= level.maxTurns ? 'incomplete' : 'running';
+    return {
+      action,
+      before,
+      after: afterTurn(
+        before,
+        level,
+        status,
+        before.support,
+        before.maxSupportReached,
+        status !== 'running',
+      ),
+      resolution,
+    };
+  }
   const mode = modeForAction(action);
   const direction = directionForAction(action);
 

@@ -1,19 +1,18 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { DynamoDBClient, TransactionCanceledException } from '@aws-sdk/client-dynamodb';
 import { marshall } from '@aws-sdk/util-dynamodb';
 import { LEVEL, resolveAction, type GameSnapshot } from '../../../shared/game';
 import { createDefaultDraft, type DraftSnapshot } from '../../../shared/robot';
 import { createClosedAttemptRecordFixture } from '../../../shared/attempt.fixture';
+import { readCurrentLevel } from '../../../shared/server/attempt';
 import {
   AttemptNotTerminalError,
   DynamoAttemptStore,
   IdempotencyConflictError,
   MemoryAttemptStore,
   MemoryBodyStore,
-  ModelUnavailableError,
   QuotaExceededError,
 } from './attempt-store';
-import * as models from '../../../shared/models';
 
 const savedDraft = (): DraftSnapshot => ({
   version: 1,
@@ -21,7 +20,29 @@ const savedDraft = (): DraftSnapshot => ({
   draft: createDefaultDraft(),
 });
 
+const modelIdentity = {
+  modelKey: 'claude-sonnet-4.6' as const,
+  modelId: 'global.anthropic.claude-sonnet-4-6',
+  region: 'us-east-1',
+  profileVersion: 'claude-sonnet-4.6-global-v1',
+};
+
 describe('attempt lifecycle store', () => {
+  it('reads the current level independent of serialized object key order', () => {
+    const reverseKeys = (value: unknown): unknown => {
+      if (Array.isArray(value)) return value.map(reverseKeys);
+      if (typeof value !== 'object' || value === null) return value;
+      return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>)
+          .reverse()
+          .map(([key, child]) => [key, reverseKeys(child)]),
+      );
+    };
+
+    expect(readCurrentLevel(reverseKeys(LEVEL))).toEqual(LEVEL);
+    expect(() => readCurrentLevel({ ...LEVEL, id: 'principal-estatico-v1' })).toThrow();
+  });
+
   it('checks idempotency before the draft version and quota', async () => {
     const store = new MemoryAttemptStore({
       quotaLimit: 1,
@@ -29,7 +50,13 @@ describe('attempt lifecycle store', () => {
       now: () => new Date('2026-09-21T15:00:00.000Z'),
     });
     const draft = savedDraft().draft;
-    const first = await store.admit({ owner: 'a', requestKey: 'same', expectedVersion: 1, draft });
+    const first = await store.admit({
+      owner: 'a',
+      requestKey: 'same',
+      expectedVersion: 1,
+      draft,
+      animationEnabled: false,
+    });
     expect(first.attempt).toMatchObject({
       modelKey: 'claude-sonnet-4.6',
       modelLabel: 'Claude Sonnet 4.6',
@@ -40,11 +67,18 @@ describe('attempt lifecycle store', () => {
       requestKey: 'same',
       expectedVersion: 999,
       draft,
+      animationEnabled: false,
     });
     expect(duplicate.admitted).toBe(false);
     expect(duplicate.attempt.id).toBe(first.attempt.id);
     await expect(
-      store.admit({ owner: 'a', requestKey: 'different', expectedVersion: 1, draft }),
+      store.admit({
+        owner: 'a',
+        requestKey: 'different',
+        expectedVersion: 1,
+        draft,
+        animationEnabled: false,
+      }),
     ).rejects.toBeInstanceOf(QuotaExceededError);
     await expect(
       store.admit({
@@ -52,14 +86,7 @@ describe('attempt lifecycle store', () => {
         requestKey: 'same',
         expectedVersion: 1,
         draft: { ...draft, instructions: 'otro' },
-      }),
-    ).rejects.toBeInstanceOf(IdempotencyConflictError);
-    await expect(
-      store.admit({
-        owner: 'a',
-        requestKey: 'same',
-        expectedVersion: 1,
-        draft: { ...draft, modelKey: 'gpt-5.6-sol' },
+        animationEnabled: false,
       }),
     ).rejects.toBeInstanceOf(IdempotencyConflictError);
   });
@@ -80,26 +107,27 @@ describe('attempt lifecycle store', () => {
       version: 1,
     });
 
-    const oldRequest = await store.admit({
+    const firstRequest = await store.admit({
       owner: 'a',
-      requestKey: 'legacy-presentation',
+      requestKey: 'animation-off',
       expectedVersion: 1,
       draft,
+      animationEnabled: false,
     });
-    expect(oldRequest.attempt.animationEnabled).toBe(false);
+    expect(firstRequest.attempt.animationEnabled).toBe(false);
     const recovered = await store.admit({
       owner: 'a',
-      requestKey: 'legacy-presentation',
+      requestKey: 'animation-off',
       expectedVersion: 999,
       draft,
       animationEnabled: false,
     });
     expect(recovered.admitted).toBe(false);
-    expect(recovered.attempt.id).toBe(oldRequest.attempt.id);
+    expect(recovered.attempt.id).toBe(firstRequest.attempt.id);
     await expect(
       store.admit({
         owner: 'a',
-        requestKey: 'legacy-presentation',
+        requestKey: 'animation-off',
         expectedVersion: 1,
         draft,
         animationEnabled: true,
@@ -140,20 +168,23 @@ describe('attempt lifecycle store', () => {
     };
 
     const animated = await makeTerminalRecord(true, 'animated');
-    const staticResult = await makeTerminalRecord(false, 'static');
+    const animationOffResult = await makeTerminalRecord(false, 'animation-off');
     expect(animated.terminal?.presentationComplete).toBe(false);
-    expect(staticResult.terminal?.presentationComplete).toBe(true);
+    expect(animationOffResult.terminal?.presentationComplete).toBe(true);
     const animatedRecord = await animated.store.getReplayRecord('a', animated.attemptId);
-    const staticRecord = await staticResult.store.getReplayRecord('a', staticResult.attemptId);
+    const animationOffRecord = await animationOffResult.store.getReplayRecord(
+      'a',
+      animationOffResult.attemptId,
+    );
     expect(animatedRecord).toMatchObject({
       actions: [{ seq: 1, action: { kind: 'advance' } }],
       closure: { status: 'cancelled', actionCount: 1 },
     });
-    expect(staticRecord).toMatchObject({
+    expect(animationOffRecord).toMatchObject({
       actions: animatedRecord?.actions,
       metrics: animatedRecord?.metrics,
     });
-    expect(staticRecord?.snapshots).toEqual(animatedRecord?.snapshots);
+    expect(animationOffRecord?.snapshots).toEqual(animatedRecord?.snapshots);
 
     await expect(
       animated.store.markPresentationComplete('a', animated.attemptId),
@@ -241,8 +272,20 @@ describe('attempt lifecycle store', () => {
     });
     const draft = savedDraft().draft;
     const [a, b] = await Promise.all([
-      store.admit({ owner: 'a', requestKey: 'a', expectedVersion: 1, draft }),
-      store.admit({ owner: 'a', requestKey: 'b', expectedVersion: 1, draft }),
+      store.admit({
+        owner: 'a',
+        requestKey: 'a',
+        expectedVersion: 1,
+        draft,
+        animationEnabled: false,
+      }),
+      store.admit({
+        owner: 'a',
+        requestKey: 'b',
+        expectedVersion: 1,
+        draft,
+        animationEnabled: false,
+      }),
     ]);
     const claimed = await Promise.all([
       store.claim('a', a.attempt.id, 'executor-a'),
@@ -253,43 +296,105 @@ describe('attempt lifecycle store', () => {
     expect(b.attempt.id).not.toBe(a.attempt.id);
   });
 
-  it('recovers a duplicate before checking a temporarily inactive model', async () => {
-    const blockedDraft = { ...createDefaultDraft(), modelKey: 'claude-sonnet-5' as const };
-    const store = new MemoryAttemptStore({
-      quotaLimit: 1,
-      draft: { ...savedDraft(), draft: blockedDraft },
-      now: () => new Date('2026-09-21T15:00:00.000Z'),
-    });
-    const draft = blockedDraft;
-    const resolver = vi
-      .spyOn(models, 'resolveAvailableModelProfile')
-      .mockImplementation((key) => models.resolveModelProfile(key));
-    const first = await store.admit({
+  it('records wait against the start phase and replays the periodic transition', async () => {
+    const base = createDefaultDraft();
+    const draft = {
+      ...base,
+      skills: base.skills.map((skill) => ({
+        ...skill,
+        enabled: skill.id === 'wait' || skill.enabled,
+      })),
+    };
+    const store = new MemoryAttemptStore({ draft: { version: 1, draft } });
+    const { attempt } = await store.admit({
       owner: 'a',
-      requestKey: 'inactive',
+      requestKey: 'periodic-wait',
       expectedVersion: 1,
       draft,
+      animationEnabled: true,
     });
-    resolver.mockImplementation(() => {
-      throw new Error('temporarily unavailable');
+    await store.claim('a', attempt.id, 'executor');
+    const before = (await store.getSnapshot('a', attempt.id)) as GameSnapshot;
+    const resolved = resolveAction(before, { kind: 'wait' }, LEVEL);
+    await store.publishAction('a', attempt.id, 'executor', {
+      seq: 1,
+      decisionId: 'decision-1',
+      action: resolved.action,
+      resolution: resolved.resolution,
+      beforeStateId: resolved.before.id,
+      afterStateId: resolved.after.id,
+      beforeSnapshot: resolved.before,
+      afterSnapshot: resolved.after,
+      progress: 0,
+      finalSupport: resolved.after.support,
+      turnsUsed: resolved.after.turnsUsed,
     });
-    try {
-      const duplicate = await store.admit({
-        owner: 'a',
-        requestKey: 'inactive',
-        expectedVersion: 999,
-        draft,
+    await store.close('a', attempt.id, 'cancelled', 'cancelled_by_user');
+
+    const replay = await store.getReplayRecord('a', attempt.id);
+    expect(replay?.config.level).toEqual(LEVEL);
+    expect(replay?.actions[0]).toMatchObject({
+      action: { kind: 'wait' },
+      resolution: { outcome: 'no_op', reason: 'wait' },
+      before: { phaseTurn: 0, terrain: expect.arrayContaining(['barrier_low', 'ground']) },
+      after: { phaseTurn: 1, terrain: expect.arrayContaining(['barrier_high', 'pit']) },
+    });
+  });
+
+  it('replays the low-barrier collision cause from its start phase', async () => {
+    const base = createDefaultDraft();
+    const draft = {
+      ...base,
+      skills: base.skills.map((skill) => ({
+        ...skill,
+        enabled: skill.id === 'advance' || skill.id === 'jump' || skill.id === 'crouch',
+      })),
+    };
+    const store = new MemoryAttemptStore({ draft: { version: 1, draft } });
+    const { attempt } = await store.admit({
+      owner: 'a',
+      requestKey: 'low-barrier-collision',
+      expectedVersion: 1,
+      draft,
+      animationEnabled: true,
+    });
+    await store.claim('a', attempt.id, 'executor');
+    let snapshot = (await store.getSnapshot('a', attempt.id)) as GameSnapshot;
+    const actions = [
+      { kind: 'advance' },
+      { kind: 'jump', direction: 'right' },
+      { kind: 'advance' },
+      { kind: 'crouch', direction: 'right' },
+      { kind: 'advance' },
+    ] as const;
+    for (const [index, action] of actions.entries()) {
+      const resolved = resolveAction(snapshot, action, LEVEL);
+      await store.publishAction('a', attempt.id, 'executor', {
+        seq: index + 1,
+        decisionId: `decision-${index + 1}`,
+        action: resolved.action,
+        resolution: resolved.resolution,
+        beforeStateId: resolved.before.id,
+        afterStateId: resolved.after.id,
+        beforeSnapshot: resolved.before,
+        afterSnapshot: resolved.after,
+        ...(resolved.after.status === 'running'
+          ? {}
+          : { terminalStatus: 'defeat' as const, reason: resolved.resolution.reason }),
+        progress: resolved.after.maxSupportReached / LEVEL.segments.length,
+        finalSupport: resolved.after.support,
+        turnsUsed: resolved.after.turnsUsed,
       });
-      expect(duplicate.admitted).toBe(false);
-      expect(duplicate.attempt.id).toBe(first.attempt.id);
-      expect((await store.quota('a')).used).toBe(1);
-      await expect(
-        store.admit({ owner: 'a', requestKey: 'new-inactive', expectedVersion: 1, draft }),
-      ).rejects.toBeInstanceOf(ModelUnavailableError);
-      expect((await store.quota('a')).used).toBe(1);
-    } finally {
-      resolver.mockRestore();
+      snapshot = resolved.after;
     }
+
+    const replay = await store.getReplayRecord('a', attempt.id);
+    expect(replay?.actions.at(-1)).toMatchObject({
+      action: { kind: 'advance' },
+      resolution: { outcome: 'collision', reason: 'walk_into_barrier' },
+      before: { phaseTurn: 4, terrain: expect.arrayContaining(['barrier_low']) },
+      after: { status: 'defeat', phaseTurn: 4 },
+    });
   });
 
   it('makes cancel/claim and cancel/publish races conditional', async () => {
@@ -303,6 +408,7 @@ describe('attempt lifecycle store', () => {
       requestKey: 'race',
       expectedVersion: 1,
       draft,
+      animationEnabled: false,
     });
     const cancelled = await store.requestCancel('a', attempt.id);
     expect(cancelled?.status).toBe('cancelled');
@@ -313,6 +419,7 @@ describe('attempt lifecycle store', () => {
       requestKey: 'race-2',
       expectedVersion: 1,
       draft,
+      animationEnabled: false,
     });
     expect(await store.claim('a', second.attempt.id, 'executor')).toBeTruthy();
     await store.requestCancel('a', second.attempt.id);
@@ -320,6 +427,7 @@ describe('attempt lifecycle store', () => {
       attemptId: second.attempt.id,
       seq: 1,
       decisionId: 'd1',
+      ...modelIdentity,
       requestKey: 'r',
       responseKey: 's',
       requestSha256: 'x',
@@ -363,12 +471,14 @@ describe('attempt lifecycle store', () => {
       requestKey: 'partial-usage',
       expectedVersion: 1,
       draft,
+      animationEnabled: false,
     });
     await store.claim('a', attempt.id, 'executor');
     const started = {
       attemptId: attempt.id,
       seq: 1,
       decisionId: 'decision-1',
+      ...modelIdentity,
       requestKey: 'request-1',
       responseKey: 'response-1',
       requestSha256: 'request-hash',
@@ -425,6 +535,7 @@ describe('attempt lifecycle store', () => {
       requestKey: 'recovery-poll',
       expectedVersion: 1,
       draft,
+      animationEnabled: false,
     });
     const running = await memory.claim('a', attempt.id, 'executor');
     if (!running) throw new Error('test setup did not claim attempt');
@@ -432,6 +543,7 @@ describe('attempt lifecycle store', () => {
       attemptId: attempt.id,
       seq: 1,
       decisionId: 'decision-1',
+      ...modelIdentity,
       requestKey: 'request-1',
       responseKey: 'response-1',
       requestSha256: 'request-hash',
@@ -498,6 +610,7 @@ describe('attempt lifecycle store', () => {
       requestKey: 'transaction-conflict',
       expectedVersion: 1,
       draft,
+      animationEnabled: false,
     });
     const winnerRecord = await winnerStore.get('a', winner.attempt.id);
     if (!winnerRecord) throw new Error('test setup did not create winner');
@@ -541,6 +654,7 @@ describe('attempt lifecycle store', () => {
       requestKey: 'transaction-conflict',
       expectedVersion: 1,
       draft,
+      animationEnabled: false,
     });
     expect(result.admitted).toBe(false);
     expect(result.attempt.id).toBe(winner.attempt.id);
@@ -556,6 +670,7 @@ describe('attempt lifecycle store', () => {
       requestKey: 'pending-cancel-command',
       expectedVersion: 1,
       draft,
+      animationEnabled: false,
     });
     const record = await memory.get('a', admitted.attempt.id);
     if (!record) throw new Error('test setup did not create pending record');
@@ -594,6 +709,7 @@ describe('attempt lifecycle store', () => {
       requestKey: 'finish-call-aliases',
       expectedVersion: 1,
       draft,
+      animationEnabled: false,
     });
     const claimed = await memory.claim('a', admitted.attempt.id, 'executor');
     if (!claimed) throw new Error('test setup did not claim record');
@@ -601,6 +717,7 @@ describe('attempt lifecycle store', () => {
       attemptId: admitted.attempt.id,
       seq: 1,
       decisionId: 'decision-1',
+      ...modelIdentity,
       requestKey: 'request-1',
       responseKey: 'response-1',
       requestSha256: 'request-hash',

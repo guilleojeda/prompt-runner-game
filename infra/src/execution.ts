@@ -11,7 +11,7 @@ import {
   aws_s3_assets as s3assets,
 } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
-import { AVAILABLE_MODEL_CATALOG, type ModelProfile } from '../../shared/models.js';
+import { MODEL_CATALOG, type ModelProfile } from '../../shared/models.js';
 import { STARTER_LAMBDA_NAME } from './robot.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -233,7 +233,7 @@ export function createExecutionResources(
     }),
   );
 
-  const approvedBedrockResources = AVAILABLE_MODEL_CATALOG.flatMap((profile) =>
+  const approvedBedrockResources = MODEL_CATALOG.flatMap((profile) =>
     approvedBedrockResourceArnsFor(scope, profile),
   );
   runnerExecutionRole.addToPolicy(

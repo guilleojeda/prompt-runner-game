@@ -3,7 +3,7 @@ import { Readable } from 'node:stream';
 import { HttpRequest, HttpResponse } from '@smithy/core/transport';
 import type { HttpHandlerOptions, RequestHandler, RequestHandlerOutput } from '@smithy/types';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { MODEL_CATALOG, modelByKey, type ModelProfile } from '../../../shared/models.js';
+import { MODEL_CATALOG, type ModelProfile } from '../../../shared/models.js';
 import {
   AuditedRequestHandler,
   DECISION_INFERENCE_IMPLEMENTATION,
@@ -162,55 +162,33 @@ describe('auditable Strands Bedrock decision', () => {
     vi.restoreAllMocks();
   });
 
-  it.each(MODEL_CATALOG)(
-    'projects the complete $key profile into one native Converse request',
-    async (profile) => {
-      const content = [
-        ...(profile.provider === 'openai' || profile.protocol.thinking === 'adaptive'
-          ? [reasoning()]
-          : []),
-        toolUse('tool_1', {}),
-      ];
-      const response = responseBytes(content);
-      const handler = new QueueHandler([{ bytes: response }]);
-      const recorded = recordingAudit();
+  it('projects only the current Sonnet 4.6 profile into one native Converse request', async () => {
+    const [profile] = MODEL_CATALOG;
+    const response = responseBytes([toolUse('tool_1', {})]);
+    const handler = new QueueHandler([{ bytes: response }]);
+    const recorded = recordingAudit();
 
-      await expect(
-        executeDecision(inputForModel(profile), recorded.audit, { requestHandler: handler }),
-      ).resolves.toMatchObject({ action: { name: 'tool_1', input: {} } });
+    expect(MODEL_CATALOG.map((entry) => entry.key)).toEqual(['claude-sonnet-4.6']);
+    await expect(
+      executeDecision(inputForModel(profile!), recorded.audit, { requestHandler: handler }),
+    ).resolves.toMatchObject({ action: { name: 'tool_1', input: {} } });
 
-      expect(handler.requests).toHaveLength(1);
-      expect(handler.requests[0]?.path).toContain(`/model/${profile.modelId}/converse`);
-      const body = JSON.parse(decoder.decode(recorded.requests[0] ?? new Uint8Array())) as Record<
-        string,
-        unknown
-      >;
-      expect(body).toMatchObject({
-        inferenceConfig: { maxTokens: profile.maxTokens },
-        toolConfig: {
-          toolChoice: profile.protocol.toolChoice === 'any' ? { any: {} } : { auto: {} },
-        },
-      });
-      expect(body).not.toHaveProperty('cacheConfig');
-      expect(body).not.toHaveProperty('temperature');
-      expect(body).not.toHaveProperty('topP');
-      expect(body).not.toHaveProperty('stopSequences');
-      if (profile.protocol.thinking === 'omitted') {
-        expect(body).not.toHaveProperty('additionalModelRequestFields');
-      } else if (profile.protocol.thinking === 'disabled') {
-        expect(body).toMatchObject({
-          additionalModelRequestFields: { thinking: { type: 'disabled' } },
-        });
-      } else {
-        expect(body).toMatchObject({
-          additionalModelRequestFields: {
-            thinking: { type: 'adaptive' },
-            output_config: { effort: profile.protocol.reasoningEffort },
-          },
-        });
-      }
-    },
-  );
+    expect(handler.requests).toHaveLength(1);
+    expect(handler.requests[0]?.path).toContain(`/model/${profile?.modelId}/converse`);
+    const body = JSON.parse(decoder.decode(recorded.requests[0] ?? new Uint8Array())) as Record<
+      string,
+      unknown
+    >;
+    expect(body).toMatchObject({
+      inferenceConfig: { maxTokens: 512 },
+      toolConfig: { toolChoice: { any: {} } },
+    });
+    expect(body).not.toHaveProperty('additionalModelRequestFields');
+    expect(body).not.toHaveProperty('cacheConfig');
+    expect(body).not.toHaveProperty('temperature');
+    expect(body).not.toHaveProperty('topP');
+    expect(body).not.toHaveProperty('stopSequences');
+  });
 
   it('rejects a changed or arbitrary model profile before any network request', async () => {
     const handler = new QueueHandler([]);
@@ -230,50 +208,6 @@ describe('auditable Strands Bedrock decision', () => {
     expect(recorded.requests).toHaveLength(0);
   });
 
-  it('executes an admitted versioned snapshot with its original values after catalog changes', async () => {
-    const historical = {
-      ...modelByKey('claude-sonnet-5')!,
-      label: 'Claude Sonnet 5 histórico',
-      modelId: 'us.anthropic.claude-sonnet-5',
-      region: 'us-west-2',
-      maxTokens: 2_048,
-      profileVersion: 'claude-sonnet-5-global-v1',
-    } as const;
-    const response = responseBytes([toolUse('tool_1', {})]);
-    const handler = new QueueHandler([{ bytes: response }]);
-    const recorded = recordingAudit();
-
-    await expect(
-      executeDecision(inputForModel(historical), recorded.audit, { requestHandler: handler }),
-    ).resolves.toMatchObject({ action: { name: 'tool_1' } });
-
-    expect(handler.requests[0]?.hostname).toContain('us-west-2');
-    expect(handler.requests[0]?.path).toContain('/model/us.anthropic.claude-sonnet-5/converse');
-    const body = JSON.parse(decoder.decode(recorded.requests[0] ?? new Uint8Array())) as Record<
-      string,
-      unknown
-    >;
-    expect(body).toMatchObject({ inferenceConfig: { maxTokens: 2_048 } });
-  });
-
-  it('accepts native reasoning blocks for GPT defaults and adaptive profiles', async () => {
-    const response = responseBytes([reasoning('decido'), toolUse('tool_1', {})]);
-    for (const model of [
-      MODEL_CATALOG.find((profile) => profile.key === 'gpt-5.6-sol')!,
-      MODEL_CATALOG.find((profile) => profile.key === 'claude-opus-5.5')!,
-    ]) {
-      const handler = new QueueHandler([{ bytes: response }]);
-      await expect(
-        executeDecision(inputForModel(model), recordingAudit().audit, { requestHandler: handler }),
-      ).resolves.toMatchObject({ action: { name: 'tool_1' } });
-    }
-
-    const disabledHandler = new QueueHandler([{ bytes: response }]);
-    await expect(
-      executeDecision(input(), recordingAudit().audit, { requestHandler: disabledHandler }),
-    ).rejects.toMatchObject({ code: 'invalid_response' });
-  });
-
   it.each([
     { name: 'no tool', content: [reasoning()] },
     {
@@ -281,17 +215,17 @@ describe('auditable Strands Bedrock decision', () => {
       content: [reasoning(), toolUse('tool_1', {}, 'one'), toolUse('tool_2', {}, 'two')],
     },
     { name: 'text plus tool', content: [reasoning(), { text: 'plan' }, toolUse('tool_1', {})] },
+    { name: 'reasoning plus tool', content: [reasoning(), toolUse('tool_1', {})] },
     {
       name: 'unknown block',
       content: [reasoning(), { unsupported: { value: true } }, toolUse('tool_1', {})],
     },
-  ])('rejects adaptive $name without publishing an action', async ({ content }) => {
+  ])('rejects $name without publishing an action', async ({ content }) => {
     const handler = new QueueHandler([{ bytes: responseBytes(content) }]);
     const recorded = recordingAudit();
-    const model = MODEL_CATALOG.find((profile) => profile.key === 'claude-opus-5.5')!;
 
     await expect(
-      executeDecision(inputForModel(model), recorded.audit, { requestHandler: handler }),
+      executeDecision(input(), recorded.audit, { requestHandler: handler }),
     ).rejects.toMatchObject({ code: 'invalid_response' });
     expect(handler.requests).toHaveLength(1);
     expect(recorded.receipts).toHaveLength(1);

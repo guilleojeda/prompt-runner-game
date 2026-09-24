@@ -1,18 +1,11 @@
-import { DEFAULT_MODEL_KEY, isModelKey, LEGACY_MODEL_KEY, type ModelKey } from './models.js';
+import { DEFAULT_MODEL_KEY, isModelKey, type ModelKey } from './models.js';
 
-/**
- * The versioned draft contract shared by the editor and the API.
- *
- * The catalog is code owned. A draft may select and describe catalog entries,
- * but it cannot replace their identity, schema, or implementation metadata.
- */
-
+/** The single current draft contract shared by the editor and the API. */
 export const MAX_DRAFT_BYTES = 65_536;
-export const ROBOT_SCHEMA_VERSION = 2 as const;
-export const ROBOT_V1_SCHEMA_VERSION = 1 as const;
-export const ROBOT_CATALOG_VERSION = 1 as const;
+export const ROBOT_SCHEMA_VERSION = 3 as const;
+export const ROBOT_CATALOG_VERSION = 2 as const;
 
-export type RobotSkillId = 'advance' | 'retreat' | 'jump' | 'crouch' | 'swim';
+export type RobotSkillId = 'advance' | 'retreat' | 'jump' | 'crouch' | 'swim' | 'wait';
 
 export interface RobotDraftSkill {
   readonly id: RobotSkillId;
@@ -24,14 +17,6 @@ export interface RobotDraft {
   readonly schemaVersion: typeof ROBOT_SCHEMA_VERSION;
   readonly catalogVersion: typeof ROBOT_CATALOG_VERSION;
   readonly modelKey: ModelKey;
-  readonly instructions: string;
-  readonly skills: readonly RobotDraftSkill[];
-}
-
-/** Shape persisted by phase 2 before model selection was added. */
-export interface LegacyRobotDraft {
-  readonly schemaVersion: typeof ROBOT_V1_SCHEMA_VERSION;
-  readonly catalogVersion: typeof ROBOT_CATALOG_VERSION;
   readonly instructions: string;
   readonly skills: readonly RobotDraftSkill[];
 }
@@ -70,13 +55,7 @@ const directionArguments = Object.freeze({
   additionalProperties: false,
 });
 
-/**
- * Published order is part of the serialized draft contract. Keep IDs and
- * opaque IDs stable when adding future catalog entries in a later version.
- */
-const freezeCatalogEntry = (entry: RobotCatalogEntry): Readonly<RobotCatalogEntry> =>
-  Object.freeze(entry);
-
+/** Published order and opaque IDs are part of the current serialized contract. */
 const catalogEntries: RobotCatalogEntry[] = [
   {
     id: 'advance',
@@ -113,21 +92,23 @@ const catalogEntries: RobotCatalogEntry[] = [
     description: 'No produce ningún efecto en este recorrido.',
     inputSchema: noArguments,
   },
+  {
+    id: 'wait',
+    name: 'Esperar',
+    opaqueId: 'tool_6',
+    description: 'Deja pasar un turno sin moverse.',
+    inputSchema: noArguments,
+  },
 ];
 
 export const ROBOT_CATALOG: readonly RobotCatalogEntry[] = Object.freeze(
-  catalogEntries.map(freezeCatalogEntry),
+  catalogEntries.map((entry) => Object.freeze(entry)),
 );
 
 const DEFAULT_INSTRUCTIONS =
   'Siempre preferí ir a la derecha, a menos que tengas un buen motivo para no hacerlo';
 
 export type DraftValidationCode = 'invalid' | 'too_large';
-
-export interface DraftValidationOptions {
-  /** Permit the v2 model key overhead only when the legacy projection fits. */
-  readonly allowLegacyMetadataOverflow?: boolean;
-}
 
 export class DraftValidationError extends Error {
   public readonly code: DraftValidationCode;
@@ -156,17 +137,10 @@ const invalid = (message: string): never => {
 
 const catalogEntryById = new Map(ROBOT_CATALOG.map((entry) => [entry.id, entry]));
 
-const cloneSkill = (skill: RobotDraftSkill): RobotDraftSkill =>
-  hasOwn(skill, 'description')
-    ? { ...skill, description: skill.description }
-    : { id: skill.id, enabled: skill.enabled };
-
-const canonicalDraftForSerialization = (
-  draft: RobotDraft | LegacyRobotDraft,
-): Record<string, unknown> => ({
+const canonicalDraftForSerialization = (draft: RobotDraft): Record<string, unknown> => ({
   schemaVersion: draft.schemaVersion,
   catalogVersion: draft.catalogVersion,
-  ...(draft.schemaVersion === ROBOT_SCHEMA_VERSION ? { modelKey: draft.modelKey } : {}),
+  modelKey: draft.modelKey,
   instructions: draft.instructions,
   skills: ROBOT_CATALOG.map((entry) => {
     const selected = draft.skills.find((skill) => skill.id === entry.id);
@@ -186,24 +160,8 @@ const canonicalDraftForSerialization = (
   })),
 });
 
-/** Canonical semantic identity treats a legacy draft as the default model. */
-const canonicalDraftForComparison = (
-  draft: RobotDraft | LegacyRobotDraft,
-): Record<string, unknown> =>
-  canonicalDraftForSerialization(
-    draft.schemaVersion === ROBOT_SCHEMA_VERSION
-      ? draft
-      : {
-          schemaVersion: ROBOT_SCHEMA_VERSION,
-          catalogVersion: draft.catalogVersion,
-          modelKey: LEGACY_MODEL_KEY,
-          instructions: draft.instructions,
-          skills: draft.skills,
-        },
-  );
-
-/** Return the exact UTF-8 byte size of the canonical, expanded draft. */
-export const draftByteLength = (draft: RobotDraft | LegacyRobotDraft): number =>
+/** Return the exact UTF-8 byte size of the canonical, expanded current draft. */
+export const draftByteLength = (draft: RobotDraft): number =>
   new TextEncoder().encode(JSON.stringify(canonicalDraftForSerialization(draft))).byteLength;
 
 export const createDefaultDraft = (): RobotDraft => ({
@@ -218,26 +176,23 @@ export const createDefaultDraft = (): RobotDraft => ({
   })),
 });
 
-/**
- * Validate and canonicalize an untrusted draft. The returned value is a new
- * object in published catalog order and preserves omitted descriptions.
- */
-export const validateDraft = (value: unknown, options: DraftValidationOptions = {}): RobotDraft => {
+/** Validate and canonicalize an untrusted current draft in published catalog order. */
+export const validateDraft = (value: unknown): RobotDraft => {
   if (!isRecord(value)) {
     return invalid('La configuración del robot no tiene una forma válida.');
   }
-  const legacy = value.schemaVersion === ROBOT_V1_SCHEMA_VERSION;
-  const current = value.schemaVersion === ROBOT_SCHEMA_VERSION;
-  if ((!legacy && !current) || value.catalogVersion !== ROBOT_CATALOG_VERSION) {
+  if (
+    value.schemaVersion !== ROBOT_SCHEMA_VERSION ||
+    value.catalogVersion !== ROBOT_CATALOG_VERSION
+  ) {
     return invalid('La versión de la configuración no es compatible.');
   }
-  const expectedKeys = legacy
-    ? ['schemaVersion', 'catalogVersion', 'instructions', 'skills']
-    : ['schemaVersion', 'catalogVersion', 'modelKey', 'instructions', 'skills'];
-  if (!exactKeys(value, expectedKeys)) {
+  if (
+    !exactKeys(value, ['schemaVersion', 'catalogVersion', 'modelKey', 'instructions', 'skills'])
+  ) {
     return invalid('La configuración del robot no tiene una forma válida.');
   }
-  if (current && !isModelKey(value.modelKey)) {
+  if (!isModelKey(value.modelKey)) {
     return invalid('El modelo seleccionado no pertenece al catálogo publicado.');
   }
   if (typeof value.instructions !== 'string') {
@@ -277,46 +232,20 @@ export const validateDraft = (value: unknown, options: DraftValidationOptions = 
     return invalid('La configuración no incluye todas las habilidades publicadas.');
   }
 
-  const legacyDraft: LegacyRobotDraft = {
-    schemaVersion: ROBOT_V1_SCHEMA_VERSION,
-    catalogVersion: ROBOT_CATALOG_VERSION,
-    instructions: value.instructions,
-    skills: ROBOT_CATALOG.map((entry) => {
-      const skill = parsed.find((candidate) => candidate.id === entry.id);
-      if (!skill) {
-        return invalid(`Falta la habilidad ${entry.id}.`);
-      }
-      return cloneSkill(skill);
-    }),
-  };
-  // A v1 item was measured without model metadata. Keep it readable at the
-  // old 65,536-byte boundary; adding the v2 key must never reject or truncate
-  // an otherwise valid stored draft during a GET or admission.
-  if (legacy && draftByteLength(legacyDraft) > MAX_DRAFT_BYTES) {
-    throw new DraftValidationError(
-      'too_large',
-      `La configuración supera el límite de ${MAX_DRAFT_BYTES} bytes UTF-8.`,
-    );
-  }
   const canonical: RobotDraft = {
     schemaVersion: ROBOT_SCHEMA_VERSION,
     catalogVersion: ROBOT_CATALOG_VERSION,
-    modelKey: legacy ? LEGACY_MODEL_KEY : (value.modelKey as ModelKey),
+    modelKey: value.modelKey,
     instructions: value.instructions,
-    skills: legacyDraft.skills,
+    skills: ROBOT_CATALOG.map((entry) => {
+      const skill = parsed.find((candidate) => candidate.id === entry.id);
+      if (!skill) return invalid(`Falta la habilidad ${entry.id}.`);
+      return hasOwn(skill, 'description')
+        ? { id: entry.id, enabled: skill.enabled, description: skill.description }
+        : { id: entry.id, enabled: skill.enabled };
+    }),
   };
-  const legacyProjection: LegacyRobotDraft = {
-    schemaVersion: ROBOT_V1_SCHEMA_VERSION,
-    catalogVersion: canonical.catalogVersion,
-    instructions: canonical.instructions,
-    skills: canonical.skills,
-  };
-  const currentTooLarge = draftByteLength(canonical) > MAX_DRAFT_BYTES;
-  const legacyMetadataOverflowAllowed =
-    options.allowLegacyMetadataOverflow === true &&
-    canonical.modelKey === LEGACY_MODEL_KEY &&
-    draftByteLength(legacyProjection) <= MAX_DRAFT_BYTES;
-  if (!legacy && currentTooLarge && !legacyMetadataOverflowAllowed) {
+  if (draftByteLength(canonical) > MAX_DRAFT_BYTES) {
     throw new DraftValidationError(
       'too_large',
       `La configuración supera el límite de ${MAX_DRAFT_BYTES} bytes UTF-8.`,
@@ -325,14 +254,11 @@ export const validateDraft = (value: unknown, options: DraftValidationOptions = 
   return canonical;
 };
 
-export const draftsEqual = (
-  left: RobotDraft | LegacyRobotDraft,
-  right: RobotDraft | LegacyRobotDraft,
-): boolean => {
+export const draftsEqual = (left: RobotDraft, right: RobotDraft): boolean => {
   try {
     return (
-      JSON.stringify(canonicalDraftForComparison(left)) ===
-      JSON.stringify(canonicalDraftForComparison(right))
+      JSON.stringify(canonicalDraftForSerialization(left)) ===
+      JSON.stringify(canonicalDraftForSerialization(right))
     );
   } catch {
     return false;

@@ -77,7 +77,7 @@ export interface DynamoDraftStoreOptions {
   readonly now?: () => string;
 }
 
-/** The single DynamoDB item used by phase 2. */
+/** The single current draft item stored for each user. */
 export const createDynamoDraftStore = (options: DynamoDraftStoreOptions = {}): DraftStore => {
   const client = options.client ?? new DynamoDBClient({});
   const tableName = options.tableName ?? process.env.DRAFT_TABLE_NAME;

@@ -20,15 +20,14 @@ import {
   type BodyStore,
   type CallRecord,
 } from '../../../shared/server/attempt.js';
-import { createDefaultDraft, validateDraft } from '../../../shared/robot.js';
+import { ATTEMPT_RECORD_VERSION } from '../../../shared/attempt.js';
+import { createDefaultDraft } from '../../../shared/robot.js';
 import { createClosedAttemptRecordFixture } from '../../../shared/attempt.fixture.js';
 import {
   AdmissionConflictError,
   AttemptNotTerminalError,
   AttemptStoreError,
   createDynamoAttemptStore,
-  IdempotencyConflictError,
-  ModelUnavailableError,
   ReplayRecordError,
   S3BodyStore,
 } from './attempt-store.js';
@@ -193,6 +192,7 @@ const seedAttempt = (
   harness.put({
     PK: 'USER#owner',
     SK: `ATTEMPT#${attemptId}`,
+    recordVersion: ATTEMPT_RECORD_VERSION,
     id: attemptId,
     createdAt: '2026-09-21T15:00:00.000Z',
     updatedAt: '2026-09-21T15:00:00.000Z',
@@ -318,6 +318,10 @@ const seedCall = (
     attemptId,
     seq: 1,
     decisionId: 'decision-1',
+    modelKey: 'claude-sonnet-4.6',
+    modelId: 'global.anthropic.claude-sonnet-4-6',
+    region: 'us-east-1',
+    profileVersion: 'claude-sonnet-4.6-global-v1',
     requestKey: `attempt/${attemptId}/decision/decision-1/call/1/request.json`,
     responseKey: `attempt/${attemptId}/decision/decision-1/call/1/response.json`,
     requestSha256: 'a'.repeat(64),
@@ -353,68 +357,18 @@ const storeFor = (harness: DynamoHarness, bodyStore?: BodyStore) =>
   });
 
 describe('Dynamo attempt admission conditions', () => {
-  it('reads a legacy Sonnet 5 config without merging current defaults', async () => {
+  it('rejects a stored model profile that differs from the current catalog', async () => {
     const harness = new DynamoHarness();
     const { attemptId } = seedAttempt(harness, {
       config: {
         ...DEFAULT_ATTEMPT_CONFIG,
-        inferenceVersion: 'legacy-inference-v7',
-        protocol: { stream: false, thinking: 'disabled', toolChoice: 'any' },
-        model: {
-          modelId: 'global.anthropic.claude-sonnet-5',
-          region: 'us-east-1',
-          maxTokens: 777,
-        },
-        scoreParameters: { ...DEFAULT_ATTEMPT_CONFIG.scoreParameters, base: 321 },
+        model: { ...DEFAULT_ATTEMPT_CONFIG.model, maxTokens: 777 },
       },
-      draft: { ...createDefaultDraft(), modelKey: 'claude-sonnet-5' as const },
     });
 
-    const record = await storeFor(harness).get('owner', attemptId);
-
-    expect(record?.config).toMatchObject({
-      inferenceVersion: 'legacy-inference-v7',
-      protocol: { api: 'converse', stream: false },
-      model: {
-        key: 'claude-sonnet-5',
-        maxTokens: 777,
-        profileVersion: 'legacy-inference-v7',
-      },
-      scoreParameters: { base: 321 },
-    });
-  });
-
-  it('reads a v2 profile snapshot without resolving current catalog values', async () => {
-    const harness = new DynamoHarness();
-    const { attemptId } = seedAttempt(harness, {
-      config: {
-        ...DEFAULT_ATTEMPT_CONFIG,
-        inferenceVersion: 'historical-profile-v9',
-        model: {
-          ...DEFAULT_ATTEMPT_CONFIG.model,
-          key: 'claude-sonnet-5',
-          provider: 'anthropic',
-          label: 'Historical label',
-          modelId: 'us.anthropic.claude-sonnet-5',
-          region: 'eu-west-1',
-          profileVersion: 'historical-profile-v9',
-          maxTokens: 777,
-          protocol: { stream: false, thinking: 'disabled', toolChoice: 'any' },
-        },
-      },
-      draft: { ...createDefaultDraft(), modelKey: 'claude-sonnet-5' as const },
-    });
-
-    const record = await storeFor(harness).get('owner', attemptId);
-
-    expect(record?.config.model).toMatchObject({
-      key: 'claude-sonnet-5',
-      label: 'Historical label',
-      modelId: 'us.anthropic.claude-sonnet-5',
-      region: 'eu-west-1',
-      profileVersion: 'historical-profile-v9',
-      maxTokens: 777,
-    });
+    await expect(storeFor(harness).get('owner', attemptId)).rejects.toBeInstanceOf(
+      AttemptStoreError,
+    );
   });
 
   it('checks request identity before draft/version/quota and writes all admission records atomically', async () => {
@@ -437,6 +391,7 @@ describe('Dynamo attempt admission conditions', () => {
       requestKey: 'request',
       expectedVersion: 1,
       draft,
+      animationEnabled: false,
     });
     expect(result.admitted).toBe(true);
     const transaction = send.mock.calls.find(([command]) => command.input.TransactItems)?.[0].input;
@@ -448,73 +403,48 @@ describe('Dynamo attempt admission conditions', () => {
     expect(transaction.TransactItems[4].Update.ConditionExpression).toContain('#used < :limit');
   });
 
-  it('recovers a phase-3 request key as animation-off before reading current draft state', async () => {
+  it('rejects a stored attempt missing fields from the current record contract', async () => {
     const harness = new DynamoHarness();
     const { attemptId } = seedAttempt(harness);
-    const legacyHeader = harness.read('USER#owner', `ATTEMPT#${attemptId}`)!;
-    delete legacyHeader.animationEnabled;
-    delete legacyHeader.presentationComplete;
-    harness.put(legacyHeader);
-    harness.put({
-      PK: 'USER#owner',
-      SK: 'REQUEST#request',
-      entity: 'attempt-request',
-      owner: 'owner',
-      requestKey: 'request',
-      fingerprint: 'legacy-draft-only-fingerprint',
-      attemptId,
-      day: '2026-09-21',
-    });
-    const store = storeFor(harness);
-    const draft = createDefaultDraft();
-    const duplicate = await store.admit({
-      owner: 'owner',
-      requestKey: 'request',
-      expectedVersion: 999,
-      draft,
-    });
-    expect(duplicate.admitted).toBe(false);
-    expect(duplicate.attempt).toMatchObject({ id: attemptId, animationEnabled: false });
-    expect(harness.send.mock.calls.some(([command]) => command.input.TransactItems)).toBe(false);
-    await expect(
-      store.admit({
-        owner: 'owner',
-        requestKey: 'request',
-        expectedVersion: 1,
-        draft,
-        animationEnabled: true,
-      }),
-    ).rejects.toBeInstanceOf(IdempotencyConflictError);
+    const header = harness.read('USER#owner', `ATTEMPT#${attemptId}`)!;
+    delete header.presentationComplete;
+    harness.put(header);
+
+    await expect(storeFor(harness).get('owner', attemptId)).rejects.toBeInstanceOf(
+      AttemptStoreError,
+    );
   });
 
-  it('rejects an unchanged legacy v1 draft before creating a new attempt', async () => {
+  it('rejects a prior draft contract without creating an attempt', async () => {
     const harness = new DynamoHarness();
     const current = createDefaultDraft();
-    const legacy = {
-      schemaVersion: 1 as const,
-      catalogVersion: current.catalogVersion,
+    const previous = {
+      schemaVersion: 2,
+      catalogVersion: 1,
+      modelKey: 'claude-sonnet-5',
       instructions: current.instructions,
-      skills: current.skills,
+      skills: current.skills.filter((skill) => skill.id !== 'wait'),
     };
     harness.put({
       PK: 'USER#owner',
       SK: 'DRAFT',
       version: 1,
       updatedAt: '2026-09-21T15:00:00.000Z',
-      draft: legacy,
+      draft: previous,
     });
     await expect(
       storeFor(harness).admit({
         owner: 'owner',
-        requestKey: 'legacy',
+        requestKey: 'previous-draft',
         expectedVersion: 1,
-        draft: validateDraft(legacy),
+        draft: current,
+        animationEnabled: false,
       }),
-    ).rejects.toBeInstanceOf(ModelUnavailableError);
+    ).rejects.toBeInstanceOf(AdmissionConflictError);
     expect(harness.send.mock.calls.some(([command]) => command.input.TransactItems)).toBe(false);
   });
 
-  it('rejects a concurrent change that only changes the selected model', async () => {
+  it('rejects a concurrent change to the current draft', async () => {
     const harness = new DynamoHarness();
     const original = createDefaultDraft();
     harness.put({
@@ -527,7 +457,7 @@ describe('Dynamo attempt admission conditions', () => {
     harness.transactionBehavior = () => {
       harness.put({
         ...harness.read('USER#owner', 'DRAFT'),
-        draft: { ...original, modelKey: 'gpt-5.6-sol' },
+        draft: { ...original, instructions: 'edición concurrente' },
       });
       return 'throw';
     };
@@ -537,6 +467,7 @@ describe('Dynamo attempt admission conditions', () => {
         requestKey: 'concurrent-model',
         expectedVersion: 1,
         draft: original,
+        animationEnabled: false,
       }),
     ).rejects.toBeInstanceOf(AdmissionConflictError);
   });
@@ -563,7 +494,13 @@ describe('Dynamo attempt admission conditions', () => {
       now: () => new Date('2026-09-21T15:00:00.000Z'),
     });
     await expect(
-      store.admit({ owner: 'owner', requestKey: 'request', expectedVersion: 1, draft }),
+      store.admit({
+        owner: 'owner',
+        requestKey: 'request',
+        expectedVersion: 1,
+        draft,
+        animationEnabled: false,
+      }),
     ).rejects.toBeInstanceOf(AttemptStoreError);
     expect(send).toHaveBeenCalledTimes(6);
     expect(send.mock.calls.filter(([command]) => command.input.TransactItems)).toHaveLength(1);
@@ -698,7 +635,7 @@ describe('Dynamo animation preference and replay projection', () => {
     expect(serialized).not.toContain('owner');
     expect(
       harness.send.mock.calls.filter(([command]) => command.constructor.name === 'QueryCommand'),
-    ).toHaveLength(6);
+    ).toHaveLength(8);
   });
 
   it('rejects a missing replay action or a broken state reference instead of truncating', async () => {
@@ -872,7 +809,7 @@ describe('Dynamo action publication ambiguity', () => {
       runtimeDeadline: '2026-09-21T14:59:00.000Z',
       animationEnabled: true,
       presentationComplete: false,
-      recordVersion: 1,
+      recordVersion: ATTEMPT_RECORD_VERSION,
     });
     const store = storeFor(harness);
     const publication = publicationFor(initial);
@@ -948,6 +885,10 @@ describe('Dynamo call finalization and recovery', () => {
       attemptId,
       seq: 1,
       decisionId: 'decision-1',
+      modelKey: 'claude-sonnet-4.6',
+      modelId: 'global.anthropic.claude-sonnet-4-6',
+      region: 'us-east-1',
+      profileVersion: 'claude-sonnet-4.6-global-v1',
       requestKey: 'request-key',
       responseKey: 'response-key',
       requestSha256: 'a'.repeat(64),

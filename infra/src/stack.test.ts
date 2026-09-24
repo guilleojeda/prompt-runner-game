@@ -15,7 +15,7 @@ import {
   foundationModelIdFor,
   STARTER_LAMBDA_ROLE_NAME,
 } from './execution.js';
-import { AVAILABLE_MODEL_CATALOG, MODEL_CATALOG } from '../../shared/models.js';
+import { MODEL_CATALOG } from '../../shared/models.js';
 
 // CDK's first template synthesis pays one-time construct startup cost; this
 // timeout gives infrastructure assertions room for that cost without changing
@@ -215,7 +215,10 @@ describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, 
     const deploymentProperties = Object.values(deployments).map((resource) => resource.Properties);
     expect(deploymentProperties).toHaveLength(2);
     expect(deploymentProperties.every((properties) => properties.ServiceToken)).toBe(true);
-    expect(deploymentProperties.every((properties) => properties.Prune === false)).toBe(true);
+    expect(deploymentProperties.map((properties) => properties.Prune).sort()).toEqual([
+      false,
+      true,
+    ]);
     const assetDeploymentEntry = Object.entries(deployments).find(
       ([, resource]) => resource.Properties.DestinationBucketKeyPrefix === 'assets',
     );
@@ -244,6 +247,7 @@ describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, 
     expect(authConfigMarkers).toContain('.auth.us-east-1.amazoncognito.com');
     expect(authConfigMarkers).not.toContain('.amazoncognito.com/');
     expect(websiteEntry?.[1].Properties.DistributionPaths).toContain('/auth-config.json');
+    expect(websiteEntry?.[1].Properties.DistributionPaths).toContain('/assets/*');
     expect(JSON.stringify(websiteEntry?.[1].Properties.SourceMarkers[1])).not.toContain(
       'ClientSecret',
     );
@@ -522,19 +526,13 @@ describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, 
       }),
     );
     const runnerPolicyJson = JSON.stringify(runnerPolicy?.Properties.PolicyDocument);
-    for (const profile of AVAILABLE_MODEL_CATALOG) {
+    for (const profile of MODEL_CATALOG) {
       expect(runnerPolicyJson).toContain(`inference-profile/${profile.modelId}`);
       expect(
         runnerPolicyJson.match(
           new RegExp(`foundation-model/${foundationModelIdFor(profile)}(?=")`, 'gu'),
         ),
       ).toHaveLength(2);
-    }
-    for (const profile of MODEL_CATALOG.filter(
-      (candidate) => !AVAILABLE_MODEL_CATALOG.some((available) => available.key === candidate.key),
-    )) {
-      expect(runnerPolicyJson).not.toContain(`inference-profile/${profile.modelId}`);
-      expect(runnerPolicyJson).not.toContain(`foundation-model/${foundationModelIdFor(profile)}`);
     }
     expect(runnerPolicyJson).not.toContain('inference-profile/*');
     expect(runnerPolicyJson).not.toContain('gpt-6');

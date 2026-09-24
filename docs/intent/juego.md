@@ -1,6 +1,6 @@
 # Juego y niveles
 
-Este documento es canónico para las reglas del mundo, el reloj, las acciones, los objetos, la salida y el contenido de niveles del juego. Documenta el comportamiento acordado. El motor disponible resuelve el recorrido estático con suelo, pozo, rama, movimientos, límites y Nadar como no-op. Terreno periódico, recogida, llave y segundo recorrido siguen pendientes. La especificación vigente se distribuye en esta carpeta y se indexa desde [README.md](../../README.md). La especificación histórica [idea-inicial.md](../../idea-inicial.md) queda como antecedente.
+Este documento es canónico para las reglas del mundo, el reloj, las acciones, los objetos, la salida y el contenido de niveles del juego. El contrato vigente usa un único nivel principal con terreno periódico, movimientos y Esperar. Objetos, llaves y el recorrido de transferencia pertenecen a fases posteriores. La especificación vigente se distribuye en esta carpeta y se indexa desde [README.md](../../README.md).
 
 Las etiquetas siguientes distinguen el grado de decisión:
 
@@ -8,11 +8,11 @@ Las etiquetas siguientes distinguen el grado de decisión:
 - **Default permitido:** elección inicial que puede adoptarse o cambiarse sin alterar las mecánicas.
 - **Pendiente:** parámetro o contenido que se concreta durante la implementación y queda documentado al hacerlo.
 
-## Recorrido estático disponible
+## Recorrido principal vigente
 
-`principal-estatico-v1` fija cinco tramos —suelo, pozo, suelo, rama baja y suelo—, seis apoyos, salida sin requisitos y un máximo de doce acciones. No contiene objetos ni ciclos. Una política basada sólo en el terreno inmediato puede resolverlo en cinco movimientos: caminar, saltar, caminar, pasar agachado y caminar, todos hacia la derecha. Esa solución sirve para verificar el contenido y no se añade al protocolo del modelo.
+El único nivel disponible es `principal-periodico-v2`, versión 2, con `RULES_VERSION=2`. Sus siete tramos, en orden, son `ground`, `pit`, `ground`, `branch`, `barrier`, `platform`, `ground`; tiene ocho apoyos, la salida está en el apoyo 7 y el límite inicial es de 16 acciones. No contiene objetos ni requisitos de salida.
 
-El nivel, las reglas y sus límites se fijan en cada intento. Publicar contenido posterior no cambia sus registros. Las reglas de objetos, ciclos y transferencia descritas abajo siguen siendo el contrato de los incrementos que los incorporen.
+La barrera está baja en turnos pares y alta en turnos impares. La plataforma es suelo en los turnos divisibles por tres y pozo en los demás. Ambas usan desfase cero desde el turno 0. El nivel y las reglas se fijan en cada intento. Este contenido no promete lectores para niveles ni registros de contratos anteriores; los datos de prueba anteriores pueden borrarse o quedar sin uso si no interfieren con el contrato vigente.
 
 ## Alcance del juego
 
@@ -42,8 +42,8 @@ El catálogo de capacidades existe antes de iniciar el intento. Habilitar una ha
 | Retroceder | implícitamente izquierda | Cruza un tramo caminando hacia el apoyo anterior |
 | Saltar | izquierda o derecha | Cruza un tramo por el aire |
 | Agacharse y avanzar | izquierda o derecha | Cruza un tramo agachado |
-| Esperar | ninguno | Conserva apoyo e inventario y deja pasar un turno |
-| Agarrar objeto | según el catálogo | Intenta recoger un objeto del apoyo actual |
+| Esperar | ninguno | Conserva el apoyo y deja pasar un turno |
+| Agarrar objeto | fase posterior | Intenta recoger un objeto del apoyo actual |
 
 Caminar, saltar y pasar agachado comparten el sentido de las reglas de colisión en ambas direcciones. Retroceder caminando no sustituye la capacidad de saltar o agacharse para volver a cruzar un obstáculo. Una habilidad distractora, como nadar en un nivel sin agua, tiene un efecto determinista y normalmente es un no-op.
 
@@ -59,15 +59,15 @@ Cada intento empieza en el turno 0. Para resolver una decisión, el motor:
 
 Esperar, recoger un objeto y cualquier habilidad sin efecto consumen un turno igual que un movimiento. El turno de una caída o choque también se cuenta. Durante la evaluación de una acción una barrera conserva la fase usada por el motor; su cambio puede animarse entre acciones.
 
-El terreno periódico se deriva de los datos del nivel y del turno, por ejemplo:
+El terreno periódico se calcula desde el nivel y el turno evaluado:
 
 ```text
 estado_del_tramo(i, t) = fases_i[(t + desfase_i) mod cantidad_de_fases_i]
 ```
 
-La fórmula expresa la regla, no un formato obligatorio de datos. Como ejemplos acordados de contenido, evaluados con el estado del turno actual, una barrera que sube y baja está baja en los turnos pares y alta en los impares; una plataforma periódica es suelo en los turnos múltiplos de tres y pozo en los turnos restantes. Los períodos dos y tres de esos ejemplos no fijan todos los obstáculos ni todos los mapas: los niveles concretos siguen siendo editables. Un desfase cero es un **default permitido**, no un valor definitivo.
+En el nivel vigente, el tramo de barrera alterna entre `barrier_low` en turnos pares y `barrier_high` en impares. El tramo de plataforma es `ground` cuando `t % 3 = 0` y `pit` en los demás turnos. El cálculo usa el turno inicial de la acción; el cambio se aplica al estado siguiente si el juego continúa.
 
-Los objetos recogidos y el inventario son persistentes durante el intento y no se recrean cuando cambia la fase de un ciclo. Si un tramo cambia detrás del robot, el apoyo en el que ya está permanece seguro. Esperar conserva posición e inventario, pero puede cambiar el próximo obstáculo; ningún nivel debe asumir que esperar es obligatoria si existe otra solución válida.
+Cuando se incorpore la mecánica de objetos, el inventario persistirá durante el intento y no cambiará con las fases del terreno. Si un tramo cambia detrás del robot, el apoyo en el que ya está permanece seguro. Esperar conserva la posición, pero puede cambiar el próximo obstáculo; ningún nivel debe asumir que esperar es obligatoria si existe otra solución válida.
 
 ## Matriz de colisiones
 
@@ -101,9 +101,11 @@ Los estados terminales de la simulación son:
 
 Cancelado y error de ejecución son resultados operativos y no derrotas del robot. No se ejecutan nuevas acciones después de un terminal. Si la acción del último turno habilita la salida, gana; si es fatal, pierde; la victoria no se reemplaza por el límite.
 
-## Objetos, inventario y salida
+## Objetos, inventario y salida en fases posteriores
 
-Los objetos se recogen únicamente desde el apoyo actual mediante `Agarrar objeto`. Pasar por un apoyo no los recoge, y no se pueden recoger objetos remotos. Recoger consume un turno, mantiene al robot en el apoyo, quita el objeto del suelo y lo agrega al inventario interno. La identidad del objeto impide recogerlo o puntuarlo dos veces.
+El nivel vigente no contiene objetos, el inventario empieza y permanece vacío, y la salida está habilitada desde el inicio. La mecánica de objetos se incorporará en una fase posterior.
+
+Cuando se incorpore, los objetos se recogerán únicamente desde el apoyo actual mediante `Agarrar objeto`. Pasar por un apoyo no los recogerá, y no se podrán recoger objetos remotos. Recoger consumirá un turno, mantendrá al robot en el apoyo, quitará el objeto del suelo y lo agregará al inventario interno. La identidad del objeto impedirá recogerlo o puntuarlo dos veces.
 
 **Default permitido:** como máximo un objeto por apoyo, para que la acción no necesite seleccionar entre varios. Si el contenido adopta más de uno, debe existir una selección inequívoca y visible. No se agregan consumo, equipamiento, combinación, lanzamiento ni uso manual de objetos.
 
@@ -119,26 +121,22 @@ Las recompensas opcionales se ubican antes de la activación automática de la v
 
 ## Niveles y transferencia
 
-El motor debe incluir un recorrido principal y un recorrido corto de transferencia. Ambos deben combinar las mismas mecánicas y ser resolubles con la observación local permitida; la ubicación exacta, la longitud, los períodos concretos, los objetos y el límite numérico son **pendientes** y deben quedar como datos fáciles de ajustar.
+El recorrido principal vigente es el definido arriba. Un recorrido corto de transferencia se incorporará en una fase posterior y combinará las mecánicas disponibles entonces. No hay selector de nivel ni otro nivel activo.
 
-El recorrido principal debe presentar una progresión legible y representar en su contenido de demostración, en una combinación que resulte resoluble:
+El nivel principal vigente presenta esta progresión:
 
 - suelo libre;
 - pozo;
 - rama u obstáculo superior;
-- barrera que alterna entre baja y alta;
-- plataforma que cambia según el turno;
-- al menos un objeto recogible;
-- una recompensa que intervenga en el puntaje;
-- un caso de llave y salida bloqueada cuando el recorrido use esa mecánica.
+- la barrera periódica baja/alta;
+- la plataforma periódica suelo/pozo.
 
-El recorrido de transferencia reordena o combina las mecánicas en una situación nueva. Su objetivo es comprobar que una configuración útil se aplica a otro recorrido, no multiplicar niveles ni exigir generación procedural.
+La ubicación exacta de objetos, recompensas y llaves se definirá cuando se incorporen esas mecánicas. El recorrido de transferencia reordenará o combinará las mecánicas disponibles en una situación nueva; no requiere generación procedural.
 
 Para cada nivel se debe verificar, además de que exista una ruta física, que una política basada en la observación actual y las herramientas disponibles pueda escogerla:
 
 - no hay dos situaciones indistinguibles que requieran acciones opuestas por información ausente;
 - no se necesita recordar que el robot está regresando ni el mapa global;
-- los objetos necesarios aparecen en apoyos alcanzables antes de necesitarlos;
 - el orden de los ciclos deja accesibles las transiciones;
 - los apoyos siguen siendo seguros entre fases;
 - el límite de turnos permite una solución razonable y corta los bucles.
@@ -147,19 +145,20 @@ Un corredor vacío que exige volver muchos apoyos sin una señal local es un niv
 
 ## Defaults permitidos y pendientes
 
-Se pueden adoptar inicialmente los siguientes defaults sin convertirlos en decisiones rígidas: un objeto por apoyo; límites como no-op; distractores con no-op determinista; períodos de dos o tres turnos con desfase cero; una configuración inicial limitada, por ejemplo con solo `Avanzar`; y un límite de turnos configurable. La orientación inicial y su frase exacta se fijan en [agente.md](agente.md). Quedan pendientes la cantidad de distractores, los mapas, los pesos y los valores de puntaje.
+El contenido vigente fija los períodos y desfases descritos arriba y un límite de 16 acciones. Los límites del recorrido son no-op y las habilidades sin efecto tienen resolución determinista. La configuración inicial limitada y la frase de orientación se fijan en [agente.md](agente.md). Los objetos, el recorrido de transferencia y sus valores se definirán en fases posteriores.
 
 ## Verificación de comportamiento
 
 La verificación debe cubrir el comportamiento, no depender solo de que se dibuje el recorrido:
 
-- probar la matriz de colisiones en ambas direcciones y en turnos representativos de cada fase periódica, incluido el turno 0;
+- probar la matriz de colisiones en ambas direcciones y las fases de barrera y plataforma, incluido el turno 0;
 - comprobar que toda acción, no-op y acción fatal cuenta un turno en el orden correcto;
 - comprobar que una fase nueva no hace caer a un robot que ya está en un apoyo seguro;
-- verificar recogida única desde el apoyo actual, persistencia del inventario y habilitación de la llave;
 - verificar victoria, derrota, límite, cancelación y error sin ejecutar una acción posterior;
-- comprobar que el recorrido principal y el de transferencia tienen solución compatible con información local, objetos y límite elegidos;
+- comprobar que el nivel principal tiene una solución dentro del límite con la observación local y las herramientas disponibles;
 - reproducir los casos de no-op y de colisión como las causas registradas.
+
+La recogida de objetos y el recorrido de transferencia se verificarán cuando se implementen en sus fases posteriores.
 
 Las pruebas pueden usar un adaptador de agente de prueba o un controlador de referencia para el motor. Eso sirve para validar reglas y resolución y no reemplaza la inferencia real requerida por la experiencia.
 
