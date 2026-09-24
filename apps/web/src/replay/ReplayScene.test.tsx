@@ -90,7 +90,9 @@ describe('ReplayScene', () => {
 
     const durationMs = prepareReplay(publicFixture()).duration * 1000;
     await nextFrame(1000 + durationMs + 3500);
-    expect(screen.getByRole('img').getAttribute('data-complete')).toBe('true');
+    const completedScene = screen.getByRole('img');
+    expect(completedScene.getAttribute('data-complete')).toBe('true');
+    expect(completedScene.querySelectorAll('use[href$="#effect-victory"]')).toHaveLength(1);
     expect(complete).toHaveBeenCalledOnce();
     expect(error).not.toHaveBeenCalled();
     expect(pendingFrames.size).toBe(0);

@@ -232,7 +232,6 @@ const ReplayCanvas = ({
       <Backdrop />
     </g>
     <TerrainBack sample={sample} />
-    {sample.effect === 'victory' && <Effects sample={sample} />}
     <g data-replay-layer="robot">
       <Robot sample={sample} />
     </g>
