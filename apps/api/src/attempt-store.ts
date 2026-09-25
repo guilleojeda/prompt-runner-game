@@ -34,8 +34,11 @@ import {
 import {
   AnimationPreferenceConflictError,
   AttemptNotTerminalError,
+  DEFAULT_ATTEMPT_SCORE_PARAMETERS,
   DEFAULT_ATTEMPT_CONFIG,
   ReplayRecordError,
+  collectionSummaryOf,
+  readAttemptScoreParameters,
   readCurrentLevel,
   replayRecordViewOf,
   summaryOf,
@@ -141,6 +144,21 @@ export const nextReset = (date: Date): string => {
 
 const initialSnapshot = (level: AttemptConfig['levelDefinition']) => createInitialState(level);
 
+const scoreRulesFor = (config: AttemptConfig) => {
+  const params = config.scoreParameters;
+  return {
+    base: params.base,
+    turnWeight: params.turnWeight,
+    tokenWeight: params.tokenWeight,
+    tokenUnit: params.tokenUnit,
+    decimalPlaces: params.decimals,
+    allowNegative: params.allowNegative !== 0,
+    objectValues: Object.fromEntries(
+      config.levelDefinition.objects.map((object) => [object.id, object.scoreValue]),
+    ),
+  };
+};
+
 const skillsFor = (draft: RobotDraft): AttemptSkill[] =>
   draft.skills
     .filter((skill) => skill.enabled)
@@ -171,9 +189,11 @@ const storedConfig = (value: unknown): AttemptConfig => {
     throw new AttemptStoreError('El intento guardado tiene una configuración incompatible.');
   let model: ReturnType<typeof readModelProfile>;
   let levelDefinition: AttemptConfig['levelDefinition'];
+  let scoreParameters: AttemptConfig['scoreParameters'];
   try {
     model = readModelProfile(value.model);
     levelDefinition = readCurrentLevel(value.levelDefinition);
+    scoreParameters = readAttemptScoreParameters(value.scoreParameters);
   } catch (error) {
     throw new AttemptStoreError('El intento guardado no coincide con el contrato actual.', {
       cause: error,
@@ -184,7 +204,7 @@ const storedConfig = (value: unknown): AttemptConfig => {
     value.protocol.stream !== false ||
     value.levelId !== levelDefinition.id ||
     value.levelVersion !== String(levelDefinition.version) ||
-    value.engineVersion !== 'periodic-engine-v2' ||
+    value.engineVersion !== 'periodic-engine-v3' ||
     value.protocolVersion !== 'tool-protocol-v2' ||
     value.inferenceVersion !== model.profileVersion ||
     value.maxTurns !== levelDefinition.maxTurns
@@ -195,6 +215,7 @@ const storedConfig = (value: unknown): AttemptConfig => {
     ...(value as unknown as Omit<AttemptConfig, 'model' | 'levelDefinition'>),
     levelDefinition,
     model,
+    scoreParameters,
   });
 };
 
@@ -208,22 +229,29 @@ const configForAdmission = (
   } catch {
     throw new ModelUnavailableError();
   }
+  let scoreParameters: AttemptConfig['scoreParameters'];
+  try {
+    scoreParameters = readAttemptScoreParameters(
+      overrides?.scoreParameters ?? DEFAULT_ATTEMPT_SCORE_PARAMETERS,
+    );
+  } catch (error) {
+    throw new AttemptStoreError('Los parámetros de puntaje de admisión no son válidos.', {
+      cause: error,
+    });
+  }
   const config: AttemptConfig = {
     ...DEFAULT_ATTEMPT_CONFIG,
     ...(overrides ?? {}),
     levelId: LEVEL.id,
     levelVersion: String(LEVEL.version),
     levelDefinition: LEVEL,
-    engineVersion: 'periodic-engine-v2',
+    engineVersion: 'periodic-engine-v3',
     protocolVersion: 'tool-protocol-v2',
     maxTurns: LEVEL.maxTurns,
     protocol: { api: 'converse', stream: false },
     inferenceVersion: model.profileVersion,
     model,
-    scoreParameters: {
-      ...DEFAULT_ATTEMPT_CONFIG.scoreParameters,
-      ...(overrides?.scoreParameters ?? {}),
-    },
+    scoreParameters,
   };
   return freezeDeep(config);
 };
@@ -279,12 +307,20 @@ const toRecord = (item: Record<string, unknown>): PersistedAttempt => {
     throw new AttemptStoreError('El intento guardado usa una versión incompatible.');
   }
   const config = storedConfig(item.config);
-  const record = item as unknown as PersistedAttempt;
+  const recordFields = { ...item };
+  delete recordFields.objectPoints;
+  const record = recordFields as unknown as PersistedAttempt;
   const draft = validateDraft(item.draft);
   if (draft.modelKey !== config.model.key) {
     throw new AttemptStoreError('El intento guardado tiene un modelo inconsistente.');
   }
-  return {
+  if (
+    !Array.isArray(item.collectedObjectIds) ||
+    !item.collectedObjectIds.every((objectId) => typeof objectId === 'string')
+  ) {
+    throw new AttemptStoreError('El intento guardado no tiene un resumen de objetos válido.');
+  }
+  const parsed: PersistedAttempt = {
     ...record,
     config,
     draft,
@@ -298,8 +334,11 @@ const toRecord = (item: Record<string, unknown>): PersistedAttempt => {
     cacheReadTokens: typeof item.cacheReadTokens === 'number' ? item.cacheReadTokens : null,
     cacheWriteTokens: typeof item.cacheWriteTokens === 'number' ? item.cacheWriteTokens : null,
     score: typeof item.score === 'number' ? item.score : null,
+    collectedObjectIds: [...item.collectedObjectIds],
     reason: typeof item.reason === 'string' ? item.reason : undefined,
   };
+  summaryOf(parsed);
+  return parsed;
 };
 
 const withoutSnapshots = (record: PersistedAttempt): Record<string, unknown> => {
@@ -421,6 +460,7 @@ export class DynamoAttemptStore implements AttemptStore {
       cacheReadTokens: 0,
       cacheWriteTokens: 0,
       score: null,
+      collectedObjectIds: [...initial.inventory],
       progress: 0,
       finalSupport: 0,
       animationEnabled,
@@ -1231,23 +1271,18 @@ export class DynamoAttemptStore implements AttemptStore {
       ...actionFields,
     });
     const status = publication.terminalStatus ?? 'running';
-    const params = current.config.scoreParameters;
+    const collection = collectionSummaryOf(
+      publication.afterSnapshot,
+      current.config.levelDefinition,
+    );
     const score = scoreAttempt(
       {
         status: publication.terminalStatus ?? 'incomplete',
         turnsUsed: publication.turnsUsed,
-        collectedObjectIds: [],
+        collectedObjectIds: collection.collectedObjectIds,
         gameTokens: current.gameTokens,
       },
-      {
-        base: params.base ?? 1000,
-        turnWeight: params.turnWeight ?? 10,
-        tokenWeight: params.tokenWeight ?? 1,
-        tokenUnit: params.tokenUnit ?? 1000,
-        decimalPlaces: params.decimals ?? 2,
-        allowNegative: params.allowNegative !== 0,
-        objectValues: {},
-      },
+      scoreRulesFor(current.config),
     );
     try {
       await this.client.send(
@@ -1272,7 +1307,7 @@ export class DynamoAttemptStore implements AttemptStore {
                 TableName: this.tableName,
                 Key: key(`USER#${owner}`, `ATTEMPT#${attemptId}`),
                 UpdateExpression:
-                  'SET #sequence = :sequence, #currentStateId = :state, #turnsUsed = :turns, #progress = :progress, #finalSupport = :support, #status = :status, #score = :score, #reason = :reason, #presentationComplete = :presented, #updatedAt = :now',
+                  'SET #sequence = :sequence, #currentStateId = :state, #turnsUsed = :turns, #progress = :progress, #finalSupport = :support, #status = :status, #score = :score, #collectedObjectIds = :collectedObjectIds, #reason = :reason, #presentationComplete = :presented, #updatedAt = :now',
                 ConditionExpression:
                   '#executorId = :executor AND #status = :running AND #cancelRequested = :false AND #sequence = :previous AND #currentStateId = :beforeState',
                 ExpressionAttributeNames: {
@@ -1283,6 +1318,7 @@ export class DynamoAttemptStore implements AttemptStore {
                   '#finalSupport': 'finalSupport',
                   '#status': 'status',
                   '#score': 'score',
+                  '#collectedObjectIds': 'collectedObjectIds',
                   '#reason': 'reason',
                   '#presentationComplete': 'presentationComplete',
                   '#updatedAt': 'updatedAt',
@@ -1297,6 +1333,7 @@ export class DynamoAttemptStore implements AttemptStore {
                   ':support': publication.finalSupport,
                   ':status': status,
                   ':score': score,
+                  ':collectedObjectIds': collection.collectedObjectIds,
                   ':reason': publication.reason ?? null,
                   ':presented': !current.animationEnabled,
                   ':now': this.now().toISOString(),
@@ -1833,45 +1870,31 @@ export class MemoryAttemptStore implements AttemptStore {
     const initial = initialSnapshot(config.levelDefinition);
     const record: PersistedAttempt = {
       recordVersion: ATTEMPT_RECORD_VERSION,
-      ...summaryOf({
-        recordVersion: ATTEMPT_RECORD_VERSION,
-        id,
-        createdAt: now,
-        updatedAt: now,
-        status: 'pending',
-        cancelRequested: false,
-        levelId: config.levelId,
-        modelKey: config.model.key,
-        modelLabel: config.model.label,
-        modelId: config.model.modelId,
-        turnsUsed: 0,
-        maxTurns: config.maxTurns,
-        calls: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        reasoningTokens: 0,
-        gameTokens: 0,
-        cacheReadTokens: 0,
-        cacheWriteTokens: 0,
-        score: null,
-        progress: 0,
-        finalSupport: 0,
-        animationEnabled,
-        presentationComplete: !animationEnabled,
-        recordComplete: true,
-        requestKey: input.requestKey,
-        owner: input.owner,
-        draft: input.draft,
-        instructions: input.draft.instructions,
-        skills: skillsFor(input.draft),
-        config,
-        initialSnapshot: initial,
-        currentSnapshot: initial,
-        sequence: 0,
-        nextCall: 1,
-        startDeadline: new Date(nowDate.getTime() + config.startTimeoutMs).toISOString(),
-        sessionId: `attempt-${id}`,
-      } as PersistedAttempt),
+      id,
+      createdAt: now,
+      updatedAt: now,
+      status: 'pending',
+      cancelRequested: false,
+      levelId: config.levelId,
+      modelKey: config.model.key,
+      modelLabel: config.model.label,
+      modelId: config.model.modelId,
+      turnsUsed: 0,
+      maxTurns: config.maxTurns,
+      calls: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      reasoningTokens: 0,
+      gameTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      score: null,
+      collectedObjectIds: [...initial.inventory],
+      progress: 0,
+      finalSupport: 0,
+      animationEnabled,
+      presentationComplete: !animationEnabled,
+      recordComplete: true,
       owner: input.owner,
       requestKey: input.requestKey,
       draft: clone(input.draft),
@@ -2167,12 +2190,17 @@ export class MemoryAttemptStore implements AttemptStore {
       resolution: clone(publication.resolution),
     });
     this.actions.set(attemptId, actionItems);
+    const collection = collectionSummaryOf(
+      publication.afterSnapshot,
+      record.config.levelDefinition,
+    );
     const changes: Record<string, unknown> = {
       sequence: publication.seq,
       currentSnapshot: clone(publication.afterSnapshot),
       turnsUsed: publication.turnsUsed,
       progress: publication.progress,
       finalSupport: publication.finalSupport,
+      collectedObjectIds: collection.collectedObjectIds,
       updatedAt: this.now().toISOString(),
     };
     if (publication.terminalStatus) {
@@ -2180,23 +2208,14 @@ export class MemoryAttemptStore implements AttemptStore {
       changes.reason = publication.reason;
       changes.presentationComplete = !record.animationEnabled;
       const current = this.records.get(attemptId)!;
-      const params = current.config.scoreParameters;
       changes.score = scoreAttempt(
         {
           status: publication.terminalStatus,
           turnsUsed: publication.turnsUsed,
-          collectedObjectIds: [],
+          collectedObjectIds: collection.collectedObjectIds,
           gameTokens: current.gameTokens,
         },
-        {
-          base: params.base ?? 1000,
-          turnWeight: params.turnWeight ?? 10,
-          tokenWeight: params.tokenWeight ?? 1,
-          tokenUnit: params.tokenUnit ?? 1000,
-          decimalPlaces: params.decimals ?? 2,
-          allowNegative: params.allowNegative !== 0,
-          objectValues: {},
-        },
+        scoreRulesFor(current.config),
       );
     }
     this.replace(record, changes as Partial<PersistedAttempt>);

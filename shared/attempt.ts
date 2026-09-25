@@ -9,7 +9,7 @@ import { ROBOT_CATALOG_VERSION, ROBOT_SCHEMA_VERSION, type RobotSkillId } from '
 import type { ModelKey } from './models.js';
 
 /** Version of the durable attempt record, independent of game rules versions. */
-export const ATTEMPT_RECORD_VERSION = 2 as const;
+export const ATTEMPT_RECORD_VERSION = 3 as const;
 
 export type AttemptStatus =
   'pending' | 'running' | 'victory' | 'defeat' | 'incomplete' | 'cancelled' | 'error';
@@ -39,6 +39,10 @@ export interface AttemptSummary extends AttemptMetrics {
   readonly turnsUsed: number;
   readonly maxTurns: number;
   readonly score: number | null;
+  /** Object IDs in the attempt's persisted inventory, in collection order. */
+  readonly collectedObjectIds: readonly string[];
+  /** Points contributed by the collected objects under the fixed level definition. */
+  readonly objectPoints: number;
   /** Highest support reached divided by the number of level segments. */
   readonly progress: number;
   readonly finalSupport: number;

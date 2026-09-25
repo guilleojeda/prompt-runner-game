@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createClosedAttemptRecordFixture } from '../../../../shared/attempt.fixture.js';
 import {
-  effectiveTerrain,
   isSemanticallyValidActionResolution,
   LEVEL,
   type TerrainState,
@@ -79,6 +78,49 @@ describe('prepareReplay', () => {
       facing: 'right',
       support: 1,
       complete: true,
+    });
+  });
+
+  it('removes the reward at the recorded pickup marker and keeps it visible before that point', () => {
+    const record = replayRecordForActions([
+      { kind: 'advance' },
+      { kind: 'jump', direction: 'right' },
+      { kind: 'collect' },
+    ]);
+    const prepared = prepareReplay(record);
+    const collectStart = 0.72 + 0.22 + 0.86 + 0.22;
+
+    expect(prepared.sample(0).remainingObjects).toEqual(['recompensa-1']);
+    expect(prepared.sample(collectStart + 0.62)).toMatchObject({
+      actionIndex: 2,
+      support: 2,
+      pose: 'collect',
+      remainingObjects: ['recompensa-1'],
+      effect: 'none',
+    });
+    expect(prepared.sample(collectStart + 0.64)).toMatchObject({
+      actionIndex: 2,
+      support: 2,
+      pose: 'collect',
+      remainingObjects: [],
+      effect: 'pickup',
+    });
+    expect(prepared.sample(collectStart + 0.9)).toMatchObject({
+      remainingObjects: [],
+      terrainTransition: { progress: 0 },
+    });
+  });
+
+  it('shows a no-object collect attempt without inventing a pickup', () => {
+    const record = replayRecordForActions([{ kind: 'collect' }]);
+    const prepared = prepareReplay(record);
+
+    expect(record.actions[0]?.resolution).toEqual({ outcome: 'no_op', reason: 'no_object_here' });
+    expect(prepared.sample(0.45)).toMatchObject({
+      support: 0,
+      pose: 'collect',
+      remainingObjects: ['recompensa-1'],
+      effect: 'none',
     });
   });
 
@@ -173,30 +215,32 @@ describe('prepareReplay', () => {
     ).not.toThrow();
   });
 
-  it('allows a running arrival at a disabled exit and rejects a victory before the enabled exit', () => {
+  it('keeps the exit enabled before and after collecting the reward', () => {
     const winningRecord = publicReplayView(createClosedAttemptRecordFixture());
-    const action = winningRecord.actions.at(-1)!;
-    const before = { ...action.before, exitEnabled: false };
-    const runningAfter = {
-      ...action.after,
-      exitEnabled: false,
-      status: 'running' as const,
-      phaseTurn: before.phaseTurn + 1,
-      terrain: effectiveTerrain(LEVEL, before.phaseTurn + 1),
-    };
-    const falseVictory = {
-      ...action.after,
-      exitEnabled: false,
-      status: 'victory' as const,
-      phaseTurn: before.phaseTurn,
-      terrain: before.terrain,
-    };
+    const pickup = winningRecord.actions.find((action) => action.action.kind === 'collect')!;
+    const finalAction = winningRecord.actions.at(-1)!;
 
+    expect(winningRecord.snapshots[0]?.exitEnabled).toBe(true);
+    expect(pickup.after.inventory).toEqual(['recompensa-1']);
+    expect(pickup.after.exitEnabled).toBe(true);
     expect(
-      isSemanticallyValidActionResolution(action.action, before, runningAfter, action.resolution),
+      isSemanticallyValidActionResolution(
+        finalAction.action,
+        finalAction.before,
+        finalAction.after,
+        finalAction.resolution,
+      ),
     ).toBe(true);
     expect(
-      isSemanticallyValidActionResolution(action.action, before, falseVictory, action.resolution),
+      isSemanticallyValidActionResolution(
+        finalAction.action,
+        finalAction.before,
+        {
+          ...finalAction.after,
+          exitEnabled: false,
+        },
+        finalAction.resolution,
+      ),
     ).toBe(false);
   });
 
@@ -292,6 +336,71 @@ describe('prepareReplay', () => {
     );
   });
 
+  it('rejects object disappearance outside a recorded pickup transition', () => {
+    const record = replayRecordForActions([{ kind: 'advance' }]);
+    const snapshots = record.snapshots.map((snapshot, index) =>
+      index === 1 ? { ...snapshot, remainingObjects: [] } : snapshot,
+    );
+    const actions = record.actions.map((action, index) =>
+      index === 0 ? { ...action, after: snapshots[1]! } : action,
+    );
+
+    expect(() => prepareReplay({ ...record, snapshots, actions })).toThrow(
+      'objetos o inventario incompatibles',
+    );
+  });
+
+  it('rejects a pickup that claims the reward from another support', () => {
+    const record = replayRecordForActions([{ kind: 'collect' }]);
+    const after = {
+      ...record.snapshots[1]!,
+      remainingObjects: [],
+      inventory: ['recompensa-1'],
+    };
+    const corrupted = {
+      ...record,
+      snapshots: [record.snapshots[0]!, after],
+      actions: record.actions.map((action) => ({
+        ...action,
+        after,
+        resolution: { outcome: 'picked_up', objectId: 'recompensa-1' } as never,
+      })),
+    };
+
+    expect(() => prepareReplay(corrupted)).toThrow('contradice el contrato del juego');
+  });
+
+  it('rejects a forged maxSupportReached in the post-pickup snapshot', () => {
+    const record = publicReplayView(createClosedAttemptRecordFixture());
+    const pickup = record.actions.find((action) => action.action.kind === 'collect')!;
+    const snapshots = record.snapshots.map((snapshot) =>
+      snapshot.id === pickup.after.id ? { ...snapshot, maxSupportReached: 7 } : snapshot,
+    );
+    const states = new Map(snapshots.map((snapshot) => [snapshot.id, snapshot]));
+    const actions = record.actions.map((action) => ({
+      ...action,
+      before: states.get(action.beforeStateId)!,
+      after: states.get(action.afterStateId)!,
+    }));
+
+    expect(() => prepareReplay({ ...record, snapshots, actions })).toThrow(
+      'contradice el contrato del juego',
+    );
+  });
+
+  it('rejects a valid object partition that starts with the reward already collected', () => {
+    const record = replayRecordForActions([]);
+    const initial = {
+      ...record.snapshots[0]!,
+      remainingObjects: [],
+      inventory: ['recompensa-1'],
+    };
+
+    expect(() => prepareReplay({ ...record, snapshots: [initial] })).toThrow(
+      'estado inicial no pertenecen al nivel vigente',
+    );
+  });
+
   it.each([
     { name: 'barrier', segmentIndex: 4, terrain: 'barrier_low' },
     { name: 'platform', segmentIndex: 5, terrain: 'ground' },
@@ -345,7 +454,7 @@ describe('prepareReplay', () => {
     expect(() =>
       prepareReplay({ ...current, closure: { ...current.closure, recordComplete: false } }),
     ).toThrow('registro está incompleto');
-    expect(() => prepareReplay({ ...current, recordVersion: 1 as 2 })).toThrow(
+    expect(() => prepareReplay({ ...current, recordVersion: 1 as 3 })).toThrow(
       'versión de registro no compatible',
     );
     expect(() =>

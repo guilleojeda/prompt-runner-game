@@ -9,7 +9,10 @@ describe('Runtime attempt coordinator', () => {
     const draft = {
       ...createDefaultDraft(),
       skills: createDefaultDraft().skills.map((skill) =>
-        skill.id === 'advance' || skill.id === 'jump' || skill.id === 'crouch'
+        skill.id === 'advance' ||
+        skill.id === 'jump' ||
+        skill.id === 'crouch' ||
+        skill.id === 'collect'
           ? { ...skill, enabled: true }
           : skill,
       ),
@@ -29,9 +32,10 @@ describe('Runtime attempt coordinator', () => {
     const actions = [
       { name: 'tool_1', input: {} },
       { name: 'tool_3', input: { direction: 'derecha' } },
+      { name: 'tool_7', input: {} },
       { name: 'tool_1', input: {} },
       { name: 'tool_4', input: { direction: 'derecha' } },
-      { name: 'tool_3', input: { direction: 'derecha' } },
+      { name: 'tool_4', input: { direction: 'derecha' } },
       { name: 'tool_3', input: { direction: 'derecha' } },
       { name: 'tool_1', input: {} },
     ];
@@ -68,12 +72,19 @@ describe('Runtime attempt coordinator', () => {
       },
     );
     const record = await store.get('a', admitted.attempt.id);
+    const replay = await store.getReplayRecord('a', admitted.attempt.id);
     expect(record?.status).toBe('victory');
-    expect(record?.turnsUsed).toBe(7);
-    expect(record?.calls).toBe(7);
-    expect(record?.gameTokens).toBe(14);
-    expect(record?.score).toBe(929.99);
-    expect(await store.getCalls('a', admitted.attempt.id)).toHaveLength(7);
+    expect(record?.turnsUsed).toBe(8);
+    expect(record?.calls).toBe(8);
+    expect(record?.gameTokens).toBe(16);
+    expect(record?.score).toBe(944.98);
+    expect(replay?.actions[2]).toMatchObject({
+      action: { kind: 'collect' },
+      resolution: { outcome: 'picked_up', objectId: 'recompensa-1' },
+      before: { support: 2, remainingObjects: ['recompensa-1'], inventory: [] },
+      after: { support: 2, remainingObjects: [], inventory: ['recompensa-1'] },
+    });
+    expect(await store.getCalls('a', admitted.attempt.id)).toHaveLength(8);
     expect(await store.getCalls('a', admitted.attempt.id)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

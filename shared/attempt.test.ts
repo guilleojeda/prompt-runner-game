@@ -15,9 +15,9 @@ describe('durable closed attempt contract fixture', () => {
     const record = createClosedAttemptRecordFixture();
 
     expect(record.recordVersion).toBe(ATTEMPT_RECORD_VERSION);
-    expect(record.config.level.id).toBe('principal-periodico-v2');
-    expect(record.config.level.version).toBe(2);
-    expect(record.config.level.rulesVersion).toBe(2);
+    expect(record.config.level.id).toBe('principal-recompensas-v3');
+    expect(record.config.level.version).toBe(3);
+    expect(record.config.level.rulesVersion).toBe(3);
     expect(record.config.scoreRules).toMatchObject({
       base: 1000,
       turnWeight: 10,
@@ -28,7 +28,8 @@ describe('durable closed attempt contract fixture', () => {
     });
     expect(Object.isFrozen(record.config)).toBe(true);
     expect(Object.isFrozen(record.config.scoreRules)).toBe(true);
-    expect(record.score).toBe(929.4);
+    expect(record.config.scoreRules.objectValues).toEqual({ 'recompensa-1': 25 });
+    expect(record.score).toBe(944.4);
   });
 
   it('forms a closed reference chain without duplicating posterior snapshots in actions', () => {
@@ -44,6 +45,7 @@ describe('durable closed attempt contract fixture', () => {
       'state-5',
       'state-6',
       'state-7',
+      'state-8',
     ]);
     expect(new Set(snapshotIds).size).toBe(snapshotIds.length);
     expect(record.actions).toHaveLength(record.snapshots.length - 1);
@@ -56,8 +58,8 @@ describe('durable closed attempt contract fixture', () => {
     }
     expect(record.closure).toEqual({
       status: 'victory',
-      actionCount: 7,
-      finalStateId: 'state-7',
+      actionCount: 8,
+      finalStateId: 'state-8',
       recordComplete: true,
     });
   });
@@ -97,7 +99,7 @@ describe('durable closed attempt contract fixture', () => {
     expect(keys).toContain('USER#fixture-owner/ATTEMPT#fixture-closed-attempt');
     expect(keys).toContain('ATTEMPT#fixture-closed-attempt/META');
     expect(keys).toContain('ATTEMPT#fixture-closed-attempt/STATE#state-0');
-    expect(keys).toContain('ATTEMPT#fixture-closed-attempt/STATE#state-7');
+    expect(keys).toContain('ATTEMPT#fixture-closed-attempt/STATE#state-8');
     expect(keys).toContain('ATTEMPT#fixture-closed-attempt/ACTION#00000001');
     expect(keys).toContain('ATTEMPT#fixture-closed-attempt/CALL#00000001');
     expect(
@@ -105,6 +107,7 @@ describe('durable closed attempt contract fixture', () => {
     ).toBe(true);
 
     const call = items.find(({ SK }) => SK === 'CALL#00000001');
+    const header = items.find(({ SK }) => SK === 'ATTEMPT#fixture-closed-attempt');
     expect(call?.value).toMatchObject({
       requestBytes: 1024,
       responseBytes: 2048,
@@ -113,5 +116,7 @@ describe('durable closed attempt contract fixture', () => {
     });
     expect(call?.value).not.toHaveProperty('requestBody');
     expect(call?.value).not.toHaveProperty('responseBody');
+    expect(header?.value).toHaveProperty('collectedObjectIds', ['recompensa-1']);
+    expect(header?.value).not.toHaveProperty('objectPoints');
   });
 });

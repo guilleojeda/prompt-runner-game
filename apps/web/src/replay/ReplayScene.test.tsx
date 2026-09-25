@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createClosedAttemptRecordFixture } from '../../../../shared/attempt.fixture.js';
+import { LEVEL } from '../../../../shared/game.js';
 import { prepareReplay } from './prepare.js';
 import { ReplayScene } from './ReplayScene.js';
 import { publicReplayView, replayRecordForActions } from './replay.test-support.js';
@@ -74,15 +75,16 @@ describe('ReplayScene', () => {
     expect(complete).not.toHaveBeenCalled();
 
     const scene = screen.getByRole('img');
-    expect(scene.getAttribute('data-profile')).toBe('principal-periodico-v2');
+    expect(scene.getAttribute('data-profile')).toBe(LEVEL.id);
     expect(scene.getAttribute('data-action-index')).toBe('0');
-    expect(scene.querySelector('text')?.textContent).toBe('Turno 1 / 7');
+    expect(scene.querySelector('text')?.textContent).toBe(`Turno 1 / ${record.actions.length}`);
     expect(scene.getAttribute('data-camera-x')).toBe('0');
     expect(
       [...scene.querySelectorAll('[data-replay-layer]')].map((layer) =>
         layer.getAttribute('data-replay-layer'),
       ),
-    ).toEqual(['backdrop', 'terrain-back', 'robot', 'terrain-front']);
+    ).toEqual(['backdrop', 'terrain-back', 'rewards', 'robot', 'terrain-front']);
+    expect(scene.querySelector('[data-object-id="recompensa-1"]')).not.toBeNull();
     expect(scene.querySelector('[data-terrain-symbol="barrier_low"]')).not.toBeNull();
     expect(scene.querySelector('[data-terrain-symbol="barrier_high"]')).toBeNull();
     expect(scene.querySelector('[data-terrain-art="platform-ground"]')).not.toBeNull();
@@ -111,7 +113,9 @@ describe('ReplayScene', () => {
     expect(completed.getAttribute('data-complete')).toBe('true');
     expect(completed.getAttribute('data-action-index')).toBe('');
     expect(Number(completed.getAttribute('data-camera-x'))).toBeGreaterThan(0);
-    expect(completed.querySelector('text')?.textContent).toBe('Turno 7 / 7');
+    expect(completed.querySelector('text')?.textContent).toBe(
+      `Turno ${record.actions.length} / ${record.actions.length}`,
+    );
     expect(completed.querySelectorAll('use[href$="#effect-victory"]')).toHaveLength(1);
     expect(complete).toHaveBeenCalledOnce();
     expect(error).not.toHaveBeenCalled();
@@ -148,6 +152,41 @@ describe('ReplayScene', () => {
         .querySelector('[data-replay-layer="robot"] > g')
         ?.getAttribute('data-facing'),
     ).toBe('right');
+  });
+
+  it('removes the recorded reward at its pickup marker during the gesture', async () => {
+    const record = replayRecordForActions([
+      { kind: 'advance' },
+      { kind: 'jump', direction: 'right' },
+      { kind: 'collect' },
+    ]);
+    render(
+      <ReplayScene record={record} onReady={vi.fn()} onComplete={vi.fn()} onError={vi.fn()} />,
+    );
+    await waitFor(() => expect(pendingFrames.size).toBe(1));
+    await nextFrame(1000);
+
+    const scene = screen.getByRole('img');
+    expect(scene.querySelector('[data-object-id="recompensa-1"]')).not.toBeNull();
+    const pickupStart = 0.72 + 0.22 + 0.86 + 0.22;
+    await nextFrame(1000 + (pickupStart + 0.62) * 1000);
+    expect(scene.querySelector('[data-replay-layer="robot"] > g')?.getAttribute('data-pose')).toBe(
+      'collect',
+    );
+    expect(scene.querySelector('[data-object-id="recompensa-1"]')).not.toBeNull();
+    expect(scene.querySelector('[data-effect="pickup"]')).toBeNull();
+
+    await nextFrame(1000 + (pickupStart + 0.72) * 1000);
+    expect(scene.querySelector('[data-replay-layer="robot"] > g')?.getAttribute('data-pose')).toBe(
+      'collect',
+    );
+    expect(scene.querySelector('[data-object-id="recompensa-1"]')).toBeNull();
+    expect(scene.querySelector('[data-effect="pickup"]')).not.toBeNull();
+
+    await nextFrame(1000 + (pickupStart + 0.901) * 1000);
+    expect(scene.querySelector('[data-object-id="recompensa-1"]')).toBeNull();
+    expect(scene.querySelector('[data-effect="pickup"]')).toBeNull();
+    expect(Number(scene.getAttribute('data-terrain-transition-progress'))).toBeGreaterThan(0);
   });
 
   it('reports a missing current artwork symbol before starting the replay', async () => {

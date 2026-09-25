@@ -1,6 +1,6 @@
 # Animación y catálogo visual
 
-**Reproductor del nivel principal periódico.** Define cómo presentar el [registro de ejecución](registro-de-ejecucion.md). La animación avanza automáticamente, a velocidad fija, hacia adelante y sin controles del usuario. Conserva el flujo y las garantías acordadas en [experiencia](../intent/experiencia.md) e [intentos](../intent/intentos.md). El perfil visual vigente cubre las siete secciones del nivel, incluidas las fases de barrera y plataforma.
+**Reproductor del nivel principal con recompensa.** Define cómo presentar el [registro de ejecución](registro-de-ejecucion.md). La animación avanza automáticamente, a velocidad fija, hacia adelante y sin controles del usuario. Conserva el flujo y las garantías acordadas en [experiencia](../intent/experiencia.md) e [intentos](../intent/intentos.md). El perfil visual vigente cubre las siete secciones del nivel, las fases de barrera y plataforma y la recogida local de `recompensa-1`.
 
 ## Enfoque elegido
 
@@ -37,11 +37,11 @@ Si todo el nivel entra de forma legible, se dibuja completo. Si no, la cámara d
 | Recurso gráfico | Identidad, URL inmutable, tamaño, recorte si pertenece a un atlas, punto de anclaje | Frame del robot, suelo, rama, llave. |
 | Clip | Frames y duración de cada uno; repetición dentro del intervalo o pose final | Caminar, salto, agachado, quieto, recoger, caer, impacto, victoria. |
 | Terreno | Tipo/estado, piezas por capa, dimensiones y anclas semánticas | Borde de entrada del pozo, contacto con obstáculo superior. |
-| Objeto y salida | Identidad visual por tipo, estado y ancla en el apoyo | Llave presente/recogida; salida bloqueada/habilitada. |
+| Objeto y salida | Identidad visual por tipo, estado y ancla en el apoyo | Recompensa presente/recogida; salida habilitada. |
 | Receta | Trayectoria, clips, marcadores y efectos para una acción con su resultado | Desplazar caminando; aproximar al borde y caer; recoger y habilitar salida. |
 | Perfil visual | Nivel y reglas del contrato vigente; geometría, catálogo y recetas coherentes | Interpretación completa de los registros admitidos. |
 
-El perfil vigente usa un SVG original con símbolos para robot, terreno, salida y efectos, publicado con URL de asset versionada por el build. Las poses del robot comparten cabeza, torso, extremidades, cara y paleta; transforman esas mismas piezas para caminar, saltar, agacharse, caer, chocar y celebrar. Esta construcción conserva proporciones y ancla de pies entre poses sin generar imágenes independientes para cada frame. El catálogo representa las siete secciones del nivel, los estados bajo/alto de la barrera y la plataforma en suelo/pozo; no contiene objetos en el contrato vigente.
+El perfil vigente usa un SVG original con símbolos para robot, terreno, recompensa, salida y efectos, publicado con URL de asset versionada por el build. Las poses del robot comparten cabeza, torso, extremidades, cara y paleta; transforman esas mismas piezas para caminar, saltar, agacharse, recoger, caer, chocar y celebrar. Esta construcción conserva proporciones y ancla de pies entre poses sin generar imágenes independientes para cada frame. El catálogo representa las siete secciones del nivel, los estados bajo/alto de la barrera, la plataforma en suelo/pozo y la recompensa en el apoyo 2.
 
 El anclaje del robot está en los pies. Cambiar de frame o de postura conserva ese punto de referencia; así un sprite más alto no desplaza al personaje. La orientación base se refleja para caminar, saltar o agacharse a la izquierda; no se duplica un set completo por dirección. Si algún arte asimétrico necesita variantes, el catálogo puede seleccionarlas sin cambiar los datos del intento.
 
@@ -60,9 +60,9 @@ La acción indica el gesto intentado. La resolución indica qué pasó. El perfi
 | Agacharse con `moved` | Bajar postura + cruzar agachado + recuperar postura al terminar. No queda agachado entre acciones. |
 | Caminar/agacharse con `fall` | Aproximarse al borde cercano del pozo + perder apoyo + caer. No atravesar el vacío caminando. |
 | Movimiento con `collision` | Iniciar el gesto + detenerlo en el contacto visual correspondiente + reacción de choque. |
-| Recoger con `picked_up` | Gesto local + retirar el objeto identificado + representar inventario/salida posteriores. |
+| Recoger con `picked_up` | Gesto local + retirar el objeto identificado en el marcador de interacción + representar el inventario posterior. |
 | Esperar o no-op | Clip local sin desplazamiento. La causa diferencia espera, límite del mapa, falta de objeto o habilidad sin efecto. |
-| Estado posterior de victoria | Completar la acción que ganó y luego celebrar; también funciona al recoger una llave sin moverse. |
+| Estado posterior de victoria | Completar la acción que ganó y luego celebrar. |
 | Límite, cancelación o error | Conservar la pose del último evento; presentar la causa de cierre, sin inventar derrota. |
 
 La receta de caída usa el borde de entrada más cercano al origen según la dirección. La de choque usa el contacto del obstáculo superior o de la barrera y la modalidad de movimiento. Estas anclas pertenecen al dibujo; **no se calculan colisiones de sprites ni se simula gravedad para decidir el desenlace**. Los arcos y curvas son fórmulas de presentación con destino y resultado ya resueltos.
@@ -75,7 +75,7 @@ Cada evento se convierte en intervalos y marcadores de presentación, calculados
 
 1. Mostrar el estado anterior y empezar el gesto.
 2. Presentar desplazamiento o interacción y, si corresponde, caída o choque. El terreno conserva la fase del estado anterior durante toda la acción.
-3. En el marcador de interacción, aplicar a la escena los objetos, inventario y salida registrados: por ejemplo, retirar la llave al recogerla. No esperar al cambio de fase ni recoger al pasar caminando.
+3. En el marcador de interacción, aplicar a la escena los objetos e inventario registrados: retirar `recompensa-1` al recogerla. No esperar al cambio de fase ni recoger al pasar caminando.
 4. Completar el gesto en su pose de llegada o terminal.
 5. Si el juego continúa, presentar el cambio del terreno anterior al posterior. Los tramos que cambian lo hacen en la misma transición; luego empieza la siguiente acción. Si termina, no crear otra fase jugable.
 
@@ -127,7 +127,7 @@ Para el recorrido de un robot y obstáculos descrito, se elige SVG con imágenes
 - Escena, cámara, objetos y fases corresponden al tiempo transcurrido aunque el navegador omita un repintado; todos los elementos comparten el reloj.
 - Saltar y agacharse cruzan un tramo en ambas direcciones; caída/choque detienen el cruce y mantienen su pose terminal sin volver al apoyo.
 - Esperar conserva la posición y cambia la fase después de la acción; una fase nueva no hace caer al robot parado en un apoyo.
-- Recoger retira exactamente el objeto registrado; pasar no lo recoge; salida bloqueada no celebra; recoger la llave en la salida puede celebrar sin caminar.
+- Recoger retira exactamente el objeto registrado y conserva la posición; pasar no lo recoge ni cambia el inventario. La salida vigente siempre está habilitada.
 - Derrota, victoria y límite en el último turno reproducen la precedencia ya resuelta; cancelación/error no agregan una acción.
 - Ambos valores de Animación guardan el mismo registro; no hay inferencia durante replay, métricas anticipadas ni edición durante presentación.
 - Recarga, assets fallidos, registro incompleto y formato no soportado conservan el resultado y evitan una UI permanentemente bloqueada.

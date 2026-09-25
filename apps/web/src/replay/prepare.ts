@@ -14,7 +14,7 @@ import {
 } from '../../../../shared/game.js';
 
 export type ReplayPose =
-  'idle' | 'step-a' | 'step-b' | 'jump' | 'crouch' | 'fall' | 'impact' | 'celebrate';
+  'idle' | 'step-a' | 'step-b' | 'jump' | 'crouch' | 'collect' | 'fall' | 'impact' | 'celebrate';
 
 export interface ReplayTerrainTransition {
   readonly to: readonly TerrainState[];
@@ -31,6 +31,8 @@ export interface ReplaySample {
   readonly pose: ReplayPose;
   /** The terrain saved before the current action remains visible during its gesture. */
   readonly terrain: readonly TerrainState[];
+  /** Object IDs still on the course in the recorded state being shown. */
+  readonly remainingObjects: readonly string[];
   /** Set only during a transition following a continuing action. */
   readonly terrainTransition: ReplayTerrainTransition | null;
   /** Horizontal world offset for the viewport camera. */
@@ -38,7 +40,7 @@ export interface ReplaySample {
   readonly actionIndex: number | null;
   readonly actionNumber: number;
   readonly closureStatus: ReplayRecordView['closure']['status'];
-  readonly effect: 'none' | 'impact' | 'victory';
+  readonly effect: 'none' | 'impact' | 'pickup' | 'victory';
   readonly complete: boolean;
 }
 
@@ -75,11 +77,13 @@ const TIMING = Object.freeze({
   jump: 0.86,
   crouch: 0.72,
   noOp: 0.42,
+  collect: 0.9,
   phase: 0.22,
   fall: 1.08,
   impact: 0.68,
   victory: 1.02,
 });
+const PICKUP_MARKER_PROGRESS = 0.7;
 // Keeps the terminal sprite inside the viewBox while placing its anchor below the ledge.
 const FALL_DEPTH = 70;
 
@@ -95,6 +99,7 @@ const SYMBOLS = Object.freeze([
   'robot-step-b',
   'robot-jump',
   'robot-crouch',
+  'robot-collect',
   'robot-fall',
   'robot-impact',
   'robot-celebrate',
@@ -108,7 +113,9 @@ const SYMBOLS = Object.freeze([
   'terrain-barrier-high',
   'terrain-exit',
   'effect-impact',
+  'effect-pickup',
   'effect-victory',
+  'reward-object',
 ]);
 
 const terminalStatuses = new Set(['victory', 'defeat', 'incomplete', 'cancelled', 'error']);
@@ -180,16 +187,25 @@ const validateSnapshot = (
     !Array.isArray(snapshot.inventory) ||
     !Number.isInteger(snapshot.maxSupportReached) ||
     (snapshot.maxSupportReached as number) < (snapshot.support as number) ||
+    (snapshot.maxSupportReached as number) > segments.length ||
     !['running', 'victory', 'defeat', 'incomplete'].includes(String(snapshot.status))
   ) {
     fail(`el estado ${expectedIndex} tiene campos incompatibles`);
   }
+  const knownObjects = new Set(LEVEL.objects.map((object) => object.id));
+  const remainingObjects = snapshot.remainingObjects as readonly unknown[];
+  const inventory = snapshot.inventory as readonly unknown[];
   if (
-    (snapshot.remainingObjects as readonly unknown[]).length > 0 ||
-    (snapshot.inventory as readonly unknown[]).length > 0 ||
-    snapshot.exitEnabled !== true
+    snapshot.exitEnabled !== true ||
+    !remainingObjects.every((id): id is string => typeof id === 'string' && knownObjects.has(id)) ||
+    !inventory.every((id): id is string => typeof id === 'string' && knownObjects.has(id)) ||
+    new Set(remainingObjects).size !== remainingObjects.length ||
+    new Set(inventory).size !== inventory.length ||
+    remainingObjects.some((id) => inventory.includes(id)) ||
+    new Set([...remainingObjects, ...inventory]).size !== knownObjects.size ||
+    [...knownObjects].some((id) => !remainingObjects.includes(id) && !inventory.includes(id))
   ) {
-    fail('el recorrido vigente no interpreta objetos ni inventario');
+    fail(`el estado ${expectedIndex} tiene objetos o inventario incompatibles`);
   }
 };
 
@@ -203,6 +219,7 @@ const directionOf = (action: AttemptActionView['action']): Direction | null => {
 const ease = (value: number): number => value * value * (3 - 2 * value);
 
 const cueDuration = (action: AttemptActionView): number => {
+  if (action.action.kind === 'collect') return TIMING.collect;
   if (action.resolution.outcome === 'fall') return TIMING.fall;
   if (action.resolution.outcome === 'collision') return TIMING.impact;
   if (action.resolution.outcome === 'no_op') return TIMING.noOp;
@@ -234,6 +251,19 @@ const validateRecord = (record: ReplayRecordView): void => {
   record.snapshots.forEach((snapshot, index) => validateSnapshot(snapshot, LEVEL.segments, index));
   if (record.snapshots[0]?.status !== 'running' || record.snapshots[0]?.phaseTurn !== 0) {
     fail('el estado inicial no pertenece al recorrido vigente');
+  }
+  const initialSnapshot = record.snapshots[0];
+  if (
+    initialSnapshot.support !== 0 ||
+    initialSnapshot.maxSupportReached !== 0 ||
+    !sameValue(
+      initialSnapshot.remainingObjects,
+      LEVEL.objects.map((object) => object.id),
+    ) ||
+    initialSnapshot.inventory.length !== 0 ||
+    initialSnapshot.exitEnabled !== true
+  ) {
+    fail('los objetos o la posición del estado inicial no pertenecen al nivel vigente');
   }
   const seenStateIds = new Set(record.snapshots.map((snapshot) => snapshot.id));
   if (seenStateIds.size !== record.snapshots.length)
@@ -354,6 +384,7 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
       const common = {
         time,
         terrain: action.before.terrain,
+        remainingObjects: action.before.remainingObjects,
         terrainTransition: null,
         cameraX: cameraForSupport(from),
         actionIndex: cue.index,
@@ -391,13 +422,35 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
         };
       }
       if (action.resolution.outcome === 'no_op') {
+        const collecting = action.action.kind === 'collect';
         return {
           ...common,
           support: from,
           drop: 0,
           facing: direction,
-          pose: p < 0.55 && cue.direction !== null ? (p < 0.28 ? 'step-a' : 'step-b') : 'idle',
+          pose: collecting
+            ? 'collect'
+            : p < 0.55 && cue.direction !== null
+              ? p < 0.28
+                ? 'step-a'
+                : 'step-b'
+              : 'idle',
           effect: 'none',
+        };
+      }
+
+      if (action.resolution.outcome === 'picked_up') {
+        const collected = p >= PICKUP_MARKER_PROGRESS;
+        return {
+          ...common,
+          support: from,
+          drop: 0,
+          facing: cue.facing,
+          pose: 'collect',
+          remainingObjects: collected
+            ? action.after.remainingObjects
+            : action.before.remainingObjects,
+          effect: collected ? 'pickup' : 'none',
         };
       }
 
@@ -453,6 +506,7 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
         facing: transitioning.facing,
         pose: 'idle',
         terrain: transitioning.action.before.terrain,
+        remainingObjects: transitioning.action.after.remainingObjects,
         terrainTransition: { to: phase.to, progress: ease(progress) },
         cameraX: cameraForSupport(support),
         actionIndex: transitioning.index,
@@ -471,6 +525,7 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
         facing: endingFacing,
         pose: 'celebrate',
         terrain: lastState.terrain,
+        remainingObjects: lastState.remainingObjects,
         terrainTransition: null,
         cameraX: cameraForSupport(lastState.support),
         actionIndex: null,
@@ -501,6 +556,7 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
       facing: endingFacing,
       pose: terminalPose,
       terrain: lastState.terrain,
+      remainingObjects: lastState.remainingObjects,
       terrainTransition: null,
       cameraX: cameraForSupport(support),
       actionIndex: terminalCue?.index ?? null,

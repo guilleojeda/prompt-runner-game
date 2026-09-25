@@ -278,6 +278,10 @@ function ResultCard({ attempt, onReplay }: { attempt: AttemptSummary; onReplay: 
           <dd>{attempt.calls}</dd>
         </div>
         <div>
+          <dt>Tokens usados para puntaje</dt>
+          <dd>{formatMetric(attempt.gameTokens)}</dd>
+        </div>
+        <div>
           <dt>Entrada</dt>
           <dd>{formatMetric(attempt.inputTokens)}</dd>
         </div>
@@ -299,7 +303,11 @@ function ResultCard({ attempt, onReplay }: { attempt: AttemptSummary; onReplay: 
         </div>
         <div>
           <dt>Objetos</dt>
-          <dd>0</dd>
+          <dd>{attempt.collectedObjectIds.length}</dd>
+        </div>
+        <div>
+          <dt>Valor de objetos recogidos</dt>
+          <dd>{attempt.objectPoints.toLocaleString('es-AR')} puntos</dd>
         </div>
         {attempt.status === 'victory' && (
           <div>
@@ -348,6 +356,10 @@ function HistoryList({
                 <strong>{statusLabel(item.status)}</strong>
                 <span>
                   {item.turnsUsed} / {item.maxTurns} turnos · {item.modelLabel} · {item.createdAt}
+                </span>
+                <span>
+                  Objetos: {item.collectedObjectIds.length} · valor recogido:{' '}
+                  {item.objectPoints.toLocaleString('es-AR')} puntos
                 </span>
               </div>
               <div className="history-actions">
@@ -1625,11 +1637,12 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       <section className="attempt-workspace" aria-labelledby="attempt-workspace-title">
         <div className="attempt-heading">
           <div>
-            <p className="card-kicker">Terreno periódico</p>
+            <p className="card-kicker">Terreno con recompensa</p>
             <h2 id="attempt-workspace-title">Probar al agente</h2>
             <p>
-              El terreno cambia entre suelo, pozo, rama, barrera y plataforma. Llegá a la salida en
-              hasta 16 acciones.
+              El terreno cambia entre suelo, pozo, rama, barrera y plataforma. En el apoyo 2 hay una
+              recompensa: pasar no la recoge; usá Agarrar objeto. Llegá a la salida en hasta 16
+              acciones.
             </p>
           </div>
           {quota && (

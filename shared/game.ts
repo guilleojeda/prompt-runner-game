@@ -1,7 +1,7 @@
 import type { RobotSkillId } from './robot.js';
 
 /** Version of the deterministic rules used by the published level. */
-export const RULES_VERSION = 2 as const;
+export const RULES_VERSION = 3 as const;
 
 export type GameStatus = 'running' | 'victory' | 'defeat' | 'incomplete';
 export type Direction = 'left' | 'right';
@@ -53,34 +53,18 @@ export interface ScoreRules {
   readonly objectValues: Readonly<Record<string, number>>;
 }
 
-export const DEFAULT_SCORE_RULES: ScoreRules = Object.freeze({
-  base: 1000,
-  turnWeight: 10,
-  tokenWeight: 1,
-  tokenUnit: 1000,
-  decimalPlaces: 2,
-  allowNegative: true,
-  objectValues: Object.freeze({}),
-});
-
 export interface GameRules {
   readonly version: typeof RULES_VERSION;
   readonly maxTurns: number;
   readonly score: ScoreRules;
 }
 
-export const RULES: GameRules = Object.freeze({
-  version: RULES_VERSION,
-  maxTurns: 16,
-  score: DEFAULT_SCORE_RULES,
-});
-
 /** The single current level: ground, pit, ground, branch, barrier, platform, ground. */
 export const LEVEL: LevelDefinition = Object.freeze({
-  id: 'principal-periodico-v2',
-  version: 2,
+  id: 'principal-recompensas-v3',
+  version: 3,
   rulesVersion: RULES_VERSION,
-  maxTurns: RULES.maxTurns,
+  maxTurns: 16,
   segments: Object.freeze([
     Object.freeze({ type: 'ground' as const }),
     Object.freeze({ type: 'pit' as const }),
@@ -98,8 +82,34 @@ export const LEVEL: LevelDefinition = Object.freeze({
     }),
     Object.freeze({ type: 'ground' as const }),
   ]),
-  objects: Object.freeze([]),
+  objects: Object.freeze([Object.freeze({ id: 'recompensa-1', support: 2, scoreValue: 25 })]),
   exit: Object.freeze({ support: 7, requiredObjectIds: Object.freeze([]) }),
+});
+
+const BASE_SCORE_RULES = {
+  base: 1000,
+  turnWeight: 10,
+  tokenWeight: 1,
+  tokenUnit: 1000,
+  decimalPlaces: 2,
+  allowNegative: true,
+} as const;
+
+/** Derive effective object points from the level snapshot used by an attempt. */
+export const scoreRulesForLevel = (level: LevelDefinition): ScoreRules =>
+  Object.freeze({
+    ...BASE_SCORE_RULES,
+    objectValues: Object.freeze(
+      Object.fromEntries(level.objects.map((object) => [object.id, object.scoreValue])),
+    ),
+  });
+
+export const DEFAULT_SCORE_RULES: ScoreRules = scoreRulesForLevel(LEVEL);
+
+export const RULES: GameRules = Object.freeze({
+  version: RULES_VERSION,
+  maxTurns: LEVEL.maxTurns,
+  score: DEFAULT_SCORE_RULES,
 });
 
 export interface GameSnapshot {
@@ -125,9 +135,10 @@ export type NormalizedAction =
   | { readonly kind: 'jump'; readonly direction: Direction }
   | { readonly kind: 'crouch'; readonly direction: Direction }
   | { readonly kind: 'swim' }
-  | { readonly kind: 'wait' };
+  | { readonly kind: 'wait' }
+  | { readonly kind: 'collect' };
 
-export type ResolutionOutcome = 'moved' | 'no_op' | 'fall' | 'collision';
+export type ResolutionOutcome = 'moved' | 'no_op' | 'fall' | 'collision' | 'picked_up';
 
 export type ResolutionReason =
   | 'moved'
@@ -135,6 +146,7 @@ export type ResolutionReason =
   | 'right_boundary'
   | 'swim_no_effect'
   | 'wait'
+  | 'no_object_here'
   | 'walk_into_pit'
   | 'crouch_into_pit'
   | 'walk_into_branch'
@@ -158,7 +170,12 @@ export interface NoOpResolution extends ActionResolutionBase {
   readonly outcome: 'no_op';
 }
 
-export type ActionResolution = MovementResolution | NoOpResolution;
+export interface PickedUpResolution {
+  readonly outcome: 'picked_up';
+  readonly objectId: string;
+}
+
+export type ActionResolution = MovementResolution | NoOpResolution | PickedUpResolution;
 
 export interface ResolvedAction {
   readonly action: NormalizedAction;
@@ -222,12 +239,16 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const hasOwn = (value: object, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(value, key);
 
+const hasExactKeys = (value: Record<string, unknown>, keys: readonly string[]): boolean =>
+  Object.keys(value).length === keys.length && keys.every((key) => hasOwn(value, key));
+
 const isResolutionReason = (value: unknown): value is ResolutionReason =>
   value === 'moved' ||
   value === 'left_boundary' ||
   value === 'right_boundary' ||
   value === 'swim_no_effect' ||
   value === 'wait' ||
+  value === 'no_object_here' ||
   value === 'walk_into_pit' ||
   value === 'crouch_into_pit' ||
   value === 'walk_into_branch' ||
@@ -243,19 +264,38 @@ export const isNormalizedAction = (value: unknown): value is NormalizedAction =>
     value.kind === 'advance' ||
     value.kind === 'retreat' ||
     value.kind === 'swim' ||
-    value.kind === 'wait'
+    value.kind === 'wait' ||
+    value.kind === 'collect'
   ) {
-    return !hasOwn(value, 'direction');
+    return hasExactKeys(value, ['kind']);
   }
   return (
     (value.kind === 'jump' || value.kind === 'crouch') &&
+    hasExactKeys(value, ['kind', 'direction']) &&
     (value.direction === 'left' || value.direction === 'right')
   );
 };
 
 /** Type guard for the single action resolution contract used by durable and public records. */
 export const isActionResolution = (value: unknown): value is ActionResolution => {
-  if (!isRecord(value) || !isResolutionReason(value.reason)) return false;
+  if (!isRecord(value)) return false;
+  if (value.outcome === 'picked_up') {
+    return (
+      hasExactKeys(value, ['outcome', 'objectId']) &&
+      typeof value.objectId === 'string' &&
+      value.objectId.length > 0
+    );
+  }
+  if (value.outcome === 'no_op' && !hasExactKeys(value, ['outcome', 'reason'])) {
+    return false;
+  }
+  if (
+    (value.outcome === 'moved' || value.outcome === 'fall' || value.outcome === 'collision') &&
+    !hasExactKeys(value, ['outcome', 'reason', 'segment', 'targetSupport'])
+  ) {
+    return false;
+  }
+  if (!isResolutionReason(value.reason)) return false;
   if (value.outcome === 'no_op') return true;
   return (
     (value.outcome === 'moved' || value.outcome === 'fall' || value.outcome === 'collision') &&
@@ -318,6 +358,9 @@ const validateLevel = (level: LevelDefinition): void => {
     level.maxTurns < 1 ||
     !Array.isArray(level.segments) ||
     level.segments.length === 0 ||
+    !Array.isArray(level.objects) ||
+    !level.exit ||
+    !Array.isArray(level.exit.requiredObjectIds) ||
     level.exit.support !== level.segments.length
   ) {
     throw new GameStateError('The level definition is invalid.');
@@ -348,18 +391,23 @@ const validateLevel = (level: LevelDefinition): void => {
     }
   }
   const objectIds = new Set<string>();
+  const objectSupports = new Set<number>();
   for (const object of level.objects) {
     if (
+      typeof object.id !== 'string' ||
       !object.id ||
       objectIds.has(object.id) ||
       !Number.isInteger(object.support) ||
       object.support < 0 ||
       object.support > level.segments.length ||
-      !Number.isFinite(object.scoreValue)
+      !Number.isFinite(object.scoreValue) ||
+      objectSupports.has(object.support) ||
+      (object.requiredForExit !== undefined && typeof object.requiredForExit !== 'boolean')
     ) {
       throw new GameStateError('The level contains an invalid object.');
     }
     objectIds.add(object.id);
+    objectSupports.add(object.support);
   }
   for (const requiredId of level.exit.requiredObjectIds) {
     if (!objectIds.has(requiredId)) {
@@ -440,7 +488,8 @@ export const normalizeSelection = (
     entry.id === 'advance' ||
     entry.id === 'retreat' ||
     entry.id === 'swim' ||
-    entry.id === 'wait'
+    entry.id === 'wait' ||
+    entry.id === 'collect'
   ) {
     if (!exactArgumentKeys(args, [])) {
       throw new SelectionValidationError('invalid_arguments', 'This tool takes no arguments.');
@@ -474,7 +523,7 @@ const isMovementAction = (
   action.kind === 'crouch';
 
 const modeForAction = (
-  action: Exclude<NormalizedAction, { readonly kind: 'wait' }>,
+  action: Exclude<NormalizedAction, { readonly kind: 'wait' | 'collect' }>,
 ): 'walk' | 'jump' | 'crouch' | 'swim' => {
   if (action.kind === 'jump') return 'jump';
   if (action.kind === 'crouch') return 'crouch';
@@ -528,9 +577,12 @@ const movementCompatibility = (terrain: TerrainState, mode: MovementMode): Movem
 
 type SemanticSnapshot = {
   readonly support: number;
+  readonly maxSupportReached: number;
   readonly turnsUsed: number;
   readonly phaseTurn: number;
   readonly terrain: readonly TerrainState[];
+  readonly remainingObjects: readonly string[];
+  readonly inventory: readonly string[];
   readonly exitEnabled: boolean;
   readonly status: GameStatus;
 };
@@ -544,6 +596,10 @@ const isSemanticSnapshot = (value: unknown): value is SemanticSnapshot =>
   Number.isSafeInteger(value.support) &&
   value.support >= 0 &&
   value.support <= LEVEL.segments.length &&
+  typeof value.maxSupportReached === 'number' &&
+  Number.isSafeInteger(value.maxSupportReached) &&
+  value.maxSupportReached >= value.support &&
+  value.maxSupportReached <= LEVEL.segments.length &&
   typeof value.turnsUsed === 'number' &&
   Number.isSafeInteger(value.turnsUsed) &&
   value.turnsUsed >= 0 &&
@@ -553,6 +609,10 @@ const isSemanticSnapshot = (value: unknown): value is SemanticSnapshot =>
   Array.isArray(value.terrain) &&
   value.terrain.length === LEVEL.segments.length &&
   value.terrain.every(validTerrain) &&
+  Array.isArray(value.remainingObjects) &&
+  value.remainingObjects.every((id) => typeof id === 'string') &&
+  Array.isArray(value.inventory) &&
+  value.inventory.every((id) => typeof id === 'string') &&
   typeof value.exitEnabled === 'boolean' &&
   isGameStatus(value.status);
 
@@ -560,6 +620,25 @@ const sameTerrain = (value: unknown, expected: readonly TerrainState[]): boolean
   Array.isArray(value) &&
   value.length === expected.length &&
   value.every((item, index) => item === expected[index]);
+
+const isValidObjectPartition = (
+  snapshot: Pick<SemanticSnapshot, 'remainingObjects' | 'inventory' | 'exitEnabled'>,
+  level: LevelDefinition = LEVEL,
+): boolean => {
+  const expectedIds = level.objects.map((object) => object.id);
+  const allIds = [...snapshot.remainingObjects, ...snapshot.inventory];
+  return (
+    new Set(snapshot.remainingObjects).size === snapshot.remainingObjects.length &&
+    new Set(snapshot.inventory).size === snapshot.inventory.length &&
+    new Set(allIds).size === allIds.length &&
+    allIds.length === expectedIds.length &&
+    expectedIds.every((id) => allIds.includes(id)) &&
+    snapshot.exitEnabled === exitIsEnabled(level, snapshot.inventory)
+  );
+};
+
+const sameIds = (left: readonly string[], right: readonly string[]): boolean =>
+  left.length === right.length && left.every((id, index) => id === right[index]);
 
 /**
  * Checks a recorded action against the current contract without reconstructing game state.
@@ -575,7 +654,9 @@ export const isSemanticallyValidActionResolution = (
     !isNormalizedAction(actionValue) ||
     !isActionResolution(resolutionValue) ||
     !isSemanticSnapshot(beforeValue) ||
-    !isSemanticSnapshot(afterValue)
+    !isSemanticSnapshot(afterValue) ||
+    !isValidObjectPartition(beforeValue, LEVEL) ||
+    !isValidObjectPartition(afterValue, LEVEL)
   ) {
     return false;
   }
@@ -585,17 +666,44 @@ export const isSemanticallyValidActionResolution = (
   const resolution = resolutionValue;
   if (before.status !== 'running') return false;
   if (
+    before.turnsUsed === 0 &&
+    (before.support !== 0 ||
+      before.maxSupportReached !== 0 ||
+      before.inventory.length !== 0 ||
+      !sameIds(
+        before.remainingObjects,
+        LEVEL.objects.map((object) => object.id),
+      ))
+  ) {
+    return false;
+  }
+  if (
     before.turnsUsed >= LEVEL.maxTurns ||
     after.turnsUsed !== before.turnsUsed + 1 ||
     before.phaseTurn !== before.turnsUsed ||
-    after.exitEnabled !== before.exitEnabled ||
+    before.exitEnabled !== exitIsEnabled(LEVEL, before.inventory) ||
     !sameTerrain(before.terrain, effectiveTerrain(LEVEL, before.phaseTurn))
   ) {
     return false;
   }
 
   let expectedSupport = before.support;
-  if (actionValue.kind === 'wait') {
+  let expectedMaxSupportReached = before.maxSupportReached;
+  let expectedRemainingObjects = before.remainingObjects;
+  let expectedInventory = before.inventory;
+  if (actionValue.kind === 'collect') {
+    const object = LEVEL.objects.find(
+      (candidate) =>
+        candidate.support === before.support && before.remainingObjects.includes(candidate.id),
+    );
+    if (object) {
+      if (resolution.outcome !== 'picked_up' || resolution.objectId !== object.id) return false;
+      expectedRemainingObjects = before.remainingObjects.filter((id) => id !== object.id);
+      expectedInventory = [...before.inventory, object.id];
+    } else if (resolution.outcome !== 'no_op' || resolution.reason !== 'no_object_here') {
+      return false;
+    }
+  } else if (actionValue.kind === 'wait') {
     if (resolution.outcome !== 'no_op' || resolution.reason !== 'wait') return false;
   } else if (actionValue.kind === 'swim') {
     if (resolution.outcome !== 'no_op' || resolution.reason !== 'swim_no_effect') return false;
@@ -625,11 +733,22 @@ export const isSemanticallyValidActionResolution = (
       ) {
         return false;
       }
-      if (expected.outcome === 'moved') expectedSupport = targetSupport;
+      if (expected.outcome === 'moved') {
+        expectedSupport = targetSupport;
+        expectedMaxSupportReached = Math.max(before.maxSupportReached, targetSupport);
+      }
     }
   }
 
-  if (after.support !== expectedSupport) return false;
+  if (
+    after.support !== expectedSupport ||
+    after.maxSupportReached !== expectedMaxSupportReached ||
+    !sameIds(after.remainingObjects, expectedRemainingObjects) ||
+    !sameIds(after.inventory, expectedInventory) ||
+    after.exitEnabled !== exitIsEnabled(LEVEL, expectedInventory)
+  ) {
+    return false;
+  }
   const fatal = resolution.outcome === 'fall' || resolution.outcome === 'collision';
   const reachesEnabledExit =
     resolution.outcome === 'moved' &&
@@ -662,6 +781,8 @@ const afterTurn = (
   support: number,
   maxSupportReached: number,
   terminal: boolean,
+  remainingObjects: readonly string[] = before.remainingObjects,
+  inventory: readonly string[] = before.inventory,
 ): GameSnapshot => {
   const turnsUsed = before.turnsUsed + 1;
   const phaseTurn = terminal ? before.phaseTurn : before.phaseTurn + 1;
@@ -671,9 +792,9 @@ const afterTurn = (
     turnsUsed,
     phaseTurn,
     terrain: terminal ? before.terrain : effectiveTerrain(level, phaseTurn),
-    remainingObjects: before.remainingObjects,
-    inventory: before.inventory,
-    exitEnabled: before.exitEnabled,
+    remainingObjects,
+    inventory,
+    exitEnabled: exitIsEnabled(level, inventory),
     status,
     maxSupportReached,
   });
@@ -693,10 +814,41 @@ export const resolveAction = (
   if (state.turnsUsed >= level.maxTurns) {
     throw new GameStateError('No action can be resolved after the turn limit.');
   }
+  if (!isValidObjectPartition(state, level)) {
+    throw new GameStateError('The snapshot object state does not match the level.');
+  }
 
   // The caller's snapshot is immutable by contract. Returning this exact
   // object keeps before/after references chainable without mutating it.
   const before = state;
+  if (action.kind === 'collect') {
+    const object = level.objects.find(
+      (candidate) =>
+        candidate.support === before.support && before.remainingObjects.includes(candidate.id),
+    );
+    const remainingObjects = object
+      ? before.remainingObjects.filter((id) => id !== object.id)
+      : before.remainingObjects;
+    const inventory = object ? [...before.inventory, object.id] : before.inventory;
+    const status: GameStatus = before.turnsUsed + 1 >= level.maxTurns ? 'incomplete' : 'running';
+    return {
+      action,
+      before,
+      after: afterTurn(
+        before,
+        level,
+        status,
+        before.support,
+        before.maxSupportReached,
+        status !== 'running',
+        remainingObjects,
+        inventory,
+      ),
+      resolution: object
+        ? { outcome: 'picked_up', objectId: object.id }
+        : { outcome: 'no_op', reason: 'no_object_here' },
+    };
+  }
   if (action.kind === 'wait') {
     const resolution: NoOpResolution = { outcome: 'no_op', reason: 'wait' };
     const status: GameStatus = before.turnsUsed + 1 >= level.maxTurns ? 'incomplete' : 'running';

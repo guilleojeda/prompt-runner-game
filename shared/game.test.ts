@@ -7,6 +7,7 @@ import {
   calculateScore,
   createInitialState,
   effectiveTerrain,
+  isSemanticallyValidActionResolution,
   normalizeSelection,
   observe,
   progressFor,
@@ -73,13 +74,14 @@ describe('periodic deterministic game engine', () => {
   it('publishes one immutable seven-segment level and its turn-zero snapshot', () => {
     const initial = createInitialState();
 
-    expect(RULES_VERSION).toBe(2);
+    expect(RULES_VERSION).toBe(3);
     expect(LEVEL).toMatchObject({
-      id: 'principal-periodico-v2',
-      version: 2,
+      id: 'principal-recompensas-v3',
+      version: 3,
       maxTurns: 16,
       exit: { support: 7, requiredObjectIds: [] },
     });
+    expect(LEVEL.objects).toEqual([{ id: 'recompensa-1', support: 2, scoreValue: 25 }]);
     expect(LEVEL.segments).toEqual([
       { type: 'ground' },
       { type: 'pit' },
@@ -95,7 +97,7 @@ describe('periodic deterministic game engine', () => {
       turnsUsed: 0,
       phaseTurn: 0,
       terrain: ['ground', 'pit', 'ground', 'branch', 'barrier_low', 'ground', 'ground'],
-      remainingObjects: [],
+      remainingObjects: ['recompensa-1'],
       inventory: [],
       exitEnabled: true,
       status: 'running',
@@ -144,6 +146,15 @@ describe('periodic deterministic game engine', () => {
     expect(() => createInitialState(invalidStaticBarrier)).toThrow(/invalid terrain type/);
   });
 
+  it('rejects multiple selectable objects at the same support', () => {
+    const ambiguousLevel: LevelDefinition = {
+      ...LEVEL,
+      objects: [...LEVEL.objects, { id: 'second-reward', support: 2, scoreValue: 5 }],
+    };
+
+    expect(() => createInitialState(ambiguousLevel)).toThrow(/invalid object/);
+  });
+
   it.each([
     ['ground', 'walk', 'moved', 'moved'],
     ['ground', 'jump', 'moved', 'moved'],
@@ -167,7 +178,7 @@ describe('periodic deterministic game engine', () => {
       for (const direction of bothDirections) {
         const result = resolveAction(stateAt(level, 1), actionFor(mode, direction), level);
         expect(result.resolution.outcome).toBe(outcome);
-        expect(result.resolution.reason).toBe(reason);
+        expect('reason' in result.resolution ? result.resolution.reason : undefined).toBe(reason);
         if ('segment' in result.resolution) {
           expect(result.resolution.segment).toBe(direction === 'right' ? 1 : 0);
           expect(result.resolution.targetSupport).toBe(direction === 'right' ? 2 : 0);
@@ -214,7 +225,7 @@ describe('periodic deterministic game engine', () => {
 
         expect(before.terrain[platformIndex]).toBe(terrain);
         expect(result.resolution.outcome).toBe(outcome);
-        expect(result.resolution.reason).toBe(reason);
+        expect('reason' in result.resolution ? result.resolution.reason : undefined).toBe(reason);
         expect(result.after.turnsUsed).toBe(phaseTurn + 1);
         expect(result.after.status).toBe(outcome === 'moved' ? 'running' : 'defeat');
       }
@@ -329,7 +340,7 @@ describe('periodic deterministic game engine', () => {
       const level = levelWith(terrain, 1);
       const result = resolveAction(createInitialState(level), action, level);
       expect(result.after.status).toBe(status);
-      expect(result.resolution.reason).toBe(reason);
+      expect('reason' in result.resolution ? result.resolution.reason : undefined).toBe(reason);
       expect(result.after.turnsUsed).toBe(1);
       expect(result.after.phaseTurn).toBe(0);
     },
@@ -411,7 +422,7 @@ describe('periodic deterministic game engine', () => {
     const snapshot = ROBOT_CATALOG.map((entry) => ({
       id: entry.id,
       opaqueId: entry.opaqueId,
-      enabled: entry.id !== 'swim' && entry.id !== 'wait',
+      enabled: entry.id !== 'swim' && entry.id !== 'wait' && entry.id !== 'collect',
     }));
 
     expect(normalizeSelection('tool_3', { direction: 'izquierda' }, snapshot)).toEqual({
@@ -423,6 +434,7 @@ describe('periodic deterministic game engine', () => {
     );
     expect(() => normalizeSelection('tool_5', {}, snapshot)).toThrow(/disabled/);
     expect(() => normalizeSelection('tool_6', {}, snapshot)).toThrow(/disabled/);
+    expect(() => normalizeSelection('tool_7', {}, snapshot)).toThrow(/disabled/);
     const enabledWait = snapshot.map((entry) =>
       entry.id === 'wait' ? { ...entry, enabled: true } : entry,
     );
@@ -430,6 +442,167 @@ describe('periodic deterministic game engine', () => {
       /takes no arguments/,
     );
     expect(normalizeSelection('tool_6', {}, enabledWait)).toEqual({ kind: 'wait' });
+    const enabledCollect = snapshot.map((entry) =>
+      entry.id === 'collect' ? { ...entry, enabled: true } : entry,
+    );
+    expect(() => normalizeSelection('tool_7', { extra: true }, enabledCollect)).toThrow(
+      /takes no arguments/,
+    );
+    expect(normalizeSelection('tool_7', {}, enabledCollect)).toEqual({ kind: 'collect' });
+  });
+
+  it('observes only objects at the current support and collects one reward in place', () => {
+    expect(observe(stateAt(LEVEL, 1)).here.objects).toEqual([]);
+    expect(observe(stateAt(LEVEL, 2)).here.objects).toEqual(['recompensa-1']);
+
+    const passedBy = resolveAction(stateAt(LEVEL, 1), { kind: 'jump', direction: 'right' });
+    expect(passedBy.after.support).toBe(2);
+    expect(passedBy.after.remainingObjects).toEqual(['recompensa-1']);
+    expect(passedBy.after.inventory).toEqual([]);
+    expect(observe(passedBy.after).here.objects).toEqual(['recompensa-1']);
+
+    const pickup = resolveAction(stateAt(LEVEL, 2), { kind: 'collect' });
+    expect(pickup.resolution).toEqual({ outcome: 'picked_up', objectId: 'recompensa-1' });
+    expect(pickup.after).toMatchObject({
+      support: 2,
+      turnsUsed: 1,
+      phaseTurn: 1,
+      remainingObjects: [],
+      inventory: ['recompensa-1'],
+      status: 'running',
+    });
+    expect(observe(pickup.after).here.objects).toEqual([]);
+
+    const repeated = resolveAction(pickup.after, { kind: 'collect' });
+    expect(repeated.resolution).toEqual({ outcome: 'no_op', reason: 'no_object_here' });
+    expect(repeated.after.inventory).toEqual(['recompensa-1']);
+    expect(repeated.after.remainingObjects).toEqual([]);
+    expect(repeated.after.phaseTurn).toBe(2);
+  });
+
+  it('preserves collected objects after moving away and returning', () => {
+    let state = resolveAction(stateAt(LEVEL, 2), { kind: 'collect' }).after;
+    state = resolveAction(state, { kind: 'jump', direction: 'left' }).after;
+    state = resolveAction(state, { kind: 'jump', direction: 'right' }).after;
+
+    expect(state.support).toBe(2);
+    expect(state.inventory).toEqual(['recompensa-1']);
+    expect(state.remainingObjects).toEqual([]);
+    expect(observe(state).here.objects).toEqual([]);
+  });
+
+  it('validates final-turn pickups and rejects forged object transitions in replay data', () => {
+    const before = stateAt(LEVEL, 2, {
+      turnsUsed: LEVEL.maxTurns - 1,
+      phaseTurn: LEVEL.maxTurns - 1,
+    });
+    const pickup = resolveAction(before, { kind: 'collect' });
+
+    expect(pickup.after.status).toBe('incomplete');
+    expect(pickup.after.phaseTurn).toBe(LEVEL.maxTurns - 1);
+    expect(
+      isSemanticallyValidActionResolution(
+        pickup.action,
+        pickup.before,
+        pickup.after,
+        pickup.resolution,
+      ),
+    ).toBe(true);
+    expect(
+      isSemanticallyValidActionResolution(pickup.action, pickup.before, pickup.after, {
+        outcome: 'picked_up',
+        objectId: 'invented-object',
+      }),
+    ).toBe(false);
+    expect(
+      isSemanticallyValidActionResolution(
+        pickup.action,
+        pickup.before,
+        { ...pickup.after, remainingObjects: ['recompensa-1'] },
+        pickup.resolution,
+      ),
+    ).toBe(false);
+    expect(
+      isSemanticallyValidActionResolution(
+        pickup.action,
+        pickup.before,
+        { ...pickup.after, inventory: ['recompensa-1', 'recompensa-1'] },
+        pickup.resolution,
+      ),
+    ).toBe(false);
+
+    const emptySupport = resolveAction(createInitialState(), { kind: 'advance' }).after;
+    const noOp = resolveAction(emptySupport, { kind: 'collect' });
+    expect(noOp.resolution).toEqual({ outcome: 'no_op', reason: 'no_object_here' });
+    expect(
+      isSemanticallyValidActionResolution(noOp.action, noOp.before, noOp.after, noOp.resolution),
+    ).toBe(true);
+    expect(noOp.after.phaseTurn).toBe(2);
+    expect(noOp.after.inventory).toEqual(noOp.before.inventory);
+    expect(noOp.after.remainingObjects).toEqual(noOp.before.remainingObjects);
+    expect(
+      isSemanticallyValidActionResolution(noOp.action, noOp.before, noOp.after, {
+        outcome: 'no_op',
+        reason: 'wait',
+      }),
+    ).toBe(false);
+
+    const moveOntoReward = resolveAction(emptySupport, {
+      kind: 'jump',
+      direction: 'right',
+    });
+    expect(
+      isSemanticallyValidActionResolution(
+        moveOntoReward.action,
+        moveOntoReward.before,
+        moveOntoReward.after,
+        moveOntoReward.resolution,
+      ),
+    ).toBe(true);
+    expect(
+      isSemanticallyValidActionResolution(
+        moveOntoReward.action,
+        moveOntoReward.before,
+        { ...moveOntoReward.after, maxSupportReached: 1 },
+        moveOntoReward.resolution,
+      ),
+    ).toBe(false);
+    expect(
+      isSemanticallyValidActionResolution(
+        moveOntoReward.action,
+        moveOntoReward.before,
+        { ...moveOntoReward.after, remainingObjects: [], inventory: ['recompensa-1'] },
+        moveOntoReward.resolution,
+      ),
+    ).toBe(false);
+
+    const initial = createInitialState();
+    const initialCollect = resolveAction(initial, { kind: 'collect' });
+    expect(initialCollect.resolution).toEqual({ outcome: 'no_op', reason: 'no_object_here' });
+    expect(
+      isSemanticallyValidActionResolution(
+        initialCollect.action,
+        initialCollect.before,
+        initialCollect.after,
+        initialCollect.resolution,
+      ),
+    ).toBe(true);
+    expect(
+      isSemanticallyValidActionResolution(
+        initialCollect.action,
+        initialCollect.before,
+        { ...initialCollect.after, maxSupportReached: 7 },
+        initialCollect.resolution,
+      ),
+    ).toBe(false);
+    expect(
+      isSemanticallyValidActionResolution(
+        initialCollect.action,
+        { ...initialCollect.before, maxSupportReached: 7 },
+        initialCollect.after,
+        initialCollect.resolution,
+      ),
+    ).toBe(false);
   });
 
   it('computes score, rounds fractions, preserves negative values, and withholds unknown usage', () => {
@@ -440,6 +613,7 @@ describe('periodic deterministic game engine', () => {
       gameTokens: 2500,
     });
     expect(known).toMatchObject({ score: 947.5, availability: 'available' });
+    expect(DEFAULT_SCORE_RULES.objectValues).toEqual({ 'recompensa-1': 25 });
     expect(
       scoreAttempt({ status: 'defeat', turnsUsed: 1, collectedObjectIds: [], gameTokens: 1 }),
     ).toBeNull();

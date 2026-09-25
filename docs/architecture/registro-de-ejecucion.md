@@ -1,6 +1,6 @@
 # Registro de ejecución para reproducción
 
-**Registro y reproducción del nivel principal periódico.** El registro conserva snapshots, acciones, llamadas, uso y cierre del intento bajo `principal-periodico-v2`, versión 2 y `RULES_VERSION=2`. Concreta los requisitos de [intentos](../intent/intentos.md), sin cambiar las [reglas del juego](../intent/juego.md). El reproductor y su catálogo visual se describen en [animación](animacion.md); la persistencia física y sus claves se definen en [datos](datos.md).
+**Registro y reproducción del nivel principal con recompensa.** El registro conserva snapshots, acciones, llamadas, uso y cierre del intento bajo `principal-recompensas-v3`, versión 3 y `RULES_VERSION=3`. Concreta los requisitos de [intentos](../intent/intentos.md), sin cambiar las [reglas del juego](../intent/juego.md). El reproductor y su catálogo visual se describen en [animación](animacion.md); la persistencia física y sus claves se definen en [datos](datos.md).
 
 ## Separación de responsabilidades
 
@@ -13,10 +13,10 @@ El registro completo contiene observaciones, prompts, herramientas, respuestas, 
 | Dato                  | Contenido y propósito                                                                                                                                                         |
 | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Identidad y versiones | Intento, versión del formato, nivel y reglas. Permiten interpretar registros retenidos.                                                                                       |
-| Escenario fijo        | `principal-periodico-v2`, versión 2: siete tramos `ground`, `pit`, `ground`, `branch`, `barrier`, `platform`, `ground`; ocho apoyos y salida en el apoyo 7. |
+| Escenario fijo        | `principal-recompensas-v3`, versión 3: los mismos siete tramos periódicos, recompensa en el apoyo 2 y salida libre en el apoyo 7. |
 | Estado inicial        | Posición lógica, fases efectivas, objetos, inventario, salida, contadores y estado de juego antes de cualquier acción.                                                        |
 | Acciones ordenadas    | Acción interna normalizada, dirección/parámetros, estados anterior y posterior, resultado y causa.                                                                            |
-| Interacción           | Tramo cruzado, apoyo objetivo y resultado `moved`, `fall`, `collision` o `no_op`; el objetivo puede no haberse alcanzado. Esperar conserva apoyo y puede cambiar la fase para el estado siguiente. |
+| Interacción           | Tramo cruzado, apoyo objetivo o ID del objeto y resultado `moved`, `fall`, `collision`, `picked_up` o `no_op`. Esperar y recoger conservan apoyo y pueden cambiar la fase para el estado siguiente. |
 | Cierre                | Número de acciones publicadas, referencia al último estado, resultado terminal y causa, incluidos cancelación y error.                                                        |
 
 Los índices de apoyos, el mapa completo y las causas internas son para motor, registro y UI. **No se agregan al contexto del agente.** Se conserva la observación local permitida y la separación entre herramienta opaca e identidad semántica interna.
@@ -34,15 +34,15 @@ type ReplayState = {
   turnsUsed: number; // Acciones ejecutadas, incluso la fatal.
   phaseTurn: number; // Turno cuya fase está representada.
   terrain: TerrainState[]; // Estado efectivo de TODOS los tramos, por orden.
-  remainingObjects: string[]; // Vacío en el nivel vigente.
-  inventory: string[]; // Vacío en el nivel vigente.
+  remainingObjects: string[]; // IDs de objetos aún disponibles en el nivel.
+  inventory: string[]; // IDs recogidos una sola vez durante este intento.
   exitEnabled: boolean; // Siempre true en el nivel vigente.
   status: 'running' | 'victory' | 'defeat' | 'incomplete';
   maxSupportReached: number; // Avance informativo del intento.
 };
 ```
 
-El snapshot materializa el terreno efectivo de los siete tramos. La barrera alterna entre `barrier_low` en turnos pares y `barrier_high` en impares; la plataforma es `ground` si el turno es múltiplo de tres y `pit` en los demás. El nivel no tiene objetos, por lo que las listas de objetos e inventario están vacías y la salida está habilitada desde el inicio. El `maxSupportReached` permite mostrar avance aunque el robot retroceda.
+El snapshot materializa el terreno efectivo de los siete tramos. La barrera alterna entre `barrier_low` en turnos pares y `barrier_high` en impares; la plataforma es `ground` si el turno es múltiplo de tres y `pit` en los demás. El estado inicial tiene `recompensa-1` entre los objetos restantes e inventario vacío; una recogida local traslada ese ID al inventario. La salida está habilitada desde el inicio. El `maxSupportReached` permite mostrar avance aunque el robot retroceda.
 
 El snapshot inicial es `state-0`; cada acción publicada agrega una sola fila `STATE#<afterStateId>` y conserva el snapshot previo por referencia. `phaseTurn` avanza sólo si el juego continúa y queda congelado en el turno evaluado cuando hay fatalidad o victoria. El reproductor lee las fases efectivas guardadas sin recalcularlas.
 
@@ -60,13 +60,13 @@ Cada acción publicada referencia una decisión auditada y sus estados anterior 
 | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `seq`, `decisionId`                   | Orden consecutivo de acciones y vínculo a la decisión. Los reintentos de inferencia no agregan acciones.                                                                         |
 | `beforeStateId`, `afterStateId`       | Estados exactos relacionados con esta acción.                                                                                                                                    |
-| `action`                              | Tipo normalizado vigente (`advance`, `retreat`, `jump`, `crouch`, `swim` o `wait`), dirección si corresponde y parámetros validados. |
-| `resolution.outcome`                  | `moved`, `no_op`, `fall` o `collision`. `picked_up` queda para la fase posterior de objetos. |
-| `resolution.reason`                   | Código estable de la causa, no explicación libre ni razonamiento supuesto del modelo.                                                                                            |
+| `action`                              | Tipo normalizado vigente (`advance`, `retreat`, `jump`, `crouch`, `swim`, `wait` o `collect`), dirección si corresponde y parámetros validados. |
+| `resolution.outcome`                  | `moved`, `no_op`, `fall`, `collision` o `picked_up`. |
+| `resolution.reason`                   | Código estable de causa para movimientos y no-ops; `picked_up` identifica el objeto con `objectId`. No es explicación libre ni razonamiento supuesto del modelo.                                                                                            |
 | `resolution.segment`, `targetSupport` | Tramo del movimiento y apoyo al que se intentó llegar; presentes solo cuando existen. El destino alcanzado está en el estado posterior.                                          |
-| `resolution.objectId`                 | Campo reservado para la fase posterior de objetos; no aparece en acciones vigentes.                                                                                              |
+| `resolution.objectId`                 | ID del objeto realmente recogido; sólo aparece en `picked_up`.                                                                                              |
 
-Las resoluciones son variantes tipadas: una caída o choque requiere tramo, objetivo y causa; un no-op identifica su motivo. Se distinguen límites izquierdo/derecho, Nadar sin efecto y Esperar. No se emite un tramo inexistente para un intento de salir del nivel.
+Las resoluciones son variantes tipadas: una caída o choque requiere tramo, objetivo y causa; `picked_up` requiere el ID del objeto local; un no-op identifica su motivo, incluido `no_object_here`. Se distinguen límites izquierdo/derecho, Nadar sin efecto y Esperar. No se emite un tramo inexistente para un intento de salir del nivel.
 
 El resultado de la interacción y el resultado del juego son conceptos distintos. Una acción `moved` puede llegar a una salida bloqueada y continuar, o a una habilitada y ganar. `picked_up` puede ganar si habilita la salida desde ese apoyo. Un no-op puede terminar por límite. Los snapshots y el cierre contienen el resultado del juego; el reproductor no vuelve a aplicar su precedencia.
 
@@ -85,7 +85,7 @@ Fragmento ficticio de un registro del contrato vigente, expandido para leer los 
     "turnsUsed": 1,
     "phaseTurn": 1,
     "terrain": ["ground", "pit", "ground", "branch", "barrier_high", "pit", "ground"],
-    "remainingObjects": [],
+    "remainingObjects": ["recompensa-1"],
     "inventory": [],
     "exitEnabled": true,
     "status": "running"
@@ -101,7 +101,7 @@ Fragmento ficticio de un registro del contrato vigente, expandido para leer los 
     "turnsUsed": 2,
     "phaseTurn": 1,
     "terrain": ["ground", "pit", "ground", "branch", "barrier_high", "pit", "ground"],
-    "remainingObjects": [],
+    "remainingObjects": ["recompensa-1"],
     "inventory": [],
     "exitEnabled": true,
     "status": "defeat"
@@ -126,6 +126,6 @@ El ejecutor publica juntos la resolución, el nuevo snapshot y la secuencia de l
 
 El cierre fija el número de acciones y el último estado. La vista de replay ensambla acciones y snapshots guardados, valida su secuencia y referencias y rechaza un registro incompleto o incompatible. No entrega bodies ni datos de diagnóstico. Una acción o snapshot faltante sigue siendo un defecto de registro, no una secuencia más corta exitosa.
 
-Invariantes que verifican motor y registro: secuencia sin huecos; primer `before` igual al inicial; cada `before` igual al `after` anterior; una acción incrementa `turnsUsed` exactamente una vez; ningún evento después de un terminal; terreno efectivo correspondiente al `phaseTurn`; salida habilitada y sin objetos; cierre sobre el último estado publicado. La implementación del reproductor valida estructura y referencias para evitar una representación engañosa; no incorpora un segundo motor para revisar la física.
+Invariantes que verifican motor y registro: secuencia sin huecos; primer `before` igual al inicial; cada `before` igual al `after` anterior; una acción incrementa `turnsUsed` exactamente una vez; ningún evento después de un terminal; terreno efectivo correspondiente al `phaseTurn`; objetos restantes e inventario sin duplicados ni IDs ajenos al nivel; una recogida traslada sólo el ID local; salida habilitada; cierre sobre el último estado publicado. La implementación del reproductor valida estructura, referencias y transiciones semánticas para evitar una representación engañosa; no incorpora un segundo motor para decidir acciones.
 
 El registro fija el nivel y las reglas del contrato vigente. Un registro de formato, nivel o reglas retirados se rechaza; no se ejecuta de nuevo para reconstruirlo ni se mantienen lectores o adaptaciones anteriores. Los datos de prueba de contratos reemplazados pueden permanecer sin uso si no estorban, o eliminarse. La reproducción del contrato vigente se describe en [animación](animacion.md).

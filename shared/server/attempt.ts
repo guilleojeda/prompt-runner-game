@@ -22,6 +22,8 @@ import type {
   TerrainState,
 } from '../game.js';
 import {
+  DEFAULT_SCORE_RULES,
+  createInitialState,
   isActionResolution,
   isNormalizedAction,
   isSemanticallyValidActionResolution,
@@ -43,7 +45,7 @@ export type Usage = {
 };
 
 /** The part of an attempt Runtime needs. It is never returned to the browser. */
-export type PersistedAttempt = AttemptSummary & {
+export type PersistedAttempt = Omit<AttemptSummary, 'objectPoints'> & {
   readonly recordVersion: typeof ATTEMPT_RECORD_VERSION;
   readonly owner: string;
   /** Internal idempotency key; intentionally omitted from AttemptSummary. */
@@ -63,6 +65,24 @@ export type PersistedAttempt = AttemptSummary & {
   readonly runtimeDeadline?: string;
   readonly sessionId: string;
 };
+
+export type AttemptScoreParameters = Readonly<{
+  readonly base: number;
+  readonly turnWeight: number;
+  readonly tokenWeight: number;
+  readonly tokenUnit: number;
+  readonly decimals: number;
+  readonly allowNegative: number;
+}>;
+
+export const DEFAULT_ATTEMPT_SCORE_PARAMETERS: AttemptScoreParameters = Object.freeze({
+  base: DEFAULT_SCORE_RULES.base,
+  turnWeight: DEFAULT_SCORE_RULES.turnWeight,
+  tokenWeight: DEFAULT_SCORE_RULES.tokenWeight,
+  tokenUnit: DEFAULT_SCORE_RULES.tokenUnit,
+  decimals: DEFAULT_SCORE_RULES.decimalPlaces,
+  allowNegative: DEFAULT_SCORE_RULES.allowNegative ? 1 : 0,
+});
 
 export type AttemptSkill = {
   readonly id: string;
@@ -90,7 +110,7 @@ export type AttemptConfig = {
   readonly callTimeoutMs: number;
   readonly saveReserveMs: number;
   readonly terminationMarginMs: number;
-  readonly scoreParameters: Readonly<Record<string, number>>;
+  readonly scoreParameters: AttemptScoreParameters;
 };
 
 export type AdmitInput = {
@@ -252,6 +272,38 @@ const isInteger = (value: unknown): value is number =>
   typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 const isFiniteValue = (value: unknown): value is number =>
   typeof value === 'number' && Number.isFinite(value);
+const SCORE_PARAMETER_NAMES = [
+  'base',
+  'turnWeight',
+  'tokenWeight',
+  'tokenUnit',
+  'decimals',
+  'allowNegative',
+] as const satisfies readonly (keyof AttemptScoreParameters)[];
+
+export const readAttemptScoreParameters = (value: unknown): AttemptScoreParameters => {
+  if (
+    !isObject(value) ||
+    Object.keys(value).length !== SCORE_PARAMETER_NAMES.length ||
+    SCORE_PARAMETER_NAMES.some(
+      (name) => !Object.prototype.hasOwnProperty.call(value, name) || !isFiniteValue(value[name]),
+    ) ||
+    !Number.isSafeInteger(value.decimals) ||
+    (value.decimals as number) < 0 ||
+    (value.tokenUnit as number) <= 0 ||
+    (value.allowNegative !== 0 && value.allowNegative !== 1)
+  ) {
+    throw new ReplayRecordError('Los parámetros de puntaje guardados no son compatibles.');
+  }
+  return {
+    base: value.base as number,
+    turnWeight: value.turnWeight as number,
+    tokenWeight: value.tokenWeight as number,
+    tokenUnit: value.tokenUnit as number,
+    decimals: value.decimals as number,
+    allowNegative: value.allowNegative as number,
+  };
+};
 const isTerrain = (value: unknown): value is TerrainState =>
   value === 'ground' ||
   value === 'pit' ||
@@ -340,12 +392,17 @@ const readAction = (value: unknown): AttemptActionRecord => {
   const resolution: ActionResolution =
     rawResolution.outcome === 'no_op'
       ? { outcome: 'no_op', reason: rawResolution.reason }
-      : {
-          outcome: rawResolution.outcome,
-          reason: rawResolution.reason,
-          segment: rawResolution.segment,
-          targetSupport: rawResolution.targetSupport,
-        };
+      : rawResolution.outcome === 'picked_up'
+        ? {
+            outcome: 'picked_up',
+            objectId: rawResolution.objectId,
+          }
+        : {
+            outcome: rawResolution.outcome,
+            reason: rawResolution.reason,
+            segment: rawResolution.segment,
+            targetSupport: rawResolution.targetSupport,
+          };
   return {
     seq: value.seq,
     decisionId: value.decisionId,
@@ -451,6 +508,91 @@ const readCurrentLevel = (value: unknown): LevelDefinition => {
 /** Read a level snapshot only when it is the code-owned periodic level. */
 export { readCurrentLevel };
 
+export interface CollectionSummary {
+  readonly collectedObjectIds: readonly string[];
+  readonly objectPoints: number;
+}
+
+const collectionSummaryFromIds = (
+  objectIds: unknown,
+  level: LevelDefinition,
+): CollectionSummary => {
+  if (
+    !Array.isArray(objectIds) ||
+    !objectIds.every((item) => typeof item === 'string') ||
+    new Set(objectIds).size !== objectIds.length
+  ) {
+    throw new ReplayRecordError('El resumen de objetos guardado no es compatible.');
+  }
+  const knownValues = new Map(level.objects.map((object) => [object.id, object.scoreValue]));
+  if (objectIds.some((id) => !knownValues.has(id))) {
+    throw new ReplayRecordError('El resumen contiene objetos ajenos al nivel vigente.');
+  }
+  const collectedObjectIds = [...(objectIds as string[])];
+  return {
+    collectedObjectIds,
+    objectPoints: collectedObjectIds.reduce((total, id) => total + knownValues.get(id)!, 0),
+  };
+};
+
+/** Read the score-relevant inventory from a persisted snapshot and its fixed level. */
+export const collectionSummaryOf = (
+  snapshotValue: unknown,
+  level: LevelDefinition,
+): CollectionSummary => {
+  if (
+    !isObject(snapshotValue) ||
+    !Array.isArray(snapshotValue.inventory) ||
+    !snapshotValue.inventory.every((item) => typeof item === 'string') ||
+    !Array.isArray(snapshotValue.remainingObjects) ||
+    !snapshotValue.remainingObjects.every((item) => typeof item === 'string')
+  ) {
+    throw new ReplayRecordError('El estado guardado contiene un inventario inválido.');
+  }
+
+  const objectIds = level.objects.map((object) => object.id);
+  const knownIds = new Set(objectIds);
+  const inventory = snapshotValue.inventory as string[];
+  const remaining = snapshotValue.remainingObjects as string[];
+  const allStateIds = [...inventory, ...remaining];
+  if (
+    new Set(inventory).size !== inventory.length ||
+    new Set(remaining).size !== remaining.length ||
+    allStateIds.some((id) => !knownIds.has(id)) ||
+    new Set(allStateIds).size !== objectIds.length ||
+    objectIds.some((id) => !allStateIds.includes(id))
+  ) {
+    throw new ReplayRecordError(
+      'El inventario y los objetos restantes no forman una partición válida.',
+    );
+  }
+
+  const required = new Set(level.exit.requiredObjectIds);
+  const exitEnabled =
+    typeof snapshotValue.exitEnabled === 'boolean' &&
+    [...required].every((id) => inventory.includes(id));
+  if (snapshotValue.exitEnabled !== exitEnabled) {
+    throw new ReplayRecordError('La salida no coincide con el inventario del intento.');
+  }
+
+  return collectionSummaryFromIds(inventory, level);
+};
+
+const summaryCollectionOf = (record: PersistedAttempt): CollectionSummary => {
+  const level = record.config.levelDefinition;
+  if (record.currentSnapshot !== undefined && record.currentSnapshot !== null) {
+    const derived = collectionSummaryOf(record.currentSnapshot, level);
+    if (
+      !Array.isArray(record.collectedObjectIds) ||
+      !isDeepStrictEqual(record.collectedObjectIds, derived.collectedObjectIds)
+    ) {
+      throw new ReplayRecordError('El resumen de objetos no coincide con el estado guardado.');
+    }
+    return derived;
+  }
+  return collectionSummaryFromIds(record.collectedObjectIds, level);
+};
+
 /** Validates durable rows and returns only the public data needed by the visual replay. */
 export const replayRecordViewOf = (
   attempt: PersistedAttempt,
@@ -499,6 +641,13 @@ export const replayRecordViewOf = (
       'El estado inicial o el terreno no coincide con el nivel guardado.',
     );
   }
+  if (
+    snapshots.some((snapshot) => snapshot.support > level.segments.length) ||
+    !isDeepStrictEqual(snapshots[0], createInitialState(level))
+  ) {
+    throw new ReplayRecordError('El estado inicial no coincide con el mundo inicial del nivel.');
+  }
+  for (const snapshot of snapshots) collectionSummaryOf(snapshot, level);
 
   const actions = actionRecords.map((action, index): AttemptActionView => {
     const before = snapshotsById.get(action.beforeStateId);
@@ -566,7 +715,7 @@ export const DEFAULT_ATTEMPT_CONFIG: AttemptConfig = {
   levelId: LEVEL.id,
   levelVersion: String(LEVEL.version),
   levelDefinition: LEVEL,
-  engineVersion: 'periodic-engine-v2',
+  engineVersion: 'periodic-engine-v3',
   protocolVersion: 'tool-protocol-v2',
   protocol: { api: 'converse', stream: false },
   inferenceVersion: 'claude-sonnet-4.6-global-v1',
@@ -580,14 +729,7 @@ export const DEFAULT_ATTEMPT_CONFIG: AttemptConfig = {
   callTimeoutMs: 60_000,
   saveReserveMs: 30_000,
   terminationMarginMs: 2 * 60_000,
-  scoreParameters: {
-    base: 1000,
-    turnWeight: 10,
-    tokenWeight: 1,
-    tokenUnit: 1000,
-    decimals: 2,
-    allowNegative: 1,
-  },
+  scoreParameters: DEFAULT_ATTEMPT_SCORE_PARAMETERS,
 };
 
 export const summaryOf = (record: PersistedAttempt): AttemptSummary => ({
@@ -611,6 +753,7 @@ export const summaryOf = (record: PersistedAttempt): AttemptSummary => ({
   cacheReadTokens: record.cacheReadTokens,
   cacheWriteTokens: record.cacheWriteTokens,
   score: record.score,
+  ...summaryCollectionOf(record),
   progress: record.progress,
   finalSupport: record.finalSupport,
   animationEnabled: record.animationEnabled,

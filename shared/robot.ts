@@ -3,9 +3,9 @@ import { DEFAULT_MODEL_KEY, isModelKey, type ModelKey } from './models.js';
 /** The single current draft contract shared by the editor and the API. */
 export const MAX_DRAFT_BYTES = 65_536;
 export const ROBOT_SCHEMA_VERSION = 3 as const;
-export const ROBOT_CATALOG_VERSION = 2 as const;
+export const ROBOT_CATALOG_VERSION = 3 as const;
 
-export type RobotSkillId = 'advance' | 'retreat' | 'jump' | 'crouch' | 'swim' | 'wait';
+export type RobotSkillId = 'advance' | 'retreat' | 'jump' | 'crouch' | 'swim' | 'wait' | 'collect';
 
 export interface RobotDraftSkill {
   readonly id: RobotSkillId;
@@ -97,6 +97,13 @@ const catalogEntries: RobotCatalogEntry[] = [
     name: 'Esperar',
     opaqueId: 'tool_6',
     description: 'Deja pasar un turno sin moverse.',
+    inputSchema: noArguments,
+  },
+  {
+    id: 'collect',
+    name: 'Agarrar objeto',
+    opaqueId: 'tool_7',
+    description: 'Intenta recoger un objeto del apoyo actual.',
     inputSchema: noArguments,
   },
 ];

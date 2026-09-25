@@ -1,6 +1,6 @@
 # Juego y niveles
 
-Este documento es canónico para las reglas del mundo, el reloj, las acciones, los objetos, la salida y el contenido de niveles del juego. El contrato vigente usa un único nivel principal con terreno periódico, movimientos y Esperar. Objetos, llaves y el recorrido de transferencia pertenecen a fases posteriores. La especificación vigente se distribuye en esta carpeta y se indexa desde [README.md](../../README.md).
+Este documento es canónico para las reglas del mundo, el reloj, las acciones, los objetos, la salida y el contenido de niveles del juego. El contrato vigente usa un único nivel principal con terreno periódico, movimientos, Esperar y una recompensa que se puede recoger. La llave, la salida bloqueada y el recorrido de transferencia pertenecen a fases posteriores. La especificación vigente se distribuye en esta carpeta y se indexa desde [README.md](../../README.md).
 
 Las etiquetas siguientes distinguen el grado de decisión:
 
@@ -10,7 +10,7 @@ Las etiquetas siguientes distinguen el grado de decisión:
 
 ## Recorrido principal vigente
 
-El único nivel disponible es `principal-periodico-v2`, versión 2, con `RULES_VERSION=2`. Sus siete tramos, en orden, son `ground`, `pit`, `ground`, `branch`, `barrier`, `platform`, `ground`; tiene ocho apoyos, la salida está en el apoyo 7 y el límite inicial es de 16 acciones. No contiene objetos ni requisitos de salida.
+El único nivel disponible es `principal-recompensas-v3`, versión 3, con `RULES_VERSION=3`. Sus siete tramos, en orden, son `ground`, `pit`, `ground`, `branch`, `barrier`, `platform`, `ground`; tiene ocho apoyos, la salida está en el apoyo 7 y el límite inicial es de 16 acciones. `recompensa-1` está en el apoyo 2 y vale 25 puntos si se recoge. La salida no requiere objetos.
 
 La barrera está baja en turnos pares y alta en turnos impares. La plataforma es suelo en los turnos divisibles por tres y pozo en los demás. Ambas usan desfase cero desde el turno 0. El nivel y las reglas se fijan en cada intento. Este contenido no promete lectores para niveles ni registros de contratos anteriores; los datos de prueba anteriores pueden borrarse o quedar sin uso si no interfieren con el contrato vigente.
 
@@ -43,7 +43,7 @@ El catálogo de capacidades existe antes de iniciar el intento. Habilitar una ha
 | Saltar | izquierda o derecha | Cruza un tramo por el aire |
 | Agacharse y avanzar | izquierda o derecha | Cruza un tramo agachado |
 | Esperar | ninguno | Conserva el apoyo y deja pasar un turno |
-| Agarrar objeto | fase posterior | Intenta recoger un objeto del apoyo actual |
+| Agarrar objeto | ninguno | Intenta recoger un objeto del apoyo actual |
 
 Caminar, saltar y pasar agachado comparten el sentido de las reglas de colisión en ambas direcciones. Retroceder caminando no sustituye la capacidad de saltar o agacharse para volver a cruzar un obstáculo. Una habilidad distractora, como nadar en un nivel sin agua, tiene un efecto determinista y normalmente es un no-op.
 
@@ -67,7 +67,7 @@ estado_del_tramo(i, t) = fases_i[(t + desfase_i) mod cantidad_de_fases_i]
 
 En el nivel vigente, el tramo de barrera alterna entre `barrier_low` en turnos pares y `barrier_high` en impares. El tramo de plataforma es `ground` cuando `t % 3 = 0` y `pit` en los demás turnos. El cálculo usa el turno inicial de la acción; el cambio se aplica al estado siguiente si el juego continúa.
 
-Cuando se incorpore la mecánica de objetos, el inventario persistirá durante el intento y no cambiará con las fases del terreno. Si un tramo cambia detrás del robot, el apoyo en el que ya está permanece seguro. Esperar conserva la posición, pero puede cambiar el próximo obstáculo; ningún nivel debe asumir que esperar es obligatoria si existe otra solución válida.
+El inventario persiste durante el intento y no cambia con las fases del terreno. Si un tramo cambia detrás del robot, el apoyo en el que ya está permanece seguro. Esperar conserva la posición, pero puede cambiar el próximo obstáculo; ningún nivel debe asumir que esperar es obligatoria si existe otra solución válida.
 
 ## Matriz de colisiones
 
@@ -101,13 +101,13 @@ Los estados terminales de la simulación son:
 
 Cancelado y error de ejecución son resultados operativos y no derrotas del robot. No se ejecutan nuevas acciones después de un terminal. Si la acción del último turno habilita la salida, gana; si es fatal, pierde; la victoria no se reemplaza por el límite.
 
-## Objetos, inventario y salida en fases posteriores
+## Objetos, inventario y salida
 
-El nivel vigente no contiene objetos, el inventario empieza y permanece vacío, y la salida está habilitada desde el inicio. La mecánica de objetos se incorporará en una fase posterior.
+El inventario empieza vacío. El nivel vigente contiene una recompensa y su salida está habilitada desde el inicio.
 
-Cuando se incorpore, los objetos se recogerán únicamente desde el apoyo actual mediante `Agarrar objeto`. Pasar por un apoyo no los recogerá, y no se podrán recoger objetos remotos. Recoger consumirá un turno, mantendrá al robot en el apoyo, quitará el objeto del suelo y lo agregará al inventario interno. La identidad del objeto impedirá recogerlo o puntuarlo dos veces.
+Los objetos se recogen únicamente desde el apoyo actual mediante `Agarrar objeto`. Pasar por un apoyo no los recoge, y no se pueden recoger objetos remotos. Recoger consume un turno, mantiene al robot en el apoyo, quita el objeto del suelo y lo agrega al inventario interno. La identidad del objeto impide recogerlo o puntuarlo dos veces. Intentarlo donde no queda un objeto es un no-op que también consume un turno.
 
-**Default permitido:** como máximo un objeto por apoyo, para que la acción no necesite seleccionar entre varios. Si el contenido adopta más de uno, debe existir una selección inequívoca y visible. No se agregan consumo, equipamiento, combinación, lanzamiento ni uso manual de objetos.
+El nivel vigente tiene como máximo un objeto por apoyo, por lo que la acción no necesita seleccionar entre varios. No se agregan consumo, equipamiento, combinación, lanzamiento ni uso manual de objetos.
 
 Un objeto puede ser:
 
@@ -115,7 +115,7 @@ Un objeto puede ser:
 - una recompensa con valor para el puntaje;
 - ambas cosas.
 
-La llave habilita automáticamente una salida que la requiera; no existe una acción adicional para usarla. Una salida sin requisitos está habilitada desde el principio. Llegar a una salida bloqueada no gana ni derrota: el intento puede continuar, incluso retroceder. La victoria ocurre al llegar a una salida habilitada o al obtener, estando en la salida, el requisito que faltaba. El estado visible de la salida puede indicar si está habilitada sin enviar el inventario completo al agente.
+La llave y las salidas con requisitos se incorporarán después. Una salida sin requisitos, como la vigente, está habilitada desde el principio. Cuando se incorpore una salida bloqueada, llegar allí permitirá continuar y retroceder; una llave la habilitará sin acción adicional de uso.
 
 Las recompensas opcionales se ubican antes de la activación automática de la victoria. Los valores y requisitos son datos del nivel y se aplican solo a los objetos realmente recogidos en ese intento.
 
@@ -131,7 +131,7 @@ El nivel principal vigente presenta esta progresión:
 - la barrera periódica baja/alta;
 - la plataforma periódica suelo/pozo.
 
-La ubicación exacta de objetos, recompensas y llaves se definirá cuando se incorporen esas mecánicas. El recorrido de transferencia reordenará o combinará las mecánicas disponibles en una situación nueva; no requiere generación procedural.
+La recompensa vigente está en el apoyo 2. La ubicación de una futura llave se definirá cuando se incorpore. El recorrido de transferencia reordenará o combinará las mecánicas disponibles en una situación nueva; no requiere generación procedural.
 
 Para cada nivel se debe verificar, además de que exista una ruta física, que una política basada en la observación actual y las herramientas disponibles pueda escogerla:
 
@@ -145,7 +145,7 @@ Un corredor vacío que exige volver muchos apoyos sin una señal local es un niv
 
 ## Defaults permitidos y pendientes
 
-El contenido vigente fija los períodos y desfases descritos arriba y un límite de 16 acciones. Los límites del recorrido son no-op y las habilidades sin efecto tienen resolución determinista. La configuración inicial limitada y la frase de orientación se fijan en [agente.md](agente.md). Los objetos, el recorrido de transferencia y sus valores se definirán en fases posteriores.
+El contenido vigente fija los períodos y desfases descritos arriba, un límite de 16 acciones y el valor de 25 puntos de `recompensa-1`. Los límites del recorrido son no-op y las habilidades sin efecto tienen resolución determinista. La configuración inicial limitada y la frase de orientación se fijan en [agente.md](agente.md). La llave y el recorrido de transferencia se definirán en sus fases.
 
 ## Verificación de comportamiento
 
@@ -158,7 +158,7 @@ La verificación debe cubrir el comportamiento, no depender solo de que se dibuj
 - comprobar que el nivel principal tiene una solución dentro del límite con la observación local y las herramientas disponibles;
 - reproducir los casos de no-op y de colisión como las causas registradas.
 
-La recogida de objetos y el recorrido de transferencia se verificarán cuando se implementen en sus fases posteriores.
+Verificar una ruta victoriosa con y sin recoger la recompensa dentro del límite; la acción de recogida cambia el turno que se encuentra en barrera y plataforma. Comprobar que sólo el objeto local puede recogerse, que el inventario conserva su identidad sin duplicados y que el no-op por ausencia de objeto consume un turno. El recorrido de transferencia se verificará en su fase posterior.
 
 Las pruebas pueden usar un adaptador de agente de prueba o un controlador de referencia para el motor. Eso sirve para validar reglas y resolución y no reemplaza la inferencia real requerida por la experiencia.
 

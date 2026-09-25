@@ -23,11 +23,11 @@ const draftWithInstructionBytes = (bytes: number) => {
 };
 
 describe('current robot draft contract', () => {
-  it('publishes one catalog and default with a disabled opaque wait tool', () => {
+  it('publishes one catalog and defaults collection and wait to disabled', () => {
     const draft = createDefaultDraft();
 
     expect(ROBOT_SCHEMA_VERSION).toBe(3);
-    expect(ROBOT_CATALOG_VERSION).toBe(2);
+    expect(ROBOT_CATALOG_VERSION).toBe(3);
     expect(ROBOT_CATALOG.map((entry) => entry.id)).toEqual([
       'advance',
       'retreat',
@@ -35,6 +35,7 @@ describe('current robot draft contract', () => {
       'crouch',
       'swim',
       'wait',
+      'collect',
     ]);
     expect(ROBOT_CATALOG.map((entry) => entry.opaqueId)).toEqual([
       'tool_1',
@@ -43,6 +44,7 @@ describe('current robot draft contract', () => {
       'tool_4',
       'tool_5',
       'tool_6',
+      'tool_7',
     ]);
     expect(ROBOT_CATALOG[3]?.name).toBe('Agacharse y avanzar');
     expect(ROBOT_CATALOG[4]?.description).toContain('ningún efecto');
@@ -51,9 +53,15 @@ describe('current robot draft contract', () => {
       opaqueId: 'tool_6',
       inputSchema: { properties: {}, additionalProperties: false },
     });
+    expect(ROBOT_CATALOG[6]).toMatchObject({
+      id: 'collect',
+      name: 'Agarrar objeto',
+      opaqueId: 'tool_7',
+      inputSchema: { properties: {}, additionalProperties: false },
+    });
     expect(draft).toMatchObject({
       schemaVersion: 3,
-      catalogVersion: 2,
+      catalogVersion: 3,
       modelKey: DEFAULT_MODEL_KEY,
       instructions:
         'Siempre preferí ir a la derecha, a menos que tengas un buen motivo para no hacerlo',
@@ -62,6 +70,7 @@ describe('current robot draft contract', () => {
       'advance',
     ]);
     expect(draft.skills.find((skill) => skill.id === 'wait')?.enabled).toBe(false);
+    expect(draft.skills.find((skill) => skill.id === 'collect')?.enabled).toBe(false);
     expect(draft.skills.every((skill) => skill.description === '')).toBe(true);
     expect(ROBOT_CATALOG[2]?.inputSchema).toMatchObject({
       properties: { direction: { enum: ['izquierda', 'derecha'] } },
@@ -162,6 +171,7 @@ describe('current robot draft contract', () => {
     expect(Object.isFrozen(ROBOT_CATALOG)).toBe(true);
     expect(Object.isFrozen(ROBOT_CATALOG[0]?.inputSchema)).toBe(true);
     expect(Object.isFrozen(ROBOT_CATALOG[5]?.inputSchema)).toBe(true);
+    expect(Object.isFrozen(ROBOT_CATALOG[6]?.inputSchema)).toBe(true);
   });
 
   it('keeps current draft equality stable and rejects unrecognized models', () => {

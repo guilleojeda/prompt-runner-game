@@ -4,7 +4,7 @@ Este documento es canónico para el contrato de decisión del agente, sus herram
 
 ## Configuración disponible
 
-El catálogo permite preparar Avanzar (`tool_1`), Retroceder (`tool_2`), Saltar (`tool_3`), Agacharse y avanzar (`tool_4`), Nadar (`tool_5`) y Esperar (`tool_6`). Sólo Avanzar comienza habilitado; Esperar comienza deshabilitada. Las descripciones empiezan vacías y las instrucciones muestran la frase de orientación acordada. La ayuda sobre el efecto de una habilidad se presenta separada del campo editable y no completa el texto del usuario. Agarrar objeto se incorporará junto con la mecánica de objetos. Probar ejecuta estas acciones en el nivel `principal-periodico-v2`.
+El catálogo permite preparar Avanzar (`tool_1`), Retroceder (`tool_2`), Saltar (`tool_3`), Agacharse y avanzar (`tool_4`), Nadar (`tool_5`), Esperar (`tool_6`) y Agarrar objeto (`tool_7`). Sólo Avanzar comienza habilitado; Esperar y Agarrar objeto comienzan deshabilitadas. Las descripciones empiezan vacías y las instrucciones muestran la frase de orientación acordada. La ayuda sobre el efecto de una habilidad se presenta separada del campo editable y no completa el texto del usuario. Probar ejecuta estas acciones en el nivel `principal-recompensas-v3`.
 
 Las referencias internas, IDs opacos y schemas pertenecen al catálogo versionado. Deshabilitar/reactivar no cambia el ID ni borra la descripción. El servidor rechaza referencias o versiones desconocidas e intentos de editar los contratos fijos. El borrador conserva textos literales y puede tener cero habilidades; Probar exige al menos una habilidad conforme a las reglas siguientes. [Guardado y concurrencia](../architecture/datos.md#borrador-disponible).
 
@@ -28,7 +28,7 @@ El payload debe construirse desde una lista explícita de campos permitidos:
 - **Protocolo:** elegir una única herramienta habilitada, respetar su esquema y decidir para la observación presente. No contiene la solución del nivel, equivalencias entre nombres e identificadores, reglas de obstáculos, ciclos ni una estrategia ganadora.
 - **Instrucciones generales:** texto escrito y aplicado por el humano. Se conserva exactamente, incluida una descripción ambigua o equivocada.
 - **Herramientas habilitadas:** todas las capacidades seleccionadas para el intento, aunque ninguna sea compatible con el obstáculo actual. Cada una lleva su identificador opaco, esquema fijo y descripción editable.
-- **Observación local:** objetos disponibles en el apoyo actual y estado de la salida si corresponde (el nivel vigente no tiene objetos y la salida siempre está habilitada); estado presente del tramo inmediato a la izquierda o un límite; y estado presente del tramo inmediato a la derecha o un límite.
+- **Observación local:** objetos disponibles en el apoyo actual y estado de la salida si corresponde (la salida vigente siempre está habilitada); estado presente del tramo inmediato a la izquierda o un límite; y estado presente del tramo inmediato a la derecha o un límite.
 
 Los nombres de campos son una decisión de implementación. Los estados pueden usar términos comprensibles como `suelo`, `pozo`, `rama baja`, `barrera baja` y `barrera alta`. La observación no debe decir qué herramienta resuelve el estado ni entregar una lista de movimientos válidos.
 

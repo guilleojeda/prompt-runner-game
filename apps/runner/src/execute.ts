@@ -10,6 +10,7 @@ import {
   type LevelDefinition,
 } from '../../../shared/game.js';
 import type { ModelProfile } from '../../../shared/models.js';
+import type { RobotSkillId } from '../../../shared/robot.js';
 import type {
   ActionPublication,
   PersistedAttempt,
@@ -114,7 +115,7 @@ export const createGameEngine = (): EngineAdapter => ({
   apply: ({ snapshot, level, skills, action }) => {
     const current = snapshot as GameSnapshot;
     const selection = skills.map((skill) => ({
-      id: skill.id as 'advance' | 'retreat' | 'jump' | 'crouch' | 'swim' | 'wait',
+      id: skill.id as RobotSkillId,
       opaqueId: skill.opaqueId,
       enabled: true,
     }));
@@ -135,7 +136,9 @@ export const createGameEngine = (): EngineAdapter => ({
                 ? 'exit_reached'
                 : resolved.after.status === 'incomplete'
                   ? 'turn_limit_reached'
-                  : resolved.resolution.reason,
+                  : 'reason' in resolved.resolution
+                    ? resolved.resolution.reason
+                    : 'turn_limit_reached',
           }),
       progress: progressFor(resolved.after, level),
       finalSupport: resolved.after.support,
