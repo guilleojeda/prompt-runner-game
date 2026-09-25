@@ -378,6 +378,50 @@ describe('attempt lifecycle store', () => {
     }
   });
 
+  it('rejects a terminal header reason or snapshot that differs from its replay chain', async () => {
+    const store = new MemoryAttemptStore({ draft: savedDraft() });
+    const { attempt } = await store.admit({
+      owner: 'a',
+      requestKey: 'corrupt-terminal-header',
+      expectedVersion: 1,
+      draft: savedDraft().draft,
+      animationEnabled: false,
+    });
+    const victoryRoute: readonly NormalizedAction[] = [
+      { kind: 'advance' },
+      { kind: 'jump', direction: 'right' },
+      { kind: 'collect' },
+      { kind: 'advance' },
+      { kind: 'crouch', direction: 'right' },
+      { kind: 'crouch', direction: 'right' },
+      { kind: 'jump', direction: 'right' },
+      { kind: 'advance' },
+      ...doorRecoveryRoute,
+    ];
+    await publishMemoryRoute(store, attempt.id, victoryRoute, { gameTokens: 0 });
+
+    const records = (store as unknown as { records: Map<string, PersistedAttempt> }).records;
+    const published = records.get(attempt.id)!;
+    records.set(attempt.id, { ...published, reason: 'walk_into_pit' });
+    await expect(store.getReplayRecord('a', attempt.id)).rejects.toThrow('causa del cierre');
+    await expect(store.list('a')).rejects.toThrow('causa terminal esperada');
+
+    const missingReason = { ...published };
+    delete (missingReason as { reason?: string }).reason;
+    records.set(attempt.id, missingReason);
+    await expect(store.getReplayRecord('a', attempt.id)).rejects.toThrow('causa del cierre');
+    await expect(store.list('a')).rejects.toThrow('causa terminal esperada');
+
+    records.set(attempt.id, {
+      ...published,
+      currentSnapshot: {
+        ...(published.currentSnapshot as GameSnapshot),
+        turnsUsed: published.turnsUsed - 1,
+      },
+    });
+    await expect(store.getReplayRecord('a', attempt.id)).rejects.toThrow('cierre no coincide');
+  });
+
   it('checks idempotency before the draft version and quota', async () => {
     const store = new MemoryAttemptStore({
       quotaLimit: 1,
