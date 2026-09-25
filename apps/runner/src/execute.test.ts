@@ -354,10 +354,11 @@ describe('Runtime attempt coordinator', () => {
       await audit.beforeSend(new TextEncoder().encode(`request-${attempts}`));
       if (attempts < 3) {
         await audit.afterReceive({
-          bytes: new TextEncoder().encode('{"error":"throttled"}'),
-          statusCode: 429,
-          requestId: `throttled-${attempts}`,
-          complete: true,
+          bytes: null,
+          statusCode: null,
+          requestId: null,
+          complete: false,
+          error: { name: 'ModelThrottledError', message: 'capacity unavailable' },
         });
         const error = Object.assign(new Error('throttled'), {
           code: 'throttled',
@@ -412,8 +413,164 @@ describe('Runtime attempt coordinator', () => {
     expect(delays.reduce((total, milliseconds) => total + milliseconds, 0)).toBe(120_000);
     expect(calls.map((call) => call.seq)).toEqual(Array.from({ length: 19 }, (_, i) => i + 1));
     expect(new Set(calls.slice(0, 3).map((call) => call.decisionId)).size).toBe(1);
+    for (const call of calls.slice(0, 2)) {
+      expect(call).toMatchObject({
+        status: 'error',
+        errorCode: 'throttled',
+        responseBytes: 0,
+        usage: {
+          inputTokens: null,
+          outputTokens: null,
+          reasoningTokens: null,
+          gameTokens: null,
+          cacheReadTokens: null,
+          cacheWriteTokens: null,
+        },
+      });
+    }
+    expect(
+      await bodies.get(
+        `attempt/${admitted.attempt.id}/decision/${admitted.attempt.id}-decision-1/call/1/response.json`,
+      ),
+    ).toEqual(new Uint8Array());
     expect(record).toMatchObject({ status: 'victory', turnsUsed: 17, sequence: 17, calls: 19 });
+    expect(record?.recordComplete).toBe(true);
     expect(replay?.actions).toHaveLength(17);
+  });
+
+  it('does not retry an ambiguous bodyless transport failure', async () => {
+    const draft = createDefaultDraft();
+    const store = new MemoryAttemptStore({
+      draft: { version: 1, draft },
+      now: () => new Date('2026-09-21T15:00:00.000Z'),
+    });
+    const bodies = new MemoryBodyStore();
+    const admitted = await store.admit({
+      owner: 'a',
+      requestKey: 'ambiguous-bodyless',
+      expectedVersion: 1,
+      draft,
+      animationEnabled: false,
+    });
+    let attempts = 0;
+    const infer: InferenceAdapter = async ({ audit }) => {
+      attempts += 1;
+      await audit.beforeSend(new TextEncoder().encode('request-1'));
+      await audit.afterReceive({
+        bytes: null,
+        statusCode: null,
+        requestId: null,
+        complete: false,
+        error: { name: 'Error', message: 'socket closed after an unknown write state' },
+      });
+      throw Object.assign(new Error('socket closed after an unknown write state'), {
+        code: 'provider_error',
+        usage: { normalized: { inputTokens: null, outputTokens: null, gameTokens: null } },
+      });
+    };
+
+    await executeAttempt(
+      { owner: 'a', attemptId: admitted.attempt.id, executorId: 'executor' },
+      {
+        store,
+        bodies,
+        infer,
+        engine: createGameEngine(),
+        now: () => new Date('2026-09-21T15:00:00.000Z'),
+      },
+    );
+
+    const record = await store.get('a', admitted.attempt.id);
+    const [call] = await store.getCalls('a', admitted.attempt.id);
+    expect(attempts).toBe(1);
+    expect(record).toMatchObject({
+      status: 'error',
+      reason: 'provider_error',
+      calls: 1,
+      recordComplete: false,
+    });
+    expect(call).toMatchObject({
+      status: 'unknown',
+      errorCode: 'provider_error',
+      responseBytes: 0,
+      usage: {
+        inputTokens: null,
+        outputTokens: null,
+        gameTokens: null,
+      },
+    });
+    expect(
+      await bodies.get(
+        `attempt/${admitted.attempt.id}/decision/${admitted.attempt.id}-decision-1/call/1/response.json`,
+      ),
+    ).toEqual(new Uint8Array());
+  });
+
+  it('does not publish an action when an adapter returns after an incomplete response audit', async () => {
+    const draft = createDefaultDraft();
+    const store = new MemoryAttemptStore({
+      draft: { version: 1, draft },
+      now: () => new Date('2026-09-21T15:00:00.000Z'),
+    });
+    const bodies = new MemoryBodyStore();
+    const admitted = await store.admit({
+      owner: 'a',
+      requestKey: 'bodyless-success',
+      expectedVersion: 1,
+      draft,
+      animationEnabled: false,
+    });
+    let attempts = 0;
+    const infer: InferenceAdapter = async ({ audit }) => {
+      attempts += 1;
+      await audit.beforeSend(new TextEncoder().encode('request-1'));
+      await audit.afterReceive({
+        bytes: null,
+        statusCode: null,
+        requestId: null,
+        complete: false,
+        error: { name: 'ModelThrottledError', message: 'capacity unavailable' },
+      });
+      return {
+        action: { name: 'tool_1', input: {} },
+        usage: { inputTokens: 99, outputTokens: 99, gameTokens: 198 },
+      };
+    };
+
+    await executeAttempt(
+      { owner: 'a', attemptId: admitted.attempt.id, executorId: 'executor' },
+      {
+        store,
+        bodies,
+        infer,
+        engine: createGameEngine(),
+        now: () => new Date('2026-09-21T15:00:00.000Z'),
+      },
+    );
+
+    const record = await store.get('a', admitted.attempt.id);
+    const [call] = await store.getCalls('a', admitted.attempt.id);
+    expect(attempts).toBe(1);
+    expect(record).toMatchObject({
+      status: 'error',
+      reason: 'incomplete_response',
+      calls: 1,
+      sequence: 0,
+      recordComplete: false,
+    });
+    expect(call).toMatchObject({
+      status: 'unknown',
+      errorCode: 'incomplete_response',
+      responseBytes: 0,
+      usage: {
+        inputTokens: null,
+        outputTokens: null,
+        reasoningTokens: null,
+        gameTokens: null,
+        cacheReadTokens: null,
+        cacheWriteTokens: null,
+      },
+    });
   });
 
   it('closes as throttled after two delayed retries for the same decision', async () => {
@@ -435,10 +592,11 @@ describe('Runtime attempt coordinator', () => {
       attempts += 1;
       await audit.beforeSend(new TextEncoder().encode(`request-${attempts}`));
       await audit.afterReceive({
-        bytes: new TextEncoder().encode('{"error":"throttled"}'),
-        statusCode: 429,
-        requestId: `throttled-${attempts}`,
-        complete: true,
+        bytes: null,
+        statusCode: null,
+        requestId: null,
+        complete: false,
+        error: { name: 'ModelThrottledError', message: 'capacity unavailable' },
       });
       throw Object.assign(new Error('throttled'), {
         code: 'throttled',
@@ -475,7 +633,24 @@ describe('Runtime attempt coordinator', () => {
       turnsUsed: 0,
       sequence: 0,
       calls: 3,
+      recordComplete: true,
     });
+    for (const call of calls) {
+      expect(call).toMatchObject({
+        status: 'error',
+        errorCode: 'throttled',
+        responseBytes: 0,
+        responseSha256: expect.any(String),
+        usage: {
+          inputTokens: null,
+          outputTokens: null,
+          reasoningTokens: null,
+          gameTokens: null,
+          cacheReadTokens: null,
+          cacheWriteTokens: null,
+        },
+      });
+    }
     expect(replay).toMatchObject({
       actions: [],
       snapshots: [{ id: 'state-0', support: 0, turnsUsed: 0 }],

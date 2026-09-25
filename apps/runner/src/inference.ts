@@ -610,6 +610,11 @@ const errorChain = (error: unknown): readonly unknown[] => {
 const errorName = (error: unknown): string | null =>
   (error instanceof Error || isRecord(error)) && typeof error.name === 'string' ? error.name : null;
 
+/**
+ * A provider-owned throttle signal remains unambiguous when transport supplied no body.
+ * Message text alone is intentionally excluded so uncertain post-send failures cannot
+ * become coordinator retries.
+ */
 const isProviderThrottle = (error: unknown, receipt: TransportReceipt | null): boolean => {
   if (receipt?.statusCode === 429) return true;
   const throttleNames = new Set([

@@ -70,6 +70,8 @@ Las resoluciones son variantes tipadas: una caída o choque requiere tramo, obje
 
 El resultado de la interacción y el resultado del juego son conceptos distintos. `picked_up` de la llave abre la puerta sin terminar el intento; `moved` al apoyo 9 atraviesa una puerta abierta y continúa; `moved` al apoyo 10 gana porque allí está la salida libre. Un no-op ante puerta cerrada puede terminar por límite. Los snapshots y el cierre contienen el resultado del juego; el reproductor no vuelve a aplicar su precedencia.
 
+Antes de persistir una acción, la tienda exige que la causa terminal coincida con la transición validada: `exit_reached` al ganar, `turn_limit_reached` al agotar turnos o la causa fatal de la resolución al perder. Una acción que continúa no lleva causa terminal. Así el resultado y el historial no pueden atribuir al mismo estado dos cierres distintos.
+
 **No se guardan píxeles, frames, velocidades ni un punto de colisión artificial.** El motor actual resuelve cruces discretos, no contactos físicos continuos. En las mecánicas actuales, acción, dirección, tramo, causa y estados permiten escoger una receta visual inequívoca. Sus anclas y curvas pertenecen al perfil visual. Si una mecánica futura admite resultados visualmente distintos que estos datos no distingan, se amplía el contrato con el dato semántico necesario en ese momento.
 
 ## Ejemplo de una caída
