@@ -361,6 +361,12 @@ function HistoryList({
                   Objetos: {item.collectedObjectIds.length} · valor recogido:{' '}
                   {item.objectPoints.toLocaleString('es-AR')} puntos
                 </span>
+                {item.status === 'victory' && (
+                  <span>
+                    Puntaje:{' '}
+                    {item.score === null ? 'desconocido' : item.score.toLocaleString('es-AR')}
+                  </span>
+                )}
               </div>
               <div className="history-actions">
                 <button

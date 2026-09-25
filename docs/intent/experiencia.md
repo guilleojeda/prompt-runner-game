@@ -74,7 +74,7 @@ El diagnóstico permite inspeccionar, para una decisión, la observación, el pr
 
 ## Resultados
 
-La vista de resultado muestra si el recorrido terminó en victoria, derrota, límite, cancelación o error, junto con los turnos, tokens reales, recompensa recogida y su aporte, y puntaje cuando corresponde. El historial conserva la cantidad recogida. Una derrota muestra la acción registrada y el obstáculo que la provocó, por ejemplo «Intentó caminar por un pozo»; no presenta una explicación inventada como pensamiento real del modelo. El costo monetario es opcional cuando hay datos suficientes y se identifica como estimado según [consumo y puntaje](consumo-y-puntaje.md).
+La vista de resultado muestra si el recorrido terminó en victoria, derrota, límite, cancelación o error, junto con los turnos, tokens reales, recompensa recogida y su aporte, y puntaje cuando corresponde. El historial conserva la cantidad recogida y su aporte en puntos; sólo muestra el puntaje en victorias, como desconocido si faltan datos para calcularlo. Una derrota muestra la acción registrada y el obstáculo que la provocó, por ejemplo «Intentó caminar por un pozo»; no presenta una explicación inventada como pensamiento real del modelo. El costo monetario es opcional cuando hay datos suficientes y se identifica como estimado según [consumo y puntaje](consumo-y-puntaje.md).
 
 ## Contenido educativo y alcance
 

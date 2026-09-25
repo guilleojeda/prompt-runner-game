@@ -117,6 +117,68 @@ describe('attempt lifecycle store', () => {
     expect(() => readCurrentLevel({ ...LEVEL, id: 'principal-estatico-v1' })).toThrow();
   });
 
+  it('publishes actions atomically and returns an identical committed publication on retry', async () => {
+    const store = new MemoryAttemptStore({ draft: savedDraft() });
+    const { attempt } = await store.admit({
+      owner: 'a',
+      requestKey: 'atomic-publication',
+      expectedVersion: 1,
+      draft: savedDraft().draft,
+      animationEnabled: false,
+    });
+    await store.claim('a', attempt.id, 'executor');
+    const before = (await store.getSnapshot('a', attempt.id)) as GameSnapshot;
+    const resolved = resolveAction(before, { kind: 'advance' }, LEVEL);
+    const publication = (afterSnapshot: GameSnapshot) => ({
+      seq: 1,
+      decisionId: 'decision-1',
+      action: resolved.action,
+      resolution: resolved.resolution,
+      beforeStateId: resolved.before.id,
+      afterStateId: resolved.after.id,
+      beforeSnapshot: resolved.before,
+      afterSnapshot,
+      progress: resolved.after.maxSupportReached / LEVEL.segments.length,
+      finalSupport: resolved.after.support,
+      turnsUsed: resolved.after.turnsUsed,
+    });
+
+    const invalidAfter = {
+      ...resolved.after,
+      inventory: ['recompensa-1', 'recompensa-1'],
+    };
+    await expect(
+      store.publishAction('a', attempt.id, 'executor', publication(invalidAfter)),
+    ).rejects.toThrow('inventario y los objetos restantes no forman una partición válida');
+    await expect(store.getSnapshot('a', attempt.id, resolved.after.id)).resolves.toBeUndefined();
+    await expect(store.get('a', attempt.id)).resolves.toMatchObject({ sequence: 0 });
+
+    const committed = await store.publishAction(
+      'a',
+      attempt.id,
+      'executor',
+      publication(resolved.after),
+    );
+    expect(committed).toMatchObject({ sequence: 1, currentSnapshot: resolved.after });
+    await expect(
+      store.publishAction('a', attempt.id, 'executor', publication(resolved.after)),
+    ).resolves.toEqual(committed);
+    await expect(
+      store.publishAction('a', attempt.id, 'executor', {
+        ...publication(resolved.after),
+        decisionId: 'different-decision',
+      }),
+    ).resolves.toBeUndefined();
+    await expect(store.get('a', attempt.id)).resolves.toEqual(committed);
+
+    await store.close('a', attempt.id, 'cancelled', 'cancelled_by_user');
+    await expect(store.getReplayRecord('a', attempt.id)).resolves.toMatchObject({
+      actions: [{ seq: 1, decisionId: 'decision-1' }],
+      snapshots: [{ id: 'state-0' }, { id: resolved.after.id }],
+      closure: { status: 'cancelled', actionCount: 1 },
+    });
+  });
+
   it('scores the persisted inventory and exposes its object summary without reading replay', async () => {
     const draft = savedDraft().draft;
     const store = new MemoryAttemptStore({ draft: savedDraft() });
