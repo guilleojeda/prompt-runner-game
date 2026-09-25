@@ -10,7 +10,7 @@ import {
 import { createDefaultDraft, type DraftSnapshot } from '../../../shared/robot';
 import { createClosedAttemptRecordFixture } from '../../../shared/attempt.fixture';
 import { DEFAULT_ATTEMPT_CONFIG, readCurrentLevel } from '../../../shared/server/attempt';
-import type { CallRecord } from '../../../shared/server/attempt';
+import type { CallRecord, PersistedAttempt } from '../../../shared/server/attempt';
 import {
   AttemptNotTerminalError,
   DynamoAttemptStore,
@@ -31,6 +31,20 @@ const modelIdentity = {
   modelId: 'global.anthropic.claude-sonnet-4-6',
   region: 'us-east-1',
   profileVersion: 'claude-sonnet-4.6-global-v1',
+};
+
+const dynamoHeaderFor = (record: PersistedAttempt): Record<string, unknown> => {
+  const { initialSnapshot, currentSnapshot, ...header } = record;
+  return {
+    ...header,
+    initialStateId: (initialSnapshot as GameSnapshot).id,
+    currentStateId: (currentSnapshot as GameSnapshot).id,
+  };
+};
+
+const dynamoSnapshotRowFor = (snapshot: unknown) => {
+  const id = (snapshot as GameSnapshot).id;
+  return marshall({ stateId: id, snapshot });
 };
 
 const publishMemoryRoute = async (
@@ -865,8 +879,8 @@ describe('attempt lifecycle store', () => {
       ...started,
       status: 'started' as const,
     };
-    const stateItem = marshall({ snapshot: running.currentSnapshot });
-    const headerItem = marshall(running, { removeUndefinedValues: true });
+    const stateItem = dynamoSnapshotRowFor(running.currentSnapshot);
+    const headerItem = marshall(dynamoHeaderFor(running), { removeUndefinedValues: true });
     const callItem = marshall(storedCall, { removeUndefinedValues: true });
     let updates = 0;
     const client = {
@@ -930,9 +944,9 @@ describe('attempt lifecycle store', () => {
         }
         if (sk === 'DRAFT') return { Item: marshall({ version: 1, draft }) };
         if (sk === `ATTEMPT#${winner.attempt.id}`)
-          return { Item: marshall(winnerRecord, { removeUndefinedValues: true }) };
+          return { Item: marshall(dynamoHeaderFor(winnerRecord), { removeUndefinedValues: true }) };
         if (sk === 'STATE#state-0')
-          return { Item: marshall({ snapshot: winnerRecord.currentSnapshot }) };
+          return { Item: dynamoSnapshotRowFor(winnerRecord.currentSnapshot) };
         return {};
       },
     };
@@ -978,8 +992,8 @@ describe('attempt lifecycle store', () => {
         return {
           Item:
             key.SK?.S === 'STATE#state-0'
-              ? marshall({ snapshot: record.currentSnapshot })
-              : marshall(record, { removeUndefinedValues: true }),
+              ? dynamoSnapshotRowFor(record.currentSnapshot)
+              : marshall(dynamoHeaderFor(record), { removeUndefinedValues: true }),
         };
       },
     };
@@ -1027,13 +1041,17 @@ describe('attempt lifecycle store', () => {
     };
     await memory.beginCall('a', admitted.attempt.id, 'executor', started);
     const persisted = { ...started, status: 'error' as const };
-    const currentItem = marshall(claimed, { removeUndefinedValues: true });
+    const currentItem = marshall(dynamoHeaderFor(claimed), { removeUndefinedValues: true });
+    const currentStateItem = dynamoSnapshotRowFor(claimed.currentSnapshot);
     const callItem = marshall(persisted, { removeUndefinedValues: true });
     let transactionInput: Record<string, unknown> | undefined;
     const client = {
       send: async (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
         const name = command.constructor.name;
-        if (name === 'GetItemCommand') return { Item: currentItem };
+        if (name === 'GetItemCommand') {
+          const key = command.input.Key as { SK?: { S?: string } };
+          return { Item: key.SK?.S?.startsWith('STATE#') ? currentStateItem : currentItem };
+        }
         if (name === 'QueryCommand') return { Items: [callItem] };
         if (name === 'TransactWriteItemsCommand') {
           transactionInput = command.input;
