@@ -199,6 +199,12 @@ describe('attempt lifecycle store', () => {
     ).rejects.toThrow('inventario y los objetos restantes no forman una partición válida');
     await expect(store.getSnapshot('a', attempt.id, resolved.after.id)).resolves.toBeUndefined();
     await expect(store.get('a', attempt.id)).resolves.toMatchObject({ sequence: 0 });
+    await expect(
+      store.publishAction('a', attempt.id, 'executor', {
+        ...publication(resolved.after),
+        reason: 'unexpected',
+      }),
+    ).rejects.toThrow('causa terminal válida');
 
     const committed = await store.publishAction(
       'a',
@@ -214,6 +220,12 @@ describe('attempt lifecycle store', () => {
       store.publishAction('a', attempt.id, 'executor', {
         ...publication(resolved.after),
         decisionId: 'different-decision',
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
+      store.publishAction('a', attempt.id, 'executor', {
+        ...publication(resolved.after),
+        reason: 'unexpected',
       }),
     ).resolves.toBeUndefined();
     await expect(store.get('a', attempt.id)).resolves.toEqual(committed);
@@ -579,7 +591,9 @@ describe('attempt lifecycle store', () => {
         progress: after.maxSupportReached / LEVEL.segments.length,
         finalSupport: after.support,
         turnsUsed: after.turnsUsed,
-        ...(action.seq === fixture.actions.length ? { terminalStatus: 'victory' as const } : {}),
+        ...(action.seq === fixture.actions.length
+          ? { terminalStatus: 'victory' as const, reason: 'exit_reached' }
+          : {}),
       });
     }
     expect(await store.get('a', attempt.id)).toMatchObject({

@@ -2,6 +2,7 @@ import { Buffer } from 'node:buffer';
 import { Readable } from 'node:stream';
 import { HttpRequest, HttpResponse } from '@smithy/core/transport';
 import type { HttpHandlerOptions, RequestHandler, RequestHandlerOutput } from '@smithy/types';
+import { ModelThrottledError } from '@strands-agents/sdk';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MODEL_CATALOG, type ModelProfile } from '../../../shared/models.js';
 import {
@@ -447,6 +448,29 @@ describe('auditable Strands Bedrock decision', () => {
     await expect(
       executeDecision(input(), recorded.audit, { requestHandler: handler }),
     ).rejects.toMatchObject({ code: 'throttled' });
+    expect(handler.requests).toHaveLength(1);
+    expect(recorded.receipts).toEqual([
+      expect.objectContaining({ bytes: null, statusCode: null, complete: false }),
+    ]);
+  });
+
+  it('classifies the exact Strands throttle without a response body and preserves unknown usage', async () => {
+    const handler = new QueueHandler([
+      {
+        run: async () => {
+          throw new ModelThrottledError('capacity unavailable');
+        },
+      },
+    ]);
+    const recorded = recordingAudit();
+
+    await expect(
+      executeDecision(input(), recorded.audit, { requestHandler: handler }),
+    ).rejects.toMatchObject({
+      code: 'throttled',
+      usage: { normalized: { inputTokens: null, outputTokens: null, gameTokens: null } },
+      receipt: { bytes: null, statusCode: null, complete: false },
+    });
     expect(handler.requests).toHaveLength(1);
     expect(recorded.receipts).toEqual([
       expect.objectContaining({ bytes: null, statusCode: null, complete: false }),

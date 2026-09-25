@@ -614,6 +614,23 @@ export const validateActionPublication = (
   ) {
     throw new ReplayRecordError('La publicación no coincide con una transición válida del juego.');
   }
+
+  const expectedReason =
+    expectedTerminalStatus === undefined
+      ? undefined
+      : expectedTerminalStatus === 'victory'
+        ? 'exit_reached'
+        : expectedTerminalStatus === 'incomplete'
+          ? 'turn_limit_reached'
+          : isActionResolution(publication.resolution) && 'reason' in publication.resolution
+            ? publication.resolution.reason
+            : undefined;
+  if (
+    publication.reason !== expectedReason ||
+    (expectedTerminalStatus === 'defeat' && expectedReason === undefined)
+  ) {
+    throw new ReplayRecordError('La publicación no coincide con una causa terminal válida.');
+  }
 };
 
 const summaryCollectionOf = (record: PersistedAttempt): CollectionSummary => {

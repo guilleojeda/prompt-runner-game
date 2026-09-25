@@ -1101,6 +1101,13 @@ describe('Dynamo action publication ambiguity', () => {
       executorId: 'executor-a',
     });
     const publication = publicationFor(initial);
+    await expect(
+      storeFor(harness).publishAction('owner', attemptId, 'executor-a', {
+        ...publication,
+        reason: 'unexpected',
+      }),
+    ).rejects.toBeInstanceOf(ReplayRecordError);
+    expect(harness.read('USER#owner', `ATTEMPT#${attemptId}`)?.sequence).toBe(0);
     let firstTransaction = true;
     harness.transactionBehavior = () => {
       if (firstTransaction) {
@@ -1119,6 +1126,12 @@ describe('Dynamo action publication ambiguity', () => {
 
     expect(result?.sequence).toBe(1);
     expect((result?.currentSnapshot as GameSnapshot).id).toBe(publication.afterStateId);
+    await expect(
+      storeFor(harness).publishAction('owner', attemptId, 'executor-a', {
+        ...publication,
+        reason: 'unexpected',
+      }),
+    ).resolves.toBeUndefined();
     const transaction = harness.send.mock.calls.find(
       ([command]) => command.constructor.name === 'TransactWriteItemsCommand',
     )?.[0].input as { TransactItems: readonly Record<string, unknown>[] };
@@ -1127,6 +1140,63 @@ describe('Dynamo action publication ambiguity', () => {
     };
     expect(headerUpdate.ConditionExpression).toContain('#currentStateId = :beforeState');
     expect(headerUpdate.ConditionExpression).toContain('#sequence = :previous');
+  });
+
+  it('requires and persists the exact turn-limit cause idempotently', async () => {
+    const harness = new DynamoHarness();
+    const { attemptId, initial } = seedAttempt(harness, {
+      status: 'running',
+      executorId: 'executor-a',
+    });
+    const store = storeFor(harness);
+    let state = initial;
+    let finalPublication: ActionPublication | undefined;
+
+    for (let index = 0; index < LEVEL.maxTurns; index += 1) {
+      const resolved = resolveAction(state, { kind: 'wait' }, LEVEL);
+      const terminalStatus =
+        resolved.after.status === 'running' ? undefined : resolved.after.status;
+      const reason = reasonOfResolvedAction(resolved);
+      const publication: ActionPublication = {
+        seq: index + 1,
+        decisionId: `decision-${index + 1}`,
+        action: resolved.action,
+        resolution: resolved.resolution,
+        beforeStateId: resolved.before.id,
+        afterStateId: resolved.after.id,
+        beforeSnapshot: resolved.before,
+        afterSnapshot: resolved.after,
+        ...(terminalStatus === undefined ? {} : { terminalStatus }),
+        ...(reason === undefined ? {} : { reason }),
+        progress: resolved.after.maxSupportReached / LEVEL.segments.length,
+        finalSupport: resolved.after.support,
+        turnsUsed: resolved.after.turnsUsed,
+      };
+      if (index === LEVEL.maxTurns - 1) {
+        finalPublication = publication;
+        break;
+      }
+      await store.publishAction('owner', attemptId, 'executor-a', publication);
+      state = resolved.after;
+    }
+
+    if (!finalPublication) throw new Error('The turn-limit publication was not built.');
+    await expect(
+      store.publishAction('owner', attemptId, 'executor-a', {
+        ...finalPublication,
+        reason: 'wait',
+      }),
+    ).rejects.toBeInstanceOf(ReplayRecordError);
+    expect(harness.read('USER#owner', `ATTEMPT#${attemptId}`)?.sequence).toBe(LEVEL.maxTurns - 1);
+
+    const committed = await store.publishAction('owner', attemptId, 'executor-a', finalPublication);
+    expect(committed).toMatchObject({ status: 'incomplete', reason: 'turn_limit_reached' });
+    await expect(
+      store.publishAction('owner', attemptId, 'executor-a', finalPublication),
+    ).resolves.toEqual(committed);
+    expect(
+      harness.read(`ATTEMPT#${attemptId}`, `ACTION#${String(LEVEL.maxTurns).padStart(8, '0')}`),
+    ).toMatchObject({ reason: 'turn_limit_reached', terminalStatus: 'incomplete' });
   });
 
   it('scores terminal actions from each published snapshot inventory', async () => {

@@ -302,38 +302,33 @@ export const executeAttempt = async (
           });
         },
         afterReceive: async (receipt) => {
-          if (receipt.bytes) {
-            const response = await dependencies.bodies.put(responseKey, receipt.bytes);
-            if (call) {
-              call = {
-                ...call,
-                status: receipt.error || !receipt.complete ? 'unknown' : 'received',
-                responseSha256: response.sha256,
-                responseBytes: response.bytes,
-                responseStatus: receipt.statusCode ?? undefined,
-                requestId: receipt.requestId ?? undefined,
-                errorCode: receipt.error?.name,
-                updatedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
-              };
-              await dependencies.store.finishCall(input.owner, activeRecord.id, executorId, call);
-              runtimeEvent('response_recorded', {
-                attemptId: activeRecord.id,
-                seq,
-                status: call.status,
-                providerRequestId: call.requestId,
-              });
-            }
-          } else if (call) {
+          if (call) {
+            // Persist a zero-byte marker for a missing provider body. The marker is not
+            // presented as provider response content; it gives the durable record an
+            // immutable response hash and byte count. Keep the call started until
+            // inference classifies the rejection so an unequivocal throttle can become
+            // a terminal error while an ambiguous transport failure remains unknown and
+            // blocks a retry.
+            const response = await dependencies.bodies.put(
+              responseKey,
+              receipt.bytes ?? new Uint8Array(),
+            );
             responseError = receipt.error;
             call = {
               ...call,
-              status: 'unknown',
+              ...(receipt.bytes === null
+                ? {}
+                : { status: receipt.error || !receipt.complete ? 'unknown' : 'received' }),
+              responseSha256: response.sha256,
+              responseBytes: response.bytes,
               responseStatus: receipt.statusCode ?? undefined,
               requestId: receipt.requestId ?? undefined,
               errorCode: receipt.error?.name,
               updatedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
             };
-            await dependencies.store.finishCall(input.owner, activeRecord.id, executorId, call);
+            if (receipt.bytes !== null) {
+              await dependencies.store.finishCall(input.owner, activeRecord.id, executorId, call);
+            }
             runtimeEvent('response_recorded', {
               attemptId: activeRecord.id,
               seq,
@@ -358,14 +353,16 @@ export const executeAttempt = async (
           timeoutMs: activeRecord.config.callTimeoutMs,
         });
       } catch (error) {
+        const failure = error as { readonly code?: string; readonly usage?: unknown };
+        const failureCode = failure.code;
         if (call) {
-          const failure = error as { readonly code?: string; readonly usage?: unknown };
-          const failureCode = failure.code;
           const completed: CallRecord = {
             ...call,
             status:
               call.status === 'started'
-                ? 'unknown'
+                ? failureCode === 'throttled'
+                  ? 'error'
+                  : 'unknown'
                 : failureCode === 'invalid_response' || failureCode === 'truncated'
                   ? 'invalid'
                   : 'error',
@@ -421,8 +418,8 @@ export const executeAttempt = async (
         await dependencies.store.recoverBodies?.(input.owner, activeRecord.id);
         await closeAttempt(
           'error',
-          responseError?.name ??
-            (error as { code?: string })?.code ??
+          failureCode ??
+            responseError?.name ??
             (error instanceof Error ? error.name : 'inference_error'),
         );
         return;
@@ -431,12 +428,24 @@ export const executeAttempt = async (
         await closeAttempt('error', 'request_not_persisted');
         return;
       }
+      if (call.status !== 'received' || call.responseSha256 === undefined) {
+        const incomplete: CallRecord = {
+          ...call,
+          status: 'unknown',
+          errorCode: 'incomplete_response',
+          updatedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
+        };
+        await dependencies.store.finishCall(input.owner, activeRecord.id, executorId, incomplete);
+        await dependencies.store.recoverBodies?.(input.owner, activeRecord.id);
+        await closeAttempt('error', 'incomplete_response');
+        return;
+      }
       const usage = usageFrom(decision.usage);
       call = {
         ...call,
         usage,
         rawAction: decision.action,
-        status: call.status === 'started' ? 'received' : call.status,
+        status: 'received',
         updatedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
       };
       await dependencies.store.finishCall(input.owner, record.id, executorId, call);
