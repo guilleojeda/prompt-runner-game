@@ -35,6 +35,26 @@ import {
 
 const commandClient = (send: ReturnType<typeof vi.fn>) => ({ send }) as unknown as DynamoDBClient;
 
+const doorRecoveryRoute: readonly NormalizedAction[] = [
+  { kind: 'advance' },
+  { kind: 'advance' },
+  { kind: 'retreat' },
+  { kind: 'retreat' },
+  { kind: 'collect' },
+  { kind: 'advance' },
+  { kind: 'advance' },
+  { kind: 'advance' },
+  { kind: 'advance' },
+];
+
+const reasonOfResolvedAction = (resolved: ReturnType<typeof resolveAction>): string | undefined => {
+  if (resolved.after.status === 'victory') return 'exit_reached';
+  if (resolved.after.status === 'incomplete') return 'turn_limit_reached';
+  if (resolved.after.status === 'defeat' && 'reason' in resolved.resolution)
+    return resolved.resolution.reason;
+  return undefined;
+};
+
 type CommandLike = {
   readonly input: Record<string, unknown>;
   readonly constructor: { readonly name: string };
@@ -360,19 +380,36 @@ const storeFor = (harness: DynamoHarness, bodyStore?: BodyStore) =>
   });
 
 describe('Dynamo attempt admission conditions', () => {
-  it('rejects an older durable attempt record contract', async () => {
-    const harness = new DynamoHarness();
-    const { attemptId } = seedAttempt(harness, { recordVersion: 2 });
+  it('rejects v2 and v3 durable attempt records under the current v4 contract', async () => {
+    for (const recordVersion of [2, 3]) {
+      const harness = new DynamoHarness();
+      const { attemptId } = seedAttempt(harness, { recordVersion });
 
-    await expect(storeFor(harness).get('owner', attemptId)).rejects.toBeInstanceOf(
-      AttemptStoreError,
-    );
+      await expect(storeFor(harness).get('owner', attemptId)).rejects.toBeInstanceOf(
+        AttemptStoreError,
+      );
+    }
   });
 
-  it('rejects the previous periodic engine metadata for the reward rules', async () => {
+  it('rejects previous engine and level metadata for the reward rules', async () => {
     const harness = new DynamoHarness();
     const { attemptId } = seedAttempt(harness, {
-      config: { ...DEFAULT_ATTEMPT_CONFIG, engineVersion: 'periodic-engine-v2' },
+      config: {
+        ...DEFAULT_ATTEMPT_CONFIG,
+        engineVersion: 'periodic-engine-v3',
+        levelId: 'principal-recompensas-v3',
+        levelVersion: '3',
+        levelDefinition: {
+          ...DEFAULT_ATTEMPT_CONFIG.levelDefinition,
+          id: 'principal-recompensas-v3',
+          version: 3,
+          rulesVersion: 3,
+          maxTurns: 16,
+          door: undefined,
+          objects: [{ id: 'recompensa-1', support: 2, scoreValue: 25 }],
+          exit: { support: 7, requiredObjectIds: [] },
+        } as unknown as typeof DEFAULT_ATTEMPT_CONFIG.levelDefinition,
+      },
     });
 
     await expect(storeFor(harness).get('owner', attemptId)).rejects.toBeInstanceOf(
@@ -626,7 +663,7 @@ describe('Dynamo attempt hydration integrity', () => {
       {
         name: 'missing current row',
         mutate: (harness, attemptId) => {
-          harness.items.delete(itemKey(`ATTEMPT#${attemptId}`, 'STATE#state-8'));
+          harness.items.delete(itemKey(`ATTEMPT#${attemptId}`, 'STATE#state-17'));
         },
       },
       {
@@ -638,17 +675,17 @@ describe('Dynamo attempt hydration integrity', () => {
       {
         name: 'current row id mismatch',
         mutate: (harness, attemptId) => {
-          const row = harness.read(`ATTEMPT#${attemptId}`, 'STATE#state-8')!;
-          harness.put({ ...row, stateId: 'state-7' });
+          const row = harness.read(`ATTEMPT#${attemptId}`, 'STATE#state-17')!;
+          harness.put({ ...row, stateId: 'state-16' });
         },
       },
       {
         name: 'current snapshot id mismatch',
         mutate: (harness, attemptId) => {
-          const row = harness.read(`ATTEMPT#${attemptId}`, 'STATE#state-8')!;
+          const row = harness.read(`ATTEMPT#${attemptId}`, 'STATE#state-17')!;
           harness.put({
             ...row,
-            snapshot: { ...(row.snapshot as Record<string, unknown>), id: 'state-7' },
+            snapshot: { ...(row.snapshot as Record<string, unknown>), id: 'state-16' },
           });
         },
       },
@@ -801,7 +838,7 @@ describe('Dynamo animation preference and replay projection', () => {
     expect(serialized).not.toContain('owner');
     expect(
       harness.send.mock.calls.filter(([command]) => command.constructor.name === 'QueryCommand'),
-    ).toHaveLength(9);
+    ).toHaveLength(18);
   });
 
   it('rejects a missing replay action or a broken state reference instead of truncating', async () => {
@@ -836,6 +873,19 @@ describe('Dynamo animation preference and replay projection', () => {
     await expect(
       storeFor(incompleteHeader).getReplayRecord('owner', partial.attemptId),
     ).rejects.toBeInstanceOf(ReplayRecordError);
+  });
+
+  it('rejects persisted snapshots without the current facing field', async () => {
+    const harness = new DynamoHarness();
+    const { attemptId } = seedClosedReplay(harness);
+    const initialState = harness.read(`ATTEMPT#${attemptId}`, 'STATE#state-0')!;
+    const snapshot = { ...(initialState.snapshot as Record<string, unknown>) };
+    delete snapshot.facing;
+    harness.put({ ...initialState, snapshot });
+
+    await expect(storeFor(harness).getReplayRecord('owner', attemptId)).rejects.toBeInstanceOf(
+      ReplayRecordError,
+    );
   });
 
   it('rejects malformed reward inventory and collection transitions during replay', async () => {
@@ -1013,6 +1063,37 @@ describe('Dynamo action publication ambiguity', () => {
     };
   };
 
+  it('rejects a transition that contradicts the current game before writing any rows', async () => {
+    const harness = new DynamoHarness();
+    const { attemptId, initial } = seedAttempt(harness, {
+      status: 'running',
+      executorId: 'executor-a',
+    });
+    const publication = publicationFor(initial);
+    const store = storeFor(harness);
+
+    await expect(
+      store.publishAction('owner', attemptId, 'executor-a', {
+        ...publication,
+        afterSnapshot: {
+          ...(publication.afterSnapshot as GameSnapshot),
+          facing: 'left',
+        },
+      }),
+    ).rejects.toBeInstanceOf(ReplayRecordError);
+
+    expect(
+      harness.read(`ATTEMPT#${attemptId}`, `STATE#${publication.afterStateId}`),
+    ).toBeUndefined();
+    expect(harness.read(`ATTEMPT#${attemptId}`, 'ACTION#00000001')).toBeUndefined();
+    expect(harness.read('USER#owner', `ATTEMPT#${attemptId}`)?.sequence).toBe(0);
+    expect(
+      harness.send.mock.calls.some(
+        ([command]) => command.constructor.name === 'TransactWriteItemsCommand',
+      ),
+    ).toBe(false);
+  });
+
   it('returns an exactly committed action after an ambiguous transaction', async () => {
     const harness = new DynamoHarness();
     const { attemptId, initial } = seedAttempt(harness, {
@@ -1071,12 +1152,13 @@ describe('Dynamo action publication ambiguity', () => {
           { kind: 'crouch', direction: 'right' },
           { kind: 'jump', direction: 'right' },
           { kind: 'advance' },
+          ...doorRecoveryRoute,
         ],
         gameTokens: 500,
         expected: {
           status: 'victory',
-          score: 944.5,
-          collectedObjectIds: ['recompensa-1'],
+          score: 854.5,
+          collectedObjectIds: ['recompensa-1', 'llave-1'],
           objectPoints: 25,
         },
       },
@@ -1090,12 +1172,13 @@ describe('Dynamo action publication ambiguity', () => {
           { kind: 'jump', direction: 'right' },
           { kind: 'jump', direction: 'right' },
           { kind: 'advance' },
+          ...doorRecoveryRoute,
         ],
         gameTokens: 500,
         expected: {
           status: 'victory',
-          score: 929.5,
-          collectedObjectIds: [],
+          score: 839.5,
+          collectedObjectIds: ['llave-1'],
           objectPoints: 0,
         },
       },
@@ -1109,12 +1192,13 @@ describe('Dynamo action publication ambiguity', () => {
           { kind: 'jump', direction: 'right' },
           { kind: 'jump', direction: 'right' },
           { kind: 'advance' },
+          ...doorRecoveryRoute,
         ],
         gameTokens: null,
         expected: {
           status: 'victory',
           score: null,
-          collectedObjectIds: [],
+          collectedObjectIds: ['llave-1'],
           objectPoints: 0,
         },
       },
@@ -1131,6 +1215,7 @@ describe('Dynamo action publication ambiguity', () => {
       let state = initial;
       for (const [index, action] of scenario.actions.entries()) {
         const resolved = resolveAction(state, action, LEVEL);
+        const reason = reasonOfResolvedAction(resolved);
         await store.publishAction('owner', attemptId, 'executor-a', {
           seq: index + 1,
           decisionId: `decision-${index + 1}`,
@@ -1141,7 +1226,7 @@ describe('Dynamo action publication ambiguity', () => {
           beforeSnapshot: resolved.before,
           afterSnapshot: resolved.after,
           ...(resolved.after.status === 'running' ? {} : { terminalStatus: resolved.after.status }),
-          ...('reason' in resolved.resolution ? { reason: resolved.resolution.reason } : {}),
+          ...(reason === undefined ? {} : { reason }),
           progress: resolved.after.maxSupportReached / LEVEL.segments.length,
           finalSupport: resolved.after.support,
           turnsUsed: resolved.after.turnsUsed,
@@ -1155,6 +1240,7 @@ describe('Dynamo action publication ambiguity', () => {
         score: scenario.expected.score,
         collectedObjectIds: scenario.expected.collectedObjectIds,
       });
+      expect(persisted?.reason).toBe('exit_reached');
       expect(persisted).not.toHaveProperty('objectPoints');
       expect((await store.list('owner')).attempts).toContainEqual(
         expect.objectContaining({
@@ -1170,6 +1256,27 @@ describe('Dynamo action publication ambiguity', () => {
         score: scenario.expected.score,
       });
       expect(header).not.toHaveProperty('objectPoints');
+      if (scenario.name === 'collected reward') {
+        const replay = await store.getReplayRecord('owner', attemptId);
+        expect(replay?.actions[9]).toMatchObject({
+          resolution: { outcome: 'no_op', reason: 'door_locked' },
+          before: { support: 8 },
+          after: { support: 8, status: 'running' },
+        });
+        expect(replay?.actions[12]).toMatchObject({
+          resolution: { outcome: 'picked_up', objectId: 'llave-1' },
+          before: { support: 6 },
+          after: { support: 6, inventory: ['recompensa-1', 'llave-1'] },
+        });
+        expect(replay?.actions[15]).toMatchObject({
+          before: { support: 8, inventory: ['recompensa-1', 'llave-1'] },
+          after: { support: 9, status: 'running' },
+        });
+        expect(replay?.actions[16]).toMatchObject({
+          before: { support: 9 },
+          after: { support: 10, status: 'victory' },
+        });
+      }
     }
   });
 

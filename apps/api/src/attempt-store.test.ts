@@ -33,6 +33,26 @@ const modelIdentity = {
   profileVersion: 'claude-sonnet-4.6-global-v1',
 };
 
+const doorRecoveryRoute: readonly NormalizedAction[] = [
+  { kind: 'advance' },
+  { kind: 'advance' },
+  { kind: 'retreat' },
+  { kind: 'retreat' },
+  { kind: 'collect' },
+  { kind: 'advance' },
+  { kind: 'advance' },
+  { kind: 'advance' },
+  { kind: 'advance' },
+];
+
+const reasonOfResolvedAction = (resolved: ReturnType<typeof resolveAction>): string | undefined => {
+  if (resolved.after.status === 'victory') return 'exit_reached';
+  if (resolved.after.status === 'incomplete') return 'turn_limit_reached';
+  if (resolved.after.status === 'defeat' && 'reason' in resolved.resolution)
+    return resolved.resolution.reason;
+  return undefined;
+};
+
 const dynamoHeaderFor = (record: PersistedAttempt): Record<string, unknown> => {
   const { initialSnapshot, currentSnapshot, ...header } = record;
   return {
@@ -95,6 +115,7 @@ const publishMemoryRoute = async (
   for (const [index, action] of actions.entries()) {
     const resolved = resolveAction(state, action, LEVEL);
     const terminalStatus = resolved.after.status === 'running' ? undefined : resolved.after.status;
+    const reason = reasonOfResolvedAction(resolved);
     await store.publishAction('a', attemptId, 'executor', {
       seq: index + 1,
       decisionId: `decision-${index + 1}`,
@@ -105,7 +126,7 @@ const publishMemoryRoute = async (
       beforeSnapshot: resolved.before,
       afterSnapshot: resolved.after,
       ...(terminalStatus ? { terminalStatus } : {}),
-      ...('reason' in resolved.resolution ? { reason: resolved.resolution.reason } : {}),
+      ...(reason === undefined ? {} : { reason }),
       progress: resolved.after.maxSupportReached / LEVEL.segments.length,
       finalSupport: resolved.after.support,
       turnsUsed: resolved.after.turnsUsed,
@@ -129,6 +150,18 @@ describe('attempt lifecycle store', () => {
 
     expect(readCurrentLevel(reverseKeys(LEVEL))).toEqual(LEVEL);
     expect(() => readCurrentLevel({ ...LEVEL, id: 'principal-estatico-v1' })).toThrow();
+    expect(() =>
+      readCurrentLevel({
+        ...LEVEL,
+        id: 'principal-recompensas-v3',
+        version: 3,
+        rulesVersion: 3,
+        maxTurns: 16,
+        door: undefined,
+        objects: [{ id: 'recompensa-1', support: 2, scoreValue: 25 }],
+        exit: { support: 7, requiredObjectIds: [] },
+      }),
+    ).toThrow();
   });
 
   it('publishes actions atomically and returns an identical committed publication on retry', async () => {
@@ -193,7 +226,7 @@ describe('attempt lifecycle store', () => {
     });
   });
 
-  it('scores the persisted inventory and exposes its object summary without reading replay', async () => {
+  it('scores the persisted inventory, exposes its summary, and replays the door route', async () => {
     const draft = savedDraft().draft;
     const store = new MemoryAttemptStore({ draft: savedDraft() });
     const routes: readonly {
@@ -218,12 +251,13 @@ describe('attempt lifecycle store', () => {
           { kind: 'crouch', direction: 'right' },
           { kind: 'jump', direction: 'right' },
           { kind: 'advance' },
+          ...doorRecoveryRoute,
         ],
         gameTokens: 500,
         expected: {
           status: 'victory',
-          score: 944.5,
-          collectedObjectIds: ['recompensa-1'],
+          score: 854.5,
+          collectedObjectIds: ['recompensa-1', 'llave-1'],
           objectPoints: 25,
         },
       },
@@ -237,12 +271,13 @@ describe('attempt lifecycle store', () => {
           { kind: 'jump', direction: 'right' },
           { kind: 'jump', direction: 'right' },
           { kind: 'advance' },
+          ...doorRecoveryRoute,
         ],
         gameTokens: 500,
         expected: {
           status: 'victory',
-          score: 929.5,
-          collectedObjectIds: [],
+          score: 839.5,
+          collectedObjectIds: ['llave-1'],
           objectPoints: 0,
         },
       },
@@ -256,12 +291,13 @@ describe('attempt lifecycle store', () => {
           { kind: 'jump', direction: 'right' },
           { kind: 'jump', direction: 'right' },
           { kind: 'advance' },
+          ...doorRecoveryRoute,
         ],
         gameTokens: null,
         expected: {
           status: 'victory',
           score: null,
-          collectedObjectIds: [],
+          collectedObjectIds: ['llave-1'],
           objectPoints: 0,
         },
       },
@@ -294,6 +330,7 @@ describe('attempt lifecycle store', () => {
         score: route.expected.score,
         collectedObjectIds: route.expected.collectedObjectIds,
       });
+      if (route.expected.status === 'victory') expect(saved?.reason).toBe('exit_reached');
       expect(saved).not.toHaveProperty('objectPoints');
       expect((await store.list('a')).attempts).toContainEqual(
         expect.objectContaining({
@@ -303,6 +340,29 @@ describe('attempt lifecycle store', () => {
           score: route.expected.score,
         }),
       );
+      if (route.requestKey === 'collected-reward') {
+        const replay = await store.getReplayRecord('a', attempt.id);
+        expect(replay?.actions[9]).toMatchObject({
+          action: { kind: 'advance' },
+          resolution: { outcome: 'no_op', reason: 'door_locked' },
+          before: { support: 8 },
+          after: { support: 8, status: 'running' },
+        });
+        expect(replay?.actions[12]).toMatchObject({
+          action: { kind: 'collect' },
+          resolution: { outcome: 'picked_up', objectId: 'llave-1' },
+          before: { support: 6 },
+          after: { support: 6, inventory: ['recompensa-1', 'llave-1'] },
+        });
+        expect(replay?.actions[15]).toMatchObject({
+          before: { support: 8, inventory: ['recompensa-1', 'llave-1'] },
+          after: { support: 9, status: 'running' },
+        });
+        expect(replay?.actions[16]).toMatchObject({
+          before: { support: 9 },
+          after: { support: 10, status: 'victory' },
+        });
+      }
     }
   });
 
@@ -326,7 +386,7 @@ describe('attempt lifecycle store', () => {
       modelId: 'global.anthropic.claude-sonnet-4-6',
     });
     expect((await store.get('a', first.attempt.id))?.config.engineVersion).toBe(
-      'periodic-engine-v3',
+      'periodic-engine-v4',
     );
     expect((await store.get('a', first.attempt.id))?.config.scoreParameters).toEqual(
       DEFAULT_ATTEMPT_CONFIG.scoreParameters,
@@ -428,7 +488,7 @@ describe('attempt lifecycle store', () => {
         afterStateId: resolved.after.id,
         beforeSnapshot: resolved.before,
         afterSnapshot: resolved.after,
-        progress: 0.2,
+        progress: 1 / LEVEL.segments.length,
         finalSupport: resolved.after.support,
         turnsUsed: 1,
       });
@@ -610,7 +670,7 @@ describe('attempt lifecycle store', () => {
     });
   });
 
-  it('rejects a persisted movement whose cause does not match its recorded terrain', async () => {
+  it('rejects a movement publication whose cause does not match its recorded terrain', async () => {
     const draft = createDefaultDraft();
     const store = new MemoryAttemptStore({ draft: { version: 1, draft } });
     const { attempt } = await store.admit({
@@ -623,24 +683,22 @@ describe('attempt lifecycle store', () => {
     await store.claim('a', attempt.id, 'executor');
     const before = (await store.getSnapshot('a', attempt.id)) as GameSnapshot;
     const resolved = resolveAction(before, { kind: 'advance' }, LEVEL);
-    await store.publishAction('a', attempt.id, 'executor', {
-      seq: 1,
-      decisionId: 'decision-1',
-      action: resolved.action,
-      resolution: { ...resolved.resolution, reason: 'walk_into_pit' },
-      beforeStateId: resolved.before.id,
-      afterStateId: resolved.after.id,
-      beforeSnapshot: resolved.before,
-      afterSnapshot: resolved.after,
-      progress: 1 / LEVEL.segments.length,
-      finalSupport: resolved.after.support,
-      turnsUsed: resolved.after.turnsUsed,
-    });
-    await store.close('a', attempt.id, 'cancelled', 'cancelled_by_user');
-
-    await expect(store.getReplayRecord('a', attempt.id)).rejects.toThrow(
-      'contradice el contrato del juego',
-    );
+    await expect(
+      store.publishAction('a', attempt.id, 'executor', {
+        seq: 1,
+        decisionId: 'decision-1',
+        action: resolved.action,
+        resolution: { ...resolved.resolution, reason: 'walk_into_pit' },
+        beforeStateId: resolved.before.id,
+        afterStateId: resolved.after.id,
+        beforeSnapshot: resolved.before,
+        afterSnapshot: resolved.after,
+        progress: 1 / LEVEL.segments.length,
+        finalSupport: resolved.after.support,
+        turnsUsed: resolved.after.turnsUsed,
+      }),
+    ).rejects.toThrow('transición válida del juego');
+    await expect(store.get('a', attempt.id)).resolves.toMatchObject({ sequence: 0 });
   });
 
   it('replays the low-barrier collision cause from its start phase', async () => {

@@ -10,6 +10,26 @@ import {
   type NormalizedAction,
 } from '../../../../shared/game.js';
 
+export const doorVictoryActions: readonly NormalizedAction[] = Object.freeze([
+  { kind: 'advance' },
+  { kind: 'jump', direction: 'right' },
+  { kind: 'collect' },
+  { kind: 'advance' },
+  { kind: 'crouch', direction: 'right' },
+  { kind: 'crouch', direction: 'right' },
+  { kind: 'jump', direction: 'right' },
+  { kind: 'advance' },
+  { kind: 'advance' },
+  { kind: 'advance' },
+  { kind: 'retreat' },
+  { kind: 'retreat' },
+  { kind: 'collect' },
+  { kind: 'advance' },
+  { kind: 'advance' },
+  { kind: 'advance' },
+  { kind: 'advance' },
+]);
+
 export const publicReplayView = (record: AttemptRecord): ReplayRecordView => {
   const states = new Map(record.snapshots.map((snapshot) => [snapshot.id, snapshot]));
   const actions: AttemptRecordView['actions'] = record.actions.map((action) => {
@@ -70,3 +90,6 @@ export const replayRecordForActions = (
   };
   return publicReplayView(record);
 };
+
+export const doorVictoryRecord = (): ReplayRecordView =>
+  replayRecordForActions(doorVictoryActions, 'victory');

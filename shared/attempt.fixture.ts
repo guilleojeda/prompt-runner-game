@@ -34,6 +34,15 @@ const referenceActions: readonly NormalizedAction[] = [
   { kind: 'crouch', direction: 'right' },
   { kind: 'jump', direction: 'right' },
   { kind: 'advance' },
+  { kind: 'advance' },
+  { kind: 'advance' },
+  { kind: 'retreat' },
+  { kind: 'retreat' },
+  { kind: 'collect' },
+  { kind: 'advance' },
+  { kind: 'advance' },
+  { kind: 'advance' },
+  { kind: 'advance' },
 ];
 
 const robotSnapshot = (): AttemptRobotSnapshot => ({
@@ -73,7 +82,7 @@ const resolveReferenceChain = (): {
 };
 
 /**
- * Closed logical record used by shared contract tests and future replay tests.
+ * Closed logical record that traverses the closed door, collects its key, and wins.
  * This fixture is deliberately test-only; it is not the DynamoDB projection.
  */
 export const createClosedAttemptRecordFixture = (): AttemptRecord => {

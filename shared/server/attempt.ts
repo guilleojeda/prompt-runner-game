@@ -14,7 +14,9 @@ import type {
 import { ATTEMPT_RECORD_VERSION } from '../attempt.js';
 import type {
   ActionResolution,
+  Direction,
   GameSnapshot,
+  LevelDoor,
   LevelDefinition,
   LevelObject,
   LevelSegment,
@@ -320,7 +322,10 @@ const isTerminal = (status: AttemptStatus): boolean =>
 const readSnapshot = (value: unknown): GameSnapshot => {
   if (
     !isObject(value) ||
+    Object.prototype.hasOwnProperty.call(value, 'exitEnabled') ||
+    Object.prototype.hasOwnProperty.call(value, 'doorOpen') ||
     typeof value.id !== 'string' ||
+    (value.facing !== 'left' && value.facing !== 'right') ||
     !isInteger(value.support) ||
     !isInteger(value.turnsUsed) ||
     !isInteger(value.phaseTurn) ||
@@ -330,7 +335,6 @@ const readSnapshot = (value: unknown): GameSnapshot => {
     !value.remainingObjects.every((item) => typeof item === 'string') ||
     !Array.isArray(value.inventory) ||
     !value.inventory.every((item) => typeof item === 'string') ||
-    typeof value.exitEnabled !== 'boolean' ||
     (value.status !== 'running' &&
       value.status !== 'victory' &&
       value.status !== 'defeat' &&
@@ -355,13 +359,13 @@ const readSnapshot = (value: unknown): GameSnapshot => {
   });
   return {
     id: value.id,
+    facing: value.facing as Direction,
     support: value.support,
     turnsUsed: value.turnsUsed,
     phaseTurn: value.phaseTurn,
     terrain,
     remainingObjects,
     inventory,
-    exitEnabled: value.exitEnabled,
     status: value.status,
     maxSupportReached: value.maxSupportReached,
   };
@@ -463,7 +467,7 @@ const readCurrentLevel = (value: unknown): LevelDefinition => {
       typeof item.id !== 'string' ||
       !isInteger(item.support) ||
       !isFiniteValue(item.scoreValue) ||
-      (item.requiredForExit !== undefined && typeof item.requiredForExit !== 'boolean')
+      Object.prototype.hasOwnProperty.call(item, 'requiredForExit')
     ) {
       throw new ReplayRecordError('El nivel contiene un objeto no compatible.');
     }
@@ -471,22 +475,24 @@ const readCurrentLevel = (value: unknown): LevelDefinition => {
       id: item.id,
       support: item.support,
       scoreValue: item.scoreValue,
-      ...(item.requiredForExit === undefined ? {} : { requiredForExit: item.requiredForExit }),
     };
   });
-  const exit = value.exit;
   if (
-    !isInteger(exit.support) ||
-    !Array.isArray(exit.requiredObjectIds) ||
-    !exit.requiredObjectIds.every((item) => typeof item === 'string')
+    !isObject(value.door) ||
+    !isInteger(value.door.support) ||
+    typeof value.door.requiredObjectId !== 'string' ||
+    value.door.requiredObjectId.length === 0
   ) {
+    throw new ReplayRecordError('La puerta guardada no es compatible con la reproducción.');
+  }
+  const door: LevelDoor = {
+    support: value.door.support,
+    requiredObjectId: value.door.requiredObjectId,
+  };
+  const exit = value.exit;
+  if (!isInteger(exit.support) || Object.prototype.hasOwnProperty.call(exit, 'requiredObjectIds')) {
     throw new ReplayRecordError('La salida guardada no es compatible con la reproducción.');
   }
-  const requiredObjectIds = exit.requiredObjectIds.map((item) => {
-    if (typeof item !== 'string')
-      throw new ReplayRecordError('La salida contiene un objeto inválido.');
-    return item;
-  });
   const level: LevelDefinition = {
     id: value.id,
     version: value.version,
@@ -494,9 +500,9 @@ const readCurrentLevel = (value: unknown): LevelDefinition => {
     maxTurns: value.maxTurns,
     segments,
     objects,
+    door,
     exit: {
       support: exit.support,
-      requiredObjectIds,
     },
   };
   if (!isDeepStrictEqual(level, LEVEL)) {
@@ -542,6 +548,7 @@ export const collectionSummaryOf = (
 ): CollectionSummary => {
   if (
     !isObject(snapshotValue) ||
+    (snapshotValue.facing !== 'left' && snapshotValue.facing !== 'right') ||
     !Array.isArray(snapshotValue.inventory) ||
     !snapshotValue.inventory.every((item) => typeof item === 'string') ||
     !Array.isArray(snapshotValue.remainingObjects) ||
@@ -567,15 +574,46 @@ export const collectionSummaryOf = (
     );
   }
 
-  const required = new Set(level.exit.requiredObjectIds);
-  const exitEnabled =
-    typeof snapshotValue.exitEnabled === 'boolean' &&
-    [...required].every((id) => inventory.includes(id));
-  if (snapshotValue.exitEnabled !== exitEnabled) {
-    throw new ReplayRecordError('La salida no coincide con el inventario del intento.');
+  if (
+    Object.prototype.hasOwnProperty.call(snapshotValue, 'exitEnabled') ||
+    Object.prototype.hasOwnProperty.call(snapshotValue, 'doorOpen')
+  ) {
+    throw new ReplayRecordError('El estado contiene campos de puerta o salida retirados.');
   }
 
   return collectionSummaryFromIds(inventory, level);
+};
+
+/** Rejects a durable publication that does not describe one valid current-engine turn. */
+export const validateActionPublication = (
+  publication: ActionPublication,
+  levelValue: LevelDefinition,
+): void => {
+  const level = readCurrentLevel(levelValue);
+  const before = readSnapshot(publication.beforeSnapshot);
+  const after = readSnapshot(publication.afterSnapshot);
+  collectionSummaryOf(before, level);
+  collectionSummaryOf(after, level);
+  const expectedTerminalStatus = after.status === 'running' ? undefined : after.status;
+
+  if (
+    publication.seq !== after.turnsUsed ||
+    publication.seq !== before.turnsUsed + 1 ||
+    before.id !== `state-${before.turnsUsed}` ||
+    after.id !== `state-${after.turnsUsed}` ||
+    publication.beforeStateId !== before.id ||
+    publication.afterStateId !== after.id ||
+    before.status !== 'running' ||
+    publication.turnsUsed !== after.turnsUsed ||
+    publication.finalSupport !== after.support ||
+    publication.progress !== after.maxSupportReached / level.segments.length ||
+    publication.terminalStatus !== expectedTerminalStatus ||
+    !isNormalizedAction(publication.action) ||
+    !isActionResolution(publication.resolution) ||
+    !isSemanticallyValidActionResolution(publication.action, before, after, publication.resolution)
+  ) {
+    throw new ReplayRecordError('La publicación no coincide con una transición válida del juego.');
+  }
 };
 
 const summaryCollectionOf = (record: PersistedAttempt): CollectionSummary => {
@@ -715,7 +753,7 @@ export const DEFAULT_ATTEMPT_CONFIG: AttemptConfig = {
   levelId: LEVEL.id,
   levelVersion: String(LEVEL.version),
   levelDefinition: LEVEL,
-  engineVersion: 'periodic-engine-v3',
+  engineVersion: 'periodic-engine-v4',
   protocolVersion: 'tool-protocol-v2',
   protocol: { api: 'converse', stream: false },
   inferenceVersion: 'claude-sonnet-4.6-global-v1',

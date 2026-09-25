@@ -1,6 +1,6 @@
 # Animación y catálogo visual
 
-**Reproductor del nivel principal con recompensa.** Define cómo presentar el [registro de ejecución](registro-de-ejecucion.md). La animación avanza automáticamente, a velocidad fija, hacia adelante y sin controles del usuario. Conserva el flujo y las garantías acordadas en [experiencia](../intent/experiencia.md) e [intentos](../intent/intentos.md). El perfil visual vigente cubre las siete secciones del nivel, las fases de barrera y plataforma y la recogida local de `recompensa-1`.
+**Reproductor del nivel principal con puerta.** Define cómo presentar el [registro de ejecución](registro-de-ejecucion.md). La animación avanza automáticamente, a velocidad fija, hacia adelante y sin controles del usuario. Conserva el flujo y las garantías acordadas en [experiencia](../intent/experiencia.md) e [intentos](../intent/intentos.md). El perfil visual vigente cubre los diez tramos, las fases de barrera y plataforma, la recogida local de recompensa y llave, la puerta y la salida libre.
 
 ## Enfoque elegido
 
@@ -24,7 +24,7 @@ Los tipos pozo, llano, rama o barrera pertenecen a **tramos entre apoyos seguros
 
 Se utiliza una unidad horizontal por tramo, apoyos en coordenadas enteras y una línea de suelo compartida. El perfil visual define el ancho visible de los apoyos, los bordes del pozo y las alturas de paso. Son medidas de dibujo, no hitboxes del motor. El escalado a pantalla no altera las unidades del mundo.
 
-El escenario se compone, de atrás hacia adelante, de fondo, terreno trasero, suelo/apoyos, objetos/salida, robot y oclusiones delanteras. Así el borde de un pozo puede ocultar parte del robot que cae y una rama puede tener piezas delante y detrás. Una rama se construye con suelo más obstáculo superior; no hace falta una imagen distinta del suelo para cada acción del robot.
+El escenario se compone, de atrás hacia adelante, de fondo, terreno trasero, suelo/apoyos, objetos/puerta/salida, robot y oclusiones delanteras. Así el borde de un pozo puede ocultar parte del robot que cae y una rama puede tener piezas delante y detrás. Una rama se construye con suelo más obstáculo superior; no hace falta una imagen distinta del suelo para cada acción del robot.
 
 El catálogo distingue tipo de tramo y estado efectivo. Una plataforma periódica en estado `pit` conserva su identidad visual de plataforma; el valor guardado determina su fase presente. Durante las acciones no oscila por su cuenta. Una transición entre fases es presentación entre turnos, nunca un nuevo estado que el agente pueda aprovechar.
 
@@ -37,15 +37,15 @@ Si todo el nivel entra de forma legible, se dibuja completo. Si no, la cámara d
 | Recurso gráfico | Identidad, URL inmutable, tamaño, recorte si pertenece a un atlas, punto de anclaje | Frame del robot, suelo, rama, llave. |
 | Clip | Frames y duración de cada uno; repetición dentro del intervalo o pose final | Caminar, salto, agachado, quieto, recoger, caer, impacto, victoria. |
 | Terreno | Tipo/estado, piezas por capa, dimensiones y anclas semánticas | Borde de entrada del pozo, contacto con obstáculo superior. |
-| Objeto y salida | Identidad visual por tipo, estado y ancla en el apoyo | Recompensa presente/recogida; salida habilitada. |
-| Receta | Trayectoria, clips, marcadores y efectos para una acción con su resultado | Desplazar caminando; aproximar al borde y caer; recoger y habilitar salida. |
+| Objeto, puerta y salida | Identidad visual por tipo, estado y ancla en el apoyo | Recompensa y llave presentes/recogidas; puerta cerrada/abierta; salida libre. |
+| Receta | Trayectoria, clips, marcadores y efectos para una acción con su resultado | Desplazar caminando; aproximar al borde y caer; detenerse ante puerta cerrada; recoger y abrirla. |
 | Perfil visual | Nivel y reglas del contrato vigente; geometría, catálogo y recetas coherentes | Interpretación completa de los registros admitidos. |
 
-El perfil vigente usa un SVG original con símbolos para robot, terreno, recompensa, salida y efectos, publicado con URL de asset versionada por el build. Las poses del robot comparten cabeza, torso, extremidades, cara y paleta; transforman esas mismas piezas para caminar, saltar, agacharse, recoger, caer, chocar y celebrar. Esta construcción conserva proporciones y ancla de pies entre poses sin generar imágenes independientes para cada frame. El catálogo representa las siete secciones del nivel, los estados bajo/alto de la barrera, la plataforma en suelo/pozo y la recompensa en el apoyo 2.
+El perfil vigente usa un SVG original con símbolos para robot, terreno, recompensa, llave, puerta, salida y efectos, publicado con URL de asset versionada por el build. Las poses del robot comparten cabeza, torso, extremidades, cara y paleta; transforman esas mismas piezas para caminar, saltar, agacharse, recoger, caer, chocar y celebrar. Esta construcción conserva proporciones y ancla de pies entre poses sin generar imágenes independientes para cada frame. El catálogo representa los diez tramos del nivel, los estados bajo/alto de la barrera, la plataforma en suelo/pozo, los dos objetos y la puerta cerrada/abierta del apoyo 9.
 
 El anclaje del robot está en los pies. Cambiar de frame o de postura conserva ese punto de referencia; así un sprite más alto no desplaza al personaje. La orientación base se refleja para caminar, saltar o agacharse a la izquierda; no se duplica un set completo por dirección. Si algún arte asimétrico necesita variantes, el catálogo puede seleccionarlas sin cambiar los datos del intento.
 
-Esperar, recoger y otros gestos sin dirección conservan la orientación del último movimiento; la inicial puede ser derecha. Esa orientación se deriva al preparar la secuencia, sin necesitar otro campo del motor ni depender de cuántos frames se hayan dibujado.
+Esperar, recoger y otros gestos sin dirección conservan `facing` del snapshot. El estado inicial mira a la derecha; cada movimiento intentado fija su dirección incluso si queda bloqueado. La secuencia usa ese estado guardado y no depende de cuántos frames se hayan dibujado.
 
 El frame se elige mediante el tiempo local del clip y las duraciones acumuladas. No se usa el número de repintados como contador. Se puede empezar con archivos individuales; agruparlos luego en un atlas solo cambia recursos y recortes. Los clips comparten el reloj de la escena para mantener sincronizados gesto, desplazamiento e interacción.
 
@@ -61,6 +61,7 @@ La acción indica el gesto intentado. La resolución indica qué pasó. El perfi
 | Caminar/agacharse con `fall` | Aproximarse al borde cercano del pozo + perder apoyo + caer. No atravesar el vacío caminando. |
 | Movimiento con `collision` | Iniciar el gesto + detenerlo en el contacto visual correspondiente + reacción de choque. |
 | Recoger con `picked_up` | Gesto local + retirar el objeto identificado en el marcador de interacción + representar el inventario posterior. |
+| Movimiento con `no_op/door_locked` | Gesto hacia la puerta del apoyo 9 + detenerse sin entrar ni caer; conservar el apoyo 8. |
 | Esperar o no-op | Clip local sin desplazamiento. La causa diferencia espera, límite del mapa, falta de objeto o habilidad sin efecto. |
 | Estado posterior de victoria | Completar la acción que ganó y luego celebrar. |
 | Límite, cancelación o error | Conservar la pose del último evento; presentar la causa de cierre, sin inventar derrota. |
@@ -75,7 +76,7 @@ Cada evento se convierte en intervalos y marcadores de presentación, calculados
 
 1. Mostrar el estado anterior y empezar el gesto.
 2. Presentar desplazamiento o interacción y, si corresponde, caída o choque. El terreno conserva la fase del estado anterior durante toda la acción.
-3. En el marcador de interacción, aplicar a la escena los objetos e inventario registrados: retirar `recompensa-1` al recogerla. No esperar al cambio de fase ni recoger al pasar caminando.
+3. En el marcador de interacción, aplicar a la escena los objetos e inventario registrados: retirar el objeto recogido y mostrar la puerta abierta cuando el inventario gana `llave-1`. No esperar al cambio de fase ni recoger al pasar caminando.
 4. Completar el gesto en su pose de llegada o terminal.
 5. Si el juego continúa, presentar el cambio del terreno anterior al posterior. Los tramos que cambian lo hacen en la misma transición; luego empieza la siguiente acción. Si termina, no crear otra fase jugable.
 
@@ -85,7 +86,7 @@ Una duración ilustrativa de caminar puede ser distinta de saltar o caer. El tie
 
 ## Reproducción continua a velocidad fija
 
-`prepareReplay(record)` valida el registro contra el único nivel vigente y construye los intervalos, marcadores y recursos requeridos. `sample(t)` devuelve terreno, objetos, salida, posición/pose/frame del robot, efectos y cámara para el tiempo transcurrido `t`. Es una función interna de dibujo: la misma entrada y tiempo producen la misma escena, sin depender de haber reproducido todos los frames anteriores. No constituye una función de búsqueda o navegación disponible al usuario.
+`prepareReplay(record)` valida el registro contra el único nivel vigente y construye los intervalos, marcadores y recursos requeridos. `sample(t)` devuelve terreno, objetos, estado derivado de la puerta, salida libre, posición/pose/frame del robot, efectos y cámara para el tiempo transcurrido `t`. Es una función interna de dibujo: la misma entrada y tiempo producen la misma escena, sin depender de haber reproducido todos los frames anteriores. No constituye una función de búsqueda o navegación disponible al usuario.
 
 El reloj conserva el instante de inicio y calcula `tiempo = min(ahora - inicio, duraciónTotal)` con una fuente monotónica. Avanza hacia adelante hasta completar la secuencia, sin estados de pausa, cambios de velocidad, retrocesos, saltos de turno ni finalización anticipada por controles del usuario. Los intervalos propios de esperar, aterrizar o celebrar forman parte de la animación continua.
 
@@ -127,7 +128,8 @@ Para el recorrido de un robot y obstáculos descrito, se elige SVG con imágenes
 - Escena, cámara, objetos y fases corresponden al tiempo transcurrido aunque el navegador omita un repintado; todos los elementos comparten el reloj.
 - Saltar y agacharse cruzan un tramo en ambas direcciones; caída/choque detienen el cruce y mantienen su pose terminal sin volver al apoyo.
 - Esperar conserva la posición y cambia la fase después de la acción; una fase nueva no hace caer al robot parado en un apoyo.
-- Recoger retira exactamente el objeto registrado y conserva la posición; pasar no lo recoge ni cambia el inventario. La salida vigente siempre está habilitada.
+- Recoger retira exactamente el objeto registrado y conserva la posición; pasar no lo recoge ni cambia el inventario. La llave abre la puerta en el marcador de recogida, incluso si se omitieron frames; la salida del apoyo 10 siempre está libre.
+- Intentar cruzar la puerta cerrada conserva el apoyo 8 y se distingue visualmente de un choque fatal; cruzarla abierta llega al apoyo 9 sin celebrar antes de la salida.
 - Derrota, victoria y límite en el último turno reproducen la precedencia ya resuelta; cancelación/error no agregan una acción.
 - Ambos valores de Animación guardan el mismo registro; no hay inferencia durante replay, métricas anticipadas ni edición durante presentación.
 - Recarga, assets fallidos, registro incompleto y formato no soportado conservan el resultado y evitan una UI permanentemente bloqueada.

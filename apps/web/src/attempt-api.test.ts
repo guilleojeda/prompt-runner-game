@@ -16,9 +16,9 @@ const summary = {
   modelKey: 'claude-sonnet-4.6',
   modelLabel: 'Claude Sonnet 4.6',
   modelId: 'global.anthropic.claude-sonnet-4-6',
-  turnsUsed: 7,
-  maxTurns: 16,
-  calls: 7,
+  turnsUsed: 16,
+  maxTurns: LEVEL.maxTurns,
+  calls: 16,
   inputTokens: null,
   outputTokens: null,
   reasoningTokens: null,
@@ -26,10 +26,10 @@ const summary = {
   cacheReadTokens: null,
   cacheWriteTokens: null,
   score: null,
-  collectedObjectIds: [],
+  collectedObjectIds: ['llave-1'],
   objectPoints: 0,
   progress: 1,
-  finalSupport: 7,
+  finalSupport: LEVEL.exit.support,
   animationEnabled: false,
   presentationComplete: true,
   recordComplete: true,
@@ -125,7 +125,7 @@ describe('AttemptApiClient', () => {
   it('keeps the collected reward summary and rejects inconsistent reward points', async () => {
     const collected = {
       ...summary,
-      collectedObjectIds: ['recompensa-1'],
+      collectedObjectIds: ['recompensa-1', 'llave-1'],
       objectPoints: 25,
     };
     const fetchImpl = vi
@@ -133,14 +133,16 @@ describe('AttemptApiClient', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({ attempt: collected }), { status: 200 }))
       .mockResolvedValueOnce(
         new Response(
-          JSON.stringify({ attempt: { ...collected, collectedObjectIds: [], objectPoints: 25 } }),
+          JSON.stringify({
+            attempt: { ...collected, collectedObjectIds: ['llave-1'], objectPoints: 25 },
+          }),
           { status: 200 },
         ),
       );
     const client = new AttemptApiClient(config, { tokenProvider: () => 'token', fetch: fetchImpl });
 
     await expect(client.getAttempt('attempt-1')).resolves.toMatchObject({
-      collectedObjectIds: ['recompensa-1'],
+      collectedObjectIds: ['recompensa-1', 'llave-1'],
       objectPoints: 25,
     });
     await expect(client.getAttempt('attempt-1')).rejects.toMatchObject({ code: 'server' });
@@ -255,6 +257,32 @@ describe('AttemptApiClient', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({ record }), { status: 200 }))
       .mockResolvedValueOnce(
         new Response(JSON.stringify({ attempt: completedAttempt }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            record: {
+              ...record,
+              snapshots: record.snapshots.map((snapshot, index) =>
+                index === 0 ? { ...snapshot, facing: undefined } : snapshot,
+              ),
+            },
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            record: {
+              ...record,
+              snapshots: record.snapshots.map((snapshot, index) =>
+                index === 0 ? { ...snapshot, exitEnabled: true } : snapshot,
+              ),
+            },
+          }),
+          { status: 200 },
+        ),
       );
     const client = new AttemptApiClient(config, {
       tokenProvider: () => 'token',
@@ -279,6 +307,8 @@ describe('AttemptApiClient', () => {
       'https://api.example.test/attempts/attempt%20%2F%20one/presentation-complete',
     );
     expect(fetchImpl.mock.calls[1]?.[1]).toMatchObject({ method: 'POST' });
+    await expect(client.getReplay(source.id)).rejects.toMatchObject({ code: 'server' });
+    await expect(client.getReplay(source.id)).rejects.toMatchObject({ code: 'server' });
   });
 
   it('rejects replay data with a terrain cause that contradicts the recorded action', async () => {

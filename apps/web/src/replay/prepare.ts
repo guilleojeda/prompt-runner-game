@@ -33,6 +33,10 @@ export interface ReplaySample {
   readonly terrain: readonly TerrainState[];
   /** Object IDs still on the course in the recorded state being shown. */
   readonly remainingObjects: readonly string[];
+  /** Objects held in the recorded state being shown. */
+  readonly inventory: readonly string[];
+  /** Door state derived from the key in inventory. */
+  readonly doorState: 'locked' | 'open';
   /** Set only during a transition following a continuing action. */
   readonly terrainTransition: ReplayTerrainTransition | null;
   /** Horizontal world offset for the viewport camera. */
@@ -116,6 +120,9 @@ const SYMBOLS = Object.freeze([
   'effect-pickup',
   'effect-victory',
   'reward-object',
+  'key-object',
+  'door-closed',
+  'door-open',
 ]);
 
 const terminalStatuses = new Set(['victory', 'defeat', 'incomplete', 'cancelled', 'error']);
@@ -174,6 +181,7 @@ const validateSnapshot = (
     snapshot.turnsUsed !== expectedIndex ||
     !Number.isInteger(snapshot.phaseTurn) ||
     (snapshot.phaseTurn as number) < 0 ||
+    (snapshot.facing !== 'left' && snapshot.facing !== 'right') ||
     !terrainAllowedByLevel(snapshot.terrain, segments, snapshot.phaseTurn as number)
   ) {
     fail(`el estado ${expectedIndex} no coincide con la fase y el nivel fijados`);
@@ -182,7 +190,6 @@ const validateSnapshot = (
     !Number.isInteger(snapshot.support) ||
     (snapshot.support as number) < 0 ||
     (snapshot.support as number) > segments.length ||
-    typeof snapshot.exitEnabled !== 'boolean' ||
     !Array.isArray(snapshot.remainingObjects) ||
     !Array.isArray(snapshot.inventory) ||
     !Number.isInteger(snapshot.maxSupportReached) ||
@@ -196,7 +203,6 @@ const validateSnapshot = (
   const remainingObjects = snapshot.remainingObjects as readonly unknown[];
   const inventory = snapshot.inventory as readonly unknown[];
   if (
-    snapshot.exitEnabled !== true ||
     !remainingObjects.every((id): id is string => typeof id === 'string' && knownObjects.has(id)) ||
     !inventory.every((id): id is string => typeof id === 'string' && knownObjects.has(id)) ||
     new Set(remainingObjects).size !== remainingObjects.length ||
@@ -256,12 +262,12 @@ const validateRecord = (record: ReplayRecordView): void => {
   if (
     initialSnapshot.support !== 0 ||
     initialSnapshot.maxSupportReached !== 0 ||
+    initialSnapshot.facing !== 'right' ||
     !sameValue(
       initialSnapshot.remainingObjects,
       LEVEL.objects.map((object) => object.id),
     ) ||
-    initialSnapshot.inventory.length !== 0 ||
-    initialSnapshot.exitEnabled !== true
+    initialSnapshot.inventory.length !== 0
   ) {
     fail('los objetos o la posición del estado inicial no pertenecen al nivel vigente');
   }
@@ -306,6 +312,10 @@ const validateRecord = (record: ReplayRecordView): void => {
     ) {
       fail(`la acción ${index + 1} contradice el contrato del juego`);
     }
+    const expectedFacing = directionOf(action.action) ?? action.before.facing;
+    if (action.after.facing !== expectedFacing) {
+      fail(`la acción ${index + 1} tiene una orientación incompatible`);
+    }
     if (index < record.actions.length - 1 && action.after.status !== 'running') {
       fail(`hay acciones publicadas después del cierre del juego en el turno ${index + 1}`);
     }
@@ -337,6 +347,9 @@ const cameraForSupport = (support: number): number => {
   );
 };
 
+const doorStateForInventory = (inventory: readonly string[]): 'locked' | 'open' =>
+  inventory.includes(LEVEL.door!.requiredObjectId) ? 'open' : 'locked';
+
 /**
  * Validate a closed public record once and produce a pure time sampler.
  * The sampler reads phases from saved before/after snapshots; it never reruns game rules.
@@ -345,10 +358,9 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
   validateRecord(record);
   const cues: ActionCue[] = [];
   let cursor = 0;
-  let facing: Direction = 'right';
   for (const [index, action] of record.actions.entries()) {
     const direction = directionOf(action.action);
-    if (direction) facing = direction;
+    const cueFacing = direction ?? action.before.facing;
     const duration = cueDuration(action);
     const start = cursor;
     const end = start + duration;
@@ -361,14 +373,14 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
       transition = { start: cursor, end: cursor + TIMING.phase, to: action.after.terrain };
       cursor = transition.end;
     }
-    cues.push({ start, end, action, index, direction, facing, transition });
+    cues.push({ start, end, action, index, direction, facing: cueFacing, transition });
   }
   const victory = record.closure.status === 'victory';
   const actionDuration = cursor;
   if (victory) cursor += TIMING.victory;
   const duration = cursor;
   const lastState = record.snapshots.at(-1)!;
-  const endingFacing = facing;
+  const endingFacing = lastState.facing;
 
   const sample = (elapsedSeconds: number): ReplaySample => {
     const time = Number.isFinite(elapsedSeconds)
@@ -385,6 +397,8 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
         time,
         terrain: action.before.terrain,
         remainingObjects: action.before.remainingObjects,
+        inventory: action.before.inventory,
+        doorState: doorStateForInventory(action.before.inventory),
         terrainTransition: null,
         cameraX: cameraForSupport(from),
         actionIndex: cue.index,
@@ -450,6 +464,10 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
           remainingObjects: collected
             ? action.after.remainingObjects
             : action.before.remainingObjects,
+          inventory: collected ? action.after.inventory : action.before.inventory,
+          doorState: doorStateForInventory(
+            collected ? action.after.inventory : action.before.inventory,
+          ),
           effect: collected ? 'pickup' : 'none',
         };
       }
@@ -507,6 +525,8 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
         pose: 'idle',
         terrain: transitioning.action.before.terrain,
         remainingObjects: transitioning.action.after.remainingObjects,
+        inventory: transitioning.action.after.inventory,
+        doorState: doorStateForInventory(transitioning.action.after.inventory),
         terrainTransition: { to: phase.to, progress: ease(progress) },
         cameraX: cameraForSupport(support),
         actionIndex: transitioning.index,
@@ -526,6 +546,8 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
         pose: 'celebrate',
         terrain: lastState.terrain,
         remainingObjects: lastState.remainingObjects,
+        inventory: lastState.inventory,
+        doorState: doorStateForInventory(lastState.inventory),
         terrainTransition: null,
         cameraX: cameraForSupport(lastState.support),
         actionIndex: null,
@@ -557,6 +579,8 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
       pose: terminalPose,
       terrain: lastState.terrain,
       remainingObjects: lastState.remainingObjects,
+      inventory: lastState.inventory,
+      doorState: doorStateForInventory(lastState.inventory),
       terrainTransition: null,
       cameraX: cameraForSupport(support),
       actionIndex: terminalCue?.index ?? null,

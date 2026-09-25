@@ -3,13 +3,10 @@
 import { readFile } from 'node:fs/promises';
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createClosedAttemptRecordFixture } from '../../../../shared/attempt.fixture.js';
 import { LEVEL } from '../../../../shared/game.js';
 import { prepareReplay } from './prepare.js';
 import { ReplayScene } from './ReplayScene.js';
-import { publicReplayView, replayRecordForActions } from './replay.test-support.js';
-
-const publicFixture = () => publicReplayView(createClosedAttemptRecordFixture());
+import { doorVictoryRecord, replayRecordForActions } from './replay.test-support.js';
 
 const toLowBarrier = [
   { kind: 'advance' },
@@ -59,8 +56,8 @@ afterEach(() => {
 });
 
 describe('ReplayScene', () => {
-  it('preflights current symbols, transitions terrain together, follows seven segments, and completes after a time jump', async () => {
-    const record = publicFixture();
+  it('preflights current symbols, transitions terrain together, follows ten segments, and completes after a time jump', async () => {
+    const record = doorVictoryRecord();
     const prepared = prepareReplay(record);
     const ready = vi.fn();
     const complete = vi.fn();
@@ -83,8 +80,17 @@ describe('ReplayScene', () => {
       [...scene.querySelectorAll('[data-replay-layer]')].map((layer) =>
         layer.getAttribute('data-replay-layer'),
       ),
-    ).toEqual(['backdrop', 'terrain-back', 'rewards', 'robot', 'terrain-front']);
+    ).toEqual(['backdrop', 'terrain-back', 'objects', 'robot', 'terrain-front']);
     expect(scene.querySelector('[data-object-id="recompensa-1"]')).not.toBeNull();
+    expect(scene.querySelector('[data-object-id="llave-1"]')?.getAttribute('href')).toContain(
+      '#key-object',
+    );
+    expect(
+      scene.querySelector('[data-door-state="locked"]')?.getAttribute('data-door-support'),
+    ).toBe('9');
+    expect(scene.querySelector('[data-exit-state="free"]')?.getAttribute('data-exit-support')).toBe(
+      '10',
+    );
     expect(scene.querySelector('[data-terrain-symbol="barrier_low"]')).not.toBeNull();
     expect(scene.querySelector('[data-terrain-symbol="barrier_high"]')).toBeNull();
     expect(scene.querySelector('[data-terrain-art="platform-ground"]')).not.toBeNull();
@@ -120,6 +126,77 @@ describe('ReplayScene', () => {
     expect(complete).toHaveBeenCalledOnce();
     expect(error).not.toHaveBeenCalled();
     expect(pendingFrames.size).toBe(0);
+  });
+
+  it('keeps a closed-door gesture at support 8 and opens the door at the key pickup marker', async () => {
+    const record = doorVictoryRecord();
+    const prepared = prepareReplay(record);
+    const durationOf = (action: (typeof record.actions)[number]): number => {
+      const actionDuration =
+        action.resolution.outcome === 'fall'
+          ? 1.08
+          : action.resolution.outcome === 'collision'
+            ? 0.68
+            : action.resolution.outcome === 'no_op'
+              ? 0.42
+              : action.action.kind === 'collect'
+                ? 0.9
+                : action.action.kind === 'jump'
+                  ? 0.86
+                  : 0.72;
+      return (
+        actionDuration +
+        (action.after.status === 'running' &&
+        JSON.stringify(action.before.terrain) !== JSON.stringify(action.after.terrain)
+          ? 0.22
+          : 0)
+      );
+    };
+    const blockedStart = record.actions
+      .slice(0, 9)
+      .reduce((sum, action) => sum + durationOf(action), 0);
+    const keyPickupIndex = record.actions.findIndex(
+      (action) =>
+        action.resolution.outcome === 'picked_up' && action.resolution.objectId === 'llave-1',
+    );
+    const keyPickupStart = record.actions
+      .slice(0, keyPickupIndex)
+      .reduce((sum, action) => sum + durationOf(action), 0);
+    const blockedSamples = [0.05, 0.21, 0.4].map((offset) =>
+      prepared.sample(blockedStart + offset),
+    );
+    const ready = vi.fn();
+    const error = vi.fn();
+    render(<ReplayScene record={record} onReady={ready} onComplete={vi.fn()} onError={error} />);
+    await waitFor(() => expect(pendingFrames.size).toBe(1));
+    await nextFrame(1000);
+    const scene = screen.getByRole('img');
+
+    await nextFrame(1000 + (blockedStart + 0.21) * 1000);
+    const blockedRobot = scene.querySelector('[data-replay-layer="robot"] > g');
+    expect(
+      blockedSamples.map(({ support, drop, effect, doorState }) => ({
+        support,
+        drop,
+        effect,
+        doorState,
+      })),
+    ).toEqual([
+      { support: 8, drop: 0, effect: 'none', doorState: 'locked' },
+      { support: 8, drop: 0, effect: 'none', doorState: 'locked' },
+      { support: 8, drop: 0, effect: 'none', doorState: 'locked' },
+    ]);
+    expect(blockedRobot?.getAttribute('data-center-x')).toBe(String(80 + 8 * 120));
+    expect(scene.querySelector('[data-effect="impact"], [data-effect="victory"]')).toBeNull();
+    expect(scene.querySelector('[data-door-state="locked"]')).not.toBeNull();
+
+    await nextFrame(1000 + (keyPickupStart + 0.62) * 1000);
+    expect(scene.querySelector('[data-door-state="locked"]')).not.toBeNull();
+    expect(scene.querySelector('[data-object-id="llave-1"]')).not.toBeNull();
+    await nextFrame(1000 + (keyPickupStart + 0.64) * 1000);
+    expect(scene.querySelector('[data-door-state="open"]')).not.toBeNull();
+    expect(scene.querySelector('[data-object-id="llave-1"]')).toBeNull();
+    expect(error).not.toHaveBeenCalled();
   });
 
   it('renders wait without moving or changing facing, then shows the recorded phase', async () => {
@@ -196,7 +273,7 @@ describe('ReplayScene', () => {
     const error = vi.fn();
     render(
       <ReplayScene
-        record={publicFixture()}
+        record={doorVictoryRecord()}
         onReady={ready}
         onComplete={complete}
         onError={error}

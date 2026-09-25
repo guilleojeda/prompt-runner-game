@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createClosedAttemptRecordFixture } from '../../../../shared/attempt.fixture.js';
+import { ATTEMPT_RECORD_VERSION } from '../../../../shared/attempt.js';
 import {
   isSemanticallyValidActionResolution,
   LEVEL,
@@ -11,7 +11,7 @@ import {
   REPLAY_SUPPORT_START_X,
   REPLAY_VIEW_WIDTH,
 } from './prepare.js';
-import { publicReplayView, replayRecordForActions } from './replay.test-support.js';
+import { doorVictoryRecord, replayRecordForActions } from './replay.test-support.js';
 
 const toLowBarrier: Parameters<typeof replayRecordForActions>[0] = [
   { kind: 'advance' },
@@ -20,6 +20,29 @@ const toLowBarrier: Parameters<typeof replayRecordForActions>[0] = [
   { kind: 'crouch', direction: 'right' },
   { kind: 'advance' },
 ];
+
+const replayActionDuration = (
+  action: ReturnType<typeof replayRecordForActions>['actions'][number],
+): number => {
+  const duration =
+    action.resolution.outcome === 'fall'
+      ? 1.08
+      : action.resolution.outcome === 'collision'
+        ? 0.68
+        : action.resolution.outcome === 'no_op'
+          ? 0.42
+          : action.action.kind === 'collect'
+            ? 0.9
+            : action.action.kind === 'jump'
+              ? 0.86
+              : action.action.kind === 'crouch'
+                ? 0.72
+                : 0.72;
+  const phaseChanges =
+    action.after.status === 'running' &&
+    JSON.stringify(action.before.terrain) !== JSON.stringify(action.after.terrain);
+  return duration + (phaseChanges ? 0.22 : 0);
+};
 
 describe('prepareReplay', () => {
   it('keeps the recorded terrain during an action and samples a transition after it', () => {
@@ -90,23 +113,23 @@ describe('prepareReplay', () => {
     const prepared = prepareReplay(record);
     const collectStart = 0.72 + 0.22 + 0.86 + 0.22;
 
-    expect(prepared.sample(0).remainingObjects).toEqual(['recompensa-1']);
+    expect(prepared.sample(0).remainingObjects).toEqual(['recompensa-1', 'llave-1']);
     expect(prepared.sample(collectStart + 0.62)).toMatchObject({
       actionIndex: 2,
       support: 2,
       pose: 'collect',
-      remainingObjects: ['recompensa-1'],
+      remainingObjects: ['recompensa-1', 'llave-1'],
       effect: 'none',
     });
     expect(prepared.sample(collectStart + 0.64)).toMatchObject({
       actionIndex: 2,
       support: 2,
       pose: 'collect',
-      remainingObjects: [],
+      remainingObjects: ['llave-1'],
       effect: 'pickup',
     });
     expect(prepared.sample(collectStart + 0.9)).toMatchObject({
-      remainingObjects: [],
+      remainingObjects: ['llave-1'],
       terrainTransition: { progress: 0 },
     });
   });
@@ -119,7 +142,7 @@ describe('prepareReplay', () => {
     expect(prepared.sample(0.45)).toMatchObject({
       support: 0,
       pose: 'collect',
-      remainingObjects: ['recompensa-1'],
+      remainingObjects: ['recompensa-1', 'llave-1'],
       effect: 'none',
     });
   });
@@ -204,7 +227,7 @@ describe('prepareReplay', () => {
 
   it('accepts a real fatal resolution, a victory at the exit, and the turn-limit ending', () => {
     expect(() => prepareReplay(replayRecordForActions(toLowBarrier, 'defeat'))).not.toThrow();
-    expect(() => prepareReplay(publicReplayView(createClosedAttemptRecordFixture()))).not.toThrow();
+    expect(() => prepareReplay(doorVictoryRecord())).not.toThrow();
     expect(() =>
       prepareReplay(
         replayRecordForActions(
@@ -215,14 +238,91 @@ describe('prepareReplay', () => {
     ).not.toThrow();
   });
 
-  it('keeps the exit enabled before and after collecting the reward', () => {
-    const winningRecord = publicReplayView(createClosedAttemptRecordFixture());
-    const pickup = winningRecord.actions.find((action) => action.action.kind === 'collect')!;
+  it('derives the door state from the key at the pickup marker and keeps the exit reachable', () => {
+    const winningRecord = doorVictoryRecord();
+    const pickupKeyIndex = winningRecord.actions.findIndex(
+      (action) =>
+        action.resolution.outcome === 'picked_up' && action.resolution.objectId === 'llave-1',
+    );
+    const pickupKey = winningRecord.actions[pickupKeyIndex]!;
+    const blockedCrossing = winningRecord.actions[9]!;
     const finalAction = winningRecord.actions.at(-1)!;
+    const prepared = prepareReplay(winningRecord);
+    const blockedStart = winningRecord.actions
+      .slice(0, 9)
+      .reduce((total, action) => total + replayActionDuration(action), 0);
+    const pickupStart = winningRecord.actions
+      .slice(0, pickupKeyIndex)
+      .reduce((total, action) => total + replayActionDuration(action), 0);
+    const blockedSamples = [0.05, 0.21, 0.4].map((offset) =>
+      prepared.sample(blockedStart + offset),
+    );
 
-    expect(winningRecord.snapshots[0]?.exitEnabled).toBe(true);
-    expect(pickup.after.inventory).toEqual(['recompensa-1']);
-    expect(pickup.after.exitEnabled).toBe(true);
+    expect(winningRecord.snapshots[0]?.inventory).toEqual([]);
+    expect(pickupKey.before.support).toBe(6);
+    expect(pickupKey.after.inventory).toEqual(['recompensa-1', 'llave-1']);
+    expect(prepared.sample(pickupStart + 0.62).doorState).toBe('locked');
+    expect(prepared.sample(pickupStart + 0.64).doorState).toBe('open');
+    expect(blockedCrossing.before.support).toBe(8);
+    expect(blockedCrossing.resolution).toEqual({ outcome: 'no_op', reason: 'door_locked' });
+    expect(
+      blockedSamples.map(({ support, drop, effect, doorState }) => ({
+        support,
+        drop,
+        effect,
+        doorState,
+      })),
+    ).toEqual([
+      { support: 8, drop: 0, effect: 'none', doorState: 'locked' },
+      { support: 8, drop: 0, effect: 'none', doorState: 'locked' },
+      { support: 8, drop: 0, effect: 'none', doorState: 'locked' },
+    ]);
+    const forgedCrossingAfter = {
+      ...blockedCrossing.after,
+      support: 9,
+      maxSupportReached: 9,
+    };
+    const forgedSnapshots = [
+      ...winningRecord.snapshots.slice(0, blockedCrossing.seq),
+      forgedCrossingAfter,
+    ];
+    const forgedActions = winningRecord.actions
+      .slice(0, blockedCrossing.seq)
+      .map((action, index) =>
+        index === blockedCrossing.seq - 1
+          ? {
+              ...action,
+              after: forgedCrossingAfter,
+              resolution: {
+                outcome: 'moved',
+                reason: 'moved',
+                segment: 8,
+                targetSupport: 9,
+              } as const,
+            }
+          : action,
+      );
+    expect(() =>
+      prepareReplay({
+        ...winningRecord,
+        snapshots: forgedSnapshots,
+        actions: forgedActions,
+        closure: {
+          ...winningRecord.closure,
+          status: 'cancelled',
+          actionCount: forgedActions.length,
+          finalStateId: forgedCrossingAfter.id,
+        },
+      }),
+    ).toThrow('contradice el contrato del juego');
+    expect(
+      isSemanticallyValidActionResolution(
+        blockedCrossing.action,
+        blockedCrossing.before,
+        { ...blockedCrossing.after, support: 9, maxSupportReached: 9 },
+        { outcome: 'moved', reason: 'moved', segment: 8, targetSupport: 9 },
+      ),
+    ).toBe(false);
     expect(
       isSemanticallyValidActionResolution(
         finalAction.action,
@@ -231,17 +331,6 @@ describe('prepareReplay', () => {
         finalAction.resolution,
       ),
     ).toBe(true);
-    expect(
-      isSemanticallyValidActionResolution(
-        finalAction.action,
-        finalAction.before,
-        {
-          ...finalAction.after,
-          exitEnabled: false,
-        },
-        finalAction.resolution,
-      ),
-    ).toBe(false);
   });
 
   it('rejects defeat on safe ground and incomplete before consuming the turn limit', () => {
@@ -354,7 +443,7 @@ describe('prepareReplay', () => {
     const record = replayRecordForActions([{ kind: 'collect' }]);
     const after = {
       ...record.snapshots[1]!,
-      remainingObjects: [],
+      remainingObjects: ['llave-1'],
       inventory: ['recompensa-1'],
     };
     const corrupted = {
@@ -371,7 +460,7 @@ describe('prepareReplay', () => {
   });
 
   it('rejects a forged maxSupportReached in the post-pickup snapshot', () => {
-    const record = publicReplayView(createClosedAttemptRecordFixture());
+    const record = doorVictoryRecord();
     const pickup = record.actions.find((action) => action.action.kind === 'collect')!;
     const snapshots = record.snapshots.map((snapshot) =>
       snapshot.id === pickup.after.id ? { ...snapshot, maxSupportReached: 7 } : snapshot,
@@ -392,7 +481,7 @@ describe('prepareReplay', () => {
     const record = replayRecordForActions([]);
     const initial = {
       ...record.snapshots[0]!,
-      remainingObjects: [],
+      remainingObjects: ['llave-1'],
       inventory: ['recompensa-1'],
     };
 
@@ -424,8 +513,19 @@ describe('prepareReplay', () => {
     },
   );
 
+  it('rejects a snapshot facing that contradicts the movement action', () => {
+    const record = replayRecordForActions([{ kind: 'advance' }]);
+    const after = { ...record.snapshots[1]!, facing: 'left' as const };
+    const snapshots = [record.snapshots[0]!, after];
+    const actions = record.actions.map((action) => ({ ...action, after }));
+
+    expect(() => prepareReplay({ ...record, snapshots, actions })).toThrow(
+      'contradice el contrato del juego',
+    );
+  });
+
   it('uses the same pure elapsed-time sample after omitted or out-of-order frames', () => {
-    const prepared = prepareReplay(publicReplayView(createClosedAttemptRecordFixture()));
+    const prepared = prepareReplay(doorVictoryRecord());
     const lateSample = prepared.sample(prepared.duration * 0.73);
     prepared.sample(prepared.duration);
     prepared.sample(0.25);
@@ -434,8 +534,9 @@ describe('prepareReplay', () => {
     expect(prepared.sample(Number.NaN)).toEqual(prepared.sample(0));
   });
 
-  it('follows the robot across the seven-segment level while keeping it in the viewport', () => {
-    const prepared = prepareReplay(publicReplayView(createClosedAttemptRecordFixture()));
+  it('follows the robot across the ten-segment level while keeping it in the viewport', () => {
+    const record = doorVictoryRecord();
+    const prepared = prepareReplay(record);
     const beginning = prepared.sample(0);
     const ending = prepared.sample(prepared.duration);
     const robotWorldX = REPLAY_SUPPORT_START_X + ending.support * REPLAY_SEGMENT_WIDTH;
@@ -445,16 +546,18 @@ describe('prepareReplay', () => {
     expect(ending.cameraX).toBeGreaterThan(beginning.cameraX);
     expect(robotScreenX).toBeGreaterThan(0);
     expect(robotScreenX).toBeLessThan(REPLAY_VIEW_WIDTH);
-    expect(ending.terrain).toEqual(createClosedAttemptRecordFixture().snapshots.at(-1)?.terrain);
+    expect(ending.support).toBe(10);
+    expect(ending.terrain).toEqual(record.snapshots.at(-1)?.terrain);
     expect(ending.terrainTransition).toBeNull();
   });
 
   it('rejects incomplete, stale, unsupported, or mismatched records explicitly', () => {
-    const current = publicReplayView(createClosedAttemptRecordFixture());
+    const current = doorVictoryRecord();
     expect(() =>
       prepareReplay({ ...current, closure: { ...current.closure, recordComplete: false } }),
     ).toThrow('registro está incompleto');
-    expect(() => prepareReplay({ ...current, recordVersion: 1 as 3 })).toThrow(
+    const previousRecordVersion = (ATTEMPT_RECORD_VERSION - 1) as typeof current.recordVersion;
+    expect(() => prepareReplay({ ...current, recordVersion: previousRecordVersion })).toThrow(
       'versión de registro no compatible',
     );
     expect(() =>

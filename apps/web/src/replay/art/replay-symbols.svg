@@ -186,4 +186,24 @@
     <path d="m24 5 0 41m-18-28 18 7 18-7M11 43l13-18 13 18" fill="none" stroke="#fff4d5" stroke-linejoin="round" stroke-width="3" />
     <path d="M16 16q8-7 16 0" fill="none" stroke="#fff" stroke-linecap="round" stroke-width="3" opacity=".9" />
   </symbol>
+  <symbol id="key-object" viewBox="0 0 48 52">
+    <circle cx="15" cy="18" r="10" fill="#f7d46d" stroke="#694730" stroke-width="4" />
+    <circle cx="15" cy="18" r="3.5" fill="#eaf8fc" />
+    <path d="M22 25 41 44l-6 6-5-5 3-3-5-5-3 3-6-6" fill="#f7d46d" stroke="#694730" stroke-linejoin="round" stroke-width="4" />
+    <path d="m25 29 5-5" stroke="#fff4d5" stroke-linecap="round" stroke-width="3" />
+  </symbol>
+  <symbol id="door-closed" viewBox="0 0 56 94">
+    <path d="M5 92V13Q5 5 13 5h30q8 0 8 8v79" fill="#8b5e46" stroke="#3e3440" stroke-linejoin="round" stroke-width="5" />
+    <path d="M13 90V18q0-5 5-5h20q5 0 5 5v72" fill="#d88b5c" stroke="#663f38" stroke-width="3" />
+    <path d="M19 24h18M19 36h18M19 48h18M19 60h18M19 72h18" stroke="#f3b874" stroke-linecap="round" stroke-width="3" />
+    <circle cx="36" cy="53" r="3" fill="#fff2c9" />
+    <path d="M7 91h43" stroke="#3e3440" stroke-linecap="round" stroke-width="5" />
+  </symbol>
+  <symbol id="door-open" viewBox="0 0 56 94">
+    <path d="M5 92V13Q5 5 13 5h30q8 0 8 8v79" fill="#8b5e46" stroke="#3e3440" stroke-linejoin="round" stroke-width="5" />
+    <path d="M16 16h24v72H16z" fill="#b9e7d8" stroke="#3e3440" stroke-width="3" />
+    <path d="M17 18 7 24v62l10 3zm22 0 10 6v62l-10 3z" fill="#d88b5c" stroke="#663f38" stroke-linejoin="round" stroke-width="3" />
+    <path d="M7 91h43" stroke="#3e3440" stroke-linecap="round" stroke-width="5" />
+    <path d="M24 52h8m-4-4v8" stroke="#3c8b79" stroke-linecap="round" stroke-width="3" />
+  </symbol>
 </svg>

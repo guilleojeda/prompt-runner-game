@@ -287,12 +287,13 @@ function isGameSnapshot(value: unknown): boolean {
     isRecord(value) &&
     typeof value.id === 'string' &&
     Number.isSafeInteger(value.support) &&
+    (value.facing === 'left' || value.facing === 'right') &&
     Number.isSafeInteger(value.turnsUsed) &&
     Number.isSafeInteger(value.phaseTurn) &&
     terrainAllowedByLevel(value.terrain, LEVEL.segments) &&
     isStringArray(value.remainingObjects) &&
     isStringArray(value.inventory) &&
-    typeof value.exitEnabled === 'boolean' &&
+    !Object.prototype.hasOwnProperty.call(value, 'exitEnabled') &&
     typeof value.status === 'string' &&
     gameStatuses.includes(value.status as (typeof gameStatuses)[number]) &&
     Number.isSafeInteger(value.maxSupportReached)

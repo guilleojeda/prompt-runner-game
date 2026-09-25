@@ -1,6 +1,6 @@
 # Juego y niveles
 
-Este documento es canónico para las reglas del mundo, el reloj, las acciones, los objetos, la salida y el contenido de niveles del juego. El contrato vigente usa un único nivel principal con terreno periódico, movimientos, Esperar y una recompensa que se puede recoger. La llave, la salida bloqueada y el recorrido de transferencia pertenecen a fases posteriores. La especificación vigente se distribuye en esta carpeta y se indexa desde [README.md](../../README.md).
+Este documento es canónico para las reglas del mundo, el reloj, las acciones, los objetos, la puerta, la salida y el contenido de niveles del juego. El contrato vigente usa un único nivel principal con terreno periódico, recompensa y llave recogibles, puerta y salida libre. El recorrido de transferencia pertenece a una fase posterior. La especificación vigente se distribuye en esta carpeta y se indexa desde [README.md](../../README.md).
 
 Las etiquetas siguientes distinguen el grado de decisión:
 
@@ -10,7 +10,7 @@ Las etiquetas siguientes distinguen el grado de decisión:
 
 ## Recorrido principal vigente
 
-El único nivel disponible es `principal-recompensas-v3`, versión 3, con `RULES_VERSION=3`. Sus siete tramos, en orden, son `ground`, `pit`, `ground`, `branch`, `barrier`, `platform`, `ground`; tiene ocho apoyos, la salida está en el apoyo 7 y el límite inicial es de 16 acciones. `recompensa-1` está en el apoyo 2 y vale 25 puntos si se recoge. La salida no requiere objetos.
+El único nivel disponible es `principal-puerta-v4`, versión 4, con `RULES_VERSION=4`. Sus diez tramos, en orden, son `ground`, `pit`, `ground`, `branch`, `barrier`, `platform`, `ground`, `ground`, `ground`, `ground`; tiene apoyos 0–10 y un límite de 24 acciones. `recompensa-1` está en el apoyo 2 y vale 25 puntos si se recoge. `llave-1` está en el apoyo 6 y no aporta puntos. La puerta ocupa el acceso al apoyo 9 desde el 8; la salida libre está en el apoyo 10.
 
 La barrera está baja en turnos pares y alta en turnos impares. La plataforma es suelo en los turnos divisibles por tres y pozo en los demás. Ambas usan desfase cero desde el turno 0. El nivel y las reglas se fijan en cada intento. Este contenido no promete lectores para niveles ni registros de contratos anteriores; los datos de prueba anteriores pueden borrarse o quedar sin uso si no interfieren con el contrato vigente.
 
@@ -22,15 +22,17 @@ El robot se desplaza por un recorrido lateral lógico formado por tramos y punto
 
 Un nivel tiene `N` tramos ordenados y `N+1` puntos de apoyo seguros. Los índices son internos al motor y no se envían al agente como coordenadas o identificadores.
 
-- El robot comienza en el apoyo 0.
+- El robot comienza en el apoyo 0 mirando a la derecha.
 - Su posición lógica siempre es un apoyo, nunca un tramo ocupado por un obstáculo.
 - Desde el apoyo `p`, avanzar cruza el tramo `p` y llega a `p+1`.
 - Desde `p`, retroceder cruza el tramo `p-1` y llega a `p-1`.
 - El apoyo `N` contiene la salida.
 - Los objetos se colocan en apoyos.
-- Los obstáculos afectan el tramo que se cruza y no ocupan ni destruyen los apoyos.
+- El terreno peligroso afecta el tramo que se cruza y no destruye los apoyos. La puerta ocupa la entrada al apoyo 9: cerrada, impide el cruce desde el apoyo 8 y deja al robot en ese apoyo seguro.
 
 Una acción de movimiento cruza exactamente un tramo. Saltar o pasar agachado termina en el apoyo del otro lado; el robot no queda detenido en un pozo. Saltar y pasar agachado tienen dirección izquierda o derecha. No existe una postura agachada persistente ni una acción separada para levantarse: cada movimiento se evalúa con su propia modalidad.
+
+Todo movimiento intentado fija la orientación física del robot en esa dirección, incluso si encuentra un límite, la puerta cerrada o un obstáculo fatal y no cambia de apoyo. Esperar, Nadar y Agarrar objeto conservan la orientación. La observación local informa esa orientación, sin añadir historial ni coordenadas.
 
 ## Acciones y direcciones
 
@@ -81,41 +83,37 @@ La compatibilidad depende del estado actual del tramo y de la modalidad de cruce
 | Barrera baja | derrota por choque | válido | derrota por choque |
 | Barrera alta | derrota por choque | derrota por choque | válido |
 
-Una acción de movimiento válida mueve exactamente un tramo en la dirección que indica. Saltar sobre suelo libre sigue siendo válido. Una colisión o caída termina el intento en esa acción. El mismo resultado debe producirse para el mismo estado inicial y la misma acción.
+Una acción de movimiento válida mueve exactamente un tramo en la dirección que indica. Saltar sobre suelo libre sigue siendo válido. Una colisión o caída termina el intento en esa acción. Una puerta cerrada impide entrar sin provocar caída ni derrota, aun si el agente intenta Saltar o Agacharse. El mismo resultado debe producirse para el mismo estado inicial y la misma acción.
 
 ## Límites y acciones sin efecto
 
 En el apoyo 0 no hay tramo a la izquierda; en el apoyo `N` no hay tramo a la derecha. **Default permitido:** intentar salir del recorrido es un no-op que conserva posición e inventario, consume un turno y queda registrado. La observación local debe mostrar el límite explícitamente. Nunca se usan índices negativos, movimientos fuera del mapa ni la salida por un extremo como condición implícita de victoria.
 
-Otros no-ops son esperar, intentar recoger sin objeto y usar una habilidad distractora donde no tiene efecto. Un no-op no es una colisión: no derrota al robot por sí mismo, aunque puede llevar a otro estado periódico al consumir el turno. Cada no-op genera un evento de reproducción y conserva el uso real de la llamada al modelo.
+Otros no-ops son esperar, intentar recoger sin objeto, intentar cruzar la puerta cerrada y usar una habilidad distractora donde no tiene efecto. Un no-op no es una colisión: no derrota al robot por sí mismo, aunque puede llevar a otro estado periódico al consumir el turno. Cada no-op genera un evento de reproducción y conserva el uso real de la llamada al modelo.
 
 Los estados terminales de la simulación son:
 
 | Estado | Causa |
 |---|---|
-| Victoria | Se completa el recorrido y la salida cumple sus requisitos |
+| Victoria | Se llega al apoyo 10, que contiene la salida libre |
 | Derrota | La acción de movimiento es incompatible con el obstáculo |
 | Recorrido incompleto | Se alcanza el límite de turnos sin terminar |
 | Cancelado | El humano interrumpe el cálculo |
 | Error de ejecución | Falla el proveedor o la respuesta no cumple el contrato |
 
-Cancelado y error de ejecución son resultados operativos y no derrotas del robot. No se ejecutan nuevas acciones después de un terminal. Si la acción del último turno habilita la salida, gana; si es fatal, pierde; la victoria no se reemplaza por el límite.
+Cancelado y error de ejecución son resultados operativos y no derrotas del robot. No se ejecutan nuevas acciones después de un terminal. Si la acción del último turno llega a la salida, gana; si es fatal, pierde; la victoria no se reemplaza por el límite.
 
-## Objetos, inventario y salida
+## Objetos, puerta y salida
 
-El inventario empieza vacío. El nivel vigente contiene una recompensa y su salida está habilitada desde el inicio.
+El inventario empieza vacío. El nivel vigente contiene una recompensa y una llave. La salida nunca está bloqueada; la puerta anterior es el único acceso condicionado por un objeto.
 
 Los objetos se recogen únicamente desde el apoyo actual mediante `Agarrar objeto`. Pasar por un apoyo no los recoge, y no se pueden recoger objetos remotos. Recoger consume un turno, mantiene al robot en el apoyo, quita el objeto del suelo y lo agrega al inventario interno. La identidad del objeto impide recogerlo o puntuarlo dos veces. Intentarlo donde no queda un objeto es un no-op que también consume un turno.
 
 El nivel vigente tiene como máximo un objeto por apoyo, por lo que la acción no necesita seleccionar entre varios. No se agregan consumo, equipamiento, combinación, lanzamiento ni uso manual de objetos.
 
-Un objeto puede ser:
+La llave abre automáticamente la puerta cuando entra al inventario; no se equipa ni se usa mediante otra herramienta. Al llegar al apoyo 8 sin ella, la observación del lado derecho identifica una puerta cerrada y el ID de la llave requerida, pero no indica dónde está. Intentar avanzar, saltar o pasar agachado hacia el apoyo 9 queda registrado como `no_op/door_locked`, conserva la posición y consume un turno. Desde allí se puede retroceder dos apoyos hasta encontrar la llave en el 6. Después de recogerla, el mismo acceso queda abierto y cualquiera de esos movimientos compatibles puede cruzarlo. La puerta no cambia la fase del terreno y no bloquea el retroceso desde un apoyo seguro.
 
-- un requisito de salida, como una llave;
-- una recompensa con valor para el puntaje;
-- ambas cosas.
-
-La llave y las salidas con requisitos se incorporarán después. Una salida sin requisitos, como la vigente, está habilitada desde el principio. Cuando se incorpore una salida bloqueada, llegar allí permitirá continuar y retroceder; una llave la habilitará sin acción adicional de uso.
+La salida del apoyo 10 no exige llave ni tiene estados de apertura. Llegar a ella después de cruzar el recorrido termina en victoria. La llave vale cero; sólo la recompensa recogida añade 25 puntos al puntaje de una victoria.
 
 Las recompensas opcionales se ubican antes de la activación automática de la victoria. Los valores y requisitos son datos del nivel y se aplican solo a los objetos realmente recogidos en ese intento.
 
@@ -131,7 +129,7 @@ El nivel principal vigente presenta esta progresión:
 - la barrera periódica baja/alta;
 - la plataforma periódica suelo/pozo.
 
-La recompensa vigente está en el apoyo 2. La ubicación de una futura llave se definirá cuando se incorpore. El recorrido de transferencia reordenará o combinará las mecánicas disponibles en una situación nueva; no requiere generación procedural.
+La recompensa está en el apoyo 2; la llave, en el 6; la puerta, en el acceso al 9; y la salida, en el 10. El recorrido de transferencia reordenará o combinará las mecánicas disponibles en una situación nueva; no requiere generación procedural.
 
 Para cada nivel se debe verificar, además de que exista una ruta física, que una política basada en la observación actual y las herramientas disponibles pueda escogerla:
 
@@ -141,11 +139,11 @@ Para cada nivel se debe verificar, además de que exista una ruta física, que u
 - los apoyos siguen siendo seguros entre fases;
 - el límite de turnos permite una solución razonable y corta los bucles.
 
-Un corredor vacío que exige volver muchos apoyos sin una señal local es un nivel inválido para este agente. Un retorno corto ante una salida bloqueada y una llave en el apoyo anterior sí puede ser válido porque la razón está localmente disponible. La resolubilidad y la calibración pedagógica se ajustan durante la implementación; no son bloqueos nuevos para comenzar.
+Un corredor vacío que exige volver sin una señal local es un nivel inválido para este agente. En el recorrido vigente, la puerta informa localmente que requiere `llave-1`; retroceder desde el apoyo 8 lleva al 7 y luego al 6, donde la llave vuelve a ser observable. En el apoyo 7, la orientación actual distingue el avance hacia la puerta del regreso desde ella, aunque los tramos vecinos sean iguales. El agente no recibe la ubicación remota ni un recuerdo de haberla visto. La calidad de sus decisiones depende también de las habilidades y descripciones que prepara el jugador.
 
 ## Defaults permitidos y pendientes
 
-El contenido vigente fija los períodos y desfases descritos arriba, un límite de 16 acciones y el valor de 25 puntos de `recompensa-1`. Los límites del recorrido son no-op y las habilidades sin efecto tienen resolución determinista. La configuración inicial limitada y la frase de orientación se fijan en [agente.md](agente.md). La llave y el recorrido de transferencia se definirán en sus fases.
+El contenido vigente fija los períodos y desfases descritos arriba, un límite de 24 acciones, el valor de 25 puntos de `recompensa-1` y el valor cero de `llave-1`. Los límites del recorrido y la puerta cerrada son no-op; las habilidades sin efecto tienen resolución determinista. La configuración inicial limitada y la frase de orientación se fijan en [agente.md](agente.md). El recorrido de transferencia se definirá en su fase.
 
 ## Verificación de comportamiento
 
@@ -158,7 +156,7 @@ La verificación debe cubrir el comportamiento, no depender solo de que se dibuj
 - comprobar que el nivel principal tiene una solución dentro del límite con la observación local y las herramientas disponibles;
 - reproducir los casos de no-op y de colisión como las causas registradas.
 
-Verificar una ruta victoriosa con y sin recoger la recompensa dentro del límite; la acción de recogida cambia el turno que se encuentra en barrera y plataforma. Comprobar que sólo el objeto local puede recogerse, que el inventario conserva su identidad sin duplicados y que el no-op por ausencia de objeto consume un turno. El recorrido de transferencia se verificará en su fase posterior.
+Verificar rutas victoriosas con y sin recompensa dentro del límite; la acción de recogida cambia el turno que se encuentra en barrera y plataforma. Comprobar que sólo el objeto local puede recogerse, que el inventario conserva su identidad sin duplicados y que el no-op por ausencia de objeto consume un turno. Una ruta debe pasar de largo la llave, encontrar la puerta cerrada, retroceder, recogerla, abrir la puerta y ganar en la salida; otra debe recogerla antes de llegar a la puerta. En ambos casos la salida queda libre. El recorrido de transferencia se verificará en su fase posterior.
 
 Las pruebas pueden usar un adaptador de agente de prueba o un controlador de referencia para el motor. Eso sirve para validar reglas y resolución y no reemplaza la inferencia real requerida por la experiencia.
 
