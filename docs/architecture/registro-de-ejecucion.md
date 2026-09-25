@@ -1,6 +1,6 @@
 # Registro de ejecución para reproducción
 
-**Registro y reproducción del nivel principal con recompensa.** El registro conserva snapshots, acciones, llamadas, uso y cierre del intento bajo `principal-recompensas-v3`, versión 3 y `RULES_VERSION=3`. Concreta los requisitos de [intentos](../intent/intentos.md), sin cambiar las [reglas del juego](../intent/juego.md). El reproductor y su catálogo visual se describen en [animación](animacion.md); la persistencia física y sus claves se definen en [datos](datos.md).
+**Registro y reproducción del nivel principal con puerta.** El registro conserva snapshots, acciones, llamadas, uso y cierre del intento bajo `principal-puerta-v4`, versión 4, `RULES_VERSION=4` y formato durable `ATTEMPT_RECORD_VERSION=4`. Concreta los requisitos de [intentos](../intent/intentos.md), sin cambiar las [reglas del juego](../intent/juego.md). El reproductor y su catálogo visual se describen en [animación](animacion.md); la persistencia física y sus claves se definen en [datos](datos.md).
 
 ## Separación de responsabilidades
 
@@ -13,8 +13,8 @@ El registro completo contiene observaciones, prompts, herramientas, respuestas, 
 | Dato                  | Contenido y propósito                                                                                                                                                         |
 | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Identidad y versiones | Intento, versión del formato, nivel y reglas. Permiten interpretar registros retenidos.                                                                                       |
-| Escenario fijo        | `principal-recompensas-v3`, versión 3: los mismos siete tramos periódicos, recompensa en el apoyo 2 y salida libre en el apoyo 7. |
-| Estado inicial        | Posición lógica, fases efectivas, objetos, inventario, salida, contadores y estado de juego antes de cualquier acción.                                                        |
+| Escenario fijo        | `principal-puerta-v4`, versión 4: diez tramos; recompensa en apoyo 2, llave en 6, puerta en acceso al 9 y salida libre en el 10. |
+| Estado inicial        | Posición y orientación físicas, fases efectivas, objetos, inventario, salida, contadores y estado de juego antes de cualquier acción.                                                        |
 | Acciones ordenadas    | Acción interna normalizada, dirección/parámetros, estados anterior y posterior, resultado y causa.                                                                            |
 | Interacción           | Tramo cruzado, apoyo objetivo o ID del objeto y resultado `moved`, `fall`, `collision`, `picked_up` o `no_op`. Esperar y recoger conservan apoyo y pueden cambiar la fase para el estado siguiente. |
 | Cierre                | Número de acciones publicadas, referencia al último estado, resultado terminal y causa, incluidos cancelación y error.                                                        |
@@ -31,18 +31,18 @@ El snapshot contiene todos los datos dinámicos del motor. Para la reproducción
 type ReplayState = {
   id: string;
   support: number; // Último apoyo lógico; no posición del sprite.
+  facing: 'left' | 'right'; // Orientación física actual, inicial derecha.
   turnsUsed: number; // Acciones ejecutadas, incluso la fatal.
   phaseTurn: number; // Turno cuya fase está representada.
   terrain: TerrainState[]; // Estado efectivo de TODOS los tramos, por orden.
   remainingObjects: string[]; // IDs de objetos aún disponibles en el nivel.
   inventory: string[]; // IDs recogidos una sola vez durante este intento.
-  exitEnabled: boolean; // Siempre true en el nivel vigente.
   status: 'running' | 'victory' | 'defeat' | 'incomplete';
   maxSupportReached: number; // Avance informativo del intento.
 };
 ```
 
-El snapshot materializa el terreno efectivo de los siete tramos. La barrera alterna entre `barrier_low` en turnos pares y `barrier_high` en impares; la plataforma es `ground` si el turno es múltiplo de tres y `pit` en los demás. El estado inicial tiene `recompensa-1` entre los objetos restantes e inventario vacío; una recogida local traslada ese ID al inventario. La salida está habilitada desde el inicio. El `maxSupportReached` permite mostrar avance aunque el robot retroceda.
+El snapshot materializa el terreno efectivo de los diez tramos. La barrera alterna entre `barrier_low` en turnos pares y `barrier_high` en impares; la plataforma es `ground` si el turno es múltiplo de tres y `pit` en los demás. El estado inicial mira a la derecha y tiene `recompensa-1` y `llave-1` entre los objetos restantes e inventario vacío. Todo movimiento intentado actualiza `facing`, incluso si no avanza; Esperar, Nadar y Agarrar objeto lo conservan. Una recogida local traslada sólo su ID al inventario. La puerta se deriva del inventario: cerrada sin `llave-1`, abierta con ella; no se persiste un segundo campo mutable. La salida siempre está libre. `maxSupportReached` permite mostrar avance aunque el robot retroceda.
 
 El snapshot inicial es `state-0`; cada acción publicada agrega una sola fila `STATE#<afterStateId>` y conserva el snapshot previo por referencia. `phaseTurn` avanza sólo si el juego continúa y queda congelado en el turno evaluado cuando hay fatalidad o victoria. El reproductor lee las fases efectivas guardadas sin recalcularlas.
 
@@ -66,9 +66,9 @@ Cada acción publicada referencia una decisión auditada y sus estados anterior 
 | `resolution.segment`, `targetSupport` | Tramo del movimiento y apoyo al que se intentó llegar; presentes solo cuando existen. El destino alcanzado está en el estado posterior.                                          |
 | `resolution.objectId`                 | ID del objeto realmente recogido; sólo aparece en `picked_up`.                                                                                              |
 
-Las resoluciones son variantes tipadas: una caída o choque requiere tramo, objetivo y causa; `picked_up` requiere el ID del objeto local; un no-op identifica su motivo, incluido `no_object_here`. Se distinguen límites izquierdo/derecho, Nadar sin efecto y Esperar. No se emite un tramo inexistente para un intento de salir del nivel.
+Las resoluciones son variantes tipadas: una caída o choque requiere tramo, objetivo y causa; `picked_up` requiere el ID del objeto local; un no-op identifica su motivo, incluidos `no_object_here` y `door_locked`. Se distinguen límites izquierdo/derecho, Nadar sin efecto y Esperar. La puerta cerrada impide entrar al apoyo 9, conserva el apoyo 8 y consume un turno; no es una colisión ni una derrota. No se emite un tramo inexistente para un intento de salir del nivel.
 
-El resultado de la interacción y el resultado del juego son conceptos distintos. Una acción `moved` puede llegar a una salida bloqueada y continuar, o a una habilitada y ganar. `picked_up` puede ganar si habilita la salida desde ese apoyo. Un no-op puede terminar por límite. Los snapshots y el cierre contienen el resultado del juego; el reproductor no vuelve a aplicar su precedencia.
+El resultado de la interacción y el resultado del juego son conceptos distintos. `picked_up` de la llave abre la puerta sin terminar el intento; `moved` al apoyo 9 atraviesa una puerta abierta y continúa; `moved` al apoyo 10 gana porque allí está la salida libre. Un no-op ante puerta cerrada puede terminar por límite. Los snapshots y el cierre contienen el resultado del juego; el reproductor no vuelve a aplicar su precedencia.
 
 **No se guardan píxeles, frames, velocidades ni un punto de colisión artificial.** El motor actual resuelve cruces discretos, no contactos físicos continuos. En las mecánicas actuales, acción, dirección, tramo, causa y estados permiten escoger una receta visual inequívoca. Sus anclas y curvas pertenecen al perfil visual. Si una mecánica futura admite resultados visualmente distintos que estos datos no distingan, se amplía el contrato con el dato semántico necesario en ese momento.
 
@@ -79,15 +79,15 @@ Fragmento ficticio de un registro del contrato vigente, expandido para leer los 
 ```json
 {
   "seq": 2,
-  "action": { "kind": "walk", "direction": "right" },
+  "action": { "kind": "advance" },
   "before": {
     "support": 1,
+    "facing": "right",
     "turnsUsed": 1,
     "phaseTurn": 1,
-    "terrain": ["ground", "pit", "ground", "branch", "barrier_high", "pit", "ground"],
-    "remainingObjects": ["recompensa-1"],
+    "terrain": ["ground", "pit", "ground", "branch", "barrier_high", "pit", "ground", "ground", "ground", "ground"],
+    "remainingObjects": ["recompensa-1", "llave-1"],
     "inventory": [],
-    "exitEnabled": true,
     "status": "running"
   },
   "resolution": {
@@ -98,12 +98,12 @@ Fragmento ficticio de un registro del contrato vigente, expandido para leer los 
   },
   "after": {
     "support": 1,
+    "facing": "right",
     "turnsUsed": 2,
     "phaseTurn": 1,
-    "terrain": ["ground", "pit", "ground", "branch", "barrier_high", "pit", "ground"],
-    "remainingObjects": ["recompensa-1"],
+    "terrain": ["ground", "pit", "ground", "branch", "barrier_high", "pit", "ground", "ground", "ground", "ground"],
+    "remainingObjects": ["recompensa-1", "llave-1"],
     "inventory": [],
-    "exitEnabled": true,
     "status": "defeat"
   }
 }
@@ -118,6 +118,8 @@ Otros casos que el mismo contrato resuelve:
 | Saltar a la izquierda desde 2 hasta 1 | `jump/left`, tramo 1, `moved`, apoyo posterior 1                        | Arco invertido; cruza exactamente un tramo.                                    |
 | Esperar ante barrera baja             | `wait`, `no_op/wait`, mismo apoyo, siguiente fase alta                  | Robot quieto; la barrera cambia después de la espera.                          |
 | Esperar antes de plataforma           | `wait`, `no_op/wait`, siguiente fase en el turno 3                      | Robot quieto; la plataforma cambia a suelo antes de la acción siguiente.      |
+| Avanzar ante puerta cerrada           | `advance`, `no_op/door_locked`, apoyo 8 conservado                      | Gesto detenido frente a la puerta, sin caída ni celebración.                  |
+| Recoger llave en apoyo 6              | `collect`, `picked_up/llave-1`, inventario posterior con la llave      | La llave desaparece y la puerta aparece abierta desde ese marcador.          |
 | Fallo técnico tras tres acciones      | Tres acciones publicadas y cierre `error` sobre el último estado        | Reproducir esas tres; informar error, sin caída ni cuarta acción.              |
 
 ## Persistencia, lectura y consistencia
@@ -126,6 +128,6 @@ El ejecutor publica juntos la resolución, el nuevo snapshot y la secuencia de l
 
 El cierre fija el número de acciones y el último estado. La vista de replay ensambla acciones y snapshots guardados, valida su secuencia y referencias y rechaza un registro incompleto o incompatible. No entrega bodies ni datos de diagnóstico. Una acción o snapshot faltante sigue siendo un defecto de registro, no una secuencia más corta exitosa.
 
-Invariantes que verifican motor y registro: secuencia sin huecos; primer `before` igual al inicial; cada `before` igual al `after` anterior; una acción incrementa `turnsUsed` exactamente una vez; ningún evento después de un terminal; terreno efectivo correspondiente al `phaseTurn`; objetos restantes e inventario sin duplicados ni IDs ajenos al nivel; una recogida traslada sólo el ID local; salida habilitada; cierre sobre el último estado publicado. La implementación del reproductor valida estructura, referencias y transiciones semánticas para evitar una representación engañosa; no incorpora un segundo motor para decidir acciones.
+Invariantes que verifican motor y registro: secuencia sin huecos; primer `before` igual al inicial; cada `before` igual al `after` anterior; una acción incrementa `turnsUsed` exactamente una vez; ningún evento después de un terminal; terreno efectivo correspondiente al `phaseTurn`; objetos restantes e inventario sin duplicados ni IDs ajenos al nivel; una recogida traslada sólo el ID local; un cruce cerrado no llega al apoyo 9; victoria sólo en la salida del 10; cierre sobre el último estado publicado. La implementación del reproductor valida estructura, referencias y transiciones semánticas para evitar una representación engañosa; no incorpora un segundo motor para decidir acciones.
 
 El registro fija el nivel y las reglas del contrato vigente. Un registro de formato, nivel o reglas retirados se rechaza; no se ejecuta de nuevo para reconstruirlo ni se mantienen lectores o adaptaciones anteriores. Los datos de prueba de contratos reemplazados pueden permanecer sin uso si no estorban, o eliminarse. La reproducción del contrato vigente se describe en [animación](animacion.md).

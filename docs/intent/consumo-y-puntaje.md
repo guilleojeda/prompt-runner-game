@@ -1,6 +1,6 @@
 # Consumo y puntaje
 
-Estado: consumo por llamada y puntaje de victorias implementados para `principal-recompensas-v3`, con recompensa, inventario y parámetros guardados. La clasificación entre soluciones y la calibración educativa siguen pendientes.
+Estado: consumo por llamada y puntaje de victorias implementados para `principal-puerta-v4`, con recompensa, llave, inventario y parámetros guardados. La llave abre la puerta y vale cero; la recompensa recogida vale 25 puntos. La clasificación entre soluciones y la calibración educativa siguen pendientes.
 
 Esta página define qué uso se mide, cómo se diferencia el volumen de tokens del costo monetario y cómo se calcula y compara el puntaje. Se relaciona con [la experiencia](experiencia.md), [las reglas del juego](juego.md), [el agente](agente.md) y [la plataforma](plataforma.md). El ciclo y el registro de cada intento están en [intentos](intentos.md).
 
@@ -88,7 +88,7 @@ El valor de un objeto debe calibrarse para que una recompensa pueda compensar lo
 
 ## Parámetros disponibles
 
-El nivel principal vigente usa base 1000, peso de turno 10, peso de tokens 1 y unidad de tokens 1000. Redondea el resultado final a dos decimales y permite puntajes negativos. `recompensa-1`, fijada en el nivel del intento, aporta 25 puntos sólo si aparece en el inventario final; pasar por su apoyo no alcanza. El valor efectivo se deriva de esa copia del nivel, sin una segunda tabla mutable. Estos parámetros son defaults técnicos ajustables, no una calibración educativa acreditada.
+El nivel principal vigente usa base 1000, peso de turno 10, peso de tokens 1 y unidad de tokens 1000. Redondea el resultado final a dos decimales y permite puntajes negativos. `recompensa-1`, fijada en el nivel del intento, aporta 25 puntos sólo si aparece en el inventario final; pasar por su apoyo no alcanza. `llave-1` abre la puerta, pero aporta cero puntos. Los valores efectivos se derivan de la copia del nivel, sin una segunda tabla mutable. Estos parámetros son defaults técnicos ajustables, no una calibración educativa acreditada.
 
 La interfaz muestra turnos, llamadas, uso reportado, cantidad de objetos recogidos y aporte de la recompensa, con desconocidos explícitos. No ofrece ranking ni costo monetario por ahora. Sólo una victoria con el total de tokens conocido obtiene puntaje; ninguna falla técnica se presenta como derrota para asignarle puntos.
 

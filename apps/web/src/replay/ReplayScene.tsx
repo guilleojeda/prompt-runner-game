@@ -93,6 +93,9 @@ const impactHref = symbolHref('effect-impact');
 const pickupHref = symbolHref('effect-pickup');
 const victoryHref = symbolHref('effect-victory');
 const rewardHref = symbolHref('reward-object');
+const keyHref = symbolHref('key-object');
+const closedDoorHref = symbolHref('door-closed');
+const openDoorHref = symbolHref('door-open');
 
 interface TerrainLayer {
   readonly state: TerrainState;
@@ -180,9 +183,20 @@ const TerrainBack = ({ sample }: { readonly sample: ReplaySample }) => {
       />
       <use
         href={exitHref}
+        data-exit-state="free"
+        data-exit-support={endSupport}
         x={SUPPORT_START_X + endSupport * SEGMENT_WIDTH - 35}
         y="156"
         width="70"
+        height="94"
+      />
+      <use
+        data-door-state={sample.doorState}
+        data-door-support={LEVEL.door!.support}
+        href={sample.doorState === 'open' ? openDoorHref : closedDoorHref}
+        x={SUPPORT_START_X + LEVEL.door!.support * SEGMENT_WIDTH - 28}
+        y="154"
+        width="56"
         height="94"
       />
     </g>
@@ -275,8 +289,8 @@ const Robot = ({ sample }: { readonly sample: ReplaySample }) => {
   );
 };
 
-const Rewards = ({ sample }: { readonly sample: ReplaySample }) => (
-  <g data-replay-layer="rewards" aria-hidden="true">
+const Objects = ({ sample }: { readonly sample: ReplaySample }) => (
+  <g data-replay-layer="objects" aria-hidden="true">
     {LEVEL.objects
       .filter((object) => sample.remainingObjects.includes(object.id))
       .map((object) => {
@@ -284,13 +298,14 @@ const Rewards = ({ sample }: { readonly sample: ReplaySample }) => (
         return (
           <use
             key={object.id}
-            className="replay-scene__reward"
+            className="replay-scene__object"
             data-object-id={object.id}
-            href={rewardHref}
+            data-object-kind={object.id === 'llave-1' ? 'key' : 'reward'}
+            href={object.id === 'llave-1' ? keyHref : rewardHref}
             x={centerX + 14}
-            y="202"
+            y={object.id === 'llave-1' ? '204' : '202'}
             width="36"
-            height="40"
+            height={object.id === 'llave-1' ? '36' : '40'}
           />
         );
       })}
@@ -349,7 +364,7 @@ const ReplayCanvas = ({
       data-world-width={REPLAY_WORLD_WIDTH}
     >
       <TerrainBack sample={sample} />
-      <Rewards sample={sample} />
+      <Objects sample={sample} />
       <g data-replay-layer="robot">
         <Robot sample={sample} />
       </g>

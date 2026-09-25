@@ -40,6 +40,7 @@ import {
   collectionSummaryOf,
   readAttemptScoreParameters,
   readCurrentLevel,
+  validateActionPublication,
   replayRecordViewOf,
   summaryOf,
   type ActionPublication,
@@ -204,7 +205,7 @@ const storedConfig = (value: unknown): AttemptConfig => {
     value.protocol.stream !== false ||
     value.levelId !== levelDefinition.id ||
     value.levelVersion !== String(levelDefinition.version) ||
-    value.engineVersion !== 'periodic-engine-v3' ||
+    value.engineVersion !== 'periodic-engine-v4' ||
     value.protocolVersion !== 'tool-protocol-v2' ||
     value.inferenceVersion !== model.profileVersion ||
     value.maxTurns !== levelDefinition.maxTurns
@@ -245,7 +246,7 @@ const configForAdmission = (
     levelId: LEVEL.id,
     levelVersion: String(LEVEL.version),
     levelDefinition: LEVEL,
-    engineVersion: 'periodic-engine-v3',
+    engineVersion: 'periodic-engine-v4',
     protocolVersion: 'tool-protocol-v2',
     maxTurns: LEVEL.maxTurns,
     protocol: { api: 'converse', stream: false },
@@ -1273,6 +1274,10 @@ export class DynamoAttemptStore implements AttemptStore {
         (current.currentSnapshot as { id?: unknown })?.id === publication.afterStateId
         ? this.committedPublication(owner, attemptId, publication, current)
         : undefined;
+    if (stableJson(publication.beforeSnapshot) !== stableJson(current.currentSnapshot)) {
+      throw new ReplayRecordError('El estado previo no coincide con el intento vigente.');
+    }
+    validateActionPublication(publication, current.config.levelDefinition);
     const state = itemOf({
       PK: `ATTEMPT#${attemptId}`,
       SK: `STATE#${publication.afterStateId}`,
@@ -2239,6 +2244,10 @@ export class MemoryAttemptStore implements AttemptStore {
     )
       return undefined;
     if (snapshots.has(publication.afterStateId) || persistedAction !== undefined) return undefined;
+    if (stableJson(publication.beforeSnapshot) !== stableJson(record.currentSnapshot)) {
+      throw new ReplayRecordError('El estado previo no coincide con el intento vigente.');
+    }
+    validateActionPublication(publication, record.config.levelDefinition);
 
     const collection = collectionSummaryOf(
       publication.afterSnapshot,

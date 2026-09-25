@@ -9,7 +9,7 @@ import { ROBOT_CATALOG_VERSION, ROBOT_SCHEMA_VERSION, type RobotSkillId } from '
 import type { ModelKey } from './models.js';
 
 /** Version of the durable attempt record, independent of game rules versions. */
-export const ATTEMPT_RECORD_VERSION = 3 as const;
+export const ATTEMPT_RECORD_VERSION = 4 as const;
 
 export type AttemptStatus =
   'pending' | 'running' | 'victory' | 'defeat' | 'incomplete' | 'cancelled' | 'error';

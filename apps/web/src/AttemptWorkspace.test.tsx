@@ -10,7 +10,6 @@ import {
   ROBOT_SCHEMA_VERSION,
   type DraftSnapshot,
 } from '../../../shared/robot.js';
-import { createClosedAttemptRecordFixture } from '../../../shared/attempt.fixture.js';
 import { LEVEL } from '../../../shared/game.js';
 import type { ReplayRecordView } from '../../../shared/attempt.js';
 import type { AuthSession } from './auth.js';
@@ -18,6 +17,7 @@ import { AttemptApiFailure, type AttemptApi, type AttemptSummary } from './attem
 import { AttemptWorkspace, type AttemptWorkspaceHandle } from './AttemptWorkspace.js';
 import { RobotEditor, type RobotEditorHandle } from './RobotEditor.js';
 import type { DraftApi } from './draft-api.js';
+import { doorVictoryRecord } from './replay/replay.test-support.js';
 
 vi.mock('./replay/ReplayScene.js', () => ({
   ReplayScene: ({
@@ -75,7 +75,7 @@ function summary(status: AttemptSummary['status'] = 'running'): AttemptSummary {
     modelLabel: 'Claude Sonnet 4.6',
     modelId: 'global.anthropic.claude-sonnet-4-6',
     turnsUsed: 2,
-    maxTurns: 16,
+    maxTurns: 24,
     calls: 2,
     inputTokens: null,
     outputTokens: null,
@@ -95,21 +95,24 @@ function summary(status: AttemptSummary['status'] = 'running'): AttemptSummary {
 }
 
 function replayRecord(id = 'attempt-1'): ReplayRecordView {
-  const source = createClosedAttemptRecordFixture();
-  const states = new Map(source.snapshots.map((snapshot) => [snapshot.id, snapshot]));
+  // AttemptWorkspace mocks ReplayScene; this 8-action transport fixture tests
+  // result/recovery plumbing, while semantic replay validation lives in replay tests.
+  const source = doorVictoryRecord();
+  const snapshots = source.snapshots.slice(0, 9);
+  const actions = source.actions.slice(0, 8);
   return {
     recordVersion: source.recordVersion,
     id,
     createdAt: source.createdAt,
     updatedAt: source.updatedAt,
     config: { level: source.config.level },
-    snapshots: source.snapshots,
-    actions: source.actions.map((action) => ({
-      ...action,
-      before: states.get(action.beforeStateId)!,
-      after: states.get(action.afterStateId)!,
-    })),
-    closure: source.closure,
+    snapshots,
+    actions,
+    closure: {
+      ...source.closure,
+      actionCount: actions.length,
+      finalStateId: snapshots.at(-1)!.id,
+    },
     metrics: source.metrics,
     score: source.score,
   };
@@ -208,7 +211,7 @@ describe('AttemptWorkspace', () => {
     render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
 
     await screen.findByText('Historial');
-    expect(screen.getByText('Terreno con recompensa')).toBeTruthy();
+    expect(screen.getByText('Terreno con recompensa y puerta')).toBeTruthy();
     expect(screen.getByText(/cambia entre suelo, pozo, rama, barrera y plataforma/)).toBeTruthy();
     const animation = screen.getByRole('checkbox', { name: 'Animación' }) as HTMLInputElement;
     expect(animation.checked).toBe(true);
@@ -480,7 +483,9 @@ describe('AttemptWorkspace', () => {
     const history = screen.getByRole('heading', { name: 'Historial' }).closest('section');
     expect(history).not.toBeNull();
     expect(
-      within(history as HTMLElement).getByText('Objetos: 1 · valor recogido: 25 puntos'),
+      within(history as HTMLElement).getByText(
+        'Recompensa: recogida (25 puntos) · Llave: no recogida (0 puntos) · valor total: 25 puntos',
+      ),
     ).toBeTruthy();
     expect(within(history as HTMLElement).queryByText(/Puntaje:/)).toBeNull();
 
@@ -489,6 +494,12 @@ describe('AttemptWorkspace', () => {
     expect(screen.getByText('Objetos').nextElementSibling?.textContent).toBe('1');
     expect(screen.getByText('Valor de objetos recogidos').nextElementSibling?.textContent).toBe(
       '25 puntos',
+    );
+    expect(screen.getByText('Recompensa opcional').nextElementSibling?.textContent).toBe(
+      'Recogida · 25 puntos',
+    );
+    expect(screen.getByText('Llave de la puerta').nextElementSibling?.textContent).toBe(
+      'No recogida · 0 puntos',
     );
     expect(screen.queryByText('Puntaje')).toBeNull();
   });
@@ -501,7 +512,7 @@ describe('AttemptWorkspace', () => {
       outputTokens: 868,
       gameTokens: 9868,
       score: 935.13,
-      collectedObjectIds: ['recompensa-1'],
+      collectedObjectIds: ['recompensa-1', 'llave-1'],
       objectPoints: 25,
       animationEnabled: false,
     };
@@ -522,20 +533,28 @@ describe('AttemptWorkspace', () => {
     const history = screen.getByRole('heading', { name: 'Historial' }).closest('section');
     expect(history).not.toBeNull();
     expect(
-      within(history as HTMLElement).getByText('Objetos: 1 · valor recogido: 25 puntos'),
+      within(history as HTMLElement).getByText(
+        'Recompensa: recogida (25 puntos) · Llave: recogida (0 puntos) · valor total: 25 puntos',
+      ),
     ).toBeTruthy();
     expect(within(history as HTMLElement).getByText(/Puntaje: 935,13/)).toBeTruthy();
     expect(getReplay).not.toHaveBeenCalled();
 
     fireEvent.click(within(history as HTMLElement).getByRole('button', { name: 'Ver resultado' }));
     expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
-    expect(screen.getByText('Turnos').nextElementSibling?.textContent).toBe('8 / 16');
+    expect(screen.getByText('Turnos').nextElementSibling?.textContent).toBe('8 / 24');
     expect(screen.getByText('Tokens usados para puntaje').nextElementSibling?.textContent).toBe(
       '9.868',
     );
-    expect(screen.getByText('Objetos').nextElementSibling?.textContent).toBe('1');
+    expect(screen.getByText('Objetos').nextElementSibling?.textContent).toBe('2');
     expect(screen.getByText('Valor de objetos recogidos').nextElementSibling?.textContent).toBe(
       '25 puntos',
+    );
+    expect(screen.getByText('Recompensa opcional').nextElementSibling?.textContent).toBe(
+      'Recogida · 25 puntos',
+    );
+    expect(screen.getByText('Llave de la puerta').nextElementSibling?.textContent).toBe(
+      'Recogida · 0 puntos',
     );
     expect(screen.getByText('Puntaje').nextElementSibling?.textContent).toBe('935,13');
     expect(getReplay).not.toHaveBeenCalled();

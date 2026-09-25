@@ -4,7 +4,7 @@ Estado: ejecución del nivel principal periódico con Sonnet 4.6, registro, cons
 
 Esta página define el ciclo de un intento desde que se fija la configuración hasta que se muestra su reproducción. Se relaciona con [la experiencia](experiencia.md), [las reglas del juego](juego.md), [el agente](agente.md) y [la plataforma](plataforma.md).
 
-El diseño técnico está en [registro de ejecución](../architecture/registro-de-ejecucion.md) y [animación](../architecture/animacion.md). El cálculo, el registro y su reproducción usan `principal-recompensas-v3`. El almacenamiento físico se documenta en [datos](../architecture/datos.md).
+El diseño técnico está en [registro de ejecución](../architecture/registro-de-ejecucion.md) y [animación](../architecture/animacion.md). El cálculo, el registro y su reproducción usan `principal-puerta-v4`. El almacenamiento físico se documenta en [datos](../architecture/datos.md).
 
 ## Alcance y reglas que no cambian
 
@@ -38,10 +38,11 @@ Editar después el borrador no modifica esa copia ni ningún intento anterior. L
 Al crear el intento se reinicia el mundo con:
 
 - posición inicial;
+- orientación física inicial hacia la derecha;
 - turno 0;
-- la recompensa del nivel disponible en su apoyo;
+- la recompensa y la llave disponibles en sus apoyos;
 - inventario vacío;
-- estado inicial de la salida;
+- puerta cerrada por ausencia inicial de la llave y salida libre;
 - contadores de turnos, llamadas y uso propios del intento.
 
 Se reinicia el estado del mundo y los contadores, y no se arrastran memoria, resultados, snapshots del mundo, eventos ni conversaciones de otro intento. La persona sí puede seleccionar o reutilizar una configuración guardada; esa configuración se usa como fuente y se fija otra copia para el nuevo intento.
@@ -79,7 +80,7 @@ La separación entre decisiones es estricta: no se pide un plan completo, no se 
 Después de ejecutar la acción final de un turno, se incrementa el contador y se evalúa:
 
 1. Si hubo colisión o caída causada por una acción de movimiento incompatible, el resultado es derrota.
-2. Si no hubo una causa fatal y se alcanzó una salida habilitada, el resultado es victoria.
+2. Si no hubo una causa fatal y se alcanzó la salida libre, el resultado es victoria.
 3. Si no terminó por las razones anteriores y se alcanzó el límite, el resultado es recorrido incompleto.
 4. En cualquier otro caso, el intento continúa con el turno siguiente.
 
@@ -89,7 +90,7 @@ Los estados terminales son:
 
 | Estado | Causa | ¿Se clasifica como solución? |
 | --- | --- | --- |
-| Victoria | Recorrido completado y salida habilitada | Sí |
+| Victoria | Robot en el apoyo de salida tras un movimiento válido | Sí |
 | Derrota | Movimiento incompatible con un obstáculo, con colisión o caída | No |
 | Recorrido incompleto | Límite de turnos alcanzado sin victoria ni derrota | No |
 | Cancelado | Interrupción explícita de la persona durante el cálculo | No |
@@ -141,7 +142,7 @@ Cada evento debe conservar como mínimo:
 - identidad interna de la acción real para el motor, el registro y la interfaz humana;
 - resultado de la acción: movimiento válido, recogida, sin efecto o derrota;
 - posición lógica de origen y destino cuando corresponda;
-- estado de la salida y objetos restantes/inventario después de la acción;
+- objetos restantes e inventario después de la acción, de los que se deriva si la puerta está abierta;
 - motivo programático del no-op, choque, caída o error de validación;
 - snapshot resultante del mundo, o el estado conservado si no se ejecutó una acción válida;
 - datos de animación necesarios para representar una trayectoria, caída o choque, cuando no se puedan derivar sin ambigüedad;
@@ -149,7 +150,7 @@ Cada evento debe conservar como mínimo:
 
 El evento usa el turno de su estado anterior. Cuando la partida continúa, su estado posterior incluye el turno siguiente. En una finalización, la última acción sigue contando, pero no se crea una nueva fase jugable. El estado de los obstáculos utilizado para resolver la acción debe poder identificarse desde ese snapshot y la copia fija del nivel.
 
-Cada snapshot representa al menos la posición, el turno, el estado del intento, el estado de la salida y los datos internos necesarios para resolver las acciones y las métricas. En el nivel vigente, la recompensa comienza en el apoyo 2, pasa al inventario sólo tras una recogida local y la salida siempre está habilitada. El motor deriva las fases de la copia fija del nivel y el turno y conserva sus estados efectivos en el snapshot; el reproductor los lee sin recalcular periodicidad, según el [contrato de registro](../architecture/registro-de-ejecucion.md).
+Cada snapshot representa al menos la posición, el turno, el estado del intento, los objetos restantes, el inventario y los datos internos necesarios para resolver las acciones y las métricas. En el nivel vigente, la recompensa comienza en el apoyo 2 y la llave en el 6; sólo una recogida local las traslada al inventario. La puerta del apoyo 9 está abierta exactamente cuando el inventario contiene `llave-1`; no se guarda otro estado mutable para ella y la salida del apoyo 10 siempre es libre. El motor deriva las fases de la copia fija del nivel y el turno y conserva sus estados efectivos en el snapshot; el reproductor los lee sin recalcular periodicidad, según el [contrato de registro](../architecture/registro-de-ejecucion.md).
 
 Registrar el uso original del proveedor junto con los campos normalizados evita perder información cuando las categorías cambian entre APIs. La normalización y el cálculo del puntaje se detallan en [consumo y puntaje](consumo-y-puntaje.md).
 
@@ -176,6 +177,7 @@ Las animaciones que la experiencia necesita cubrir son:
 - pasar agachado un tramo en ambas direcciones;
 - esperar;
 - recoger un objeto;
+- detenerse ante la puerta cerrada sin derrota y cruzarla después de recoger la llave;
 - permanecer sin efecto para una habilidad que no produce cambios;
 - caer por un pozo;
 - chocar con una rama o barrera;

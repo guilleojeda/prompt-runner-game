@@ -25,6 +25,7 @@ import {
 import type { RobotEditorHandle } from './RobotEditor.js';
 import type { RobotDraft } from '../../../shared/robot.js';
 import type { AnimationPreference, ReplayRecordView } from '../../../shared/attempt.js';
+import { LEVEL } from '../../../shared/game.js';
 import { ReplayScene } from './replay/ReplayScene.js';
 
 type WorkspaceMode =
@@ -239,6 +240,19 @@ function isTransientAdmissionFailure(error: unknown): boolean {
   return error instanceof AttemptApiFailure && (error.ambiguous || error.code === 'authentication');
 }
 
+function objectCollectionStatus(attempt: AttemptSummary): string {
+  const collected = new Set(attempt.collectedObjectIds);
+  const details = LEVEL.objects.map((object) => {
+    const label = object.id === 'llave-1' ? 'Llave' : 'Recompensa';
+    const value = `${object.scoreValue} puntos`;
+    const state = collected.has(object.id)
+      ? `recogida (${value})`
+      : `no recogida (${value}${object.scoreValue > 0 ? ' posibles' : ''})`;
+    return `${label}: ${state}`;
+  });
+  return `${details.join(' · ')} · valor total: ${attempt.objectPoints.toLocaleString('es-AR')} puntos`;
+}
+
 function ResultCard({ attempt, onReplay }: { attempt: AttemptSummary; onReplay: () => void }) {
   return (
     <section className="attempt-result" aria-labelledby="attempt-result-title">
@@ -305,6 +319,19 @@ function ResultCard({ attempt, onReplay }: { attempt: AttemptSummary; onReplay: 
           <dt>Objetos</dt>
           <dd>{attempt.collectedObjectIds.length}</dd>
         </div>
+        {LEVEL.objects.map((object) => {
+          const collected = attempt.collectedObjectIds.includes(object.id);
+          return (
+            <div key={object.id}>
+              <dt>{object.id === 'llave-1' ? 'Llave de la puerta' : 'Recompensa opcional'}</dt>
+              <dd>
+                {collected
+                  ? `Recogida · ${object.scoreValue} puntos`
+                  : `No recogida · ${object.scoreValue} puntos${object.scoreValue > 0 ? ' posibles' : ''}`}
+              </dd>
+            </div>
+          );
+        })}
         <div>
           <dt>Valor de objetos recogidos</dt>
           <dd>{attempt.objectPoints.toLocaleString('es-AR')} puntos</dd>
@@ -357,10 +384,7 @@ function HistoryList({
                 <span>
                   {item.turnsUsed} / {item.maxTurns} turnos · {item.modelLabel} · {item.createdAt}
                 </span>
-                <span>
-                  Objetos: {item.collectedObjectIds.length} · valor recogido:{' '}
-                  {item.objectPoints.toLocaleString('es-AR')} puntos
-                </span>
+                <span>{objectCollectionStatus(item)}</span>
                 {item.status === 'victory' && (
                   <span>
                     Puntaje:{' '}
@@ -1643,12 +1667,13 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       <section className="attempt-workspace" aria-labelledby="attempt-workspace-title">
         <div className="attempt-heading">
           <div>
-            <p className="card-kicker">Terreno con recompensa</p>
+            <p className="card-kicker">Terreno con recompensa y puerta</p>
             <h2 id="attempt-workspace-title">Probar al agente</h2>
             <p>
               El terreno cambia entre suelo, pozo, rama, barrera y plataforma. En el apoyo 2 hay una
-              recompensa: pasar no la recoge; usá Agarrar objeto. Llegá a la salida en hasta 16
-              acciones.
+              recompensa opcional: pasar no la recoge y vale 25 puntos. La llave está en el apoyo 6;
+              permite abrir la puerta del apoyo 9, que no se puede cruzar cerrada. Recoger la llave
+              no da puntos. Llegá a la salida libre del apoyo 10 en hasta 24 acciones.
             </p>
           </div>
           {quota && (

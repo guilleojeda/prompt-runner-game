@@ -1,7 +1,7 @@
 import type { RobotSkillId } from './robot.js';
 
 /** Version of the deterministic rules used by the published level. */
-export const RULES_VERSION = 3 as const;
+export const RULES_VERSION = 4 as const;
 
 export type GameStatus = 'running' | 'victory' | 'defeat' | 'incomplete';
 export type Direction = 'left' | 'right';
@@ -25,12 +25,16 @@ export interface LevelObject {
   readonly id: string;
   readonly support: number;
   readonly scoreValue: number;
-  readonly requiredForExit?: boolean;
 }
 
 export interface LevelExit {
   readonly support: number;
-  readonly requiredObjectIds: readonly string[];
+}
+
+export interface LevelDoor {
+  /** Support reached by crossing the doorway from the preceding support. */
+  readonly support: number;
+  readonly requiredObjectId: string;
 }
 
 export interface LevelDefinition {
@@ -40,6 +44,7 @@ export interface LevelDefinition {
   readonly maxTurns: number;
   readonly segments: readonly LevelSegment[];
   readonly objects: readonly LevelObject[];
+  readonly door?: LevelDoor;
   readonly exit: LevelExit;
 }
 
@@ -59,12 +64,12 @@ export interface GameRules {
   readonly score: ScoreRules;
 }
 
-/** The single current level: ground, pit, ground, branch, barrier, platform, ground. */
+/** The current level: seven original segments followed by three clear ground segments. */
 export const LEVEL: LevelDefinition = Object.freeze({
-  id: 'principal-recompensas-v3',
-  version: 3,
+  id: 'principal-puerta-v4',
+  version: 4,
   rulesVersion: RULES_VERSION,
-  maxTurns: 16,
+  maxTurns: 24,
   segments: Object.freeze([
     Object.freeze({ type: 'ground' as const }),
     Object.freeze({ type: 'pit' as const }),
@@ -81,9 +86,16 @@ export const LEVEL: LevelDefinition = Object.freeze({
       offset: 0,
     }),
     Object.freeze({ type: 'ground' as const }),
+    Object.freeze({ type: 'ground' as const }),
+    Object.freeze({ type: 'ground' as const }),
+    Object.freeze({ type: 'ground' as const }),
   ]),
-  objects: Object.freeze([Object.freeze({ id: 'recompensa-1', support: 2, scoreValue: 25 })]),
-  exit: Object.freeze({ support: 7, requiredObjectIds: Object.freeze([]) }),
+  objects: Object.freeze([
+    Object.freeze({ id: 'recompensa-1', support: 2, scoreValue: 25 }),
+    Object.freeze({ id: 'llave-1', support: 6, scoreValue: 0 }),
+  ]),
+  door: Object.freeze({ support: 9, requiredObjectId: 'llave-1' }),
+  exit: Object.freeze({ support: 10 }),
 });
 
 const BASE_SCORE_RULES = {
@@ -116,6 +128,8 @@ export interface GameSnapshot {
   readonly id: string;
   /** Internal support index. It is never included in an agent observation. */
   readonly support: number;
+  /** Direction most recently attempted by a movement action. */
+  readonly facing: Direction;
   readonly turnsUsed: number;
   /** The phase used to evaluate the current/last action. */
   readonly phaseTurn: number;
@@ -123,7 +137,6 @@ export interface GameSnapshot {
   readonly terrain: readonly TerrainState[];
   readonly remainingObjects: readonly string[];
   readonly inventory: readonly string[];
-  readonly exitEnabled: boolean;
   readonly status: GameStatus;
   /** Highest support reached, used for incomplete-attempt progress. */
   readonly maxSupportReached: number;
@@ -147,6 +160,7 @@ export type ResolutionReason =
   | 'swim_no_effect'
   | 'wait'
   | 'no_object_here'
+  | 'door_locked'
   | 'walk_into_pit'
   | 'crouch_into_pit'
   | 'walk_into_branch'
@@ -193,13 +207,20 @@ export interface BoundaryObservation {
   readonly kind: 'boundary';
 }
 
-export type LocalSideObservation = LocalSegmentObservation | BoundaryObservation;
+export interface DoorObservation {
+  readonly kind: 'door';
+  readonly state: 'locked' | 'open';
+  readonly requiredObjectId: string;
+}
+
+export type LocalSideObservation = LocalSegmentObservation | BoundaryObservation | DoorObservation;
 
 export interface LocalObservation {
   /** Only objects at the current support and a local exit marker are exposed. */
+  readonly facing: Direction;
   readonly here: {
     readonly objects: readonly string[];
-    readonly exit?: { readonly enabled: boolean };
+    readonly exit?: Readonly<Record<string, never>>;
   };
   readonly left: LocalSideObservation;
   readonly right: LocalSideObservation;
@@ -249,6 +270,7 @@ const isResolutionReason = (value: unknown): value is ResolutionReason =>
   value === 'swim_no_effect' ||
   value === 'wait' ||
   value === 'no_object_here' ||
+  value === 'door_locked' ||
   value === 'walk_into_pit' ||
   value === 'crouch_into_pit' ||
   value === 'walk_into_branch' ||
@@ -360,7 +382,6 @@ const validateLevel = (level: LevelDefinition): void => {
     level.segments.length === 0 ||
     !Array.isArray(level.objects) ||
     !level.exit ||
-    !Array.isArray(level.exit.requiredObjectIds) ||
     level.exit.support !== level.segments.length
   ) {
     throw new GameStateError('The level definition is invalid.');
@@ -401,24 +422,24 @@ const validateLevel = (level: LevelDefinition): void => {
       object.support < 0 ||
       object.support > level.segments.length ||
       !Number.isFinite(object.scoreValue) ||
-      objectSupports.has(object.support) ||
-      (object.requiredForExit !== undefined && typeof object.requiredForExit !== 'boolean')
+      objectSupports.has(object.support)
     ) {
       throw new GameStateError('The level contains an invalid object.');
     }
     objectIds.add(object.id);
     objectSupports.add(object.support);
   }
-  for (const requiredId of level.exit.requiredObjectIds) {
-    if (!objectIds.has(requiredId)) {
-      throw new GameStateError('The exit requires an object missing from the level.');
-    }
+  if (
+    level.door !== undefined &&
+    (!Number.isInteger(level.door.support) ||
+      level.door.support < 1 ||
+      level.door.support >= level.exit.support ||
+      typeof level.door.requiredObjectId !== 'string' ||
+      level.door.requiredObjectId.length === 0 ||
+      !objectIds.has(level.door.requiredObjectId))
+  ) {
+    throw new GameStateError('The level contains an invalid door.');
   }
-};
-
-const exitIsEnabled = (level: LevelDefinition, inventory: readonly string[]): boolean => {
-  const inventoryIds = new Set(inventory);
-  return level.exit.requiredObjectIds.every((id) => inventoryIds.has(id));
 };
 
 const stateIdForTurns = (turnsUsed: number): string => `state-${turnsUsed}`;
@@ -438,12 +459,12 @@ export const createInitialState = (level: LevelDefinition = LEVEL): GameSnapshot
   return createSnapshot({
     id: stateIdForTurns(0),
     support: 0,
+    facing: 'right',
     turnsUsed: 0,
     phaseTurn: 0,
     terrain,
     remainingObjects,
     inventory: [],
-    exitEnabled: exitIsEnabled(level, []),
     status: 'running',
     maxSupportReached: 0,
   });
@@ -575,15 +596,21 @@ const directionForAction = (action: NormalizedAction): Direction | undefined => 
 const movementCompatibility = (terrain: TerrainState, mode: MovementMode): MovementCompatibility =>
   MOVEMENT_COMPATIBILITY[terrain][mode];
 
+const observeDoor = (door: LevelDoor, inventory: readonly string[]): DoorObservation => ({
+  kind: 'door',
+  state: inventory.includes(door.requiredObjectId) ? 'open' : 'locked',
+  requiredObjectId: door.requiredObjectId,
+});
+
 type SemanticSnapshot = {
   readonly support: number;
+  readonly facing: Direction;
   readonly maxSupportReached: number;
   readonly turnsUsed: number;
   readonly phaseTurn: number;
   readonly terrain: readonly TerrainState[];
   readonly remainingObjects: readonly string[];
   readonly inventory: readonly string[];
-  readonly exitEnabled: boolean;
   readonly status: GameStatus;
 };
 
@@ -596,6 +623,7 @@ const isSemanticSnapshot = (value: unknown): value is SemanticSnapshot =>
   Number.isSafeInteger(value.support) &&
   value.support >= 0 &&
   value.support <= LEVEL.segments.length &&
+  (value.facing === 'left' || value.facing === 'right') &&
   typeof value.maxSupportReached === 'number' &&
   Number.isSafeInteger(value.maxSupportReached) &&
   value.maxSupportReached >= value.support &&
@@ -613,7 +641,7 @@ const isSemanticSnapshot = (value: unknown): value is SemanticSnapshot =>
   value.remainingObjects.every((id) => typeof id === 'string') &&
   Array.isArray(value.inventory) &&
   value.inventory.every((id) => typeof id === 'string') &&
-  typeof value.exitEnabled === 'boolean' &&
+  !hasOwn(value, 'exitEnabled') &&
   isGameStatus(value.status);
 
 const sameTerrain = (value: unknown, expected: readonly TerrainState[]): boolean =>
@@ -622,7 +650,7 @@ const sameTerrain = (value: unknown, expected: readonly TerrainState[]): boolean
   value.every((item, index) => item === expected[index]);
 
 const isValidObjectPartition = (
-  snapshot: Pick<SemanticSnapshot, 'remainingObjects' | 'inventory' | 'exitEnabled'>,
+  snapshot: Pick<SemanticSnapshot, 'remainingObjects' | 'inventory'>,
   level: LevelDefinition = LEVEL,
 ): boolean => {
   const expectedIds = level.objects.map((object) => object.id);
@@ -632,10 +660,18 @@ const isValidObjectPartition = (
     new Set(snapshot.inventory).size === snapshot.inventory.length &&
     new Set(allIds).size === allIds.length &&
     allIds.length === expectedIds.length &&
-    expectedIds.every((id) => allIds.includes(id)) &&
-    snapshot.exitEnabled === exitIsEnabled(level, snapshot.inventory)
+    expectedIds.every((id) => allIds.includes(id))
   );
 };
+
+const isPastClosedDoor = (
+  support: number,
+  inventory: readonly string[],
+  level: LevelDefinition,
+): boolean =>
+  level.door !== undefined &&
+  support >= level.door.support &&
+  !inventory.includes(level.door.requiredObjectId);
 
 const sameIds = (left: readonly string[], right: readonly string[]): boolean =>
   left.length === right.length && left.every((id, index) => id === right[index]);
@@ -664,10 +700,13 @@ export const isSemanticallyValidActionResolution = (
   const before = beforeValue;
   const after = afterValue;
   const resolution = resolutionValue;
-  if (before.status !== 'running') return false;
+  if (before.status !== 'running' || isPastClosedDoor(before.support, before.inventory, LEVEL)) {
+    return false;
+  }
   if (
     before.turnsUsed === 0 &&
     (before.support !== 0 ||
+      before.facing !== 'right' ||
       before.maxSupportReached !== 0 ||
       before.inventory.length !== 0 ||
       !sameIds(
@@ -681,13 +720,13 @@ export const isSemanticallyValidActionResolution = (
     before.turnsUsed >= LEVEL.maxTurns ||
     after.turnsUsed !== before.turnsUsed + 1 ||
     before.phaseTurn !== before.turnsUsed ||
-    before.exitEnabled !== exitIsEnabled(LEVEL, before.inventory) ||
     !sameTerrain(before.terrain, effectiveTerrain(LEVEL, before.phaseTurn))
   ) {
     return false;
   }
 
   let expectedSupport = before.support;
+  let expectedFacing = before.facing;
   let expectedMaxSupportReached = before.maxSupportReached;
   let expectedRemainingObjects = before.remainingObjects;
   let expectedInventory = before.inventory;
@@ -710,6 +749,7 @@ export const isSemanticallyValidActionResolution = (
   } else {
     const direction = directionForAction(actionValue);
     if (!direction) return false;
+    expectedFacing = direction;
     const targetSupport = before.support + (direction === 'right' ? 1 : -1);
     if (targetSupport < 0 || targetSupport > LEVEL.segments.length) {
       if (
@@ -719,44 +759,46 @@ export const isSemanticallyValidActionResolution = (
         return false;
       }
     } else {
-      const segment = direction === 'right' ? before.support : targetSupport;
-      const terrain = before.terrain[segment];
-      if (terrain === undefined) return false;
-      const mode = modeForAction(actionValue);
-      if (mode === 'swim') return false;
-      const expected = movementCompatibility(terrain, mode);
-      if (
-        resolution.outcome !== expected.outcome ||
-        resolution.reason !== expected.reason ||
-        resolution.segment !== segment ||
-        resolution.targetSupport !== targetSupport
-      ) {
-        return false;
-      }
-      if (expected.outcome === 'moved') {
-        expectedSupport = targetSupport;
-        expectedMaxSupportReached = Math.max(before.maxSupportReached, targetSupport);
+      const door = LEVEL.door;
+      if (door?.support === targetSupport && !before.inventory.includes(door.requiredObjectId)) {
+        if (resolution.outcome !== 'no_op' || resolution.reason !== 'door_locked') return false;
+      } else {
+        const segment = direction === 'right' ? before.support : targetSupport;
+        const terrain = before.terrain[segment];
+        if (terrain === undefined) return false;
+        const mode = modeForAction(actionValue);
+        if (mode === 'swim') return false;
+        const expected = movementCompatibility(terrain, mode);
+        if (
+          resolution.outcome !== expected.outcome ||
+          resolution.reason !== expected.reason ||
+          resolution.segment !== segment ||
+          resolution.targetSupport !== targetSupport
+        ) {
+          return false;
+        }
+        if (expected.outcome === 'moved') {
+          expectedSupport = targetSupport;
+          expectedMaxSupportReached = Math.max(before.maxSupportReached, targetSupport);
+        }
       }
     }
   }
 
   if (
     after.support !== expectedSupport ||
+    after.facing !== expectedFacing ||
     after.maxSupportReached !== expectedMaxSupportReached ||
     !sameIds(after.remainingObjects, expectedRemainingObjects) ||
-    !sameIds(after.inventory, expectedInventory) ||
-    after.exitEnabled !== exitIsEnabled(LEVEL, expectedInventory)
+    !sameIds(after.inventory, expectedInventory)
   ) {
     return false;
   }
   const fatal = resolution.outcome === 'fall' || resolution.outcome === 'collision';
-  const reachesEnabledExit =
-    resolution.outcome === 'moved' &&
-    expectedSupport === LEVEL.exit.support &&
-    before.exitEnabled === true;
+  const reachesExit = resolution.outcome === 'moved' && expectedSupport === LEVEL.exit.support;
   const expectedStatus: GameStatus = fatal
     ? 'defeat'
-    : reachesEnabledExit
+    : reachesExit
       ? 'victory'
       : before.turnsUsed + 1 >= LEVEL.maxTurns
         ? 'incomplete'
@@ -781,6 +823,7 @@ const afterTurn = (
   support: number,
   maxSupportReached: number,
   terminal: boolean,
+  facing: Direction = before.facing,
   remainingObjects: readonly string[] = before.remainingObjects,
   inventory: readonly string[] = before.inventory,
 ): GameSnapshot => {
@@ -789,12 +832,12 @@ const afterTurn = (
   return createSnapshot({
     id: stateIdForTurns(turnsUsed),
     support,
+    facing,
     turnsUsed,
     phaseTurn,
     terrain: terminal ? before.terrain : effectiveTerrain(level, phaseTurn),
     remainingObjects,
     inventory,
-    exitEnabled: exitIsEnabled(level, inventory),
     status,
     maxSupportReached,
   });
@@ -814,8 +857,14 @@ export const resolveAction = (
   if (state.turnsUsed >= level.maxTurns) {
     throw new GameStateError('No action can be resolved after the turn limit.');
   }
+  if (state.facing !== 'left' && state.facing !== 'right') {
+    throw new GameStateError('The snapshot facing is invalid.');
+  }
   if (!isValidObjectPartition(state, level)) {
     throw new GameStateError('The snapshot object state does not match the level.');
+  }
+  if (isPastClosedDoor(state.support, state.inventory, level)) {
+    throw new GameStateError('The running snapshot is past a locked door.');
   }
 
   // The caller's snapshot is immutable by contract. Returning this exact
@@ -841,6 +890,7 @@ export const resolveAction = (
         before.support,
         before.maxSupportReached,
         status !== 'running',
+        before.facing,
         remainingObjects,
         inventory,
       ),
@@ -907,12 +957,35 @@ export const resolveAction = (
         before.support,
         before.maxSupportReached,
         status !== 'running',
+        direction,
       ),
       resolution,
     };
   }
 
   const segment = direction === 'right' ? before.support : targetSupport;
+  if (
+    level.door?.support === targetSupport &&
+    !before.inventory.includes(level.door.requiredObjectId)
+  ) {
+    const resolution: NoOpResolution = { outcome: 'no_op', reason: 'door_locked' };
+    const status: GameStatus = before.turnsUsed + 1 >= level.maxTurns ? 'incomplete' : 'running';
+    return {
+      action,
+      before,
+      after: afterTurn(
+        before,
+        level,
+        status,
+        before.support,
+        before.maxSupportReached,
+        status !== 'running',
+        direction,
+      ),
+      resolution,
+    };
+  }
+
   const compatibility = movementCompatibility(before.terrain[segment], mode);
   const resolution: MovementResolution = {
     ...compatibility,
@@ -923,23 +996,35 @@ export const resolveAction = (
     return {
       action,
       before,
-      after: afterTurn(before, level, 'defeat', before.support, before.maxSupportReached, true),
+      after: afterTurn(
+        before,
+        level,
+        'defeat',
+        before.support,
+        before.maxSupportReached,
+        true,
+        direction,
+      ),
       resolution,
     };
   }
 
   const nextMaxSupport = Math.max(before.maxSupportReached, targetSupport);
-  const reachesEnabledExit = targetSupport === level.exit.support && before.exitEnabled;
+  const reachesExit = targetSupport === level.exit.support;
   const reachesTurnLimit = before.turnsUsed + 1 >= level.maxTurns;
-  const status: GameStatus = reachesEnabledExit
-    ? 'victory'
-    : reachesTurnLimit
-      ? 'incomplete'
-      : 'running';
+  const status: GameStatus = reachesExit ? 'victory' : reachesTurnLimit ? 'incomplete' : 'running';
   return {
     action,
     before,
-    after: afterTurn(before, level, status, targetSupport, nextMaxSupport, status !== 'running'),
+    after: afterTurn(
+      before,
+      level,
+      status,
+      targetSupport,
+      nextMaxSupport,
+      status !== 'running',
+      direction,
+    ),
     resolution,
   };
 };
@@ -956,16 +1041,22 @@ const objectsAtSupport = (state: GameSnapshot, level: LevelDefinition): readonly
 /** Project only the local fields allowed in a model decision. */
 export const observe = (state: GameSnapshot, level: LevelDefinition = LEVEL): LocalObservation => {
   validateLevel(level);
+  const door = level.door;
   const left: LocalSideObservation =
     state.support === 0
       ? { kind: 'boundary' }
-      : { kind: 'segment', terrain: state.terrain[state.support - 1] };
+      : door?.support === state.support
+        ? observeDoor(door, state.inventory)
+        : { kind: 'segment', terrain: state.terrain[state.support - 1] };
   const right: LocalSideObservation =
     state.support === level.segments.length
       ? { kind: 'boundary' }
-      : { kind: 'segment', terrain: state.terrain[state.support] };
-  const exit = state.support === level.exit.support ? { enabled: state.exitEnabled } : undefined;
+      : door?.support === state.support + 1
+        ? observeDoor(door, state.inventory)
+        : { kind: 'segment', terrain: state.terrain[state.support] };
+  const exit = state.support === level.exit.support ? {} : undefined;
   return cloneAndFreeze({
+    facing: state.facing,
     here: {
       objects: objectsAtSupport(state, level),
       ...(exit ? { exit } : {}),

@@ -4,7 +4,7 @@ Este documento es canónico para el contrato de decisión del agente, sus herram
 
 ## Configuración disponible
 
-El catálogo permite preparar Avanzar (`tool_1`), Retroceder (`tool_2`), Saltar (`tool_3`), Agacharse y avanzar (`tool_4`), Nadar (`tool_5`), Esperar (`tool_6`) y Agarrar objeto (`tool_7`). Sólo Avanzar comienza habilitado; Esperar y Agarrar objeto comienzan deshabilitadas. Las descripciones empiezan vacías y las instrucciones muestran la frase de orientación acordada. La ayuda sobre el efecto de una habilidad se presenta separada del campo editable y no completa el texto del usuario. Probar ejecuta estas acciones en el nivel `principal-recompensas-v3`.
+El catálogo permite preparar Avanzar (`tool_1`), Retroceder (`tool_2`), Saltar (`tool_3`), Agacharse y avanzar (`tool_4`), Nadar (`tool_5`), Esperar (`tool_6`) y Agarrar objeto (`tool_7`). Sólo Avanzar comienza habilitado; Esperar y Agarrar objeto comienzan deshabilitadas. Las descripciones empiezan vacías y las instrucciones muestran la frase de orientación acordada. La ayuda sobre el efecto de una habilidad se presenta separada del campo editable y no completa el texto del usuario. Probar ejecuta estas acciones en el nivel `principal-puerta-v4`.
 
 Las referencias internas, IDs opacos y schemas pertenecen al catálogo versionado. Deshabilitar/reactivar no cambia el ID ni borra la descripción. El servidor rechaza referencias o versiones desconocidas e intentos de editar los contratos fijos. El borrador conserva textos literales y puede tener cero habilidades; Probar exige al menos una habilidad conforme a las reglas siguientes. [Guardado y concurrencia](../architecture/datos.md#borrador-disponible).
 
@@ -17,7 +17,7 @@ Cada decisión del intento es una invocación nueva e independiente. El mundo co
 3. todas las herramientas habilitadas en esa configuración;
 4. una observación local nueva del estado presente.
 
-La solicitud no incluye la conversación anterior, decisiones, llamadas, resultados, errores, intención, orientación o resumen de ningún turno previo. Esta regla rige dentro de un mismo intento y entre intentos. No pedir al modelo un plan completo ni un arreglo de acciones: cada respuesta decide una sola acción y la siguiente observación se construye después de resolverla.
+La solicitud no incluye la conversación anterior, decisiones, llamadas, resultados, errores, intención ni resumen de ningún turno previo. Sí incluye la orientación física actual del robot como parte de la observación nueva. Esta regla rige dentro de un mismo intento y entre intentos. No pedir al modelo un plan completo ni un arreglo de acciones: cada respuesta decide una sola acción y la siguiente observación se construye después de resolverla.
 
 Un proveedor puede reutilizar técnicamente un prefijo mediante caché. Eso no autoriza enviar historial ni mantener una conversación funcional. La condición verificable es el payload efectivo de cada decisión.
 
@@ -28,7 +28,7 @@ El payload debe construirse desde una lista explícita de campos permitidos:
 - **Protocolo:** elegir una única herramienta habilitada, respetar su esquema y decidir para la observación presente. No contiene la solución del nivel, equivalencias entre nombres e identificadores, reglas de obstáculos, ciclos ni una estrategia ganadora.
 - **Instrucciones generales:** texto escrito y aplicado por el humano. Se conserva exactamente, incluida una descripción ambigua o equivocada.
 - **Herramientas habilitadas:** todas las capacidades seleccionadas para el intento, aunque ninguna sea compatible con el obstáculo actual. Cada una lleva su identificador opaco, esquema fijo y descripción editable.
-- **Observación local:** objetos disponibles en el apoyo actual y estado de la salida si corresponde (la salida vigente siempre está habilitada); estado presente del tramo inmediato a la izquierda o un límite; y estado presente del tramo inmediato a la derecha o un límite.
+- **Observación local:** orientación física actual `facing: 'left' | 'right'`; objetos disponibles en el apoyo actual y marcador de salida si corresponde; estado presente del tramo inmediato a la izquierda o un límite; y estado presente del tramo inmediato a la derecha o un límite. Si el lado inmediato es la puerta, se informa `kind: 'door'`, `state: 'locked' | 'open'` y `requiredObjectId: 'llave-1'`. Desde el apoyo 8 la puerta aparece a la derecha; desde el 9, a la izquierda. Esa información describe el obstáculo local y su requisito, nunca la ubicación de la llave ni una herramienta recomendada. La orientación empieza en `right`, cambia con cualquier movimiento intentado y se conserva al Esperar, Nadar o Agarrar objeto.
 
 Los nombres de campos son una decisión de implementación. Los estados pueden usar términos comprensibles como `suelo`, `pozo`, `rama baja`, `barrera baja` y `barrera alta`. La observación no debe decir qué herramienta resuelve el estado ni entregar una lista de movimientos válidos.
 
@@ -47,7 +47,7 @@ El modelo no recibe:
 
 El backend puede conocer toda esa información para resolver y registrar el intento. No debe enviar un objeto de mundo completo confiando en que el prompt indique al modelo qué ignorar.
 
-Las instrucciones generales sí pueden expresar un objetivo, como llegar a la salida. Lo prohibido es agregar al payload un destino, una intención u orientación como dato oculto del mundo o como recuerdo de turnos previos.
+Las instrucciones generales sí pueden expresar un objetivo, como llegar a la salida. Lo prohibido es agregar al payload un destino o una intención como dato oculto del mundo, o una orientación inferida de un historial de turnos: `facing` procede únicamente del estado físico actual.
 
 ## Identidad de las herramientas
 
