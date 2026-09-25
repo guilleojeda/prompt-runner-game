@@ -636,7 +636,19 @@ export class DynamoAttemptStore implements AttemptStore {
     );
     if (!response.Item) return undefined;
     const item = unmarshall(response.Item);
-    const stateId = typeof item.currentStateId === 'string' ? item.currentStateId : 'state-0';
+    if (
+      typeof item.sequence !== 'number' ||
+      !Number.isSafeInteger(item.sequence) ||
+      item.sequence < 0 ||
+      item.turnsUsed !== item.sequence ||
+      typeof item.initialStateId !== 'string' ||
+      item.initialStateId !== 'state-0' ||
+      typeof item.currentStateId !== 'string' ||
+      item.currentStateId !== `state-${item.sequence}`
+    ) {
+      throw new AttemptStoreError('El intento guardado no tiene referencias de estado válidas.');
+    }
+    const stateId = item.currentStateId;
     const [state, initial] = await Promise.all([
       this.client.send(
         new GetItemCommand({
@@ -655,13 +667,25 @@ export class DynamoAttemptStore implements AttemptStore {
             }),
           ),
     ]);
-    const currentSnapshot = state.Item ? unmarshall(state.Item).snapshot : undefined;
-    const initialSnapshot =
-      stateId === 'state-0'
-        ? currentSnapshot
-        : initial?.Item
-          ? unmarshall(initial.Item).snapshot
-          : undefined;
+    const currentRow = state.Item ? unmarshall(state.Item) : undefined;
+    const initialRow =
+      stateId === 'state-0' ? currentRow : initial?.Item ? unmarshall(initial.Item) : undefined;
+    if (
+      !currentRow ||
+      currentRow.stateId !== stateId ||
+      !isRecord(currentRow.snapshot) ||
+      currentRow.snapshot.id !== stateId ||
+      currentRow.snapshot.turnsUsed !== item.sequence ||
+      !initialRow ||
+      initialRow.stateId !== 'state-0' ||
+      !isRecord(initialRow.snapshot) ||
+      initialRow.snapshot.id !== 'state-0' ||
+      initialRow.snapshot.turnsUsed !== 0
+    ) {
+      throw new AttemptStoreError('El intento guardado hace referencia a un estado incompleto.');
+    }
+    const currentSnapshot = currentRow.snapshot;
+    const initialSnapshot = initialRow.snapshot;
     return toRecord({ ...item, initialSnapshot, currentSnapshot });
   }
 
@@ -724,7 +748,13 @@ export class DynamoAttemptStore implements AttemptStore {
     owner: string,
     attemptId: string,
   ): Promise<ReplayRecordView | undefined> {
-    const attempt = await this.get(owner, attemptId);
+    let attempt: PersistedAttempt | undefined;
+    try {
+      attempt = await this.get(owner, attemptId);
+    } catch (error) {
+      if (error instanceof AttemptStoreError) throw new ReplayRecordError();
+      throw error;
+    }
     if (!attempt) return undefined;
     if (!terminalAttempt(attempt) || !attempt.recordComplete) throw new ReplayRecordError();
     const [actionItems, snapshotItems] = await Promise.all([

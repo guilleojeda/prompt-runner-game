@@ -562,6 +562,120 @@ describe('Dynamo attempt admission conditions', () => {
   });
 });
 
+describe('Dynamo attempt hydration integrity', () => {
+  it('fails closed on a missing current snapshot while keeping list header-only', async () => {
+    const harness = new DynamoHarness();
+    const { attemptId } = seedAttempt(harness);
+    harness.items.delete(itemKey(`ATTEMPT#${attemptId}`, 'STATE#state-0'));
+    const store = storeFor(harness);
+
+    await expect(store.get('owner', attemptId)).rejects.toBeInstanceOf(AttemptStoreError);
+    await expect(store.getReplayRecord('owner', attemptId)).rejects.toBeInstanceOf(
+      ReplayRecordError,
+    );
+    await expect(store.claim('owner', attemptId, 'executor-a')).rejects.toBeInstanceOf(
+      AttemptStoreError,
+    );
+    expect(
+      harness.send.mock.calls.some(([command]) => command.constructor.name === 'UpdateItemCommand'),
+    ).toBe(false);
+    await expect(store.list('owner')).resolves.toMatchObject({
+      attempts: [{ id: attemptId, collectedObjectIds: [], objectPoints: 0 }],
+    });
+  });
+
+  it('rejects missing, invalid or sequence-inconsistent state ids before claim', async () => {
+    const cases: readonly {
+      readonly field: 'initialStateId' | 'currentStateId' | 'sequence' | 'turnsUsed';
+      readonly value: unknown;
+    }[] = [
+      { field: 'currentStateId', value: undefined },
+      { field: 'currentStateId', value: 'state-1' },
+      { field: 'initialStateId', value: undefined },
+      { field: 'initialStateId', value: 'state-1' },
+      { field: 'sequence', value: 1 },
+      { field: 'turnsUsed', value: 1 },
+    ];
+
+    for (const testCase of cases) {
+      const harness = new DynamoHarness();
+      const { attemptId } = seedAttempt(harness);
+      const header = harness.read('USER#owner', `ATTEMPT#${attemptId}`)!;
+      if (testCase.value === undefined) delete header[testCase.field];
+      else header[testCase.field] = testCase.value;
+      harness.put(header);
+      const store = storeFor(harness);
+
+      await expect(store.get('owner', attemptId)).rejects.toBeInstanceOf(AttemptStoreError);
+      await expect(store.claim('owner', attemptId, 'executor-a')).rejects.toBeInstanceOf(
+        AttemptStoreError,
+      );
+      expect(
+        harness.send.mock.calls.some(
+          ([command]) => command.constructor.name === 'UpdateItemCommand',
+        ),
+      ).toBe(false);
+    }
+  });
+
+  it('rejects missing or mismatched current and initial snapshot rows', async () => {
+    const cases: readonly {
+      readonly name: string;
+      readonly mutate: (harness: DynamoHarness, attemptId: string) => void;
+    }[] = [
+      {
+        name: 'missing current row',
+        mutate: (harness, attemptId) => {
+          harness.items.delete(itemKey(`ATTEMPT#${attemptId}`, 'STATE#state-8'));
+        },
+      },
+      {
+        name: 'missing initial row',
+        mutate: (harness, attemptId) => {
+          harness.items.delete(itemKey(`ATTEMPT#${attemptId}`, 'STATE#state-0'));
+        },
+      },
+      {
+        name: 'current row id mismatch',
+        mutate: (harness, attemptId) => {
+          const row = harness.read(`ATTEMPT#${attemptId}`, 'STATE#state-8')!;
+          harness.put({ ...row, stateId: 'state-7' });
+        },
+      },
+      {
+        name: 'current snapshot id mismatch',
+        mutate: (harness, attemptId) => {
+          const row = harness.read(`ATTEMPT#${attemptId}`, 'STATE#state-8')!;
+          harness.put({
+            ...row,
+            snapshot: { ...(row.snapshot as Record<string, unknown>), id: 'state-7' },
+          });
+        },
+      },
+      {
+        name: 'initial snapshot id mismatch',
+        mutate: (harness, attemptId) => {
+          const row = harness.read(`ATTEMPT#${attemptId}`, 'STATE#state-0')!;
+          harness.put({
+            ...row,
+            snapshot: { ...(row.snapshot as Record<string, unknown>), id: 'state-1' },
+          });
+        },
+      },
+    ];
+
+    for (const testCase of cases) {
+      const harness = new DynamoHarness();
+      const { attemptId } = seedClosedReplay(harness);
+      testCase.mutate(harness, attemptId);
+
+      await expect(storeFor(harness).get('owner', attemptId), testCase.name).rejects.toBeInstanceOf(
+        AttemptStoreError,
+      );
+    }
+  });
+});
+
 describe('Dynamo animation preference and replay projection', () => {
   it('writes the first default preference with a strict absent-item condition and no unused values', async () => {
     const harness = new DynamoHarness();
