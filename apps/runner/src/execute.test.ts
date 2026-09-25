@@ -306,7 +306,7 @@ describe('Runtime attempt coordinator', () => {
     expect((await store.get('a', admitted.attempt.id))?.status).toBe('cancelled');
   });
 
-  it('retries only throttling twice with separate call ordinals and fixed backoff', async () => {
+  it('recovers after two throttles without publishing extra turns', async () => {
     const base = createDefaultDraft();
     const draft = {
       ...base,
@@ -353,6 +353,12 @@ describe('Runtime attempt coordinator', () => {
       attempts += 1;
       await audit.beforeSend(new TextEncoder().encode(`request-${attempts}`));
       if (attempts < 3) {
+        await audit.afterReceive({
+          bytes: new TextEncoder().encode('{"error":"throttled"}'),
+          statusCode: 429,
+          requestId: `throttled-${attempts}`,
+          complete: true,
+        });
         const error = Object.assign(new Error('throttled'), {
           code: 'throttled',
           usage: {
@@ -397,12 +403,185 @@ describe('Runtime attempt coordinator', () => {
         },
       },
     );
+    const record = await store.get('a', admitted.attempt.id);
+    const calls = await store.getCalls('a', admitted.attempt.id);
+    const replay = await store.getReplayRecord('a', admitted.attempt.id);
     expect(attempts).toBe(19);
-    expect(delays).toEqual([500, 1000]);
-    expect((await store.getCalls('a', admitted.attempt.id)).map((call) => call.seq)).toEqual(
-      Array.from({ length: 19 }, (_, index) => index + 1),
+    expect(delays).toHaveLength(24);
+    expect(delays.every((milliseconds) => milliseconds === 5_000)).toBe(true);
+    expect(delays.reduce((total, milliseconds) => total + milliseconds, 0)).toBe(120_000);
+    expect(calls.map((call) => call.seq)).toEqual(Array.from({ length: 19 }, (_, i) => i + 1));
+    expect(new Set(calls.slice(0, 3).map((call) => call.decisionId)).size).toBe(1);
+    expect(record).toMatchObject({ status: 'victory', turnsUsed: 17, sequence: 17, calls: 19 });
+    expect(replay?.actions).toHaveLength(17);
+  });
+
+  it('closes as throttled after two delayed retries for the same decision', async () => {
+    const draft = createDefaultDraft();
+    const store = new MemoryAttemptStore({
+      draft: { version: 1, draft },
+      now: () => new Date('2026-09-21T15:00:00.000Z'),
+    });
+    const admitted = await store.admit({
+      owner: 'a',
+      requestKey: 'throttle-exhausted',
+      expectedVersion: 1,
+      draft,
+      animationEnabled: false,
+    });
+    let attempts = 0;
+    const waits: number[] = [];
+    const infer: InferenceAdapter = async ({ audit }) => {
+      attempts += 1;
+      await audit.beforeSend(new TextEncoder().encode(`request-${attempts}`));
+      await audit.afterReceive({
+        bytes: new TextEncoder().encode('{"error":"throttled"}'),
+        statusCode: 429,
+        requestId: `throttled-${attempts}`,
+        complete: true,
+      });
+      throw Object.assign(new Error('throttled'), {
+        code: 'throttled',
+        usage: { normalized: { inputTokens: null, outputTokens: null, gameTokens: null } },
+      });
+    };
+
+    await executeAttempt(
+      { owner: 'a', attemptId: admitted.attempt.id, executorId: 'executor' },
+      {
+        store,
+        bodies: new MemoryBodyStore(),
+        infer,
+        engine: createGameEngine(),
+        now: () => new Date('2026-09-21T15:00:00.000Z'),
+        sleep: async (milliseconds) => {
+          waits.push(milliseconds);
+        },
+      },
     );
-    expect((await store.get('a', admitted.attempt.id))?.status).toBe('victory');
+
+    const record = await store.get('a', admitted.attempt.id);
+    const calls = await store.getCalls('a', admitted.attempt.id);
+    const replay = await store.getReplayRecord('a', admitted.attempt.id);
+    expect(attempts).toBe(3);
+    expect(waits).toHaveLength(24);
+    expect(waits.every((milliseconds) => milliseconds === 5_000)).toBe(true);
+    expect(waits.reduce((total, milliseconds) => total + milliseconds, 0)).toBe(120_000);
+    expect(calls.map((call) => call.seq)).toEqual([1, 2, 3]);
+    expect(new Set(calls.map((call) => call.decisionId)).size).toBe(1);
+    expect(record).toMatchObject({
+      status: 'error',
+      reason: 'throttled',
+      turnsUsed: 0,
+      sequence: 0,
+      calls: 3,
+    });
+    expect(replay).toMatchObject({
+      actions: [],
+      snapshots: [{ id: 'state-0', support: 0, turnsUsed: 0 }],
+      closure: { status: 'error', actionCount: 0, finalStateId: 'state-0' },
+    });
+  });
+
+  it('closes a throttled attempt without retrying when cancellation arrives during backoff', async () => {
+    const draft = createDefaultDraft();
+    const store = new MemoryAttemptStore({
+      draft: { version: 1, draft },
+      now: () => new Date('2026-09-21T15:00:00.000Z'),
+    });
+    const admitted = await store.admit({
+      owner: 'a',
+      requestKey: 'throttle-cancel',
+      expectedVersion: 1,
+      draft,
+      animationEnabled: false,
+    });
+    let attempts = 0;
+    const waits: number[] = [];
+    const infer: InferenceAdapter = async ({ audit }) => {
+      attempts += 1;
+      await audit.beforeSend(new TextEncoder().encode(`request-${attempts}`));
+      throw Object.assign(new Error('throttled'), {
+        code: 'throttled',
+        usage: { normalized: { inputTokens: null, outputTokens: null, gameTokens: null } },
+      });
+    };
+
+    await executeAttempt(
+      { owner: 'a', attemptId: admitted.attempt.id, executorId: 'executor' },
+      {
+        store,
+        bodies: new MemoryBodyStore(),
+        infer,
+        engine: createGameEngine(),
+        now: () => new Date('2026-09-21T15:00:00.000Z'),
+        sleep: async (milliseconds) => {
+          waits.push(milliseconds);
+          await store.requestCancel('a', admitted.attempt.id);
+        },
+      },
+    );
+
+    expect(waits).toEqual([5_000]);
+    expect(attempts).toBe(1);
+    expect(await store.get('a', admitted.attempt.id)).toMatchObject({
+      status: 'cancelled',
+      reason: 'cancelled_during_retry',
+      turnsUsed: 0,
+      sequence: 0,
+      calls: 1,
+    });
+  });
+
+  it('stops throttle retries before the next backoff would consume the Runtime deadline reserve', async () => {
+    const draft = createDefaultDraft();
+    let nowMs = new Date('2026-09-21T15:00:00.000Z').getTime();
+    const now = () => new Date(nowMs);
+    const store = new MemoryAttemptStore({ draft: { version: 1, draft }, now });
+    const admitted = await store.admit({
+      owner: 'a',
+      requestKey: 'throttle-deadline',
+      expectedVersion: 1,
+      draft,
+      animationEnabled: false,
+      config: { runtimeLifetimeMs: 155_000 },
+    });
+    let attempts = 0;
+    const waits: number[] = [];
+    const infer: InferenceAdapter = async ({ audit }) => {
+      attempts += 1;
+      await audit.beforeSend(new TextEncoder().encode(`request-${attempts}`));
+      throw Object.assign(new Error('throttled'), {
+        code: 'throttled',
+        usage: { normalized: { inputTokens: null, outputTokens: null, gameTokens: null } },
+      });
+    };
+
+    await executeAttempt(
+      { owner: 'a', attemptId: admitted.attempt.id, executorId: 'executor' },
+      {
+        store,
+        bodies: new MemoryBodyStore(),
+        infer,
+        engine: createGameEngine(),
+        now,
+        sleep: async (milliseconds) => {
+          waits.push(milliseconds);
+          nowMs += milliseconds;
+        },
+      },
+    );
+
+    expect(attempts).toBe(2);
+    expect(waits).toHaveLength(12);
+    expect(waits.reduce((total, milliseconds) => total + milliseconds, 0)).toBe(60_000);
+    expect(await store.get('a', admitted.attempt.id)).toMatchObject({
+      status: 'error',
+      reason: 'runtime_deadline_exceeded',
+      turnsUsed: 0,
+      sequence: 0,
+      calls: 2,
+    });
   });
 
   it('keeps provider usage when response validation fails after an audited body', async () => {
