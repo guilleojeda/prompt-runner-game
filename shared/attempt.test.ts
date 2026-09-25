@@ -6,9 +6,96 @@ import {
 } from './attempt.fixture.js';
 import { ATTEMPT_RECORD_VERSION } from './attempt.js';
 import type { ReplayRecordView } from './attempt.js';
+import {
+  LEVEL,
+  createInitialState,
+  resolveAction,
+  type GameSnapshot,
+  type NormalizedAction,
+} from './game.js';
+import { DEFAULT_ATTEMPT_CONFIG, replayRecordViewOf, summaryOf } from './server/attempt.js';
+import type { PersistedAttempt } from './server/attempt.js';
 
 const DYNAMODB_ITEM_LIMIT = 400 * 1024;
 const REQUIRED_ITEM_MARGIN = 16 * 1024;
+
+const terminalChain = (status: 'victory' | 'defeat' | 'incomplete') => {
+  if (status === 'victory') {
+    const record = createClosedAttemptRecordFixture();
+    return { actions: record.actions, snapshots: record.snapshots };
+  }
+
+  const route: readonly NormalizedAction[] =
+    status === 'defeat'
+      ? [{ kind: 'advance' }, { kind: 'advance' }]
+      : Array.from({ length: LEVEL.maxTurns }, () => ({ kind: 'wait' as const }));
+  let state = createInitialState(LEVEL);
+  const snapshots: GameSnapshot[] = [state];
+  const actions = route.map((action, index) => {
+    const result = resolveAction(state, action, LEVEL);
+    state = result.after;
+    snapshots.push(state);
+    return {
+      seq: index + 1,
+      decisionId: `decision-${index + 1}`,
+      beforeStateId: result.before.id,
+      afterStateId: result.after.id,
+      action: result.action,
+      resolution: result.resolution,
+    };
+  });
+  return { actions, snapshots };
+};
+
+const persistedReplayAttempt = (
+  status: 'victory' | 'defeat' | 'incomplete',
+  reason: string | undefined,
+  snapshots: readonly GameSnapshot[],
+  sequence: number,
+): PersistedAttempt => {
+  const final = snapshots.at(-1)!;
+  return {
+    recordVersion: ATTEMPT_RECORD_VERSION,
+    id: `fixture-${status}`,
+    createdAt: '2026-09-21T12:00:00.000Z',
+    updatedAt: '2026-09-21T12:00:05.000Z',
+    status,
+    cancelRequested: false,
+    ...(reason === undefined ? {} : { reason }),
+    levelId: LEVEL.id,
+    modelKey: DEFAULT_ATTEMPT_CONFIG.model.key,
+    modelLabel: DEFAULT_ATTEMPT_CONFIG.model.label,
+    modelId: DEFAULT_ATTEMPT_CONFIG.model.modelId,
+    turnsUsed: final.turnsUsed,
+    maxTurns: LEVEL.maxTurns,
+    calls: sequence,
+    inputTokens: 0,
+    outputTokens: 0,
+    reasoningTokens: 0,
+    gameTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    score: null,
+    collectedObjectIds: [...final.inventory],
+    progress: final.maxSupportReached / LEVEL.segments.length,
+    finalSupport: final.support,
+    animationEnabled: false,
+    presentationComplete: true,
+    recordComplete: true,
+    owner: 'fixture-owner',
+    requestKey: `request-${status}`,
+    draft: {} as PersistedAttempt['draft'],
+    instructions: '',
+    skills: [],
+    config: DEFAULT_ATTEMPT_CONFIG,
+    initialSnapshot: snapshots[0],
+    currentSnapshot: final,
+    sequence,
+    nextCall: sequence + 1,
+    startDeadline: '2026-09-21T13:00:00.000Z',
+    sessionId: `attempt-${status}`,
+  };
+};
 
 describe('durable closed attempt contract fixture', () => {
   it('keeps the immutable record version, level and effective score parameters', () => {
@@ -140,5 +227,83 @@ describe('durable closed attempt contract fixture', () => {
     expect(call?.value).not.toHaveProperty('responseBody');
     expect(header?.value).toHaveProperty('collectedObjectIds', ['recompensa-1', 'llave-1']);
     expect(header?.value).not.toHaveProperty('objectPoints');
+  });
+});
+
+describe('durable terminal reason validation', () => {
+  const replayInput = (status: 'victory' | 'defeat' | 'incomplete') => {
+    const { actions, snapshots } = terminalChain(status);
+    const lastResolution = actions.at(-1)?.resolution;
+    const reason =
+      status === 'victory'
+        ? 'exit_reached'
+        : status === 'incomplete'
+          ? 'turn_limit_reached'
+          : lastResolution && 'reason' in lastResolution
+            ? lastResolution.reason
+            : undefined;
+    const attempt = persistedReplayAttempt(status, reason, snapshots, actions.length);
+    return {
+      actions,
+      snapshots,
+      attempt,
+      rawActions: actions,
+      rawSnapshots: snapshots.map((snapshot) => ({ stateId: snapshot.id, snapshot })),
+    };
+  };
+
+  it.each([
+    ['victory', 'exit_reached', 'walk_into_pit'],
+    ['defeat', 'walk_into_pit', 'walk_into_branch'],
+    ['incomplete', 'turn_limit_reached', 'wait'],
+  ] as const)(
+    'checks both presence and exact last-transition reason for %s replay closures',
+    (status, validReason, otherReason) => {
+      const { attempt, rawActions, rawSnapshots } = replayInput(status);
+      expect(replayRecordViewOf(attempt, rawActions, rawSnapshots).closure).toMatchObject({
+        status,
+        reason: validReason,
+      });
+      for (const reason of [undefined, otherReason]) {
+        const corrupted = { ...attempt, reason } as PersistedAttempt;
+        expect(() => replayRecordViewOf(corrupted, rawActions, rawSnapshots)).toThrow(
+          'causa del cierre',
+        );
+      }
+    },
+  );
+
+  it('requires the complete persisted current snapshot to match the final replay snapshot', () => {
+    const { attempt, rawActions, rawSnapshots, snapshots } = replayInput('victory');
+    const final = snapshots.at(-1)!;
+    const corrupted = {
+      ...attempt,
+      currentSnapshot: { ...final, turnsUsed: final.turnsUsed - 1 },
+    } as PersistedAttempt;
+
+    expect(() => replayRecordViewOf(corrupted, rawActions, rawSnapshots)).toThrow(
+      'cierre no coincide',
+    );
+  });
+
+  it.each([
+    ['victory', 'exit_reached', 'walk_into_pit'],
+    ['incomplete', 'turn_limit_reached', 'wait'],
+  ] as const)('validates %s reason in summaries', (status, validReason, otherReason) => {
+    const { attempt, snapshots } = replayInput(status);
+    expect(summaryOf(attempt).reason).toBe(validReason);
+    for (const reason of [undefined, otherReason]) {
+      expect(() => summaryOf({ ...attempt, reason } as PersistedAttempt)).toThrow(
+        'causa terminal esperada',
+      );
+    }
+    expect(attempt.currentSnapshot).toEqual(snapshots.at(-1));
+  });
+
+  it('keeps a defeat cause in summaries only when it is a fatal game reason', () => {
+    const { attempt } = replayInput('defeat');
+    expect(summaryOf(attempt).reason).toBe('walk_into_pit');
+    expect(() => summaryOf({ ...attempt, reason: undefined })).toThrow('causa de derrota');
+    expect(() => summaryOf({ ...attempt, reason: 'wait' })).toThrow('causa de derrota');
   });
 });

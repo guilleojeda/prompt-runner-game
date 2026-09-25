@@ -319,6 +319,27 @@ const isTerminal = (status: AttemptStatus): boolean =>
   status === 'cancelled' ||
   status === 'error';
 
+const FATAL_RESOLUTION_REASONS: ReadonlySet<string> = new Set([
+  'walk_into_pit',
+  'crouch_into_pit',
+  'walk_into_branch',
+  'jump_into_branch',
+  'walk_into_barrier',
+  'crouch_into_low_barrier',
+  'jump_into_high_barrier',
+]);
+
+const expectedTerminalReason = (
+  status: GameSnapshot['status'],
+  resolution?: unknown,
+): string | undefined => {
+  if (status === 'victory') return 'exit_reached';
+  if (status === 'incomplete') return 'turn_limit_reached';
+  if (status === 'defeat' && isActionResolution(resolution) && 'reason' in resolution)
+    return resolution.reason;
+  return undefined;
+};
+
 const readSnapshot = (value: unknown): GameSnapshot => {
   if (
     !isObject(value) ||
@@ -615,16 +636,7 @@ export const validateActionPublication = (
     throw new ReplayRecordError('La publicación no coincide con una transición válida del juego.');
   }
 
-  const expectedReason =
-    expectedTerminalStatus === undefined
-      ? undefined
-      : expectedTerminalStatus === 'victory'
-        ? 'exit_reached'
-        : expectedTerminalStatus === 'incomplete'
-          ? 'turn_limit_reached'
-          : isActionResolution(publication.resolution) && 'reason' in publication.resolution
-            ? publication.resolution.reason
-            : undefined;
+  const expectedReason = expectedTerminalReason(after.status, publication.resolution);
   if (
     publication.reason !== expectedReason ||
     (expectedTerminalStatus === 'defeat' && expectedReason === undefined)
@@ -724,10 +736,16 @@ export const replayRecordViewOf = (
   });
 
   const finalSnapshot = snapshots.at(-1);
+  const gameTerminalStatus =
+    attempt.status === 'victory' || attempt.status === 'defeat' || attempt.status === 'incomplete'
+      ? attempt.status
+      : undefined;
+  const expectedReason = gameTerminalStatus
+    ? expectedTerminalReason(gameTerminalStatus, actions.at(-1)?.resolution)
+    : undefined;
   if (
     !finalSnapshot ||
-    !isObject(attempt.currentSnapshot) ||
-    attempt.currentSnapshot.id !== finalSnapshot.id ||
+    !isDeepStrictEqual(readSnapshot(attempt.currentSnapshot), finalSnapshot) ||
     attempt.turnsUsed !== finalSnapshot.turnsUsed ||
     ((attempt.status === 'victory' ||
       attempt.status === 'defeat' ||
@@ -736,9 +754,16 @@ export const replayRecordViewOf = (
   ) {
     throw new ReplayRecordError('El cierre no coincide con el último estado guardado.');
   }
+  if (gameTerminalStatus && (expectedReason === undefined || attempt.reason !== expectedReason)) {
+    throw new ReplayRecordError('La causa del cierre no coincide con la última acción guardada.');
+  }
   const closure: AttemptClosure = {
     status: attempt.status,
-    ...(attempt.reason === undefined ? {} : { reason: attempt.reason }),
+    ...(gameTerminalStatus
+      ? { reason: expectedReason }
+      : attempt.reason === undefined
+        ? {}
+        : { reason: attempt.reason }),
     actionCount: actions.length,
     finalStateId: finalSnapshot.id,
     recordComplete: true,
@@ -787,31 +812,49 @@ export const DEFAULT_ATTEMPT_CONFIG: AttemptConfig = {
   scoreParameters: DEFAULT_ATTEMPT_SCORE_PARAMETERS,
 };
 
-export const summaryOf = (record: PersistedAttempt): AttemptSummary => ({
-  id: record.id,
-  createdAt: record.createdAt,
-  updatedAt: record.updatedAt,
-  status: record.status,
-  cancelRequested: record.cancelRequested,
-  ...(record.reason === undefined ? {} : { reason: record.reason }),
-  levelId: record.levelId,
-  modelKey: record.config.model.key,
-  modelLabel: record.config.model.label,
-  modelId: record.config.model.modelId,
-  turnsUsed: record.turnsUsed,
-  maxTurns: record.maxTurns,
-  calls: record.calls,
-  inputTokens: record.inputTokens,
-  outputTokens: record.outputTokens,
-  reasoningTokens: record.reasoningTokens,
-  gameTokens: record.gameTokens,
-  cacheReadTokens: record.cacheReadTokens,
-  cacheWriteTokens: record.cacheWriteTokens,
-  score: record.score,
-  ...summaryCollectionOf(record),
-  progress: record.progress,
-  finalSupport: record.finalSupport,
-  animationEnabled: record.animationEnabled,
-  presentationComplete: record.presentationComplete,
-  recordComplete: record.recordComplete,
-});
+const summaryReasonOf = (record: PersistedAttempt): string | undefined => {
+  if (record.status === 'victory' || record.status === 'incomplete') {
+    const expectedReason = expectedTerminalReason(record.status);
+    if (record.reason !== expectedReason)
+      throw new ReplayRecordError('El resumen no coincide con la causa terminal esperada.');
+    return expectedReason;
+  }
+  if (record.status === 'defeat') {
+    // The summary has no final action row, so it can check fatality but not exact attribution.
+    if (typeof record.reason !== 'string' || !FATAL_RESOLUTION_REASONS.has(record.reason))
+      throw new ReplayRecordError('El resumen no contiene una causa de derrota permitida.');
+  }
+  return record.reason;
+};
+
+export const summaryOf = (record: PersistedAttempt): AttemptSummary => {
+  const reason = summaryReasonOf(record);
+  return {
+    id: record.id,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    status: record.status,
+    cancelRequested: record.cancelRequested,
+    ...(reason === undefined ? {} : { reason }),
+    levelId: record.levelId,
+    modelKey: record.config.model.key,
+    modelLabel: record.config.model.label,
+    modelId: record.config.model.modelId,
+    turnsUsed: record.turnsUsed,
+    maxTurns: record.maxTurns,
+    calls: record.calls,
+    inputTokens: record.inputTokens,
+    outputTokens: record.outputTokens,
+    reasoningTokens: record.reasoningTokens,
+    gameTokens: record.gameTokens,
+    cacheReadTokens: record.cacheReadTokens,
+    cacheWriteTokens: record.cacheWriteTokens,
+    score: record.score,
+    ...summaryCollectionOf(record),
+    progress: record.progress,
+    finalSupport: record.finalSupport,
+    animationEnabled: record.animationEnabled,
+    presentationComplete: record.presentationComplete,
+    recordComplete: record.recordComplete,
+  };
+};

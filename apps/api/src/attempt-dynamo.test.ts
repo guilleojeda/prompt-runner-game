@@ -276,6 +276,7 @@ const seedClosedReplay = (
     updatedAt: record.updatedAt,
     status: record.closure.status,
     cancelRequested: false,
+    reason: 'exit_reached',
     levelId: record.config.level.id,
     turnsUsed: final?.turnsUsed ?? 0,
     maxTurns: record.config.level.maxTurns,
@@ -873,6 +874,44 @@ describe('Dynamo animation preference and replay projection', () => {
     await expect(
       storeFor(incompleteHeader).getReplayRecord('owner', partial.attemptId),
     ).rejects.toBeInstanceOf(ReplayRecordError);
+  });
+
+  it('rejects a replay header reason that is fatal but differs from its last resolution', async () => {
+    const harness = new DynamoHarness();
+    const { attemptId, initial } = seedAttempt(harness, {
+      status: 'running',
+      executorId: 'executor-a',
+    });
+    const store = storeFor(harness);
+    let snapshot = initial;
+    for (const [index, action] of [{ kind: 'advance' }, { kind: 'advance' }].entries()) {
+      const resolved = resolveAction(snapshot, action as NormalizedAction, LEVEL);
+      const reason = reasonOfResolvedAction(resolved);
+      await store.publishAction('owner', attemptId, 'executor-a', {
+        seq: index + 1,
+        decisionId: `decision-${index + 1}`,
+        action: resolved.action,
+        resolution: resolved.resolution,
+        beforeStateId: resolved.before.id,
+        afterStateId: resolved.after.id,
+        beforeSnapshot: resolved.before,
+        afterSnapshot: resolved.after,
+        ...(resolved.after.status === 'running' ? {} : { terminalStatus: resolved.after.status }),
+        ...(reason === undefined ? {} : { reason }),
+        progress: resolved.after.maxSupportReached / LEVEL.segments.length,
+        finalSupport: resolved.after.support,
+        turnsUsed: resolved.after.turnsUsed,
+      });
+      snapshot = resolved.after;
+    }
+    const header = harness.read('USER#owner', `ATTEMPT#${attemptId}`)!;
+    expect(header.reason).toBe('walk_into_pit');
+    harness.put({ ...header, reason: 'walk_into_branch' });
+
+    await expect(store.getReplayRecord('owner', attemptId)).rejects.toThrow('causa del cierre');
+    await expect(store.list('owner')).resolves.toMatchObject({
+      attempts: [expect.objectContaining({ status: 'defeat', reason: 'walk_into_branch' })],
+    });
   });
 
   it('rejects persisted snapshots without the current facing field', async () => {
