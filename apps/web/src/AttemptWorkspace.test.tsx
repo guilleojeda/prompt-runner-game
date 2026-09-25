@@ -482,6 +482,7 @@ describe('AttemptWorkspace', () => {
     expect(
       within(history as HTMLElement).getByText('Objetos: 1 · valor recogido: 25 puntos'),
     ).toBeTruthy();
+    expect(within(history as HTMLElement).queryByText(/Puntaje:/)).toBeNull();
 
     fireEvent.click(within(history as HTMLElement).getByRole('button', { name: 'Ver resultado' }));
     await screen.findByRole('heading', { name: 'Derrota' });
@@ -490,6 +491,54 @@ describe('AttemptWorkspace', () => {
       '25 puntos',
     );
     expect(screen.queryByText('Puntaje')).toBeNull();
+  });
+
+  it('shows a collected victory result and history values directly with animation disabled', async () => {
+    const collected = {
+      ...summary('victory'),
+      turnsUsed: 8,
+      inputTokens: 9000,
+      outputTokens: 868,
+      gameTokens: 9868,
+      score: 935.13,
+      collectedObjectIds: ['recompensa-1'],
+      objectPoints: 25,
+      animationEnabled: false,
+    };
+    const getReplay = vi.fn();
+    const attemptApi = api({
+      listAttempts: vi.fn().mockResolvedValue({ attempts: [collected] }),
+      getAttempt: vi.fn().mockResolvedValue(collected),
+      getAnimationPreference: vi.fn().mockResolvedValue({ animationEnabled: false, version: 0 }),
+      getReplay,
+    });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+
+    await screen.findByRole('heading', { name: 'Historial' });
+    expect((screen.getByRole('checkbox', { name: 'Animación' }) as HTMLInputElement).checked).toBe(
+      false,
+    );
+    const history = screen.getByRole('heading', { name: 'Historial' }).closest('section');
+    expect(history).not.toBeNull();
+    expect(
+      within(history as HTMLElement).getByText('Objetos: 1 · valor recogido: 25 puntos'),
+    ).toBeTruthy();
+    expect(within(history as HTMLElement).getByText(/Puntaje: 935,13/)).toBeTruthy();
+    expect(getReplay).not.toHaveBeenCalled();
+
+    fireEvent.click(within(history as HTMLElement).getByRole('button', { name: 'Ver resultado' }));
+    expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
+    expect(screen.getByText('Turnos').nextElementSibling?.textContent).toBe('8 / 16');
+    expect(screen.getByText('Tokens usados para puntaje').nextElementSibling?.textContent).toBe(
+      '9.868',
+    );
+    expect(screen.getByText('Objetos').nextElementSibling?.textContent).toBe('1');
+    expect(screen.getByText('Valor de objetos recogidos').nextElementSibling?.textContent).toBe(
+      '25 puntos',
+    );
+    expect(screen.getByText('Puntaje').nextElementSibling?.textContent).toBe('935,13');
+    expect(getReplay).not.toHaveBeenCalled();
   });
 
   it('replays a current history record manually without admitting or marking it again', async () => {

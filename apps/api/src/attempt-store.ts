@@ -2167,8 +2167,40 @@ export class MemoryAttemptStore implements AttemptStore {
     publication: ActionPublication,
   ): Promise<PersistedAttempt | undefined> {
     const record = this.owned(attemptId, owner);
+    if (!record) return undefined;
+    const snapshots = this.snapshots.get(attemptId) ?? new Map<string, unknown>();
+    const actionItems = this.actions.get(attemptId) ?? [];
+    const persistedAction = actionItems.find(
+      (item) =>
+        typeof item === 'object' &&
+        item !== null &&
+        'seq' in item &&
+        (item as { seq?: unknown }).seq === publication.seq,
+    ) as Record<string, unknown> | undefined;
     if (
-      !record ||
+      record.sequence === publication.seq &&
+      (record.currentSnapshot as { id?: unknown })?.id === publication.afterStateId
+    ) {
+      const persistedSnapshot = snapshots.get(publication.afterStateId);
+      const sameAction =
+        persistedAction?.seq === publication.seq &&
+        persistedAction.decisionId === publication.decisionId &&
+        persistedAction.beforeStateId === publication.beforeStateId &&
+        persistedAction.afterStateId === publication.afterStateId &&
+        persistedAction.terminalStatus === publication.terminalStatus &&
+        persistedAction.reason === publication.reason &&
+        persistedAction.progress === publication.progress &&
+        persistedAction.finalSupport === publication.finalSupport &&
+        persistedAction.turnsUsed === publication.turnsUsed &&
+        stableJson(persistedAction.action) === stableJson(publication.action) &&
+        stableJson(persistedAction.resolution) === stableJson(publication.resolution);
+      return snapshots.has(publication.afterStateId) &&
+        sameAction &&
+        stableJson(persistedSnapshot) === stableJson(publication.afterSnapshot)
+        ? clone(record)
+        : undefined;
+    }
+    if (
       record.status !== 'running' ||
       record.executorId !== executorId ||
       record.cancelRequested ||
@@ -2176,27 +2208,31 @@ export class MemoryAttemptStore implements AttemptStore {
       (record.currentSnapshot as { id?: unknown })?.id !== publication.beforeStateId
     )
       return undefined;
-    const snapshots = this.snapshots.get(attemptId) ?? new Map<string, unknown>();
-    if (snapshots.has(publication.afterStateId)) return clone(record);
-    snapshots.set(publication.afterStateId, clone(publication.afterSnapshot));
-    this.snapshots.set(attemptId, snapshots);
-    const actionItems = this.actions.get(attemptId) ?? [];
-    actionItems.push({
+    if (snapshots.has(publication.afterStateId) || persistedAction !== undefined) return undefined;
+
+    const collection = collectionSummaryOf(
+      publication.afterSnapshot,
+      record.config.levelDefinition,
+    );
+    const afterSnapshot = clone(publication.afterSnapshot);
+    const action = {
       seq: publication.seq,
       decisionId: publication.decisionId,
       beforeStateId: publication.beforeStateId,
       afterStateId: publication.afterStateId,
       action: clone(publication.action),
       resolution: clone(publication.resolution),
-    });
-    this.actions.set(attemptId, actionItems);
-    const collection = collectionSummaryOf(
-      publication.afterSnapshot,
-      record.config.levelDefinition,
-    );
+      ...(publication.terminalStatus === undefined
+        ? {}
+        : { terminalStatus: publication.terminalStatus }),
+      ...(publication.reason === undefined ? {} : { reason: publication.reason }),
+      progress: publication.progress,
+      finalSupport: publication.finalSupport,
+      turnsUsed: publication.turnsUsed,
+    };
     const changes: Record<string, unknown> = {
       sequence: publication.seq,
-      currentSnapshot: clone(publication.afterSnapshot),
+      currentSnapshot: clone(afterSnapshot),
       turnsUsed: publication.turnsUsed,
       progress: publication.progress,
       finalSupport: publication.finalSupport,
@@ -2207,19 +2243,24 @@ export class MemoryAttemptStore implements AttemptStore {
       changes.status = publication.terminalStatus;
       changes.reason = publication.reason;
       changes.presentationComplete = !record.animationEnabled;
-      const current = this.records.get(attemptId)!;
       changes.score = scoreAttempt(
         {
           status: publication.terminalStatus,
           turnsUsed: publication.turnsUsed,
           collectedObjectIds: collection.collectedObjectIds,
-          gameTokens: current.gameTokens,
+          gameTokens: record.gameTokens,
         },
-        scoreRulesFor(current.config),
+        scoreRulesFor(record.config),
       );
     }
-    this.replace(record, changes as Partial<PersistedAttempt>);
-    return clone(this.records.get(attemptId)!);
+    const updated = { ...record, ...changes } as PersistedAttempt;
+    const result = clone(updated);
+    const nextSnapshots = new Map(snapshots);
+    nextSnapshots.set(publication.afterStateId, afterSnapshot);
+    this.snapshots.set(attemptId, nextSnapshots);
+    this.actions.set(attemptId, [...actionItems, action]);
+    this.records.set(attemptId, updated);
+    return result;
   }
 
   public async close(
