@@ -1,10 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { DynamoDBClient, TransactionCanceledException } from '@aws-sdk/client-dynamodb';
 import { marshall } from '@aws-sdk/util-dynamodb';
-import { LEVEL, resolveAction, type GameSnapshot } from '../../../shared/game';
+import {
+  LEVEL,
+  resolveAction,
+  type GameSnapshot,
+  type NormalizedAction,
+} from '../../../shared/game';
 import { createDefaultDraft, type DraftSnapshot } from '../../../shared/robot';
 import { createClosedAttemptRecordFixture } from '../../../shared/attempt.fixture';
-import { readCurrentLevel } from '../../../shared/server/attempt';
+import { DEFAULT_ATTEMPT_CONFIG, readCurrentLevel } from '../../../shared/server/attempt';
+import type { CallRecord } from '../../../shared/server/attempt';
 import {
   AttemptNotTerminalError,
   DynamoAttemptStore,
@@ -27,6 +33,74 @@ const modelIdentity = {
   profileVersion: 'claude-sonnet-4.6-global-v1',
 };
 
+const publishMemoryRoute = async (
+  store: MemoryAttemptStore,
+  attemptId: string,
+  actions: readonly NormalizedAction[],
+  usage: { readonly gameTokens: number | null },
+) => {
+  await store.claim('a', attemptId, 'executor');
+  const started: CallRecord = {
+    attemptId,
+    seq: 1,
+    decisionId: 'decision-1',
+    ...modelIdentity,
+    requestKey: `attempt/${attemptId}/request.json`,
+    responseKey: `attempt/${attemptId}/response.json`,
+    requestSha256: 'a'.repeat(64),
+    requestBytes: 1,
+    status: 'started',
+    usage: {
+      inputTokens: null,
+      outputTokens: null,
+      reasoningTokens: null,
+      gameTokens: null,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+    },
+    createdAt: '2026-09-21T15:00:00.000Z',
+    updatedAt: '2026-09-21T15:00:00.000Z',
+  };
+  await store.beginCall('a', attemptId, 'executor', started);
+  await store.finishCall('a', attemptId, 'executor', {
+    ...started,
+    status: 'received',
+    responseSha256: 'b'.repeat(64),
+    responseBytes: 1,
+    usage: {
+      inputTokens: 200,
+      outputTokens: 300,
+      reasoningTokens: 0,
+      gameTokens: usage.gameTokens,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    },
+  });
+
+  let state = (await store.getSnapshot('a', attemptId)) as GameSnapshot;
+  for (const [index, action] of actions.entries()) {
+    const resolved = resolveAction(state, action, LEVEL);
+    const terminalStatus = resolved.after.status === 'running' ? undefined : resolved.after.status;
+    await store.publishAction('a', attemptId, 'executor', {
+      seq: index + 1,
+      decisionId: `decision-${index + 1}`,
+      action: resolved.action,
+      resolution: resolved.resolution,
+      beforeStateId: resolved.before.id,
+      afterStateId: resolved.after.id,
+      beforeSnapshot: resolved.before,
+      afterSnapshot: resolved.after,
+      ...(terminalStatus ? { terminalStatus } : {}),
+      ...('reason' in resolved.resolution ? { reason: resolved.resolution.reason } : {}),
+      progress: resolved.after.maxSupportReached / LEVEL.segments.length,
+      finalSupport: resolved.after.support,
+      turnsUsed: resolved.after.turnsUsed,
+    });
+    state = resolved.after;
+  }
+  return store.get('a', attemptId);
+};
+
 describe('attempt lifecycle store', () => {
   it('reads the current level independent of serialized object key order', () => {
     const reverseKeys = (value: unknown): unknown => {
@@ -41,6 +115,119 @@ describe('attempt lifecycle store', () => {
 
     expect(readCurrentLevel(reverseKeys(LEVEL))).toEqual(LEVEL);
     expect(() => readCurrentLevel({ ...LEVEL, id: 'principal-estatico-v1' })).toThrow();
+  });
+
+  it('scores the persisted inventory and exposes its object summary without reading replay', async () => {
+    const draft = savedDraft().draft;
+    const store = new MemoryAttemptStore({ draft: savedDraft() });
+    const routes: readonly {
+      readonly requestKey: string;
+      readonly actions: readonly NormalizedAction[];
+      readonly gameTokens: number | null;
+      readonly expected: {
+        readonly status: 'victory' | 'defeat';
+        readonly score: number | null;
+        readonly collectedObjectIds: readonly string[];
+        readonly objectPoints: number;
+      };
+    }[] = [
+      {
+        requestKey: 'collected-reward',
+        actions: [
+          { kind: 'advance' },
+          { kind: 'jump', direction: 'right' },
+          { kind: 'collect' },
+          { kind: 'advance' },
+          { kind: 'crouch', direction: 'right' },
+          { kind: 'crouch', direction: 'right' },
+          { kind: 'jump', direction: 'right' },
+          { kind: 'advance' },
+        ],
+        gameTokens: 500,
+        expected: {
+          status: 'victory',
+          score: 944.5,
+          collectedObjectIds: ['recompensa-1'],
+          objectPoints: 25,
+        },
+      },
+      {
+        requestKey: 'without-reward',
+        actions: [
+          { kind: 'advance' },
+          { kind: 'jump', direction: 'right' },
+          { kind: 'advance' },
+          { kind: 'crouch', direction: 'right' },
+          { kind: 'jump', direction: 'right' },
+          { kind: 'jump', direction: 'right' },
+          { kind: 'advance' },
+        ],
+        gameTokens: 500,
+        expected: {
+          status: 'victory',
+          score: 929.5,
+          collectedObjectIds: [],
+          objectPoints: 0,
+        },
+      },
+      {
+        requestKey: 'unknown-usage',
+        actions: [
+          { kind: 'advance' },
+          { kind: 'jump', direction: 'right' },
+          { kind: 'advance' },
+          { kind: 'crouch', direction: 'right' },
+          { kind: 'jump', direction: 'right' },
+          { kind: 'jump', direction: 'right' },
+          { kind: 'advance' },
+        ],
+        gameTokens: null,
+        expected: {
+          status: 'victory',
+          score: null,
+          collectedObjectIds: [],
+          objectPoints: 0,
+        },
+      },
+      {
+        requestKey: 'defeat-score',
+        actions: [{ kind: 'advance' }, { kind: 'advance' }],
+        gameTokens: 500,
+        expected: {
+          status: 'defeat',
+          score: null,
+          collectedObjectIds: [],
+          objectPoints: 0,
+        },
+      },
+    ];
+
+    for (const route of routes) {
+      const { attempt } = await store.admit({
+        owner: 'a',
+        requestKey: route.requestKey,
+        expectedVersion: 1,
+        draft,
+        animationEnabled: false,
+      });
+      const saved = await publishMemoryRoute(store, attempt.id, route.actions, {
+        gameTokens: route.gameTokens,
+      });
+      expect(saved).toMatchObject({
+        status: route.expected.status,
+        score: route.expected.score,
+        collectedObjectIds: route.expected.collectedObjectIds,
+      });
+      expect(saved).not.toHaveProperty('objectPoints');
+      expect((await store.list('a')).attempts).toContainEqual(
+        expect.objectContaining({
+          id: attempt.id,
+          collectedObjectIds: route.expected.collectedObjectIds,
+          objectPoints: route.expected.objectPoints,
+          score: route.expected.score,
+        }),
+      );
+    }
   });
 
   it('checks idempotency before the draft version and quota', async () => {
@@ -62,6 +249,12 @@ describe('attempt lifecycle store', () => {
       modelLabel: 'Claude Sonnet 4.6',
       modelId: 'global.anthropic.claude-sonnet-4-6',
     });
+    expect((await store.get('a', first.attempt.id))?.config.engineVersion).toBe(
+      'periodic-engine-v3',
+    );
+    expect((await store.get('a', first.attempt.id))?.config.scoreParameters).toEqual(
+      DEFAULT_ATTEMPT_CONFIG.scoreParameters,
+    );
     const duplicate = await store.admit({
       owner: 'a',
       requestKey: 'same',
@@ -413,7 +606,10 @@ describe('attempt lifecycle store', () => {
         afterSnapshot: resolved.after,
         ...(resolved.after.status === 'running'
           ? {}
-          : { terminalStatus: 'defeat' as const, reason: resolved.resolution.reason }),
+          : {
+              terminalStatus: 'defeat' as const,
+              ...('reason' in resolved.resolution ? { reason: resolved.resolution.reason } : {}),
+            }),
         progress: resolved.after.maxSupportReached / LEVEL.segments.length,
         finalSupport: resolved.after.support,
         turnsUsed: resolved.after.turnsUsed,

@@ -152,14 +152,35 @@ function parseAttempt(value: unknown): AttemptSummary | null {
     value.reason === undefined ? undefined : typeof value.reason === 'string' ? value.reason : null;
   if (reason === null) return null;
   const score = nullableNumber(value, 'score');
+  const objectPoints = requiredNumber(value, 'objectPoints');
   const inputTokens = nullableNumber(value, 'inputTokens');
   const outputTokens = nullableNumber(value, 'outputTokens');
   const gameTokens = nullableNumber(value, 'gameTokens');
   const cacheReadTokens = nullableNumber(value, 'cacheReadTokens');
   const cacheWriteTokens = nullableNumber(value, 'cacheWriteTokens');
   const reasoningTokens = nullableNumber(value, 'reasoningTokens');
+  const collectedObjectIds = Array.isArray(value.collectedObjectIds)
+    ? value.collectedObjectIds
+    : null;
+  const knownObjectValues = new Map(LEVEL.objects.map((object) => [object.id, object.scoreValue]));
+  const validCollectedObjectIds =
+    collectedObjectIds !== null &&
+    collectedObjectIds.every(
+      (objectId): objectId is string =>
+        typeof objectId === 'string' && knownObjectValues.has(objectId),
+    ) &&
+    new Set(collectedObjectIds).size === collectedObjectIds.length;
   if (
     score === undefined ||
+    objectPoints === null ||
+    !Number.isInteger(objectPoints) ||
+    objectPoints < 0 ||
+    !validCollectedObjectIds ||
+    objectPoints !==
+      (collectedObjectIds as string[]).reduce(
+        (total, objectId) => total + (knownObjectValues.get(objectId) ?? 0),
+        0,
+      ) ||
     inputTokens === undefined ||
     outputTokens === undefined ||
     gameTokens === undefined ||
@@ -202,6 +223,8 @@ function parseAttempt(value: unknown): AttemptSummary | null {
     modelLabel,
     modelId,
     score,
+    collectedObjectIds: collectedObjectIds as string[],
+    objectPoints,
     progress,
     finalSupport,
     animationEnabled: value.animationEnabled,

@@ -32,6 +32,7 @@ const ROBOT_SYMBOL: Readonly<Record<ReplayPose, string>> = Object.freeze({
   'step-b': 'robot-step-b',
   jump: 'robot-jump',
   crouch: 'robot-crouch',
+  collect: 'robot-collect',
   fall: 'robot-fall',
   impact: 'robot-impact',
   celebrate: 'robot-celebrate',
@@ -68,6 +69,8 @@ const poseLabel = (pose: ReplayPose): string => {
       return 'saltando';
     case 'crouch':
       return 'agachado';
+    case 'collect':
+      return 'recolectando';
     case 'fall':
       return 'cayendo';
     case 'impact':
@@ -87,7 +90,9 @@ const barrierLowHref = symbolHref('terrain-barrier-low');
 const barrierHighHref = symbolHref('terrain-barrier-high');
 const exitHref = symbolHref('terrain-exit');
 const impactHref = symbolHref('effect-impact');
+const pickupHref = symbolHref('effect-pickup');
 const victoryHref = symbolHref('effect-victory');
+const rewardHref = symbolHref('reward-object');
 
 interface TerrainLayer {
   readonly state: TerrainState;
@@ -270,20 +275,43 @@ const Robot = ({ sample }: { readonly sample: ReplaySample }) => {
   );
 };
 
+const Rewards = ({ sample }: { readonly sample: ReplaySample }) => (
+  <g data-replay-layer="rewards" aria-hidden="true">
+    {LEVEL.objects
+      .filter((object) => sample.remainingObjects.includes(object.id))
+      .map((object) => {
+        const centerX = SUPPORT_START_X + object.support * SEGMENT_WIDTH;
+        return (
+          <use
+            key={object.id}
+            className="replay-scene__reward"
+            data-object-id={object.id}
+            href={rewardHref}
+            x={centerX + 14}
+            y="202"
+            width="36"
+            height="40"
+          />
+        );
+      })}
+  </g>
+);
+
 const Effects = ({ sample }: { readonly sample: ReplaySample }) => {
   if (sample.effect === 'none') return null;
   const centerX = SUPPORT_START_X + sample.support * SEGMENT_WIDTH;
   const victory = sample.effect === 'victory';
-  const size = victory ? 74 : 34;
+  const pickup = sample.effect === 'pickup';
+  const size = victory ? 74 : pickup ? 46 : 34;
   const x = victory
     ? centerX - size / 2
-    : centerX + (sample.facing === 'left' ? -20 : 20) - size / 2;
-  const y = victory ? 132 : 146;
+    : centerX + (sample.facing === 'left' ? -24 : 34) - size / 2;
+  const y = victory ? 132 : pickup ? 184 : 146;
   return (
     <use
       aria-hidden="true"
       data-effect={sample.effect}
-      href={sample.effect === 'victory' ? victoryHref : impactHref}
+      href={victory ? victoryHref : pickup ? pickupHref : impactHref}
       x={x}
       y={y}
       width={size}
@@ -321,6 +349,7 @@ const ReplayCanvas = ({
       data-world-width={REPLAY_WORLD_WIDTH}
     >
       <TerrainBack sample={sample} />
+      <Rewards sample={sample} />
       <g data-replay-layer="robot">
         <Robot sample={sample} />
       </g>

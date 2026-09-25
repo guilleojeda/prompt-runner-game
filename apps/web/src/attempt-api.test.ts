@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createDefaultDraft } from '../../../shared/robot.js';
 import { createClosedAttemptRecordFixture } from '../../../shared/attempt.fixture.js';
+import { LEVEL } from '../../../shared/game.js';
 import { AttemptApiClient } from './attempt-api.js';
 
 const config = { apiBaseUrl: 'https://api.example.test/', apiScope: 'prompt-runner/robot' };
@@ -11,7 +12,7 @@ const summary = {
   updatedAt: '2026-09-21T12:00:01.000Z',
   status: 'victory',
   cancelRequested: false,
-  levelId: 'principal-periodico-v2',
+  levelId: LEVEL.id,
   modelKey: 'claude-sonnet-4.6',
   modelLabel: 'Claude Sonnet 4.6',
   modelId: 'global.anthropic.claude-sonnet-4-6',
@@ -25,6 +26,8 @@ const summary = {
   cacheReadTokens: null,
   cacheWriteTokens: null,
   score: null,
+  collectedObjectIds: [],
+  objectPoints: 0,
   progress: 1,
   finalSupport: 7,
   animationEnabled: false,
@@ -109,14 +112,38 @@ describe('AttemptApiClient', () => {
     await expect(client.getAttempt('attempt-1')).rejects.toMatchObject({ code: 'server' });
   });
 
-  it('rejects an attempt summary from the retired static level', async () => {
-    const obsolete = { ...summary, levelId: 'principal-estatico-v1', maxTurns: 12 };
+  it('rejects an attempt summary from the retired phase 5 level', async () => {
+    const obsolete = { ...summary, levelId: 'principal-periodico-v2' };
     const fetchImpl = vi
       .fn<typeof fetch>()
       .mockResolvedValue(new Response(JSON.stringify({ attempt: obsolete }), { status: 200 }));
     const client = new AttemptApiClient(config, { tokenProvider: () => 'token', fetch: fetchImpl });
 
     await expect(client.getAttempt('attempt-old')).rejects.toMatchObject({ code: 'server' });
+  });
+
+  it('keeps the collected reward summary and rejects inconsistent reward points', async () => {
+    const collected = {
+      ...summary,
+      collectedObjectIds: ['recompensa-1'],
+      objectPoints: 25,
+    };
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ attempt: collected }), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ attempt: { ...collected, collectedObjectIds: [], objectPoints: 25 } }),
+          { status: 200 },
+        ),
+      );
+    const client = new AttemptApiClient(config, { tokenProvider: () => 'token', fetch: fetchImpl });
+
+    await expect(client.getAttempt('attempt-1')).resolves.toMatchObject({
+      collectedObjectIds: ['recompensa-1'],
+      objectPoints: 25,
+    });
+    await expect(client.getAttempt('attempt-1')).rejects.toMatchObject({ code: 'server' });
   });
 
   it('rejects an attempt response without the server-normalized model identity', async () => {

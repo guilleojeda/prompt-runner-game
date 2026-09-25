@@ -1,6 +1,6 @@
 # Ejecución del juego y del agente
 
-**Ejecución periódica del nivel principal con Sonnet 4.6.** AgentCore Runtime con Strands en TypeScript y Amazon Bedrock mediante su integración nativa reúne la coordinación del intento, el motor determinista y el registro. El nivel `principal-periodico-v2` conserva el resultado y permite consultar y reproducir intentos del contrato vigente. Sonnet 4.6 es el único modelo operativo. Los requisitos están en [la especificación](../../README.md#documentación-del-producto); Cognito usa su correo predeterminado inicialmente y SES se incorpora después; el frontend se publica en S3 privado mediante CloudFront con Origin Access Control, según [acceso y entrega](acceso-y-entrega.md).
+**Ejecución periódica del nivel principal con recompensa y Sonnet 4.6.** AgentCore Runtime con Strands en TypeScript y Amazon Bedrock mediante su integración nativa reúne la coordinación del intento, el motor determinista y el registro. El nivel `principal-recompensas-v3` conserva el resultado y permite consultar y reproducir intentos del contrato vigente. Sonnet 4.6 es el único modelo operativo. Los requisitos están en [la especificación](../../README.md#documentación-del-producto); Cognito usa su correo predeterminado inicialmente y SES se incorpora después; el frontend se publica en S3 privado mediante CloudFront con Origin Access Control, según [acceso y entrega](acceso-y-entrega.md).
 
 ## Componentes y responsabilidades
 
@@ -35,11 +35,11 @@ CodeZip Node.js y el SDK de Runtime alojan el ejecutor y su tarea de background.
 
 ### Contrato operativo vigente del nivel principal
 
-El único nivel vigente es `principal-periodico-v2`, versión 2, con `RULES_VERSION=2`. Sus tramos son `ground`, `pit`, `ground`, `branch`, `barrier`, `platform`, `ground`; la salida está en el apoyo 7 y `maxTurns=16`. No contiene objetos y la salida no tiene requisitos. La barrera está baja en turnos pares y alta en impares; la plataforma es suelo si el turno es divisible por tres y pozo en los demás. La fase se calcula desde el turno inicial de cada acción, con desfase cero.
+El único nivel vigente es `principal-recompensas-v3`, versión 3, con `RULES_VERSION=3`. Sus tramos son `ground`, `pit`, `ground`, `branch`, `barrier`, `platform`, `ground`; la salida está en el apoyo 7 y `maxTurns=16`. Contiene `recompensa-1` en el apoyo 2, con valor 25 al recogerla; la salida no tiene requisitos. La barrera está baja en turnos pares y alta en impares; la plataforma es suelo si el turno es divisible por tres y pozo en los demás. La fase se calcula desde el turno inicial de cada acción, con desfase cero.
 
-El catálogo conserva `tool_1` Avanzar, `tool_2` Retroceder, `tool_3` Saltar, `tool_4` Agacharse y avanzar, `tool_5` Nadar y `tool_6` Esperar. Esperar no tiene argumentos, empieza deshabilitada y consume un turno sin mover al robot. La observación contiene el apoyo local, el tramo inmediato a cada lado o un límite y el estado presente de la salida; no expone coordenadas ni fases futuras.
+El catálogo conserva `tool_1` Avanzar, `tool_2` Retroceder, `tool_3` Saltar, `tool_4` Agacharse y avanzar, `tool_5` Nadar, `tool_6` Esperar y `tool_7` Agarrar objeto. Esperar y Agarrar objeto no tienen argumentos y empiezan deshabilitadas; ambas consumen un turno sin mover al robot. Agarrar sólo recoge el objeto del apoyo actual y se registra como no-op cuando allí no queda ninguno. La observación contiene los objetos del apoyo actual, el tramo inmediato a cada lado o un límite y el estado presente de la salida; no expone coordenadas, inventario ni fases futuras.
 
-La configuración efectiva fija `RULES_VERSION=2`, `scoreVersion=score-v1`, el perfil único de Sonnet 4.6 y los parámetros de puntaje base 1000, peso de turno 10, peso de tokens 1, unidad 1000, dos decimales y negativos permitidos. Los plazos operativos guardados son: inicio pendiente 5 minutos, evento de starter 5 minutos, vida de Runtime 30 minutos, llamada 60 segundos, reserva de guardado 30 segundos y margen de terminación 2 minutos. No son objetivos de latencia.
+La configuración efectiva fija `RULES_VERSION=3`, `scoreVersion=score-v1`, el perfil único de Sonnet 4.6 y los parámetros de puntaje base 1000, peso de turno 10, peso de tokens 1, unidad 1000, dos decimales y negativos permitidos. El valor de la recompensa procede de la definición del nivel fijada en el intento; sólo su ID en el inventario final aporta puntos. Los plazos operativos guardados son: inicio pendiente 5 minutos, evento de starter 5 minutos, vida de Runtime 30 minutos, llamada 60 segundos, reserva de guardado 30 segundos y margen de terminación 2 minutos. No son objetivos de latencia.
 
 El Runtime registra una tarea asíncrona y el coordinador conserva snapshots de estado, llamadas y acciones en DynamoDB; los bodies completos de inferencia van a S3 privado. La continuidad al cerrar el navegador depende del proceso y de los registros persistidos. Una caída del proceso conserva lo ya escrito y cierra el intento como error; no hay reanudación automática del juego.
 
@@ -61,7 +61,7 @@ La aprobación de una cancelación o el cierre por error impide nuevas acciones.
 
 ### Fases posteriores
 
-La fase 6 incorporará objetos y recompensas; la fase 7, llaves y salidas bloqueadas; la fase 8, diagnóstico de prompts y responses; las fases 9 y 10, comparación y recorrido de transferencia. No forman parte del nivel principal vigente.
+La fase 7 incorporará llaves y salidas bloqueadas; la fase 8, diagnóstico de prompts y responses; las fases 9 y 10, comparación y recorrido de transferencia. No forman parte del nivel principal vigente.
 
 ## Inferencia
 

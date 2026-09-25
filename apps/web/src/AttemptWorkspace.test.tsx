@@ -11,6 +11,7 @@ import {
   type DraftSnapshot,
 } from '../../../shared/robot.js';
 import { createClosedAttemptRecordFixture } from '../../../shared/attempt.fixture.js';
+import { LEVEL } from '../../../shared/game.js';
 import type { ReplayRecordView } from '../../../shared/attempt.js';
 import type { AuthSession } from './auth.js';
 import { AttemptApiFailure, type AttemptApi, type AttemptSummary } from './attempt-api.js';
@@ -69,7 +70,7 @@ function summary(status: AttemptSummary['status'] = 'running'): AttemptSummary {
     updatedAt: '2026-09-21T12:00:01.000Z',
     status,
     cancelRequested: false,
-    levelId: 'principal-periodico-v2',
+    levelId: LEVEL.id,
     modelKey: 'claude-sonnet-4.6',
     modelLabel: 'Claude Sonnet 4.6',
     modelId: 'global.anthropic.claude-sonnet-4-6',
@@ -83,6 +84,8 @@ function summary(status: AttemptSummary['status'] = 'running'): AttemptSummary {
     cacheReadTokens: null,
     cacheWriteTokens: null,
     score: null,
+    collectedObjectIds: [],
+    objectPoints: 0,
     progress: 0.4,
     finalSupport: 2,
     animationEnabled: false,
@@ -191,7 +194,7 @@ describe('AttemptWorkspace', () => {
         ...summary('victory'),
         animationEnabled: false,
         presentationComplete: true,
-        turnsUsed: 7,
+        turnsUsed: 8,
       },
       dispatchConfirmed: true,
     });
@@ -205,7 +208,7 @@ describe('AttemptWorkspace', () => {
     render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
 
     await screen.findByText('Historial');
-    expect(screen.getByText('Terreno periódico')).toBeTruthy();
+    expect(screen.getByText('Terreno con recompensa')).toBeTruthy();
     expect(screen.getByText(/cambia entre suelo, pozo, rama, barrera y plataforma/)).toBeTruthy();
     const animation = screen.getByRole('checkbox', { name: 'Animación' }) as HTMLInputElement;
     expect(animation.checked).toBe(true);
@@ -301,7 +304,7 @@ describe('AttemptWorkspace', () => {
   it('recovers pending playback without exposing the result early and lets the player replay without inference', async () => {
     const pending = {
       ...summary('victory'),
-      turnsUsed: 7,
+      turnsUsed: 8,
       animationEnabled: true,
       presentationComplete: false,
     };
@@ -352,7 +355,7 @@ describe('AttemptWorkspace', () => {
     const terminal = {
       ...active,
       status: 'victory' as const,
-      turnsUsed: 7,
+      turnsUsed: 8,
       updatedAt: '2026-09-21T12:05:00.000Z',
     };
     const getAttempt = vi.fn().mockResolvedValue(terminal);
@@ -376,7 +379,7 @@ describe('AttemptWorkspace', () => {
   it('refreshes an incomplete automatic summary before retrying the replay', async () => {
     const incomplete = {
       ...summary('victory'),
-      turnsUsed: 7,
+      turnsUsed: 8,
       animationEnabled: true,
       presentationComplete: false,
       recordComplete: false,
@@ -404,7 +407,7 @@ describe('AttemptWorkspace', () => {
   it('keeps the result accessible if the refreshed record remains incomplete', async () => {
     const incomplete = {
       ...summary('victory'),
-      turnsUsed: 7,
+      turnsUsed: 8,
       animationEnabled: true,
       presentationComplete: false,
       recordComplete: false,
@@ -457,8 +460,40 @@ describe('AttemptWorkspace', () => {
     },
   );
 
+  it('shows collected object value without presenting it as an awarded score after defeat', async () => {
+    const collected = {
+      ...summary('defeat'),
+      collectedObjectIds: ['recompensa-1'],
+      objectPoints: 25,
+      animationEnabled: false,
+      presentationComplete: true,
+      turnsUsed: 6,
+    };
+    const attemptApi = api({
+      listAttempts: vi.fn().mockResolvedValue({ attempts: [collected] }),
+      getAttempt: vi.fn().mockResolvedValue(collected),
+    });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+
+    await screen.findByRole('heading', { name: 'Historial' });
+    const history = screen.getByRole('heading', { name: 'Historial' }).closest('section');
+    expect(history).not.toBeNull();
+    expect(
+      within(history as HTMLElement).getByText('Objetos: 1 · valor recogido: 25 puntos'),
+    ).toBeTruthy();
+
+    fireEvent.click(within(history as HTMLElement).getByRole('button', { name: 'Ver resultado' }));
+    await screen.findByRole('heading', { name: 'Derrota' });
+    expect(screen.getByText('Objetos').nextElementSibling?.textContent).toBe('1');
+    expect(screen.getByText('Valor de objetos recogidos').nextElementSibling?.textContent).toBe(
+      '25 puntos',
+    );
+    expect(screen.queryByText('Puntaje')).toBeNull();
+  });
+
   it('replays a current history record manually without admitting or marking it again', async () => {
-    const historical = { ...summary('victory'), animationEnabled: false, turnsUsed: 7 };
+    const historical = { ...summary('victory'), animationEnabled: false, turnsUsed: 8 };
     const getReplay = vi.fn().mockResolvedValue(replayRecord(historical.id));
     const createAttempt = vi.fn();
     const completePresentation = vi.fn();
@@ -485,7 +520,7 @@ describe('AttemptWorkspace', () => {
   it('keeps replay errors recoverable and lets the player open the stored result', async () => {
     const pending = {
       ...summary('victory'),
-      turnsUsed: 7,
+      turnsUsed: 8,
       animationEnabled: true,
       presentationComplete: false,
     };
@@ -536,7 +571,7 @@ describe('AttemptWorkspace', () => {
   it('shows and unlocks the result while the automatic presentation mark is still pending', async () => {
     const pending = {
       ...summary('victory'),
-      turnsUsed: 7,
+      turnsUsed: 8,
       animationEnabled: true,
       presentationComplete: false,
     };
@@ -586,7 +621,7 @@ describe('AttemptWorkspace', () => {
   it('replays from the server snapshot after repeated reloads when ACK confirmation failed', async () => {
     const pending = {
       ...summary('victory'),
-      turnsUsed: 7,
+      turnsUsed: 8,
       animationEnabled: true,
       presentationComplete: false,
     };
@@ -641,7 +676,7 @@ describe('AttemptWorkspace', () => {
   it('uses a completed server summary to open the result directly after reload', async () => {
     const pending = {
       ...summary('victory'),
-      turnsUsed: 7,
+      turnsUsed: 8,
       animationEnabled: true,
       presentationComplete: false,
     };
@@ -680,7 +715,7 @@ describe('AttemptWorkspace', () => {
   it('replays a history attempt when the server still reports presentation pending', async () => {
     const pending = {
       ...summary('victory'),
-      turnsUsed: 7,
+      turnsUsed: 8,
       animationEnabled: true,
       presentationComplete: false,
     };
@@ -701,7 +736,7 @@ describe('AttemptWorkspace', () => {
   it('recovers B without carrying A as the foreground recovery', async () => {
     const attemptA = {
       ...summary('victory'),
-      turnsUsed: 7,
+      turnsUsed: 8,
       animationEnabled: true,
       presentationComplete: false,
     };
@@ -785,7 +820,7 @@ describe('AttemptWorkspace', () => {
   it('ignores a late successful ACK callback from A after B becomes current', async () => {
     const attemptA = {
       ...summary('victory'),
-      turnsUsed: 7,
+      turnsUsed: 8,
       animationEnabled: true,
       presentationComplete: false,
     };
@@ -842,7 +877,7 @@ describe('AttemptWorkspace', () => {
   it('replays from the server snapshot even after the result was already shown locally', async () => {
     const pending = {
       ...summary('victory'),
-      turnsUsed: 7,
+      turnsUsed: 8,
       animationEnabled: true,
       presentationComplete: false,
     };
@@ -867,7 +902,7 @@ describe('AttemptWorkspace', () => {
   it('shows the result after playback even when the completion mark needs a retry', async () => {
     const pending = {
       ...summary('victory'),
-      turnsUsed: 7,
+      turnsUsed: 8,
       animationEnabled: true,
       presentationComplete: false,
     };

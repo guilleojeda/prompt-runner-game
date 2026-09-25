@@ -28,9 +28,10 @@ const freezeDeep = <T>(value: T): T => {
 const referenceActions: readonly NormalizedAction[] = [
   { kind: 'advance' },
   { kind: 'jump', direction: 'right' },
+  { kind: 'collect' },
   { kind: 'advance' },
   { kind: 'crouch', direction: 'right' },
-  { kind: 'jump', direction: 'right' },
+  { kind: 'crouch', direction: 'right' },
   { kind: 'jump', direction: 'right' },
   { kind: 'advance' },
 ];
@@ -113,7 +114,7 @@ export const createClosedAttemptRecordFixture = (): AttemptRecord => {
     score: scoreAttempt({
       status: 'victory',
       turnsUsed: results.at(-1)?.after.turnsUsed ?? 0,
-      collectedObjectIds: [],
+      collectedObjectIds: results.at(-1)?.after.inventory ?? [],
       gameTokens: metrics.gameTokens,
     }),
   };
@@ -154,6 +155,7 @@ export const representativeAttemptItems = (
     cacheReadTokens: record.metrics.cacheReadTokens,
     cacheWriteTokens: record.metrics.cacheWriteTokens,
     score: record.score,
+    collectedObjectIds: [...(record.snapshots.at(-1)?.inventory ?? [])],
     progress: 1,
     finalSupport: record.snapshots.at(-1)?.support ?? 0,
     animationEnabled: false,

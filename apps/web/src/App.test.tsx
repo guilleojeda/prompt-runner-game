@@ -16,6 +16,7 @@ import {
   type DraftSnapshot,
 } from '../../../shared/robot.js';
 import { createClosedAttemptRecordFixture } from '../../../shared/attempt.fixture.js';
+import { LEVEL } from '../../../shared/game.js';
 import type { ReplayRecordView } from '../../../shared/attempt.js';
 
 vi.mock('./replay/ReplayScene.js', () => ({
@@ -626,11 +627,11 @@ describe('access screen', () => {
       updatedAt: '2026-09-21T12:00:01.000Z',
       status: 'victory',
       cancelRequested: false,
-      levelId: 'principal-periodico-v2',
+      levelId: LEVEL.id,
       modelKey: 'claude-sonnet-4.6',
       modelLabel: 'Claude Sonnet 4.6',
       modelId: 'global.anthropic.claude-sonnet-4-6',
-      turnsUsed: 7,
+      turnsUsed: 8,
       maxTurns: 16,
       calls: 5,
       inputTokens: null,
@@ -640,6 +641,8 @@ describe('access screen', () => {
       cacheReadTokens: null,
       cacheWriteTokens: null,
       score: null,
+      collectedObjectIds: ['recompensa-1'],
+      objectPoints: 25,
       progress: 1,
       finalSupport: 5,
       animationEnabled: true,
@@ -770,11 +773,11 @@ describe('access screen', () => {
       updatedAt: '2026-09-21T12:01:00.000Z',
       status: 'victory',
       cancelRequested: false,
-      levelId: 'principal-periodico-v2',
+      levelId: LEVEL.id,
       modelKey: 'claude-sonnet-4.6',
       modelLabel: 'Claude Sonnet 4.6',
       modelId: 'global.anthropic.claude-sonnet-4-6',
-      turnsUsed: 7,
+      turnsUsed: 8,
       maxTurns: 16,
       calls: 5,
       inputTokens: null,
@@ -784,6 +787,8 @@ describe('access screen', () => {
       cacheReadTokens: null,
       cacheWriteTokens: null,
       score: null,
+      collectedObjectIds: ['recompensa-1'],
+      objectPoints: 25,
       progress: 1,
       finalSupport: 7,
       animationEnabled: false,

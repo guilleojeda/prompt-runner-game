@@ -80,6 +80,14 @@
     <use href="#robot-leg" transform="translate(42 82) rotate(-33)" />
     <use href="#robot-leg" transform="translate(58 82) rotate(33)" />
   </symbol>
+  <symbol id="robot-collect" viewBox="0 0 100 112">
+    <use href="#robot-head" />
+    <use href="#robot-torso" />
+    <use href="#robot-arm" transform="translate(34 55) rotate(18)" />
+    <use href="#robot-arm" transform="translate(66 55) scale(-1 1) rotate(65)" />
+    <use href="#robot-leg" transform="translate(42 81)" />
+    <use href="#robot-leg" transform="translate(58 81)" />
+  </symbol>
   <symbol id="robot-fall" viewBox="0 0 100 112">
     <g transform="rotate(11 50 108)">
       <use href="#robot-head" transform="translate(0 -1)" />
@@ -163,9 +171,19 @@
     <path d="m50 3 9 25 23-14-8 26 25 2-21 16 19 18-27-3-4 26-16-20-17 20-3-27-27 3 19-19L1 39l27-1-8-26 23 15z" fill="#ffbe5c" stroke="#ef8862" stroke-linejoin="round" stroke-width="4" />
     <circle cx="50" cy="51" r="15" fill="#fff4d5" />
   </symbol>
+  <symbol id="effect-pickup" viewBox="0 0 100 100">
+    <path d="M50 4v18m0 56v18M4 50h18m56 0h18M18 18l13 13m38 38 13 13m0-64L69 31m-38 38L18 82" fill="none" stroke="#fbba55" stroke-linecap="round" stroke-width="7" />
+    <path d="m50 25 7 18 18 7-18 7-7 18-7-18-18-7 18-7z" fill="#fff4d5" stroke="#ef8862" stroke-linejoin="round" stroke-width="4" />
+    <circle cx="50" cy="50" r="8" fill="#77e1df" />
+  </symbol>
   <symbol id="effect-victory" viewBox="0 0 100 100">
     <path d="M12 19v10m-5-5h10M79 11v12m-6-6h12M84 66v10m-5-5h10M22 75v12m-6-6h12" stroke="#ef8862" stroke-linecap="round" stroke-width="4" />
     <path d="m49 9 4 12 12-4-7 11 10 8-13 1-3 13-7-11-11 7 4-13-11-6 13-2z" fill="#fbba55" />
     <circle cx="48" cy="54" r="17" fill="#77e1df" opacity=".8" />
+  </symbol>
+  <symbol id="reward-object" viewBox="0 0 48 52">
+    <path d="M24 3 43 18 37 43 24 50 11 43 5 18z" fill="#fbba55" stroke="#694730" stroke-linejoin="round" stroke-width="3" />
+    <path d="m24 5 0 41m-18-28 18 7 18-7M11 43l13-18 13 18" fill="none" stroke="#fff4d5" stroke-linejoin="round" stroke-width="3" />
+    <path d="M16 16q8-7 16 0" fill="none" stroke="#fff" stroke-linecap="round" stroke-width="3" opacity=".9" />
   </symbol>
 </svg>
