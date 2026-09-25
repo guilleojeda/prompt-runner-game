@@ -95,6 +95,10 @@ export type ExecuteAttemptDependencies = {
 
 type RuntimeLogValue = string | number | boolean;
 
+const THROTTLE_RETRY_DELAY_MS = 60_000;
+const THROTTLE_RETRY_CHECK_INTERVAL_MS = 5_000;
+const MAX_THROTTLE_RETRIES_PER_DECISION = 2;
+
 const runtimeEvent = (
   stage: string,
   fields: Record<string, RuntimeLogValue | undefined> = {},
@@ -370,15 +374,47 @@ export const executeAttempt = async (
             updatedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
           };
           await dependencies.store.finishCall(input.owner, activeRecord.id, executorId, completed);
-          if (failureCode === 'throttled' && throttledRetries < 2) {
+          if (failureCode === 'throttled' && throttledRetries < MAX_THROTTLE_RETRIES_PER_DECISION) {
             const latest = await dependencies.store.get(input.owner, activeRecord.id);
-            if (!latest || latest.cancelRequested || latest.status !== 'running') {
-              if (latest?.cancelRequested)
-                await closeAttempt('cancelled', 'cancelled_during_retry');
+            if (!latest || latest.executorId !== executorId || latest.status !== 'running') {
               return;
             }
-            await wait(throttledRetries === 0 ? 500 : 1000);
+            if (latest.cancelRequested) {
+              await closeAttempt('cancelled', 'cancelled_during_retry');
+              return;
+            }
             throttledRetries += 1;
+            let retryState = latest;
+            let remainingDelay = THROTTLE_RETRY_DELAY_MS;
+            while (remainingDelay > 0) {
+              const deadlineMs = retryState.executionDeadline
+                ? new Date(retryState.executionDeadline).getTime()
+                : undefined;
+              if (
+                deadlineMs !== undefined &&
+                deadlineMs - (dependencies.now ?? (() => new Date()))().getTime() <=
+                  remainingDelay + retryState.config.callTimeoutMs + retryState.config.saveReserveMs
+              ) {
+                await closeAttempt('error', 'runtime_deadline_exceeded');
+                return;
+              }
+              const interval = Math.min(remainingDelay, THROTTLE_RETRY_CHECK_INTERVAL_MS);
+              await wait(interval);
+              remainingDelay -= interval;
+              const afterWait = await dependencies.store.get(input.owner, activeRecord.id);
+              if (
+                !afterWait ||
+                afterWait.executorId !== executorId ||
+                afterWait.status !== 'running'
+              ) {
+                return;
+              }
+              if (afterWait.cancelRequested) {
+                await closeAttempt('cancelled', 'cancelled_during_retry');
+                return;
+              }
+              retryState = afterWait;
+            }
             continue;
           }
         }
