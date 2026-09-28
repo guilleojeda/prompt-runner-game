@@ -14,6 +14,7 @@ import {
 import { DraftValidationError, type RobotDraft, validateDraft } from '../../../shared/robot.js';
 import {
   AdmissionConflictError,
+  AttemptDecisionsPendingError,
   AnimationPreferenceConflictError,
   AttemptNotTerminalError,
   AttemptStoreError,
@@ -287,6 +288,19 @@ const animationPreferenceInput = (
   return { animationEnabled: object.animationEnabled, expectedVersion: object.expectedVersion };
 };
 
+const decisionNumberInput = (event: APIGatewayProxyEventV2): number | undefined => {
+  const value = event.queryStringParameters?.decision;
+  if (value === undefined) return undefined;
+  if (!/^[1-9]\d*$/u.test(value)) {
+    throw new ApiError(400, 'invalid', 'decision debe ser un entero positivo.');
+  }
+  const number = Number(value);
+  if (!Number.isSafeInteger(number)) {
+    throw new ApiError(400, 'invalid', 'decision debe ser un entero positivo.');
+  }
+  return number;
+};
+
 const dispatchDefault = async (attemptId: string, owner: string): Promise<void> => {
   const functionName = process.env.STARTER_FUNCTION_NAME;
   if (!functionName) throw new Error('Falta STARTER_FUNCTION_NAME.');
@@ -398,6 +412,8 @@ export const handleRequest = async (
       parts[0] === 'attempts' &&
       (parts[2] === 'start' || parts[2] === 'cancel');
     const isAttemptReplay = parts.length === 3 && parts[0] === 'attempts' && parts[2] === 'replay';
+    const isAttemptDecisions =
+      parts.length === 3 && parts[0] === 'attempts' && parts[2] === 'decisions';
     const isPresentationComplete =
       parts.length === 3 && parts[0] === 'attempts' && parts[2] === 'presentation-complete';
     const isAnimationPreference = parts.length === 1 && parts[0] === 'animation-preference';
@@ -409,6 +425,7 @@ export const handleRequest = async (
       (isAttemptItem && method === 'GET') ||
       (isAttemptAction && method === 'POST') ||
       (isAttemptReplay && method === 'GET') ||
+      (isAttemptDecisions && method === 'GET') ||
       (isPresentationComplete && method === 'POST') ||
       (isAnimationPreference && (method === 'GET' || method === 'PUT')) ||
       (isQuota && method === 'GET');
@@ -517,6 +534,18 @@ export const handleRequest = async (
       if (!record) throw new ApiError(404, 'not_found', 'Intento no encontrado.');
       return respond(event, 200, 'ok', { record });
     }
+    if (isAttemptDecisions) {
+      const attemptId = decodeURIComponent(parts[1]);
+      const decisionNumber = decisionNumberInput(event);
+      if (decisionNumber === undefined) {
+        const index = await attemptStore.getDecisionIndex(identity.sub, attemptId);
+        if (!index) throw new ApiError(404, 'not_found', 'Intento no encontrado.');
+        return respond(event, 200, 'ok', index);
+      }
+      const detail = await attemptStore.getDecision(identity.sub, attemptId, decisionNumber);
+      if (!detail) throw new ApiError(404, 'not_found', 'Decisión no encontrada.');
+      return respond(event, 200, 'ok', detail);
+    }
     if (isPresentationComplete) {
       const attemptId = decodeURIComponent(parts[1]);
       const attempt = await attemptStore.markPresentationComplete(identity.sub, attemptId);
@@ -544,6 +573,12 @@ export const handleRequest = async (
     if (error instanceof AttemptNotTerminalError) {
       return respond(event, 409, 'presentation_pending', {
         code: 'presentation_pending',
+        message: error.message,
+      });
+    }
+    if (error instanceof AttemptDecisionsPendingError) {
+      return respond(event, 409, 'decisions_pending', {
+        code: 'decisions_pending',
         message: error.message,
       });
     }

@@ -16,6 +16,7 @@ import {
   ROBOT_CATALOG,
   ROBOT_SCHEMA_VERSION,
   validateDraft,
+  type RobotSkillId,
   type DraftSnapshot,
   type RobotDraft,
 } from '../../../shared/robot.js';
@@ -24,11 +25,26 @@ import {
   resolveModelProfile,
   type ModelProfile,
 } from '../../../shared/models.js';
-import { createInitialState, LEVEL, scoreAttempt } from '../../../shared/game.js';
+import {
+  createInitialState,
+  isSemanticallyValidActionResolution,
+  LEVEL,
+  normalizeSelection,
+  scoreAttempt,
+  type GameSnapshot,
+} from '../../../shared/game.js';
 import { usageFromBedrockResponseBytes } from '../../runner/src/usage.js';
 import {
   ATTEMPT_RECORD_VERSION,
   type AnimationPreference,
+  type DecisionAvailableAction,
+  type DecisionChoice,
+  type DecisionDetail,
+  type DecisionIndex,
+  type DecisionIndexItem,
+  type DecisionObservation,
+  type DecisionObservationSide,
+  type DecisionResult,
   type ReplayRecordView,
 } from '../../../shared/attempt.js';
 import {
@@ -40,6 +56,8 @@ import {
   collectionSummaryOf,
   readAttemptScoreParameters,
   readCurrentLevel,
+  readAction,
+  readSnapshot,
   validateActionPublication,
   replayRecordViewOf,
   summaryOf,
@@ -100,6 +118,13 @@ export class QuotaExceededError extends Error {
     this.day = day;
     this.used = used;
     this.limit = limit;
+  }
+}
+
+export class AttemptDecisionsPendingError extends Error {
+  public constructor() {
+    super('Las decisiones todavía no están disponibles para un intento activo.');
+    this.name = 'AttemptDecisionsPendingError';
   }
 }
 
@@ -372,6 +397,432 @@ const animationPreferenceOf = (item: Record<string, unknown>): AnimationPreferen
 
 const terminalAttempt = (attempt: PersistedAttempt): boolean =>
   attempt.status !== 'pending' && attempt.status !== 'running';
+
+const isDecisionId = (value: unknown): value is string =>
+  typeof value === 'string' && value.length > 0 && value.length <= 256;
+
+const projectObservationSide = (value: unknown): DecisionObservationSide | undefined => {
+  if (!isRecord(value) || typeof value.kind !== 'string') return undefined;
+  if (value.kind === 'boundary') {
+    return Object.keys(value).length === 1 ? { kind: value.kind } : undefined;
+  }
+  if (value.kind === 'segment') {
+    return typeof value.terrain === 'string' &&
+      ['ground', 'pit', 'branch', 'barrier_low', 'barrier_high'].includes(value.terrain) &&
+      Object.keys(value).length === 2
+      ? { kind: value.kind, terrain: value.terrain }
+      : undefined;
+  }
+  if (value.kind === 'door') {
+    return (value.state === 'locked' || value.state === 'open') &&
+      typeof value.requiredObjectId === 'string' &&
+      value.requiredObjectId.length > 0 &&
+      Object.keys(value).length === 3
+      ? {
+          kind: value.kind,
+          state: value.state,
+          requiredObjectId: value.requiredObjectId,
+        }
+      : undefined;
+  }
+  return undefined;
+};
+
+const projectObservation = (value: unknown): DecisionObservation | null => {
+  if (!isRecord(value) || (value.facing !== 'left' && value.facing !== 'right')) return null;
+  if (!isRecord(value.here) || !Array.isArray(value.here.objects)) return null;
+  if (
+    Object.keys(value).some((key) => !['facing', 'here', 'left', 'right'].includes(key)) ||
+    Object.keys(value.here).some((key) => !['objects', 'exit'].includes(key)) ||
+    !value.here.objects.every((item) => typeof item === 'string') ||
+    (value.here.exit !== undefined &&
+      (!isRecord(value.here.exit) || Object.keys(value.here.exit).length !== 0))
+  )
+    return null;
+  const left = projectObservationSide(value.left);
+  const right = projectObservationSide(value.right);
+  if (!left || !right) return null;
+  return {
+    facing: value.facing,
+    here: {
+      objects: [...value.here.objects],
+      exit: Object.prototype.hasOwnProperty.call(value.here, 'exit'),
+    },
+    left,
+    right,
+  };
+};
+
+const humanActionFor = (skill: AttemptSkill): DecisionAvailableAction | undefined => {
+  const catalog = ROBOT_CATALOG.find((entry) => entry.id === skill.id);
+  return catalog && catalog.opaqueId === skill.opaqueId
+    ? {
+        opaqueId: skill.opaqueId,
+        label: catalog.name,
+        skillId: catalog.id,
+      }
+    : undefined;
+};
+
+type DecisionRequestProjection = Readonly<{
+  readonly observation: DecisionObservation | null;
+  readonly availableActions: readonly DecisionAvailableAction[] | null;
+}>;
+
+const emptyDecisionRequestProjection: DecisionRequestProjection = Object.freeze({
+  observation: null,
+  availableActions: null,
+});
+
+/** Project only the local observation and effective tool specs from one S3 request. */
+const projectDecisionRequest = (
+  bytes: Uint8Array,
+  skills: readonly AttemptSkill[],
+): DecisionRequestProjection => {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+  } catch {
+    return emptyDecisionRequestProjection;
+  }
+  if (!isRecord(payload)) return emptyDecisionRequestProjection;
+
+  let observation: DecisionObservation | null = null;
+  if (Array.isArray(payload.messages)) {
+    const message = payload.messages[0];
+    if (isRecord(message) && Array.isArray(message.content)) {
+      const textBlock = message.content.find(
+        (entry): entry is Record<string, unknown> =>
+          isRecord(entry) && typeof entry.text === 'string',
+      );
+      const prefix = 'Observación local presente:\n';
+      const text = typeof textBlock?.text === 'string' ? textBlock.text : undefined;
+      if (text?.startsWith(prefix)) {
+        try {
+          observation = projectObservation(JSON.parse(text.slice(prefix.length)));
+        } catch {
+          observation = null;
+        }
+      }
+    }
+  }
+
+  const toolConfig = payload.toolConfig;
+  if (!isRecord(toolConfig) || !Array.isArray(toolConfig.tools)) {
+    return { observation, availableActions: null };
+  }
+  if (toolConfig.tools.length === 0) return { observation, availableActions: null };
+  const availableActions: DecisionAvailableAction[] = [];
+  for (const rawTool of toolConfig.tools) {
+    if (!isRecord(rawTool) || !isRecord(rawTool.toolSpec))
+      return { observation, availableActions: null };
+    const toolSpec = rawTool.toolSpec;
+    if (typeof toolSpec.name !== 'string') return { observation, availableActions: null };
+    if (
+      Object.keys(toolSpec).some((key) => !['name', 'description', 'inputSchema'].includes(key)) ||
+      !isRecord(toolSpec.inputSchema)
+    )
+      return { observation, availableActions: null };
+    const skill = skills.find((candidate) => candidate.opaqueId === toolSpec.name);
+    if (!skill) return { observation, availableActions: null };
+    const action = humanActionFor(skill);
+    if (!action) return { observation, availableActions: null };
+    const description = toolSpec.description;
+    if (description !== undefined && typeof description !== 'string')
+      return { observation, availableActions: null };
+    if (stableJson(toolSpec.inputSchema) !== stableJson(skill.inputSchema))
+      return { observation, availableActions: null };
+    availableActions.push(description === undefined ? action : { ...action, description });
+  }
+  return { observation, availableActions };
+};
+
+const bodyForCall = async (
+  bodyStore: BodyStore | undefined,
+  attemptId: string,
+  decisionId: string,
+  call: CallRecord | undefined,
+): Promise<Uint8Array | undefined> => {
+  if (!bodyStore || !call || !Number.isSafeInteger(call.requestBytes) || call.requestBytes < 0)
+    return undefined;
+  const expectedKey = `attempt/${attemptId}/decision/${decisionId}/call/${call.seq}/request.json`;
+  if (call.requestKey !== expectedKey) return undefined;
+  const body = await bodyStore.get(call.requestKey);
+  if (!body || body.byteLength !== call.requestBytes || sha256(body) !== call.requestSha256)
+    return undefined;
+  return body;
+};
+
+const rawSelection = (
+  value: unknown,
+): { readonly name: unknown; readonly input: unknown } | undefined =>
+  isRecord(value) &&
+  Object.prototype.hasOwnProperty.call(value, 'name') &&
+  Object.prototype.hasOwnProperty.call(value, 'input')
+    ? { name: value.name, input: value.input }
+    : undefined;
+
+const selectionForCall = (
+  call: CallRecord | undefined,
+  attempt: PersistedAttempt,
+): { readonly choice: DecisionChoice; readonly normalized?: unknown } => {
+  if (call?.status === 'invalid') return { choice: { state: 'invalid' } };
+  const raw = rawSelection(call?.rawAction);
+  if (!raw) return { choice: { state: 'unknown' } };
+  try {
+    const selection = attempt.skills.map((skill) => ({
+      id: skill.id as RobotSkillId,
+      opaqueId: skill.opaqueId,
+      enabled: true,
+    }));
+    const normalized = normalizeSelection(raw.name, raw.input, selection);
+    if (typeof raw.name !== 'string')
+      return { choice: { state: 'invalid', parameters: raw.input } };
+    return {
+      choice: {
+        state: 'selected',
+        opaqueId: raw.name,
+        action: normalized,
+        parameters: raw.input,
+      },
+      normalized,
+    };
+  } catch {
+    return {
+      choice: {
+        state: 'invalid',
+        ...(typeof raw.name === 'string' ? { opaqueId: raw.name } : {}),
+        parameters: raw.input,
+      },
+    };
+  }
+};
+
+type DecisionGroup = Readonly<{
+  readonly item: DecisionIndexItem;
+  readonly calls: readonly CallRecord[];
+  readonly action?: ReturnType<typeof readAction>;
+  readonly before?: GameSnapshot;
+  readonly after?: GameSnapshot;
+}>;
+
+type DecisionData = Readonly<{
+  readonly index: DecisionIndex;
+  readonly groups: readonly DecisionGroup[];
+}>;
+
+const decisionDataFor = (
+  attempt: PersistedAttempt,
+  rawCalls: readonly CallRecord[],
+  rawActions: readonly unknown[],
+  rawSnapshots: readonly unknown[],
+): DecisionData => {
+  if (!terminalAttempt(attempt)) throw new AttemptDecisionsPendingError();
+  if (
+    attempt.recordVersion !== ATTEMPT_RECORD_VERSION ||
+    attempt.levelId !== LEVEL.id ||
+    !attempt.recordComplete
+  )
+    throw new ReplayRecordError('El intento no coincide con el contrato vigente.');
+  if (
+    !Number.isSafeInteger(attempt.sequence) ||
+    attempt.sequence < 0 ||
+    !Number.isSafeInteger(attempt.calls) ||
+    attempt.calls < 0 ||
+    rawCalls.length !== attempt.calls
+  )
+    throw new ReplayRecordError('La secuencia de llamadas del intento está incompleta.');
+
+  const calls = [...rawCalls].sort((left, right) => left.seq - right.seq);
+  if (
+    calls.some(
+      (call, index) =>
+        call.attemptId !== attempt.id ||
+        call.seq !== index + 1 ||
+        !isDecisionId(call.decisionId) ||
+        typeof call.requestKey !== 'string' ||
+        typeof call.requestSha256 !== 'string' ||
+        !Number.isSafeInteger(call.requestBytes) ||
+        call.requestBytes < 0,
+    )
+  )
+    throw new ReplayRecordError('Las llamadas del intento no tienen una secuencia válida.');
+
+  const snapshots = new Map<string, GameSnapshot>();
+  for (const rawSnapshot of rawSnapshots) {
+    if (!isRecord(rawSnapshot) || typeof rawSnapshot.stateId !== 'string')
+      throw new ReplayRecordError('Falta una referencia de estado del intento.');
+    const snapshot = readSnapshot(rawSnapshot.snapshot);
+    if (snapshot.id !== rawSnapshot.stateId || snapshots.has(snapshot.id))
+      throw new ReplayRecordError('Las referencias de estado del intento no son únicas.');
+    snapshots.set(snapshot.id, snapshot);
+  }
+  if (
+    snapshots.size !== attempt.sequence + 1 ||
+    !snapshots.has('state-0') ||
+    [...snapshots.values()].some((snapshot) => snapshot.terrain.length !== LEVEL.segments.length)
+  )
+    throw new ReplayRecordError('Los estados conservados del intento están incompletos.');
+  for (let seq = 0; seq <= attempt.sequence; seq += 1) {
+    const snapshot = snapshots.get(`state-${seq}`);
+    if (!snapshot || snapshot.turnsUsed !== seq) {
+      throw new ReplayRecordError('Los estados conservados no siguen el orden de turnos.');
+    }
+  }
+
+  const actions = rawActions.map(readAction).sort((left, right) => left.seq - right.seq);
+  if (actions.length !== attempt.sequence) {
+    throw new ReplayRecordError('Las acciones publicadas del intento están incompletas.');
+  }
+  const actionByDecision = new Map<string, ReturnType<typeof readAction>>();
+  for (const [index, action] of actions.entries()) {
+    const before = snapshots.get(action.beforeStateId);
+    const after = snapshots.get(action.afterStateId);
+    if (
+      action.seq !== index + 1 ||
+      !before ||
+      !after ||
+      before.id !== `state-${index}` ||
+      after.id !== `state-${index + 1}` ||
+      before.status !== 'running' ||
+      after.turnsUsed !== before.turnsUsed + 1 ||
+      !isSemanticallyValidActionResolution(action.action, before, after, action.resolution) ||
+      actionByDecision.has(action.decisionId)
+    )
+      throw new ReplayRecordError('Las acciones publicadas contradicen el registro del intento.');
+    actionByDecision.set(action.decisionId, action);
+  }
+
+  const grouped = new Map<string, CallRecord[]>();
+  for (const call of calls) {
+    const group = grouped.get(call.decisionId) ?? [];
+    group.push(call);
+    grouped.set(call.decisionId, group);
+  }
+  const groups: DecisionGroup[] = [];
+  for (const callGroup of grouped.values()) {
+    const decisionId = callGroup[0]?.decisionId;
+    if (!decisionId) throw new ReplayRecordError('Falta el identificador de una decisión.');
+    if (callGroup.some((call, index) => index > 0 && call.seq !== callGroup[index - 1]!.seq + 1)) {
+      throw new ReplayRecordError('Los reintentos de una decisión no son contiguos.');
+    }
+    const action = actionByDecision.get(decisionId);
+    if (!action && groups.length !== grouped.size - 1) {
+      throw new ReplayRecordError('Una decisión sin acción no puede preceder a otra decisión.');
+    }
+    const before = action
+      ? snapshots.get(action.beforeStateId)
+      : snapshots.get(`state-${attempt.sequence}`);
+    const after = action ? snapshots.get(action.afterStateId) : undefined;
+    if (!before || (action && !after))
+      throw new ReplayRecordError('Falta el estado asociado a una decisión.');
+    groups.push({
+      item: {
+        number: groups.length + 1,
+        decisionId,
+        originSupport: before.support,
+        hasAction: action !== undefined,
+      },
+      calls: callGroup,
+      ...(action ? { action } : {}),
+      before,
+      ...(after ? { after } : {}),
+    });
+  }
+  for (const action of actions) {
+    if (!grouped.has(action.decisionId))
+      throw new ReplayRecordError('Una acción publicada no tiene una llamada asociada.');
+  }
+  const actionGroups = groups.filter((group) => group.action !== undefined);
+  if (
+    actionGroups.length !== actions.length ||
+    actionGroups.some((group, index) => group.action?.seq !== index + 1)
+  ) {
+    throw new ReplayRecordError('El orden de decisiones y acciones no coincide.');
+  }
+  return {
+    index: {
+      attemptId: attempt.id,
+      levelId: attempt.levelId,
+      decisions: groups.map((group) => group.item),
+    },
+    groups,
+  };
+};
+
+const decisionDetailFor = async (
+  attempt: PersistedAttempt,
+  data: DecisionData,
+  decisionNumber: number,
+  bodyStore: BodyStore | undefined,
+): Promise<DecisionDetail | undefined> => {
+  if (!Number.isSafeInteger(decisionNumber) || decisionNumber < 1) return undefined;
+  const group = data.groups[decisionNumber - 1];
+  if (!group) return undefined;
+  const selectedCall = group.action
+    ? (() => {
+        const received = group.calls.filter((call) => call.status === 'received');
+        const matching = received.filter((call) => {
+          const selection = selectionForCall(call, attempt);
+          return (
+            selection.choice.state === 'selected' &&
+            stableJson(selection.normalized) === stableJson(group.action?.action)
+          );
+        });
+        if (matching.length === 0)
+          throw new ReplayRecordError('La acción publicada no tiene una llamada productora.');
+        return matching.at(-1);
+      })()
+    : group.calls.at(-1);
+  const bytes = await bodyForCall(bodyStore, attempt.id, group.item.decisionId, selectedCall);
+  const projection = bytes
+    ? projectDecisionRequest(bytes, attempt.skills)
+    : emptyDecisionRequestProjection;
+  const selection = selectionForCall(selectedCall, attempt);
+  const choice =
+    group.action && selection.choice.state === 'selected'
+      ? stableJson(selection.normalized) === stableJson(group.action.action)
+        ? selection.choice
+        : { state: 'invalid' as const }
+      : selection.choice;
+  const result: DecisionResult = group.action
+    ? (() => {
+        if (!group.before || !group.after)
+          throw new ReplayRecordError('Falta el estado asociado a una acción.');
+        return {
+          kind: 'action',
+          action: group.action.action,
+          resolution: group.action.resolution,
+          beforeSupport: group.before.support,
+          afterSupport: group.after.support,
+          turnsUsed: group.after.turnsUsed,
+          ...(group.after.status !== 'running' ? { status: group.after.status } : {}),
+          ...(group.after.status === 'victory'
+            ? { reason: 'exit_reached' }
+            : group.after.status === 'incomplete'
+              ? { reason: 'turn_limit_reached' }
+              : isRecord(group.action.resolution) &&
+                  typeof group.action.resolution.reason === 'string'
+                ? { reason: group.action.resolution.reason }
+                : {}),
+        };
+      })()
+    : {
+        kind: 'no-action',
+        turnsUsed: group.before?.turnsUsed ?? 0,
+        status: attempt.status,
+        ...(attempt.reason === undefined ? {} : { reason: attempt.reason }),
+      };
+  return {
+    attemptId: attempt.id,
+    levelId: attempt.levelId,
+    item: group.item,
+    observation: projection.observation,
+    availableActions: projection.availableActions,
+    choice,
+    result,
+  };
+};
 
 export type DynamoAttemptStoreOptions = {
   readonly client?: DynamoDBClient;
@@ -767,6 +1218,50 @@ export class DynamoAttemptStore implements AttemptStore {
       actionItems.map((item) => unmarshall(item)),
       snapshotItems.map((item) => unmarshall(item)),
     );
+  }
+
+  public async getDecisionIndex(
+    owner: string,
+    attemptId: string,
+  ): Promise<DecisionIndex | undefined> {
+    const attempt = await this.get(owner, attemptId);
+    if (!attempt) return undefined;
+    if (!terminalAttempt(attempt)) throw new AttemptDecisionsPendingError();
+    if (!attempt.recordComplete) throw new ReplayRecordError();
+    const [calls, actionItems, snapshotItems] = await Promise.all([
+      this.getCalls(owner, attemptId),
+      this.queryAttemptItems(attemptId, 'ACTION#'),
+      this.queryAttemptItems(attemptId, 'STATE#'),
+    ]);
+    return decisionDataFor(
+      attempt,
+      calls,
+      actionItems.map((item) => unmarshall(item)),
+      snapshotItems.map((item) => unmarshall(item)),
+    ).index;
+  }
+
+  public async getDecision(
+    owner: string,
+    attemptId: string,
+    decisionNumber: number,
+  ): Promise<DecisionDetail | undefined> {
+    const attempt = await this.get(owner, attemptId);
+    if (!attempt) return undefined;
+    if (!terminalAttempt(attempt)) throw new AttemptDecisionsPendingError();
+    if (!attempt.recordComplete) throw new ReplayRecordError();
+    const [calls, actionItems, snapshotItems] = await Promise.all([
+      this.getCalls(owner, attemptId),
+      this.queryAttemptItems(attemptId, 'ACTION#'),
+      this.queryAttemptItems(attemptId, 'STATE#'),
+    ]);
+    const data = decisionDataFor(
+      attempt,
+      calls,
+      actionItems.map((item) => unmarshall(item)),
+      snapshotItems.map((item) => unmarshall(item)),
+    );
+    return decisionDetailFor(attempt, data, decisionNumber, this.bodyStore);
   }
 
   public async markPresentationComplete(
@@ -1848,6 +2343,7 @@ export type MemoryAttemptStoreOptions = {
   readonly now?: () => Date;
   readonly quotaLimit?: number;
   readonly draft?: DraftSnapshot;
+  readonly bodyStore?: BodyStore;
 };
 
 /** A deterministic store used by the API and Runtime tests. It mirrors the service conditions. */
@@ -1861,11 +2357,13 @@ export class MemoryAttemptStore implements AttemptStore {
   private readonly animationPreferences = new Map<string, AnimationPreference>();
   private readonly now: () => Date;
   private readonly quotaLimit: number;
+  private readonly bodyStore: BodyStore;
   private draftSnapshot: DraftSnapshot;
 
   public constructor(options: MemoryAttemptStoreOptions = {}) {
     this.now = options.now ?? (() => new Date());
     this.quotaLimit = options.quotaLimit ?? DEFAULT_QUOTA;
+    this.bodyStore = options.bodyStore ?? new MemoryBodyStore();
     this.draftSnapshot = options.draft ?? { version: 0, draft: createDefaultDraft() };
   }
 
@@ -1988,6 +2486,47 @@ export class MemoryAttemptStore implements AttemptStore {
         snapshot: clone(snapshot),
       })),
     );
+  }
+
+  public async getDecisionIndex(
+    owner: string,
+    attemptId: string,
+  ): Promise<DecisionIndex | undefined> {
+    const attempt = await this.get(owner, attemptId);
+    if (!attempt) return undefined;
+    if (!terminalAttempt(attempt)) throw new AttemptDecisionsPendingError();
+    if (!attempt.recordComplete) throw new ReplayRecordError();
+    const data = decisionDataFor(
+      attempt,
+      await this.getCalls(owner, attemptId),
+      clone(this.actions.get(attemptId) ?? []),
+      [...(this.snapshots.get(attemptId) ?? new Map())].map(([stateId, snapshot]) => ({
+        stateId,
+        snapshot: clone(snapshot),
+      })),
+    );
+    return data.index;
+  }
+
+  public async getDecision(
+    owner: string,
+    attemptId: string,
+    decisionNumber: number,
+  ): Promise<DecisionDetail | undefined> {
+    const attempt = await this.get(owner, attemptId);
+    if (!attempt) return undefined;
+    if (!terminalAttempt(attempt)) throw new AttemptDecisionsPendingError();
+    if (!attempt.recordComplete) throw new ReplayRecordError();
+    const data = decisionDataFor(
+      attempt,
+      await this.getCalls(owner, attemptId),
+      clone(this.actions.get(attemptId) ?? []),
+      [...(this.snapshots.get(attemptId) ?? new Map())].map(([stateId, snapshot]) => ({
+        stateId,
+        snapshot: clone(snapshot),
+      })),
+    );
+    return decisionDetailFor(attempt, data, decisionNumber, this.bodyStore);
   }
 
   public async markPresentationComplete(

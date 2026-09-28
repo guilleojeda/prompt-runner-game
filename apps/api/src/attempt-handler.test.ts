@@ -265,4 +265,117 @@ describe('attempt API projection and dispatch recovery', () => {
     expect(changedChoice.statusCode).toBe(409);
     expect(responseBody(changedChoice).code).toBe('idempotency_conflict');
   });
+
+  it('serves the authenticated decision route with no-store and distinguishes invalid and active queries', async () => {
+    const draft = createDefaultDraft();
+    const attemptStore = new MemoryAttemptStore({ draft: { version: 1, draft } });
+    const dependencies = {
+      store: { get: vi.fn().mockResolvedValue({ version: 1, draft }), put: vi.fn() },
+      attemptStore,
+      fetch: vi.fn(
+        async () => new Response(JSON.stringify({ sub: 'owner', email_verified: true })),
+      ),
+      clientId: 'client',
+      userInfoUrl: 'https://cognito.example.test/userinfo',
+    };
+    const admitted = await attemptStore.admit({
+      owner: 'owner',
+      requestKey: 'decision-route',
+      expectedVersion: 1,
+      draft,
+      animationEnabled: false,
+    });
+
+    const index = await handleRequest(
+      eventFor('GET', `/attempts/${admitted.attempt.id}/decisions`),
+      dependencies,
+    );
+    expect(index.statusCode).toBe(409);
+    expect(index.headers?.['cache-control']).toBe('no-store');
+    expect(responseBody(index).code).toBe('decisions_pending');
+
+    const invalid = eventFor('GET', `/attempts/${admitted.attempt.id}/decisions`);
+    invalid.queryStringParameters = { decision: '0' };
+    const invalidResponse = await handleRequest(invalid, dependencies);
+    expect(invalidResponse.statusCode).toBe(400);
+    expect(responseBody(invalidResponse).code).toBe('invalid');
+
+    const missing = eventFor('GET', `/attempts/${admitted.attempt.id}/decisions`);
+    missing.queryStringParameters = { decision: '1' };
+    const missingResponse = await handleRequest(missing, dependencies);
+    expect(missingResponse.statusCode).toBe(409);
+    expect(responseBody(missingResponse).code).toBe('decisions_pending');
+
+    const other = await handleRequest(
+      eventFor('GET', `/attempts/${admitted.attempt.id}/decisions`, undefined, 'other'),
+      {
+        ...dependencies,
+        fetch: vi.fn(
+          async () => new Response(JSON.stringify({ sub: 'other', email_verified: true })),
+        ),
+      },
+    );
+    expect(other.statusCode).toBe(404);
+  });
+
+  it('returns an empty index for cancellation before the first call and 404 for positive detail', async () => {
+    const draft = createDefaultDraft();
+    const attemptStore = new MemoryAttemptStore({ draft: { version: 1, draft } });
+    const dependencies = {
+      store: { get: vi.fn().mockResolvedValue({ version: 1, draft }), put: vi.fn() },
+      attemptStore,
+      dispatch: vi.fn(),
+      fetch: vi.fn(
+        async () => new Response(JSON.stringify({ sub: 'owner', email_verified: true })),
+      ),
+      clientId: 'client',
+      userInfoUrl: 'https://cognito.example.test/userinfo',
+    };
+    const admitted = await attemptStore.admit({
+      owner: 'owner',
+      requestKey: 'cancel-before-decision',
+      expectedVersion: 1,
+      draft,
+      animationEnabled: false,
+    });
+    await attemptStore.requestCancel('owner', admitted.attempt.id);
+
+    const admission = vi.spyOn(attemptStore, 'admit');
+    const cancel = vi.spyOn(attemptStore, 'requestCancel');
+    const quota = vi.spyOn(attemptStore, 'quota');
+    const beginCall = vi.spyOn(attemptStore, 'beginCall');
+    const finishCall = vi.spyOn(attemptStore, 'finishCall');
+    const publishAction = vi.spyOn(attemptStore, 'publishAction');
+    const getIndex = vi.spyOn(attemptStore, 'getDecisionIndex');
+    const getDetail = vi.spyOn(attemptStore, 'getDecision');
+    try {
+      const index = await handleRequest(
+        eventFor('GET', `/attempts/${admitted.attempt.id}/decisions`),
+        dependencies,
+      );
+      expect(index.statusCode).toBe(200);
+      expect(index.headers?.['cache-control']).toBe('no-store');
+      expect(responseBody(index)).toEqual({
+        attemptId: admitted.attempt.id,
+        levelId: 'principal-puerta-v4',
+        decisions: [],
+      });
+      const detailEvent = eventFor('GET', `/attempts/${admitted.attempt.id}/decisions`);
+      detailEvent.queryStringParameters = { decision: '1' };
+      const detail = await handleRequest(detailEvent, dependencies);
+      expect(detail.statusCode).toBe(404);
+      expect(responseBody(detail).code).toBe('not_found');
+      expect(getIndex).toHaveBeenCalledWith('owner', admitted.attempt.id);
+      expect(getDetail).toHaveBeenCalledWith('owner', admitted.attempt.id, 1);
+      expect(admission).not.toHaveBeenCalled();
+      expect(cancel).not.toHaveBeenCalled();
+      expect(quota).not.toHaveBeenCalled();
+      expect(beginCall).not.toHaveBeenCalled();
+      expect(finishCall).not.toHaveBeenCalled();
+      expect(publishAction).not.toHaveBeenCalled();
+      expect(dependencies.dispatch).not.toHaveBeenCalled();
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
 });

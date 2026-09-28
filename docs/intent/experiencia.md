@@ -1,6 +1,6 @@
 # Experiencia y alcance
 
-Especificación vigente de la experiencia. El acceso, la preparación persistida y los intentos reales del nivel principal con recompensa, llave y puerta están implementados, con Esperar, Agarrar objeto, animación opcional, resultado directo, cancelación, historial y reproducción. La comparación y el recorrido de transferencia pertenecen a fases posteriores. Se relaciona con [intentos](intentos.md), [agente](agente.md), [reglas del juego](juego.md), [consumo y puntaje](consumo-y-puntaje.md) y [plataforma](plataforma.md).
+Especificación vigente de la experiencia. El acceso, la preparación persistida y los intentos reales del nivel principal con recompensa, llave y puerta están implementados, con Esperar, Agarrar objeto, animación opcional, resultado directo, cancelación, historial, reproducción e inspección de decisiones. La comparación y el recorrido de transferencia pertenecen a fases posteriores. Se relaciona con [intentos](intentos.md), [agente](agente.md), [reglas del juego](juego.md), [consumo y puntaje](consumo-y-puntaje.md) y [plataforma](plataforma.md).
 
 ## Propósito y participantes
 
@@ -35,7 +35,7 @@ No hay selector de nivel: se juega el único nivel vigente, `principal-puerta-v4
 4. Hace clic en **Probar**. Los controles se bloquean inmediatamente mientras se valida la admisión y se guarda el borrador visible. El intento fija nivel, configuración, parámetros de puntuación y el valor actual de **Animación**. No hay un botón separado para aplicar el borrador.
 5. Si el servidor admite el intento, inicia el cálculo secuencial y conserva el registro. La interfaz muestra «Preparando intento» y bloquea la edición.
 6. Cuando el registro queda cerrado, si el snapshot tiene `Animación` activado, la interfaz reproduce automáticamente el registro completo. Al terminar muestra el resultado; si está desactivado, salta la reproducción y muestra el resultado de inmediato.
-7. La persona consulta el resultado y el historial, modifica el borrador y vuelve a hacer clic en **Probar**. La comparación entre soluciones se incorporará en una fase posterior.
+7. La persona consulta el resultado y el historial. Desde cualquiera de ellos puede inspeccionar decisiones en el mapa estático o iniciar otra reproducción completa. Después modifica el borrador y vuelve a hacer clic en **Probar**. La comparación entre soluciones se incorporará en una fase posterior.
 
 El snapshot de **Animación** es sólo una decisión de presentación para ese intento. No cambia el prompt, las herramientas, las llamadas, los tokens, los turnos, el puntaje, la cuota ni el registro. Ambas rutas guardan siempre el registro completo, las métricas y los recursos necesarios para reproducirlo después desde el historial.
 
@@ -49,7 +49,7 @@ Los estados de la interfaz describen qué puede hacer la persona. No son una cop
 | Guardando o admitiendo | Ningún control operativo mientras se confirma la admisión | Si hay conflicto o error antes de admitir, se conserva el borrador, no se usa cuota ni agente y se vuelve a Edición |
 | Cálculo | Sólo **Cancelar** | Se bloquean campos, habilidades, toggle, **Probar**, historial e inicio de otras visualizaciones |
 | Animación automática | Ninguno | Avanza a velocidad fija, hacia adelante y sin interrupciones; campos, habilidades, toggle, **Probar** e historial siguen bloqueados hasta terminar |
-| Resultado | Campos, toggle, **Probar** e historial | Se consulta el resultado y se puede iniciar otro intento |
+| Resultado | Campos, toggle, **Probar**, historial e inspección | Se consulta el resultado, se pueden inspeccionar decisiones y se puede iniciar otro intento |
 | Visualización desde resultado o historial | Ninguno mientras se reproduce | Una vez iniciada, avanza automáticamente de principio a fin a la misma velocidad fija; no hay inferencia ni edición o navegación durante la reproducción |
 
 Durante el cálculo **Cancelar** es el único control operativo. No se habilita edición parcial ni se permite cambiar el toggle o las instrucciones hasta que el intento llegue a un estado terminal. La animación se muestra completa, en orden y a una única velocidad fija. Durante ella no hay controles para pausar, retroceder, avanzar, saltar turnos, reiniciar ni modificar la velocidad. El bloqueo continúa hasta presentar el resultado.
@@ -70,7 +70,7 @@ Cada habilidad presenta su nombre humano, si está habilitada, su descripción y
 
 El borrador se mantiene separado del snapshot de cada intento. Un clic en **Probar** guarda directamente el contenido vigente y lo fija para el intento admitido. Si la validación, el guardado o la detección de conflicto fallan antes de admitirlo, se conserva el borrador, se muestran el error y su causa, y la interfaz vuelve a estar disponible. No se consume cuota ni se llama al agente en ese caso.
 
-El diagnóstico permite inspeccionar, para una decisión, la observación, el prompt efectivo con su protocolo, las herramientas y descripciones enviadas, la herramienta elegida y sus argumentos, el resultado del motor y el uso real. El diagnóstico no es necesario para operar los controles principales.
+Desde un resultado propio o su historial, **Inspeccionar decisiones** abre el mapa completo para la persona; el agente nunca recibió ese mapa. Las casillas con decisiones muestran su cantidad y filtran una lista ordenada; la secuencia cronológica completa sigue disponible. Cada decisión se asigna a la casilla donde el robot estaba antes de elegir, aunque se haya movido o fallado. Una inferencia sin acción se muestra sin inventar un turno. La ficha presenta **Observación** local realmente enviada, **Acciones disponibles** (herramientas elegibles con ID opaco, nombre humano y descripción literal enviada), **Acción elegida** con parámetros cuando corresponda y **Resultado** registrado. Disponible no significa que la acción funcione en esa casilla. La vista no inventa motivos ni sugiere cambios «Para revisar». Los prompts y bodies completos y el uso por llamada permanecen privados; la inspección no llama al modelo ni consume cuota. El mapa y sus listas se operan con mouse o teclado después del resultado, sin controlar la animación automática ni el replay.
 
 ## Resultados
 
@@ -107,4 +107,5 @@ Al implementar, recorrer desde el acceso hasta editar, probar, recuperar, reprod
 - un conflicto o error antes de admitir conserve el borrador y no invoque agente ni cuota;
 - `Animación` activado reproduzca antes de mostrar el resultado, mientras que desactivado muestre el resultado al cerrar el registro;
 - error o cancelación sin acciones no produzca un replay vacío y los replays manuales del historial no llamen al modelo;
+- el mapa de inspección agrupe por casilla de origen, mantenga la secuencia completa, muestre sólo la observación local y distinga una decisión sin acción de un turno consumido;
 - la demostración use la integración real, dejando cualquier adaptador simulado claramente identificado como modo de prueba.

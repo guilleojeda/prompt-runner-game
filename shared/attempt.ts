@@ -138,3 +138,90 @@ export interface ReplayRecordView {
   readonly metrics: AttemptMetrics;
   readonly score: number | null;
 }
+
+/** Small, map-friendly navigation item for decision inspection. */
+export interface DecisionIndexItem {
+  readonly number: number;
+  readonly decisionId: string;
+  readonly originSupport: number;
+  readonly hasAction: boolean;
+}
+
+/** Public index for the authenticated owner's terminal attempt. */
+export interface DecisionIndex {
+  readonly attemptId: string;
+  readonly levelId: string;
+  readonly decisions: readonly DecisionIndexItem[];
+}
+
+/** Local observation projected from one effective Converse request. */
+export type DecisionObservationSide =
+  | { readonly kind: 'boundary' }
+  | { readonly kind: 'segment'; readonly terrain: string }
+  | {
+      readonly kind: 'door';
+      readonly state: 'locked' | 'open';
+      readonly requiredObjectId: string;
+    };
+
+export interface DecisionObservation {
+  readonly facing: 'left' | 'right';
+  readonly here: {
+    readonly objects: readonly string[];
+    readonly exit: boolean;
+  };
+  readonly left: DecisionObservationSide;
+  readonly right: DecisionObservationSide;
+}
+
+/** One tool as actually serialized in the effective request. */
+export interface DecisionAvailableAction {
+  readonly opaqueId: string;
+  readonly label: string;
+  /** Omitted when the provider request omitted the description. */
+  readonly description?: string;
+  readonly skillId?: RobotSkillId;
+}
+
+export type DecisionChoice =
+  | {
+      readonly state: 'selected';
+      readonly opaqueId: string;
+      readonly action: unknown;
+      readonly parameters: unknown;
+    }
+  | {
+      readonly state: 'invalid';
+      readonly opaqueId?: string;
+      readonly parameters?: unknown;
+    }
+  | { readonly state: 'unknown' };
+
+export type DecisionResult =
+  | {
+      readonly kind: 'action';
+      readonly action: unknown;
+      readonly resolution: unknown;
+      readonly beforeSupport: number;
+      readonly afterSupport: number;
+      readonly turnsUsed: number;
+      readonly status?: string;
+      readonly reason?: string;
+    }
+  | {
+      readonly kind: 'no-action';
+      readonly turnsUsed: number;
+      readonly status: string;
+      readonly reason?: string;
+    };
+
+/** Public detail for one grouped model decision. */
+export interface DecisionDetail {
+  readonly attemptId: string;
+  readonly levelId: string;
+  readonly item: DecisionIndexItem;
+  readonly observation: DecisionObservation | null;
+  readonly availableActions: readonly DecisionAvailableAction[] | null;
+  readonly choice: DecisionChoice | null;
+  readonly result: DecisionResult;
+}

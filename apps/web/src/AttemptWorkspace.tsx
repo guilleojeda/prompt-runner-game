@@ -26,6 +26,7 @@ import type { RobotEditorHandle } from './RobotEditor.js';
 import type { RobotDraft } from '../../../shared/robot.js';
 import type { AnimationPreference, ReplayRecordView } from '../../../shared/attempt.js';
 import { LEVEL } from '../../../shared/game.js';
+import { DecisionInspector } from './DecisionInspector.js';
 import { ReplayScene } from './replay/ReplayScene.js';
 
 type WorkspaceMode =
@@ -253,7 +254,15 @@ function objectCollectionStatus(attempt: AttemptSummary): string {
   return `${details.join(' · ')} · valor total: ${attempt.objectPoints.toLocaleString('es-AR')} puntos`;
 }
 
-function ResultCard({ attempt, onReplay }: { attempt: AttemptSummary; onReplay: () => void }) {
+function ResultCard({
+  attempt,
+  onReplay,
+  onInspect,
+}: {
+  attempt: AttemptSummary;
+  onReplay: () => void;
+  onInspect?: () => void;
+}) {
   return (
     <section className="attempt-result" aria-labelledby="attempt-result-title">
       <div className="attempt-result-heading">
@@ -274,6 +283,11 @@ function ResultCard({ attempt, onReplay }: { attempt: AttemptSummary; onReplay: 
       {attempt.recordComplete && attempt.turnsUsed > 0 && (
         <button className="secondary-button replay-again" type="button" onClick={onReplay}>
           Ver de nuevo
+        </button>
+      )}
+      {onInspect && (
+        <button className="secondary-button replay-again" type="button" onClick={onInspect}>
+          Inspeccionar decisiones
         </button>
       )}
       <dl className="attempt-metrics">
@@ -355,6 +369,7 @@ function HistoryList({
   busy,
   onOpen,
   onReplay,
+  onInspect,
   onMore,
 }: {
   attempts: readonly AttemptSummary[];
@@ -362,6 +377,7 @@ function HistoryList({
   busy: boolean;
   onOpen: (id: string) => void;
   onReplay: (id: string) => void;
+  onInspect?: (id: string) => void;
   onMore: () => void;
 }) {
   return (
@@ -411,6 +427,16 @@ function HistoryList({
                     Ver de nuevo
                   </button>
                 )}
+                {isTerminal(item.status) && item.presentationComplete && onInspect && (
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() => onInspect(item.id)}
+                    disabled={busy}
+                  >
+                    Inspeccionar decisiones
+                  </button>
+                )}
               </div>
             </li>
           ))}
@@ -457,6 +483,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     const [replayRecord, setReplayRecord] = useState<ReplayRecordView | null>(null);
     const [playbackKind, setPlaybackKind] = useState<PlaybackKind | null>(null);
     const [playbackReachedEnd, setPlaybackReachedEnd] = useState(false);
+    const [decisionInspectorOpen, setDecisionInspectorOpen] = useState(false);
     const [completionBusy, setCompletionBusy] = useState(false);
     const generationRef = useRef(0);
     const frozenRef = useRef<FrozenAdmission | null>(null);
@@ -516,10 +543,15 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         setReplayRecord(null);
         setPlaybackKind(null);
         setPlaybackReachedEnd(false);
+        setDecisionInspectorOpen(false);
         setCompletionBusy(false);
         sessionSubRef.current = sessionSub;
       }
     }, [sessionSub]);
+
+    useEffect(() => {
+      if (authPaused) queueMicrotask(() => setDecisionInspectorOpen(false));
+    }, [authPaused]);
 
     useEffect(() => {
       attemptRef.current = attempt;
@@ -725,6 +757,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         setPlaybackKind(kind);
         setReplayRecord(null);
         setPlaybackReachedEnd(false);
+        setDecisionInspectorOpen(false);
         setError(null);
         completionOperationRef.current += 1;
         completionBusyRef.current = false;
@@ -789,6 +822,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           completionAttemptRef.current = null;
           setCompletionBusy(false);
           setPlaybackReachedEnd(false);
+          setDecisionInspectorOpen(false);
         }
         attemptRef.current = next;
         setAttempt(next);
@@ -1122,6 +1156,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         return;
       }
       startLockRef.current = true;
+      setDecisionInspectorOpen(false);
       completionOperationRef.current += 1;
       completionBusyRef.current = false;
       completionAttemptRef.current = null;
@@ -1331,6 +1366,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         operationEpochRef.current += 1;
         const operationEpoch = operationEpochRef.current;
         const previousMode: WorkspaceMode = modeRef.current === 'result' ? 'result' : 'idle';
+        setDecisionInspectorOpen(false);
         setMode('opening');
         setError(null);
         try {
@@ -1357,12 +1393,68 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       [api, applyAttempt, busy, onAuthRequired],
     );
 
+    const openDecisionInspector = useCallback((): void => {
+      if (busy || !attemptRef.current || !isTerminal(attemptRef.current.status)) {
+        return;
+      }
+      setError(null);
+      setDecisionInspectorOpen(true);
+    }, [busy]);
+
+    const openDecisionInspectorFromHistory = useCallback(
+      async (id: string): Promise<void> => {
+        if (busy) return;
+        const operationGeneration = generationRef.current;
+        operationEpochRef.current += 1;
+        const operationEpoch = operationEpochRef.current;
+        const previousMode: WorkspaceMode = modeRef.current === 'result' ? 'result' : 'idle';
+        setDecisionInspectorOpen(false);
+        setMode('opening');
+        setError(null);
+        try {
+          const next = await api.getAttempt(id);
+          if (
+            generationRef.current !== operationGeneration ||
+            operationEpochRef.current !== operationEpoch
+          ) {
+            return;
+          }
+          if (!isTerminal(next.status) || !next.presentationComplete) {
+            setError(
+              !isTerminal(next.status)
+                ? 'Este intento todavía no está cerrado para inspeccionar.'
+                : 'Primero hay que terminar la presentación para inspeccionar este intento.',
+            );
+            setMode(isTerminal(next.status) ? 'result' : previousMode);
+            return;
+          }
+          attemptRef.current = next;
+          setAttempt(next);
+          setHistory((current) => current.map((item) => (item.id === next.id ? next : item)));
+          setMode('result');
+          setDecisionInspectorOpen(true);
+        } catch (inspectOpenError) {
+          if (
+            generationRef.current !== operationGeneration ||
+            operationEpochRef.current !== operationEpoch
+          ) {
+            return;
+          }
+          if (isAuthenticationFailure(inspectOpenError)) onAuthRequired?.();
+          setError(attemptErrorMessage(inspectOpenError));
+          setMode(previousMode);
+        }
+      },
+      [api, busy, onAuthRequired],
+    );
+
     const openReplayFromHistory = useCallback(
       async (id: string): Promise<void> => {
         if (busy) return;
         const operationGeneration = generationRef.current;
         operationEpochRef.current += 1;
         const operationEpoch = operationEpochRef.current;
+        setDecisionInspectorOpen(false);
         setMode('opening');
         setError(null);
         try {
@@ -1663,6 +1755,11 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       setActiveCandidates([]);
     };
 
+    const handleDecisionInspectorAuthRequired = useCallback((): void => {
+      setDecisionInspectorOpen(false);
+      onAuthRequired?.();
+    }, [onAuthRequired]);
+
     return (
       <section className="attempt-workspace" aria-labelledby="attempt-workspace-title">
         <div className="attempt-heading">
@@ -1882,7 +1979,21 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         )}
 
         {mode === 'result' && attempt && (
-          <ResultCard attempt={attempt} onReplay={replayCurrentAttempt} />
+          <ResultCard
+            attempt={attempt}
+            onReplay={replayCurrentAttempt}
+            onInspect={openDecisionInspector}
+          />
+        )}
+
+        {mode === 'result' && attempt && decisionInspectorOpen && !authPaused && (
+          <DecisionInspector
+            key={`${sessionSub}:${attempt.id}`}
+            api={api}
+            attemptId={attempt.id}
+            onAuthRequired={handleDecisionInspectorAuthRequired}
+            onClose={() => setDecisionInspectorOpen(false)}
+          />
         )}
 
         {mode === 'result' && playbackReachedEnd && playbackKind === 'automatic' && (
@@ -1910,6 +2021,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             busy={busy || loadingHistory}
             onOpen={(id) => void openAttempt(id)}
             onReplay={(id) => void openReplayFromHistory(id)}
+            onInspect={(id) => void openDecisionInspectorFromHistory(id)}
             onMore={() => void loadMore()}
           />
         )}

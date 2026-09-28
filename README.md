@@ -4,7 +4,7 @@ Juego educativo de AWS User Group AI Argentina. El participante configura las ha
 
 **Web publicada:** [Abrir la aplicación](https://d1ilpq1n58tzqo.cloudfront.net).
 
-**Estado del proyecto:** acceso Cognito, configuración persistida y ejecución real del nivel principal con recompensa, llave y puerta mediante AgentCore Runtime, Strands y Bedrock. Probar guarda la configuración visible y fija el intento; la animación opcional presenta las acciones guardadas antes del resultado. El historial propio permite volver a ver los intentos del contrato vigente sin inferencia. La comparación y el segundo recorrido corresponden a fases posteriores. El nombre del juego es provisional.
+**Estado del proyecto:** acceso Cognito, configuración persistida y ejecución real del nivel principal con recompensa, llave y puerta mediante AgentCore Runtime, Strands y Bedrock. Probar guarda la configuración visible y fija el intento; la animación opcional presenta las acciones guardadas antes del resultado. El historial propio permite volver a ver los intentos del contrato vigente e inspeccionar sus decisiones sin inferencia. La comparación y el segundo recorrido corresponden a fases posteriores. El nombre del juego es provisional.
 
 ## Desarrollo local
 
@@ -59,7 +59,7 @@ Desde Probar hasta el resultado se bloquean edición, nuevos intentos, historial
 
 La cuota inicial es de cien intentos por día y cuenta al admitir, con reinicio a medianoche de Argentina. Un duplicado o rechazo previo no consume otra unidad; un error o cancelación posterior no devuelve la consumida. El resultado distingue victoria, derrota, límite, cancelación y error técnico, con turnos, llamadas, tokens reales y recompensa recogida. El puntaje de una victoria suma 25 si la recompensa está en el inventario y descuenta turnos y tokens usados. Un uso desconocido se muestra como tal y no produce un puntaje aparentemente exacto. Sólo las victorias con uso completo tienen puntos.
 
-Los intentos del contrato vigente se pueden reproducir desde su registro. La vista de animación usa estados y acciones; las observaciones, prompts y cuerpos de inferencia permanecen privados y el diagnóstico detallado sigue pendiente.
+Los intentos del contrato vigente se pueden reproducir desde su registro. Después del resultado, **Inspeccionar decisiones** abre un mapa estático para el jugador: elegí una casilla donde decidió el robot o seguí todas las decisiones en orden. Cada ficha muestra la **Observación** local enviada al agente, las **Acciones disponibles** con sus identificadores y descripciones, la **Acción elegida** y el **Resultado** del motor. Una elección sin acción no consume un turno ficticio. El mapa completo no se envía al agente. Los prompts completos, los bodies de inferencia y el uso por llamada no se muestran en la ficha; siguen guardados en privado para auditoría y puntaje. La inspección no inicia otra inferencia ni consume cuota.
 
 ## Publicación
 

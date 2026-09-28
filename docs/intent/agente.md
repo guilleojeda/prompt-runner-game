@@ -73,7 +73,7 @@ Las instrucciones generales expresan objetivos y prioridades. La orientación in
 
 > «Siempre preferí ir a la derecha, a menos que tengas un buen motivo para no hacerlo».
 
-La frase se muestra dentro del texto de instrucciones que el usuario puede editar y queda visible en la vista de diagnóstico junto con el prompt efectivo. No es una instrucción oculta ni un mecanismo protegido contra edición. La configuración inicial debe precargarla; si el usuario edita las instrucciones, la configuración capturada por **Probar** usa y registra exactamente el texto resultante. No agregar en secreto reglas como recoger objetos, saltar pozos o esperar.
+La frase se muestra dentro del texto de instrucciones que el usuario puede editar y se conserva en el request efectivo privado del intento. La ficha de decisiones muestra la observación y las herramientas enviadas, sin exponer el prompt completo. No es una instrucción oculta ni un mecanismo protegido contra edición. La configuración inicial debe precargarla; si el usuario edita las instrucciones, la configuración capturada por **Probar** usa y registra exactamente el texto resultante. No agregar en secreto reglas como recoger objetos, saltar pozos o esperar.
 
 Puede haber ayudas de interfaz para explicar cómo editar un campo, pero no pasan automáticamente al prompt. La versión acordada no requiere un segundo LLM que traduzca sugerencias del público.
 
@@ -93,7 +93,7 @@ El clic en **Probar** valida y guarda directamente el borrador. Cada intento adm
 
 Mientras un intento calcula o reproduce automáticamente su registro, la interfaz bloquea la edición, incluido el selector de modelos. Después de mostrar el resultado y cerrar esa presentación, editar el borrador sólo afecta el próximo clic en **Probar**. No modifica retrospectivamente observaciones, llamadas, estados, resultados ni métricas. Repetir la animación de un intento usa el snapshot cerrado, no vuelve a llamar al modelo ni toma decisiones nuevas. Cambiar textos no requiere redesplegar infraestructura ni crear un recurso de agente nuevo por edición.
 
-El prompt efectivo de cada decisión debe poder inspeccionarse para comprobar el protocolo, las instrucciones, las herramientas, sus descripciones y la observación enviada. La vista de diagnóstico es evidencia del contenido aplicado; no debe presentar como texto del usuario una regla que el sistema haya añadido en secreto.
+El prompt efectivo de cada decisión se conserva completo en el servidor para auditoría del protocolo, las instrucciones, las herramientas y la observación enviada. La inspección del jugador proyecta sólo la **Observación**, las **Acciones disponibles** realmente enviadas, la **Acción elegida** y el **Resultado**. El mapa completo y el nombre humano de una herramienta ayudan al jugador a interpretar el intento, pero no se presentan como contenido recibido por el modelo. La ficha no atribuye al modelo una explicación interna de su elección.
 
 ## Contrato de datos e independencia
 

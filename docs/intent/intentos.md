@@ -27,7 +27,7 @@ Antes de iniciar, la persona revisa el nivel principal vigente y edita el borrad
 
 - la definición y versión del nivel;
 - las habilidades habilitadas, sus identificadores opacos, schemas y descripciones;
-- las instrucciones generales y el prompt efectivo inspeccionable;
+- las instrucciones generales y el prompt efectivo conservado en servidor para auditoría;
 - la configuración de inferencia elegida;
 - el límite de turnos;
 - los parámetros de puntuación vigentes;
@@ -153,6 +153,8 @@ El evento usa el turno de su estado anterior. Cuando la partida continúa, su es
 Cada snapshot representa al menos la posición, el turno, el estado del intento, los objetos restantes, el inventario y los datos internos necesarios para resolver las acciones y las métricas. En el nivel vigente, la recompensa comienza en el apoyo 2 y la llave en el 6; sólo una recogida local las traslada al inventario. La puerta del apoyo 9 está abierta exactamente cuando el inventario contiene `llave-1`; no se guarda otro estado mutable para ella y la salida del apoyo 10 siempre es libre. El motor deriva las fases de la copia fija del nivel y el turno y conserva sus estados efectivos en el snapshot; el reproductor los lee sin recalcular periodicidad, según el [contrato de registro](../architecture/registro-de-ejecucion.md).
 
 Registrar el uso original del proveedor junto con los campos normalizados evita perder información cuando las categorías cambian entre APIs. La normalización y el cálculo del puntaje se detallan en [consumo y puntaje](consumo-y-puntaje.md).
+
+La inspección de decisiones se abre sólo después de presentar el resultado. Agrupa cada decisión en la casilla del snapshot **anterior**, aunque su acción no mueva al robot. Los reintentos técnicos de una decisión no crean turnos adicionales y una llamada sin acción no se representa como un turno consumido. El mapa completo pertenece a la vista del jugador y no al contexto del agente; la ficha separa la observación local y las herramientas realmente enviadas de la acción validada y el resultado determinista. Los requests/responses completos y el uso original siguen guardados en privado, fuera de esa ficha. Consultar una decisión propia no altera cuota, cálculo, resultado ni replay.
 
 ## Reproducción fiel
 

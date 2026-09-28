@@ -14,10 +14,10 @@ flowchart LR
   R --> D
   R --> S[(S3 privado: llamadas)]
   R --> B[Bedrock: Sonnet 4.6]
-  W -->|lectura autorizada de metadatos| D
+  W -->|lectura autorizada del request| S
 ```
 
-React sirve el editor, el estado del intento, su resultado, el historial y la reproducción con SVG. Lambda autentica solicitudes, controla pertenencia y cuota, guarda configuraciones y expone las consultas del intento y su proyección pública para replay. AgentCore Runtime ejecuta el motor determinista, construye observaciones, llama a Bedrock y guarda el resultado. DynamoDB es la autoridad del estado del intento; el navegador nunca decide movimientos, consumo ni puntos. Los cuerpos de inferencia se conservan en S3 privado según [datos](datos.md). La API no expone un endpoint de bodies o diagnóstico detallado. Para recuperar el uso, su rol puede leer objetos y comprobar su existencia únicamente en el bucket privado de inferencias. Una consulta no intenta recuperar la respuesta de una llamada aún activa; después del cierre o del vencimiento, un objeto ausente conserva el registro incompleto y un error real de S3 se informa como fallo de dependencia.
+React sirve el editor, el estado del intento, su resultado, el historial, la reproducción y el mapa estático de decisiones. Lambda autentica solicitudes, controla pertenencia y cuota, guarda configuraciones y expone consultas propias, replay e inspección acotada. AgentCore Runtime ejecuta el motor determinista, construye observaciones, llama a Bedrock y guarda el resultado. DynamoDB es la autoridad del estado del intento; el navegador nunca decide movimientos, consumo ni puntos. Los cuerpos de inferencia se conservan en S3 privado según [datos](datos.md). La API no expone un endpoint de bodies: para inspeccionar una decisión propia lee y verifica sólo su request efectivo y devuelve la observación y herramientas locales acordadas. El rol API puede leer objetos únicamente del bucket privado de inferencias. Una consulta no intenta recuperar la respuesta de una llamada aún activa; después del cierre o del vencimiento, un objeto ausente se muestra como información no disponible y un error real de S3 se informa como fallo de dependencia.
 
 El [registro de ejecución](registro-de-ejecucion.md) define estados y resoluciones para reproducir sin importar el motor en el navegador. La [animación](animacion.md) y el renderer React/SVG presentan las acciones cerradas sin volver a llamar al modelo.
 
@@ -61,7 +61,7 @@ La aprobación de una cancelación o el cierre por error impide nuevas acciones.
 
 ### Fases posteriores
 
-La fase 8 incorporará diagnóstico de prompts y responses; las fases 9 y 10, comparación y recorrido de transferencia. No forman parte del nivel principal vigente.
+La inspección de decisiones conserva el prompt y response completos en el servidor sin mostrarlos al jugador. Las fases 9 y 10 incorporarán comparación y recorrido de transferencia.
 
 ## Inferencia
 

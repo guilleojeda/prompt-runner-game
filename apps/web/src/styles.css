@@ -242,6 +242,225 @@ h1 {
   color: #b9b4a8;
 }
 
+.decision-inspector {
+  margin-top: 1rem;
+  padding: 1rem;
+  border: 1px solid rgba(216, 179, 106, 0.42);
+  border-radius: 0.7rem;
+  background: rgba(20, 19, 15, 0.3);
+}
+
+.decision-inspector-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.decision-inspector-heading h3 {
+  margin: 0 0 0.35rem;
+  color: #f7f1e1;
+}
+
+.decision-inspector-heading p:last-child {
+  margin: 0;
+  color: #b9b4a8;
+}
+
+.decision-map {
+  display: grid;
+  grid-template-columns: repeat(11, minmax(4.2rem, 1fr));
+  gap: 0.45rem;
+  overflow-x: auto;
+  padding: 0.25rem 0.1rem 0.65rem;
+}
+
+.decision-map-cell {
+  display: grid;
+  min-width: 4.2rem;
+  min-height: 7.1rem;
+  align-content: start;
+  gap: 0.25rem;
+  padding: 0.55rem 0.45rem;
+  border: 1px solid rgba(242, 239, 232, 0.14);
+  border-radius: 0.55rem;
+  color: #b9b4a8;
+  background: rgba(242, 239, 232, 0.04);
+  text-align: left;
+  cursor: pointer;
+}
+
+.decision-map-cell:hover,
+.decision-map-cell.is-selected {
+  border-color: #f2c879;
+  background: rgba(216, 179, 106, 0.14);
+}
+
+.decision-map-cell.has-decisions {
+  border-color: rgba(155, 197, 158, 0.65);
+}
+
+.decision-map-cell-number {
+  color: #f7f1e1;
+  font-size: 1.35rem;
+  font-weight: 800;
+}
+
+.decision-map-cell-name {
+  min-height: 2.2rem;
+  color: #d8b36a;
+  font-size: 0.76rem;
+  line-height: 1.25;
+}
+
+.decision-map-cell-object,
+.decision-map-cell-door {
+  color: #bde0bf;
+  font-size: 0.73rem;
+}
+
+.decision-map-cell-count {
+  margin-top: auto;
+  color: #f7f1e1;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.decision-inspector-columns {
+  display: grid;
+  grid-template-columns: minmax(12rem, 0.8fr) minmax(0, 1.4fr);
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.decision-inspector-lists {
+  display: grid;
+  align-content: start;
+  gap: 1rem;
+}
+
+.decision-inspector-lists section,
+.decision-detail-wrap {
+  min-width: 0;
+  padding: 0.8rem;
+  border: 1px solid rgba(242, 239, 232, 0.1);
+  border-radius: 0.55rem;
+  background: rgba(242, 239, 232, 0.03);
+}
+
+.decision-inspector h4 {
+  margin: 0 0 0.6rem;
+  color: #f7f1e1;
+  font-size: 0.96rem;
+}
+
+.decision-list {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.decision-list-item {
+  display: grid;
+  width: 100%;
+  gap: 0.18rem;
+  padding: 0.55rem 0.6rem;
+  border: 1px solid rgba(242, 239, 232, 0.12);
+  border-radius: 0.45rem;
+  color: #f7f1e1;
+  background: rgba(20, 19, 15, 0.26);
+  text-align: left;
+  cursor: pointer;
+}
+
+.decision-list-item:hover,
+.decision-list-item.is-selected {
+  border-color: #f2c879;
+  background: rgba(216, 179, 106, 0.14);
+}
+
+.decision-list-item span:last-child {
+  color: #b9b4a8;
+  font-size: 0.78rem;
+}
+
+.decision-detail {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.decision-detail-heading {
+  margin: 0;
+  color: #f7f1e1;
+  font-size: 1rem;
+}
+
+.decision-fact {
+  padding: 0.7rem;
+  border: 1px solid rgba(242, 239, 232, 0.1);
+  border-radius: 0.45rem;
+  background: rgba(20, 19, 15, 0.24);
+}
+
+.decision-fact h4 {
+  color: #d8b36a;
+}
+
+.decision-fact p,
+.decision-detail-empty,
+.decision-inspector-empty,
+.decision-inspector-lists section > p {
+  margin: 0;
+  color: #b9b4a8;
+  line-height: 1.45;
+}
+
+.decision-fact-copy {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.decision-action-list {
+  display: grid;
+  gap: 0.55rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.decision-action-list li {
+  display: grid;
+  gap: 0.18rem;
+}
+
+.decision-action-list strong {
+  color: #f7f1e1;
+  font-size: 0.9rem;
+}
+
+.decision-action-list span {
+  color: #b9b4a8;
+  font-size: 0.87rem;
+  line-height: 1.4;
+}
+
+.decision-parameters {
+  margin-top: 0.4rem !important;
+  color: #d8b36a !important;
+  overflow-wrap: anywhere;
+}
+
+.decision-inspector-empty {
+  margin-top: 1rem !important;
+  padding: 0.8rem;
+  border: 1px solid rgba(242, 239, 232, 0.12);
+  border-radius: 0.45rem;
+}
+
 .replay-again {
   margin: 0.3rem 0 0.8rem;
 }
@@ -921,5 +1140,21 @@ button:disabled {
 
   .attempt-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .decision-inspector-heading {
+    display: block;
+  }
+
+  .decision-inspector-heading .secondary-button {
+    margin-top: 0.75rem;
+  }
+
+  .decision-map {
+    grid-template-columns: repeat(11, 5.1rem);
+  }
+
+  .decision-inspector-columns {
+    grid-template-columns: 1fr;
   }
 }
