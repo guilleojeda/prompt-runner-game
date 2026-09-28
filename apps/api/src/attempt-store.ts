@@ -536,20 +536,57 @@ const projectDecisionRequest = (
   return { observation, availableActions };
 };
 
-const bodyForCall = async (
+const verifiedBodyForCall = async (
   bodyStore: BodyStore | undefined,
   attemptId: string,
   decisionId: string,
   call: CallRecord | undefined,
+  kind: 'request' | 'response',
 ): Promise<Uint8Array | undefined> => {
-  if (!bodyStore || !call || !Number.isSafeInteger(call.requestBytes) || call.requestBytes < 0)
+  const bytes = kind === 'request' ? call?.requestBytes : call?.responseBytes;
+  const digest = kind === 'request' ? call?.requestSha256 : call?.responseSha256;
+  if (
+    !bodyStore ||
+    !call ||
+    typeof bytes !== 'number' ||
+    !Number.isSafeInteger(bytes) ||
+    bytes < 0 ||
+    typeof digest !== 'string' ||
+    call.decisionId !== decisionId
+  )
     return undefined;
-  const expectedKey = `attempt/${attemptId}/decision/${decisionId}/call/${call.seq}/request.json`;
-  if (call.requestKey !== expectedKey) return undefined;
-  const body = await bodyStore.get(call.requestKey);
-  if (!body || body.byteLength !== call.requestBytes || sha256(body) !== call.requestSha256)
-    return undefined;
+  const key = kind === 'request' ? call.requestKey : call.responseKey;
+  const expectedKey = `attempt/${attemptId}/decision/${decisionId}/call/${call.seq}/${kind}.json`;
+  if (key !== expectedKey) return undefined;
+  const body = await bodyStore.get(key);
+  if (!body || body.byteLength !== bytes || sha256(body) !== digest) return undefined;
   return body;
+};
+
+const rawSelectionFromResponse = (
+  bytes: Uint8Array,
+): { readonly name: unknown; readonly input: unknown } | undefined => {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(payload) || !isRecord(payload.output)) return undefined;
+  const message = payload.output.message;
+  if (!isRecord(message) || !Array.isArray(message.content)) return undefined;
+  const toolUses = message.content.filter(
+    (entry): entry is Record<string, unknown> => isRecord(entry) && isRecord(entry.toolUse),
+  );
+  if (toolUses.length !== 1) return undefined;
+  const toolUse = toolUses[0]!.toolUse;
+  if (
+    !isRecord(toolUse) ||
+    !Object.prototype.hasOwnProperty.call(toolUse, 'name') ||
+    !Object.prototype.hasOwnProperty.call(toolUse, 'input')
+  )
+    return undefined;
+  return { name: toolUse.name, input: toolUse.input };
 };
 
 const rawSelection = (
@@ -758,22 +795,43 @@ const decisionDetailFor = async (
   if (!Number.isSafeInteger(decisionNumber) || decisionNumber < 1) return undefined;
   const group = data.groups[decisionNumber - 1];
   if (!group) return undefined;
-  const selectedCall = group.action
-    ? (() => {
-        const received = group.calls.filter((call) => call.status === 'received');
-        const matching = received.filter((call) => {
-          const selection = selectionForCall(call, attempt);
-          return (
-            selection.choice.state === 'selected' &&
-            stableJson(selection.normalized) === stableJson(group.action?.action)
-          );
-        });
-        if (matching.length === 0)
-          throw new ReplayRecordError('La acción publicada no tiene una llamada productora.');
-        return matching.at(-1);
-      })()
-    : group.calls.at(-1);
-  const bytes = await bodyForCall(bodyStore, attempt.id, group.item.decisionId, selectedCall);
+  let selectedCall = group.calls.at(-1);
+  if (group.action) {
+    const received = group.calls.filter((call) => call.status === 'received');
+    const candidates = await Promise.all(
+      received.map(async (call) => {
+        if (call.rawAction !== undefined) return call;
+        const response = await verifiedBodyForCall(
+          bodyStore,
+          attempt.id,
+          group.item.decisionId,
+          call,
+          'response',
+        );
+        const rawAction = response ? rawSelectionFromResponse(response) : undefined;
+        return rawAction === undefined ? call : { ...call, rawAction };
+      }),
+    );
+    const matching = candidates.filter((call) => {
+      const selection = selectionForCall(call, attempt);
+      return (
+        selection.choice.state === 'selected' &&
+        stableJson(selection.normalized) === stableJson(group.action?.action)
+      );
+    });
+    if (matching.length === 0)
+      throw new ReplayRecordError('La acción publicada no tiene una llamada productora.');
+    if (matching.length > 1)
+      throw new ReplayRecordError('La acción publicada tiene llamadas productoras ambiguas.');
+    selectedCall = matching[0];
+  }
+  const bytes = await verifiedBodyForCall(
+    bodyStore,
+    attempt.id,
+    group.item.decisionId,
+    selectedCall,
+    'request',
+  );
   const projection = bytes
     ? projectDecisionRequest(bytes, attempt.skills)
     : emptyDecisionRequestProjection;
@@ -1590,6 +1648,7 @@ export class DynamoAttemptStore implements AttemptStore {
       ':requestId': call.requestId,
       ':responseStatus': call.responseStatus,
       ':errorCode': call.errorCode,
+      ':rawAction': call.rawAction,
     };
     const names: Record<string, string> = {
       '#attemptId': 'attemptId',
@@ -1617,6 +1676,7 @@ export class DynamoAttemptStore implements AttemptStore {
       ['requestId', call.requestId],
       ['responseStatus', call.responseStatus],
       ['errorCode', call.errorCode],
+      ['rawAction', call.rawAction],
     ] as const)
       if (value !== undefined) {
         sets.push(`#${name} = :${name}`);

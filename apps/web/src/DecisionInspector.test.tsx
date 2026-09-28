@@ -3,7 +3,12 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LEVEL } from '../../../shared/game.js';
-import type { AttemptApi, DecisionDetail, DecisionIndex } from './attempt-api.js';
+import {
+  AttemptApiClient,
+  type AttemptApi,
+  type DecisionDetail,
+  type DecisionIndex,
+} from './attempt-api.js';
 import { DecisionInspector } from './DecisionInspector.js';
 
 const index: DecisionIndex = {
@@ -69,6 +74,23 @@ afterEach(() => {
 });
 
 describe('DecisionInspector', () => {
+  it('loads detail through the real client method with its receiver intact', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify(index), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(detail(1)), { status: 200 }));
+    const api = new AttemptApiClient(
+      { apiBaseUrl: 'https://api.example.test/' },
+      { tokenProvider: () => 'token', fetch: fetchImpl },
+    );
+    render(<DecisionInspector api={api} attemptId="attempt-1" onClose={vi.fn()} />);
+
+    expect(await screen.findByRole('heading', { name: 'Observación' })).toBeTruthy();
+    expect(fetchImpl.mock.calls[1]?.[0]).toBe(
+      'https://api.example.test/attempts/attempt-1/decisions?decision=1',
+    );
+  });
+
   it('shows a static map with per-support counts and the full chronological list', async () => {
     const api = inspectorApi();
     render(<DecisionInspector api={api} attemptId="attempt-1" onClose={vi.fn()} />);
@@ -156,5 +178,16 @@ describe('DecisionInspector', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Reintentar ficha' }));
     expect(await screen.findByRole('heading', { name: 'Observación' })).toBeTruthy();
     expect(getDecision).toHaveBeenCalledTimes(2);
+  });
+
+  it('surfaces a synchronous detail failure and clears its loading state', async () => {
+    const getDecision = vi.fn(() => {
+      throw new Error('fallo síncrono');
+    });
+    const api = inspectorApi({ getDecision });
+    render(<DecisionInspector api={api} attemptId="attempt-1" onClose={vi.fn()} />);
+
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    expect(screen.queryByRole('status', { name: 'Cargando la ficha…' })).toBeNull();
   });
 });
