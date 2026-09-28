@@ -170,12 +170,36 @@ const hasMeaningfulParameters = (parameters: unknown): boolean => {
   return parameters !== undefined && parameters !== null;
 };
 
+const resultCodeLabel = (code: string): string => {
+  const labels: Record<string, string> = {
+    invalid_input: 'entrada inválida',
+    invalid_response: 'respuesta inválida',
+    provider_error: 'error del proveedor',
+    audit_failed: 'falló la auditoría de la llamada',
+    incomplete_response: 'respuesta incompleta',
+    truncated: 'respuesta truncada',
+    timeout: 'tiempo de espera agotado',
+    throttled: 'proveedor saturado',
+    request_not_persisted: 'solicitud no conservada',
+    cancelled_before_action: 'cancelación antes de ejecutar una acción',
+    cancelled_by_user: 'cancelación solicitada',
+    cancelled_during_retry: 'cancelación durante un reintento',
+    runtime_deadline_exceeded: 'se agotó el tiempo de ejecución',
+    runtime_deadline_expired: 'se agotó el tiempo de ejecución',
+    start_deadline_expired: 'se agotó el tiempo de inicio',
+    cancelled: 'cancelado',
+    incomplete: 'incompleto',
+    error: 'error',
+  };
+  return labels[code] ?? 'motivo técnico no detallado';
+};
+
 const actionResultText = (result: DecisionResult, choice: DecisionChoice | null): string[] => {
   if (result.kind === 'no-action') {
     const details = [
       'No se ejecutó ninguna acción y no se consumió turno.',
-      ...(result.reason ? [`Motivo registrado: ${result.reason}.`] : []),
-      ...(result.status ? [`Cierre: ${result.status}.`] : []),
+      ...(result.reason ? [`Motivo registrado: ${resultCodeLabel(result.reason)}.`] : []),
+      ...(result.status ? [`Cierre: ${resultCodeLabel(result.status)}.`] : []),
     ];
     return details;
   }
@@ -202,10 +226,16 @@ const mapSupportLabel = (
   support: number,
   count: number,
   location: string,
+  segment: string | null,
   object: string | null,
-  door: boolean,
+  door: string | null,
 ): string => {
-  const features = [location, ...(object ? [object] : []), ...(door ? ['puerta'] : [])];
+  const features = [
+    location,
+    ...(segment ? [segment] : []),
+    ...(object ? [object] : []),
+    ...(door ? [door] : []),
+  ];
   const decisionCount =
     count > 0 ? `${count} ${count === 1 ? 'decisión' : 'decisiones'}` : 'sin decisiones';
   return `Casilla ${support}, ${features.join(', ')}, ${decisionCount}`;
@@ -233,8 +263,13 @@ function StaticLevelMap({
         const count = counts.get(support) ?? 0;
         const marker = support === 0 ? 'Inicio' : support === LEVEL.exit.support ? 'Salida' : null;
         const object = LEVEL.objects.find((entry) => entry.support === support);
-        const door = LEVEL.door?.support === support;
-        const location = marker ?? segmentLabel(LEVEL.segments[support - 1]);
+        const door =
+          LEVEL.door?.support === support ? `Puerta en acceso ${support - 1}–${support}` : null;
+        const location = marker ?? 'Apoyo';
+        const segment =
+          support > 0 && support <= LEVEL.segments.length
+            ? `Tramo ${support - 1}–${support}: ${segmentLabel(LEVEL.segments[support - 1])}`
+            : null;
         return (
           <button
             className={`decision-map-cell${selectedSupport === support ? ' is-selected' : ''}${
@@ -247,6 +282,7 @@ function StaticLevelMap({
               support,
               count,
               location,
+              segment,
               object ? objectLabel(object.id) : null,
               door,
             )}
@@ -254,8 +290,9 @@ function StaticLevelMap({
           >
             <span className="decision-map-cell-number">{support}</span>
             <span className="decision-map-cell-name">{location}</span>
+            {segment && <span className="decision-map-cell-segment">{segment}</span>}
             {object && <span className="decision-map-cell-object">{objectLabel(object.id)}</span>}
-            {door && <span className="decision-map-cell-door">puerta</span>}
+            {door && <span className="decision-map-cell-door">{door}</span>}
             <span className="decision-map-cell-count">
               {count > 0 ? `${count} ${count === 1 ? 'decisión' : 'decisiones'}` : 'sin decisiones'}
             </span>
@@ -332,8 +369,6 @@ function DecisionDetailCard({ detail }: { readonly detail: DecisionDetail | null
         ) : (
           <ul className="decision-action-list">
             {available.map((action: DecisionAvailableAction) => {
-              const entry = humanEntryFor(action);
-              const label = entry?.name ?? action.label;
               const description =
                 action.description === undefined
                   ? 'Descripción omitida.'
@@ -343,7 +378,7 @@ function DecisionDetailCard({ detail }: { readonly detail: DecisionDetail | null
               return (
                 <li key={action.opaqueId}>
                   <strong>
-                    {action.opaqueId} ({label})
+                    {action.opaqueId} ({action.label})
                   </strong>
                   <span>{description}</span>
                 </li>
@@ -498,6 +533,7 @@ export function DecisionInspector({
     setSelectedNumber(first?.number ?? null);
     setDetail(null);
     setDetailError(null);
+    if (!first) setLoadingDetail(false);
   };
   const selectDecision = (item: DecisionIndexItem): void => {
     setSelectedSupport(item.originSupport);

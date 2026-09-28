@@ -1,6 +1,6 @@
 # Agente, herramientas y observación
 
-Este documento es canónico para el contrato de decisión del agente, sus herramientas, la información que recibe y la captura de configuraciones. El editor, los snapshots y la ejecución independiente por decisión usan el nivel periódico vigente. La inspección detallada en la interfaz sigue pendiente; sus datos se conservan desde la ejecución. Se relaciona con [experiencia](experiencia.md), [intentos](intentos.md), [juego](juego.md), [consumo y puntaje](consumo-y-puntaje.md) y [plataforma](plataforma.md).
+Este documento es canónico para el contrato de decisión del agente, sus herramientas, la información que recibe y la captura de configuraciones. El editor, los snapshots y la ejecución independiente por decisión usan el nivel periódico vigente. La interfaz permite inspeccionar los intentos terminales publicados mediante un mapa estático y fichas de decisión; sus datos se conservan desde la ejecución. Se relaciona con [experiencia](experiencia.md), [intentos](intentos.md), [juego](juego.md), [consumo y puntaje](consumo-y-puntaje.md) y [plataforma](plataforma.md).
 
 ## Configuración disponible
 

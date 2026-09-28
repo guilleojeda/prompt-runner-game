@@ -317,10 +317,15 @@ h1 {
 }
 
 .decision-map-cell-name {
-  min-height: 2.2rem;
   color: #d8b36a;
   font-size: 0.76rem;
   line-height: 1.25;
+}
+
+.decision-map-cell-segment {
+  color: #c9c2b0;
+  font-size: 0.68rem;
+  line-height: 1.2;
 }
 
 .decision-map-cell-object,

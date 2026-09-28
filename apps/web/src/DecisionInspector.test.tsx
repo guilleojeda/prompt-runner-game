@@ -33,7 +33,7 @@ const detail = (number: number): DecisionDetail => ({
     right: { kind: 'segment', terrain: 'pit' },
   },
   availableActions: [
-    { opaqueId: 'tool_1', label: 'Avanzar', description: 'Avanza un tramo.' },
+    { opaqueId: 'tool_1', label: 'Avance personalizado', description: 'Avanza un tramo.' },
     { opaqueId: 'tool_6', label: 'Esperar', description: '' },
     { opaqueId: 'tool_7', label: 'Agarrar objeto' },
   ],
@@ -98,10 +98,14 @@ describe('DecisionInspector', () => {
 
     expect(await screen.findByRole('heading', { name: 'Inspeccionar decisiones' })).toBeTruthy();
     expect(
-      await screen.findByRole('button', { name: /Casilla 2, pozo, recompensa, 2 decisiones/ }),
+      await screen.findByRole('button', {
+        name: /Casilla 2, Apoyo, Tramo 1[–-]2: pozo, recompensa, 2 decisiones/,
+      }),
     ).toBeTruthy();
     expect(
-      screen.getByRole('button', { name: /Casilla 5, barrera periódica, 1 decisión/ }),
+      screen.getByRole('button', {
+        name: /Casilla 5, Apoyo, Tramo 4[–-]5: barrera periódica, 1 decisión/,
+      }),
     ).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Todas las decisiones, en orden' })).toBeTruthy();
     expect(screen.getAllByRole('button', { name: /Decisión [123]/ })).toHaveLength(5);
@@ -112,6 +116,7 @@ describe('DecisionInspector', () => {
     expect(screen.getByRole('heading', { name: 'Resultado' })).toBeTruthy();
     expect(screen.getByText('Descripción vacía.')).toBeTruthy();
     expect(screen.getByText('Descripción omitida.')).toBeTruthy();
+    expect(screen.getByText(/Avance personalizado/)).toBeTruthy();
     expect(screen.queryByText('Parámetros: {}')).toBeNull();
     expect(screen.queryByText('Acción registrada: Avanzar.')).toBeNull();
     expect(screen.queryByText(/prompt|response|uso|razonamiento/i)).toBeNull();
@@ -132,8 +137,86 @@ describe('DecisionInspector', () => {
 
     expect(await screen.findByText('A la derecha: puerta cerrada; requiere llave.')).toBeTruthy();
     expect(
-      screen.getByRole('button', { name: /Casilla 9, suelo, puerta, sin decisiones/ }),
+      screen.getByRole('button', {
+        name: /Casilla 9, Apoyo, Tramo 8[–-]9: suelo, Puerta en acceso 8[–-]9, sin decisiones/,
+      }),
     ).toBeTruthy();
+  });
+
+  it('clears detail loading when a pending selection is changed to an empty support', async () => {
+    const getDecision = vi.fn().mockReturnValue(new Promise<DecisionDetail>(() => undefined));
+    const api = inspectorApi({ getDecision });
+    render(<DecisionInspector api={api} attemptId="attempt-1" onClose={vi.fn()} />);
+
+    expect(await screen.findByText('Cargando la ficha…')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /Casilla 1, Apoyo, Tramo 0[–-]1: suelo/ }));
+
+    expect(await screen.findByText('No hay decisiones en esta casilla.')).toBeTruthy();
+    expect(screen.queryByText('Cargando la ficha…')).toBeNull();
+    expect(screen.getByText('Elegí una decisión para ver su ficha.')).toBeTruthy();
+  });
+
+  it('renders no-action result codes in Spanish without exposing raw codes', async () => {
+    const providerFailure: DecisionDetail = {
+      ...detail(1),
+      result: {
+        kind: 'no-action',
+        reason: 'provider_error',
+        turnsUsed: 1,
+        status: 'error',
+      },
+    };
+    const getDecision = vi
+      .fn()
+      .mockImplementation((_id: string, number: number) =>
+        Promise.resolve(number === 1 ? providerFailure : detail(2)),
+      );
+    const api = inspectorApi({ getDecision });
+    render(<DecisionInspector api={api} attemptId="attempt-1" onClose={vi.fn()} />);
+
+    expect(await screen.findByText('Motivo registrado: error del proveedor.')).toBeTruthy();
+    expect(screen.getByText('Cierre: error.')).toBeTruthy();
+    expect(screen.queryByText('provider_error')).toBeNull();
+
+    fireEvent.click(screen.getAllByRole('button', { name: /Decisión 2/ })[0]!);
+    expect(await screen.findByText('Motivo registrado: respuesta inválida.')).toBeTruthy();
+    expect(screen.queryByText('invalid_response')).toBeNull();
+  });
+
+  it('uses an honest Spanish fallback for cancellation and unknown technical reasons', async () => {
+    const cancellation: DecisionDetail = {
+      ...detail(1),
+      result: {
+        kind: 'no-action',
+        reason: 'cancelled_before_action',
+        turnsUsed: 0,
+        status: 'cancelled',
+      },
+    };
+    const cancellationApi = inspectorApi({
+      getDecision: vi.fn().mockResolvedValue(cancellation),
+    });
+    render(<DecisionInspector api={cancellationApi} attemptId="attempt-1" onClose={vi.fn()} />);
+    expect(
+      await screen.findByText('Motivo registrado: cancelación antes de ejecutar una acción.'),
+    ).toBeTruthy();
+    expect(screen.getByText('Cierre: cancelado.')).toBeTruthy();
+    expect(screen.queryByText('cancelled_before_action')).toBeNull();
+
+    cleanup();
+    const unknown: DecisionDetail = {
+      ...cancellation,
+      result: {
+        kind: 'no-action',
+        reason: 'executor_specific_failure',
+        turnsUsed: 0,
+        status: 'error',
+      },
+    };
+    const fallbackApi = inspectorApi({ getDecision: vi.fn().mockResolvedValue(unknown) });
+    render(<DecisionInspector api={fallbackApi} attemptId="attempt-1" onClose={vi.fn()} />);
+    expect(await screen.findByText('Motivo registrado: motivo técnico no detallado.')).toBeTruthy();
+    expect(screen.queryByText('executor_specific_failure')).toBeNull();
   });
 
   it('shows meaningful action parameters while omitting empty parameter objects', async () => {
@@ -206,7 +289,9 @@ describe('DecisionInspector', () => {
 
     await screen.findByRole('heading', { name: 'Observación' });
     fireEvent.click(
-      screen.getByRole('button', { name: /Casilla 5, barrera periódica, 1 decisión/ }),
+      screen.getByRole('button', {
+        name: /Casilla 5, Apoyo, Tramo 4[–-]5: barrera periódica, 1 decisión/,
+      }),
     );
 
     const supportList = screen.getByRole('heading', {
@@ -229,7 +314,7 @@ describe('DecisionInspector', () => {
 
     await screen.findByRole('heading', { name: 'Observación' });
     const support = screen.getByRole('button', {
-      name: /Casilla 5, barrera periódica, 1 decisión/,
+      name: /Casilla 5, Apoyo, Tramo 4[–-]5: barrera periódica, 1 decisión/,
     });
     support.focus();
     fireEvent.click(support);
@@ -257,7 +342,9 @@ describe('DecisionInspector', () => {
     expect(await screen.findByRole('alert')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Reintentar inspección' }));
     expect(
-      await screen.findByRole('button', { name: /Casilla 2, pozo, recompensa, 2 decisiones/ }),
+      await screen.findByRole('button', {
+        name: /Casilla 2, Apoyo, Tramo 1[–-]2: pozo, recompensa, 2 decisiones/,
+      }),
     ).toBeTruthy();
     expect(getDecisionIndex).toHaveBeenCalledTimes(2);
   });
