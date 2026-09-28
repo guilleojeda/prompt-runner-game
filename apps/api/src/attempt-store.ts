@@ -293,6 +293,11 @@ const stableJson = (value: unknown): string => {
   return JSON.stringify(value);
 };
 
+const rawActionCompatible = (existing: CallRecord, incoming: CallRecord): boolean =>
+  incoming.rawAction === undefined ||
+  existing.rawAction === undefined ||
+  stableJson(existing.rawAction) === stableJson(incoming.rawAction);
+
 const key = (pk: string, sk: string): Record<string, AttributeValue> =>
   marshall({ PK: pk, SK: sk });
 const itemOf = (value: Record<string, unknown>): Record<string, AttributeValue> =>
@@ -1629,17 +1634,25 @@ export class DynamoAttemptStore implements AttemptStore {
   ): Promise<CallRecord | undefined> {
     const current = await this.get(owner, attemptId);
     if (!current || current.executorId !== executorId) return undefined;
+    const storedCalls = await this.getCalls(owner, attemptId);
+    const storedCall = storedCalls.find((item) => item.seq === call.seq);
+    const effectiveCall: CallRecord = {
+      ...call,
+      ...(call.rawAction === undefined && storedCall?.rawAction !== undefined
+        ? { rawAction: storedCall.rawAction }
+        : {}),
+    };
     const values: Record<string, unknown> = {
-      ':status': call.status,
-      ':updatedAt': call.updatedAt,
-      ':usage': call.usage,
-      ':responseKey': call.responseKey,
-      ':responseSha256': call.responseSha256,
-      ':responseBytes': call.responseBytes,
-      ':requestId': call.requestId,
-      ':responseStatus': call.responseStatus,
-      ':errorCode': call.errorCode,
-      ':rawAction': call.rawAction,
+      ':status': effectiveCall.status,
+      ':updatedAt': effectiveCall.updatedAt,
+      ':usage': effectiveCall.usage,
+      ':responseKey': effectiveCall.responseKey,
+      ':responseSha256': effectiveCall.responseSha256,
+      ':responseBytes': effectiveCall.responseBytes,
+      ':requestId': effectiveCall.requestId,
+      ':responseStatus': effectiveCall.responseStatus,
+      ':errorCode': effectiveCall.errorCode,
+      ':rawAction': effectiveCall.rawAction,
     };
     const names: Record<string, string> = {
       '#attemptId': 'attemptId',
@@ -1658,23 +1671,27 @@ export class DynamoAttemptStore implements AttemptStore {
       '#usage = :usage',
       '#responseKey = :responseKey',
     ];
-    const callCondition = call.responseSha256
+    const callCondition = effectiveCall.responseSha256
       ? '#attemptId = :attemptId AND #seq = :seq AND #requestKey = :requestKey AND #responseKey = :responseKey AND (attribute_not_exists(#responseSha256) OR #responseSha256 = :responseSha256)'
       : '#attemptId = :attemptId AND #seq = :seq AND #requestKey = :requestKey AND #responseKey = :responseKey AND attribute_not_exists(#responseSha256)';
+    const rawActionCondition =
+      call.rawAction === undefined
+        ? ''
+        : ' AND (attribute_not_exists(#rawAction) OR #rawAction = :rawAction)';
     for (const [name, value] of [
-      ['responseSha256', call.responseSha256],
-      ['responseBytes', call.responseBytes],
-      ['requestId', call.requestId],
-      ['responseStatus', call.responseStatus],
-      ['errorCode', call.errorCode],
-      ['rawAction', call.rawAction],
+      ['responseSha256', effectiveCall.responseSha256],
+      ['responseBytes', effectiveCall.responseBytes],
+      ['requestId', effectiveCall.requestId],
+      ['responseStatus', effectiveCall.responseStatus],
+      ['errorCode', effectiveCall.errorCode],
+      ['rawAction', effectiveCall.rawAction],
     ] as const)
       if (value !== undefined) {
         sets.push(`#${name} = :${name}`);
         names[`#${name}`] = name;
       }
-    const allCalls = (await this.getCalls(owner, attemptId)).map((item) =>
-      item.seq === call.seq ? call : item,
+    const allCalls = storedCalls.map((item) =>
+      item.seq === effectiveCall.seq ? effectiveCall : item,
     );
     const completedCalls = allCalls.filter((item) => item.status !== 'started');
     const allCallsComplete = completedCalls.length === allCalls.length;
@@ -1696,22 +1713,27 @@ export class DynamoAttemptStore implements AttemptStore {
             {
               Update: {
                 TableName: this.tableName,
-                Key: key(`ATTEMPT#${attemptId}`, `CALL#${String(call.seq).padStart(8, '0')}`),
+                Key: key(
+                  `ATTEMPT#${attemptId}`,
+                  `CALL#${String(effectiveCall.seq).padStart(8, '0')}`,
+                ),
                 UpdateExpression: `SET ${sets.join(', ')}`,
-                ConditionExpression: `${callCondition} AND (#status = :started OR #status = :incoming OR (#status = :received AND (:incoming = :invalid OR :incoming = :error)))`,
+                ConditionExpression: `${callCondition}${rawActionCondition} AND (#status = :started OR #status = :incoming OR (#status = :received AND (:incoming = :invalid OR :incoming = :error)))`,
                 ExpressionAttributeNames: names,
                 ExpressionAttributeValues: marshall(
                   {
                     ...values,
                     ':attemptId': attemptId,
-                    ':seq': call.seq,
-                    ':requestKey': call.requestKey,
+                    ':seq': effectiveCall.seq,
+                    ':requestKey': effectiveCall.requestKey,
                     ':started': 'started',
-                    ':incoming': call.status,
+                    ':incoming': effectiveCall.status,
                     ':received': 'received',
                     ':invalid': 'invalid',
                     ':error': 'error',
-                    ...(call.responseSha256 ? { ':responseSha256': call.responseSha256 } : {}),
+                    ...(effectiveCall.responseSha256
+                      ? { ':responseSha256': effectiveCall.responseSha256 }
+                      : {}),
                   },
                   { removeUndefinedValues: true },
                 ),
@@ -1781,7 +1803,7 @@ export class DynamoAttemptStore implements AttemptStore {
           ],
         }),
       );
-      return clone(call);
+      return clone(effectiveCall);
     } catch (error) {
       if (isTransactionCancellation(error) || isConditional(error))
         return this.findCall(owner, attemptId, call.seq);
@@ -2731,8 +2753,12 @@ export class MemoryAttemptStore implements AttemptStore {
       (existing.responseSha256 !== undefined && existing.responseSha256 !== call.responseSha256)
     )
       return undefined;
+    if (!rawActionCompatible(existing, call)) return clone(existing);
     const effectiveCall: CallRecord = {
       ...call,
+      ...(call.rawAction === undefined && existing.rawAction !== undefined
+        ? { rawAction: existing.rawAction }
+        : {}),
       modelKey: record.config.model.key,
       modelId: record.config.model.modelId,
       region: record.config.model.region,

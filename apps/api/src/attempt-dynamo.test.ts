@@ -2098,6 +2098,69 @@ describe('Dynamo call finalization and recovery', () => {
     ).toContain('#requestKey = :requestKey');
   });
 
+  it('keeps an existing raw action immutable across Dynamo retries and status changes', async () => {
+    const harness = new DynamoHarness();
+    const { attemptId } = seedAttempt(harness, {
+      status: 'running',
+      executorId: 'executor-a',
+    });
+    const started = seedCall(harness, attemptId);
+    const rawAction = { name: 'tool_1', input: {}, toolUseId: 'tool-use-1' };
+    const received: CallRecord = {
+      ...started,
+      status: 'received',
+      rawAction,
+      responseSha256: 'b'.repeat(64),
+      responseBytes: 20,
+      usage: {
+        inputTokens: 10,
+        outputTokens: 5,
+        reasoningTokens: null,
+        gameTokens: 15,
+        cacheReadTokens: null,
+        cacheWriteTokens: null,
+      },
+      updatedAt: '2026-09-21T15:00:02.000Z',
+    };
+    const store = storeFor(harness);
+    await expect(
+      store.finishCall('owner', attemptId, 'executor-a', received),
+    ).resolves.toMatchObject({ status: 'received', rawAction });
+
+    await expect(
+      store.finishCall('owner', attemptId, 'executor-a', received),
+    ).resolves.toMatchObject({ status: 'received', rawAction });
+
+    harness.transactionBehavior = () => 'throw';
+    const differentAction = {
+      ...received,
+      status: 'invalid' as const,
+      errorCode: 'invalid_response',
+      rawAction: { name: 'tool_2', input: {}, toolUseId: 'tool-use-2' },
+      updatedAt: '2026-09-21T15:00:03.000Z',
+    };
+    await expect(
+      store.finishCall('owner', attemptId, 'executor-a', differentAction),
+    ).resolves.toMatchObject({ status: 'received', rawAction });
+    const rejectedTransaction = harness.send.mock.calls
+      .filter(([command]) => command.constructor.name === 'TransactWriteItemsCommand')
+      .at(-1)?.[0].input as { TransactItems: readonly Record<string, unknown>[] };
+    expect(
+      (rejectedTransaction.TransactItems[0].Update as { ConditionExpression: string })
+        .ConditionExpression,
+    ).toContain('#rawAction = :rawAction');
+
+    harness.transactionBehavior = () => undefined;
+    const withoutAction = { ...received, status: 'error' as const, rawAction: undefined };
+    await expect(
+      store.finishCall('owner', attemptId, 'executor-a', withoutAction),
+    ).resolves.toMatchObject({ status: 'error', rawAction });
+    expect(harness.read(`ATTEMPT#${attemptId}`, 'CALL#00000001')).toMatchObject({
+      status: 'error',
+      rawAction,
+    });
+  });
+
   it('keeps an audited received call when a delayed same-status write has null usage', async () => {
     const harness = new DynamoHarness();
     const { attemptId } = seedAttempt(harness, {

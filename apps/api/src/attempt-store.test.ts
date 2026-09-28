@@ -1624,4 +1624,81 @@ describe('attempt lifecycle store', () => {
     await expect(store.getDecision('other', attemptId, 1)).resolves.toBeUndefined();
     expect(getBody).not.toHaveBeenCalled();
   });
+
+  it('keeps a Memory raw action immutable while allowing an omitted retry field', async () => {
+    const store = new MemoryAttemptStore({ draft: savedDraft() });
+    const { attempt } = await store.admit({
+      owner: 'a',
+      requestKey: 'raw-action-immutability',
+      expectedVersion: 1,
+      draft: savedDraft().draft,
+      animationEnabled: false,
+    });
+    await store.claim('a', attempt.id, 'executor');
+    const started: CallRecord = {
+      attemptId: attempt.id,
+      seq: 1,
+      decisionId: `${attempt.id}-decision-1`,
+      ...modelIdentity,
+      requestKey: `attempt/${attempt.id}/decision/${attempt.id}-decision-1/call/1/request.json`,
+      responseKey: `attempt/${attempt.id}/decision/${attempt.id}-decision-1/call/1/response.json`,
+      requestSha256: 'a'.repeat(64),
+      requestBytes: 1,
+      status: 'started',
+      usage: {
+        inputTokens: null,
+        outputTokens: null,
+        reasoningTokens: null,
+        gameTokens: null,
+        cacheReadTokens: null,
+        cacheWriteTokens: null,
+      },
+      createdAt: '2026-09-21T15:00:01.000Z',
+      updatedAt: '2026-09-21T15:00:01.000Z',
+    };
+    await store.beginCall('a', attempt.id, 'executor', started);
+    const rawAction = { name: 'tool_1', input: {}, toolUseId: 'tool-use-1' };
+    const received: CallRecord = {
+      ...started,
+      status: 'received',
+      rawAction,
+      responseSha256: 'b'.repeat(64),
+      responseBytes: 1,
+      usage: {
+        inputTokens: 1,
+        outputTokens: 1,
+        reasoningTokens: null,
+        gameTokens: 1,
+        cacheReadTokens: null,
+        cacheWriteTokens: null,
+      },
+      updatedAt: '2026-09-21T15:00:02.000Z',
+    };
+    await expect(store.finishCall('a', attempt.id, 'executor', received)).resolves.toMatchObject({
+      status: 'received',
+      rawAction,
+    });
+    await expect(store.finishCall('a', attempt.id, 'executor', received)).resolves.toMatchObject({
+      status: 'received',
+      rawAction,
+    });
+    const differentAction = {
+      ...received,
+      status: 'error' as const,
+      rawAction: { name: 'tool_2', input: {}, toolUseId: 'tool-use-2' },
+    };
+    await expect(
+      store.finishCall('a', attempt.id, 'executor', differentAction),
+    ).resolves.toMatchObject({
+      status: 'received',
+      rawAction,
+    });
+    const withoutAction = { ...received, status: 'invalid' as const, rawAction: undefined };
+    await expect(
+      store.finishCall('a', attempt.id, 'executor', withoutAction),
+    ).resolves.toMatchObject({
+      status: 'invalid',
+      rawAction,
+    });
+  });
 });
