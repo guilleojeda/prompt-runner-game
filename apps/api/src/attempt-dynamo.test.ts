@@ -382,6 +382,99 @@ const storeFor = (harness: DynamoHarness, bodyStore?: BodyStore) =>
     now: () => new Date('2026-09-21T15:00:00.000Z'),
   });
 
+const legacyResponseBody = new TextEncoder().encode(
+  JSON.stringify({
+    output: {
+      message: {
+        content: [
+          { text: 'PRIVATE RESPONSE TEXT MUST NOT BE PROJECTED' },
+          { toolUse: { name: 'tool_1', input: {}, toolUseId: 'provider-tool-use-1' } },
+        ],
+      },
+    },
+  }),
+);
+
+const legacyDecisionFixture = (
+  options: {
+    readonly responseAvailable?: boolean;
+    readonly responseBody?: Uint8Array;
+    readonly responseBytes?: number;
+    readonly responseKey?: string;
+    readonly responseSha256?: string;
+  } = {},
+) => {
+  const harness = new DynamoHarness();
+  const record = createClosedAttemptRecordFixture();
+  const { attemptId, actionCount } = seedClosedReplay(harness);
+  const header = harness.read('USER#owner', `ATTEMPT#${attemptId}`);
+  if (!header) throw new Error('test setup did not persist the attempt header');
+  header.calls = actionCount;
+  header.skills = ROBOT_CATALOG.map((entry) => ({
+    id: entry.id,
+    opaqueId: entry.opaqueId,
+    inputSchema: entry.inputSchema,
+  }));
+  harness.put(header);
+  const first = record.actions[0];
+  if (!first) throw new Error('test fixture did not persist its first action');
+  const canonicalResponseKey = `attempt/${attemptId}/decision/${first.decisionId}/call/${first.seq}/response.json`;
+  const responseBody = options.responseBody ?? legacyResponseBody;
+  const responseHash = createHash('sha256').update(responseBody).digest('hex');
+  const responseKey = options.responseKey ?? canonicalResponseKey;
+  for (const action of record.actions) {
+    const requestKey = `attempt/${attemptId}/decision/${action.decisionId}/call/${action.seq}/request.json`;
+    const callResponseKey =
+      action.seq === first.seq
+        ? responseKey
+        : `attempt/${attemptId}/decision/${action.decisionId}/call/${action.seq}/response.json`;
+    harness.put({
+      PK: `ATTEMPT#${attemptId}`,
+      SK: `CALL#${String(action.seq).padStart(8, '0')}`,
+      entity: 'call',
+      attemptId,
+      seq: action.seq,
+      decisionId: action.decisionId,
+      requestKey,
+      responseKey: callResponseKey,
+      requestSha256: '0'.repeat(64),
+      requestBytes: 0,
+      ...(action.seq === first.seq
+        ? {
+            responseSha256: options.responseSha256 ?? responseHash,
+            responseBytes: options.responseBytes ?? responseBody.byteLength,
+          }
+        : { responseSha256: '0'.repeat(64), responseBytes: 0 }),
+      status: 'received',
+      usage: {
+        inputTokens: 1,
+        outputTokens: 1,
+        reasoningTokens: null,
+        gameTokens: 1,
+        cacheReadTokens: null,
+        cacheWriteTokens: null,
+      },
+      modelKey: 'claude-sonnet-4.6',
+      modelId: 'global.anthropic.claude-sonnet-4-6',
+      region: 'us-east-1',
+      profileVersion: 'claude-sonnet-4.6-global-v1',
+      createdAt: '2026-09-21T12:00:00.000Z',
+      updatedAt: '2026-09-21T12:00:00.000Z',
+    });
+  }
+  const bodyStore: BodyStore = {
+    put: async () => {
+      throw new Error('legacy response fixture is read-only');
+    },
+    get: vi.fn(async (key) =>
+      options.responseAvailable === false || key !== canonicalResponseKey
+        ? undefined
+        : responseBody,
+    ),
+  };
+  return { attemptId, bodyStore, canonicalResponseKey, harness };
+};
+
 describe('Dynamo attempt admission conditions', () => {
   it('rejects v2 and v3 durable attempt records under the current v4 contract', async () => {
     for (const recordVersion of [2, 3]) {
@@ -655,6 +748,65 @@ describe('Dynamo attempt admission conditions', () => {
       { number: 14, originSupport: 6 },
       { number: 15, originSupport: 7 },
     ]);
+  });
+
+  it('recovers a legacy received action from its verified private response body', async () => {
+    const fixture = legacyDecisionFixture();
+    const store = storeFor(fixture.harness, fixture.bodyStore);
+    const index = await store.getDecisionIndex('owner', fixture.attemptId);
+    expect(index?.decisions[0]).toMatchObject({ number: 1, hasAction: true });
+    expect(fixture.bodyStore.get).not.toHaveBeenCalled();
+    const detail = await store.getDecision('owner', fixture.attemptId, 1);
+    expect(detail?.choice).toMatchObject({
+      state: 'selected',
+      opaqueId: 'tool_1',
+      action: { kind: 'advance' },
+      parameters: {},
+    });
+    expect(detail?.availableActions).toBeNull();
+    expect(JSON.stringify(detail)).not.toContain('PRIVATE RESPONSE TEXT');
+    expect(JSON.stringify(detail)).not.toContain('provider-tool-use-1');
+    expect(fixture.bodyStore.get).toHaveBeenCalledWith(fixture.canonicalResponseKey);
+  });
+
+  it.each([
+    { name: 'missing response body', options: { responseAvailable: false } },
+    { name: 'response hash mismatch', options: { responseSha256: '0'.repeat(64) } },
+    { name: 'response byte count mismatch', options: { responseBytes: 1 } },
+    {
+      name: 'ambiguous tool uses',
+      options: {
+        responseBody: new TextEncoder().encode(
+          JSON.stringify({
+            output: {
+              message: {
+                content: [
+                  { toolUse: { name: 'tool_1', input: {} } },
+                  { toolUse: { name: 'tool_1', input: {} } },
+                ],
+              },
+            },
+          }),
+        ),
+      },
+    },
+  ])('does not invent a producer when the legacy response is $name', async ({ options }) => {
+    const fixture = legacyDecisionFixture(options);
+    await expect(
+      storeFor(fixture.harness, fixture.bodyStore).getDecision('owner', fixture.attemptId, 1),
+    ).rejects.toThrow('llamada productora');
+    expect(fixture.bodyStore.get).toHaveBeenCalledTimes(1);
+    expect(fixture.bodyStore.get).toHaveBeenCalledWith(fixture.canonicalResponseKey);
+  });
+
+  it('rejects a legacy response key that is not canonical before reading S3', async () => {
+    const fixture = legacyDecisionFixture({
+      responseKey: 'attempt/foreign/response.json',
+    });
+    await expect(
+      storeFor(fixture.harness, fixture.bodyStore).getDecision('owner', fixture.attemptId, 1),
+    ).rejects.toThrow('llamada productora');
+    expect(fixture.bodyStore.get).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -1821,12 +1973,16 @@ describe('Dynamo call finalization and recovery', () => {
         cacheReadTokens: null,
         cacheWriteTokens: null,
       },
+      rawAction: { name: 'tool_1', input: {}, toolUseId: 'tool-use-1' },
       updatedAt: '2026-09-21T15:00:02.000Z',
     };
     const store = storeFor(harness);
     const first = await store.finishCall('owner', attemptId, 'executor-a', received);
     expect(first?.status).toBe('received');
     expect(first?.requestKey).toBe(started.requestKey);
+    expect(harness.read(`ATTEMPT#${attemptId}`, 'CALL#00000001')).toMatchObject({
+      rawAction: { name: 'tool_1', input: {}, toolUseId: 'tool-use-1' },
+    });
 
     const transaction = harness.send.mock.calls.find(
       ([command]) => command.constructor.name === 'TransactWriteItemsCommand',
@@ -1837,6 +1993,9 @@ describe('Dynamo call finalization and recovery', () => {
     expect(callUpdate.ConditionExpression).toContain('#requestKey = :requestKey');
     expect(callUpdate.ConditionExpression).toContain('#responseKey = :responseKey');
     expect(callUpdate.ConditionExpression).toContain('#status = :started');
+    expect(
+      (transaction.TransactItems[0].Update as { UpdateExpression: string }).UpdateExpression,
+    ).toContain('#rawAction = :rawAction');
 
     const invalid: CallRecord = {
       ...received,
