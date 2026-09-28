@@ -160,9 +160,7 @@ describe('DecisionInspector', () => {
     const api = inspectorApi({ getDecision: vi.fn().mockResolvedValue(unknownChoiceDetail) });
     render(<DecisionInspector api={api} attemptId="attempt-1" onClose={vi.fn()} />);
 
-    expect(
-      await screen.findByText('Acción registrada: tool_3 (Saltar) · dirección: derecha.'),
-    ).toBeTruthy();
+    expect(await screen.findByText('Acción registrada: Saltar · dirección: derecha.')).toBeTruthy();
     expect(screen.queryByText(/dirección: right/)).toBeNull();
   });
 
@@ -174,7 +172,7 @@ describe('DecisionInspector', () => {
     const api = inspectorApi({ getDecision: vi.fn().mockResolvedValue(unknownChoiceDetail) });
     render(<DecisionInspector api={api} attemptId="attempt-1" onClose={vi.fn()} />);
 
-    expect(await screen.findByText('Acción registrada: tool_1 (Avanzar).')).toBeTruthy();
+    expect(await screen.findByText('Acción registrada: Avanzar.')).toBeTruthy();
     expect(screen.queryByText(/Acción ejecutada/)).toBeNull();
   });
 

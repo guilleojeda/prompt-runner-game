@@ -88,7 +88,7 @@ const actionText = (
   const kind = typeof action.kind === 'string' ? action.kind : undefined;
   const kindEntry = kind ? humanEntryFor({ kind }) : undefined;
   const label = catalogEntry?.name ?? kindEntry?.name ?? 'Acción registrada';
-  const identifier = id ?? catalogEntry?.opaqueId ?? kindEntry?.opaqueId;
+  const identifier = id ?? catalogEntry?.opaqueId;
   const parameters: string[] = [];
   if (options?.showInternalDirection && typeof action.direction === 'string') {
     parameters.push(`dirección: ${directionLabel(action.direction)}`);
