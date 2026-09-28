@@ -522,6 +522,12 @@ const projectDecisionRequest = (
       !isRecord(toolSpec.inputSchema)
     )
       return { observation, availableActions: null };
+    if (
+      Object.keys(toolSpec.inputSchema).length !== 1 ||
+      !Object.prototype.hasOwnProperty.call(toolSpec.inputSchema, 'json') ||
+      !isRecord(toolSpec.inputSchema.json)
+    )
+      return { observation, availableActions: null };
     const skill = skills.find((candidate) => candidate.opaqueId === toolSpec.name);
     if (!skill) return { observation, availableActions: null };
     const action = humanActionFor(skill);
@@ -529,7 +535,7 @@ const projectDecisionRequest = (
     const description = toolSpec.description;
     if (description !== undefined && typeof description !== 'string')
       return { observation, availableActions: null };
-    if (stableJson(toolSpec.inputSchema) !== stableJson(skill.inputSchema))
+    if (stableJson(toolSpec.inputSchema.json) !== stableJson(skill.inputSchema))
       return { observation, availableActions: null };
     availableActions.push(description === undefined ? action : { ...action, description });
   }

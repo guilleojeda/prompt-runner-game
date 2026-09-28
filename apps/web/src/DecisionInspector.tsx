@@ -5,6 +5,7 @@ import {
   AttemptApiFailure,
   type AttemptApi,
   type DecisionAvailableAction,
+  type DecisionChoice,
   type DecisionDetail,
   type DecisionIndex,
   type DecisionIndexItem,
@@ -87,7 +88,7 @@ const actionText = (action: unknown, opaqueId?: string): string => {
       }
     }
   }
-  return `${identifier ? `${identifier} ` : ''}(${label})${
+  return `${identifier ? `${identifier} (${label})` : label}${
     parameters.length > 0 ? ` · ${parameters.join(' · ')}` : ''
   }`;
 };
@@ -156,7 +157,13 @@ const observationText = (observation: DecisionObservation | null): string[] => {
   ];
 };
 
-const actionResultText = (result: DecisionResult): string[] => {
+const hasMeaningfulParameters = (parameters: unknown): boolean => {
+  if (isRecord(parameters)) return Object.keys(parameters).length > 0;
+  if (Array.isArray(parameters)) return parameters.length > 0;
+  return parameters !== undefined && parameters !== null;
+};
+
+const actionResultText = (result: DecisionResult, choice: DecisionChoice | null): string[] => {
   if (result.kind === 'no-action') {
     const details = [
       'No se ejecutó ninguna acción y no se consumió turno.',
@@ -165,8 +172,11 @@ const actionResultText = (result: DecisionResult): string[] => {
     ];
     return details;
   }
+  const recordedAction = actionText(result.action);
   const details = [
-    `Acción ejecutada: ${actionText(result.action)}.`,
+    ...(choice?.state === 'unknown' && recordedAction !== 'Acción registrada'
+      ? [`Acción registrada: ${recordedAction}.`]
+      : []),
     ...(resolutionLabel(result.resolution)
       ? [`Resolución: ${resolutionLabel(result.resolution)}.`]
       : []),
@@ -334,14 +344,16 @@ function DecisionDetailCard({ detail }: { readonly detail: DecisionDetail | null
       <div className="decision-fact">
         <h4>Acción elegida</h4>
         <p>{choiceText}</p>
-        {selectedChoice && choice.parameters !== undefined && (
-          <p className="decision-parameters">Parámetros: {JSON.stringify(choice.parameters)}</p>
-        )}
+        {selectedChoice &&
+          choice.parameters !== undefined &&
+          hasMeaningfulParameters(choice.parameters) && (
+            <p className="decision-parameters">Parámetros: {JSON.stringify(choice.parameters)}</p>
+          )}
       </div>
       <div className="decision-fact">
         <h4>Resultado</h4>
         <div className="decision-fact-copy">
-          {actionResultText(detail.result).map((line) => (
+          {actionResultText(detail.result, detail.choice).map((line) => (
             <p key={line}>{line}</p>
           ))}
         </div>

@@ -74,7 +74,9 @@ const decisionRequest = (snapshot: GameSnapshot): Uint8Array =>
             toolSpec: {
               name: 'tool_1',
               description: 'Descripción literal de prueba',
-              inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+              inputSchema: {
+                json: { type: 'object', properties: {}, additionalProperties: false },
+              },
             },
           },
         ],

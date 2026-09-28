@@ -107,7 +107,46 @@ describe('DecisionInspector', () => {
     expect(screen.getByRole('heading', { name: 'Resultado' })).toBeTruthy();
     expect(screen.getByText('Descripción vacía.')).toBeTruthy();
     expect(screen.getByText('Descripción omitida.')).toBeTruthy();
+    expect(screen.queryByText('Parámetros: {}')).toBeNull();
+    expect(screen.queryByText('Acción registrada: Avanzar.')).toBeNull();
     expect(screen.queryByText(/prompt|response|uso|razonamiento/i)).toBeNull();
+  });
+
+  it('shows meaningful action parameters while omitting empty parameter objects', async () => {
+    const detailWithParameters: DecisionDetail = {
+      ...detail(1),
+      choice: {
+        state: 'selected',
+        opaqueId: 'tool_5',
+        action: { kind: 'jump', direction: 'right' },
+        parameters: { direction: 'derecha' },
+      },
+      result: {
+        kind: 'action',
+        action: { kind: 'jump', direction: 'right' },
+        resolution: { outcome: 'moved', reason: 'moved' },
+        beforeSupport: 2,
+        afterSupport: 3,
+        turnsUsed: 1,
+      },
+    };
+    const api = inspectorApi({ getDecision: vi.fn().mockResolvedValue(detailWithParameters) });
+    render(<DecisionInspector api={api} attemptId="attempt-1" onClose={vi.fn()} />);
+
+    expect(await screen.findByText('Parámetros: {"direction":"derecha"}')).toBeTruthy();
+    expect(screen.queryByText('Parámetros: {}')).toBeNull();
+  });
+
+  it('shows the recorded action in the result only when the choice is unknown', async () => {
+    const unknownChoiceDetail: DecisionDetail = {
+      ...detail(1),
+      choice: { state: 'unknown' },
+    };
+    const api = inspectorApi({ getDecision: vi.fn().mockResolvedValue(unknownChoiceDetail) });
+    render(<DecisionInspector api={api} attemptId="attempt-1" onClose={vi.fn()} />);
+
+    expect(await screen.findByText('Acción registrada: Avanzar.')).toBeTruthy();
+    expect(screen.queryByText(/Acción ejecutada/)).toBeNull();
   });
 
   it('filters a selected support, keeps all decisions visible, and loads the selected detail', async () => {

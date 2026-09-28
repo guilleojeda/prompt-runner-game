@@ -653,7 +653,7 @@ describe('Dynamo attempt admission conditions', () => {
               toolSpec: {
                 name: entry.opaqueId,
                 ...(entry.id === 'advance' ? { description: 'Descripción literal' } : {}),
-                inputSchema: entry.inputSchema,
+                inputSchema: { json: entry.inputSchema },
               },
             })),
           },
@@ -707,6 +707,32 @@ describe('Dynamo attempt admission conditions', () => {
       description: 'Descripción literal',
     });
     expect(boundary?.availableActions?.[1]).not.toHaveProperty('description');
+
+    const firstRequestKey = `attempt/${attemptId}/decision/${record.actions[0]!.decisionId}/call/1/request.json`;
+    const firstBody = requestBodies.get(firstRequestKey);
+    const firstCall = harness.read(`ATTEMPT#${attemptId}`, 'CALL#00000001');
+    if (!firstBody || !firstCall) throw new Error('test setup did not persist the first call');
+    const incompatiblePayload = JSON.parse(new TextDecoder().decode(firstBody)) as {
+      toolConfig: {
+        tools: Array<{ toolSpec: { inputSchema: { json: Record<string, unknown> } } }>;
+      };
+    };
+    incompatiblePayload.toolConfig.tools[0]!.toolSpec.inputSchema.json = {
+      ...incompatiblePayload.toolConfig.tools[0]!.toolSpec.inputSchema.json,
+      additionalProperties: true,
+    };
+    const incompatibleBody = new TextEncoder().encode(JSON.stringify(incompatiblePayload));
+    requestBodies.set(firstRequestKey, incompatibleBody);
+    harness.put({
+      ...firstCall,
+      requestSha256: sha256(incompatibleBody),
+      requestBytes: incompatibleBody.byteLength,
+    });
+    await expect(store.getDecision('owner', attemptId, 1)).resolves.toMatchObject({
+      availableActions: null,
+    });
+    requestBodies.set(firstRequestKey, firstBody);
+    harness.put(firstCall);
 
     const periodic = await store.getDecision('owner', attemptId, 6);
     expect(periodic?.observation).toMatchObject({
