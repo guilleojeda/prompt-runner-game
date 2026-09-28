@@ -405,7 +405,6 @@ export function DecisionInspector({
   }, [loadIndex]);
 
   useEffect(() => {
-    const getDecision = api.getDecision;
     if (!selectedNumber) {
       return undefined;
     }
@@ -415,7 +414,8 @@ export function DecisionInspector({
       if (controller.signal.aborted) return;
       setLoadingDetail(true);
       setDetailError(null);
-      void getDecision(attemptId, number, controller.signal)
+      void Promise.resolve()
+        .then(() => api.getDecision(attemptId, number, controller.signal))
         .then((loaded) => {
           if (
             controller.signal.aborted ||
