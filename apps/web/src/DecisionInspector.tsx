@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type KeyboardEvent } from 'react';
 import { LEVEL, type LevelSegment } from '../../../shared/game.js';
-import { ROBOT_CATALOG, type RobotCatalogEntry } from '../../../shared/robot.js';
+import { ROBOT_CATALOG, type RobotCatalogEntry, type RobotSkillId } from '../../../shared/robot.js';
 import {
   AttemptApiFailure,
   type AttemptApi,
@@ -57,32 +57,11 @@ const objectLabel = (id: string): string => {
 
 const humanEntryFor = (action: {
   readonly opaqueId?: string;
-  readonly skillId?: string;
+  readonly kind?: string;
 }): RobotCatalogEntry | undefined => {
   if (action.opaqueId) return catalogByOpaqueId.get(action.opaqueId);
-  if (action.skillId) return catalogBySkillId.get(action.skillId as RobotCatalogEntry['id']);
+  if (action.kind) return catalogBySkillId.get(action.kind as RobotSkillId);
   return undefined;
-};
-
-const actionKindLabel = (kind: string): string => {
-  switch (kind) {
-    case 'advance':
-      return 'Avanzar';
-    case 'retreat':
-      return 'Retroceder';
-    case 'jump':
-      return 'Saltar';
-    case 'crouch':
-      return 'Agacharse y avanzar';
-    case 'swim':
-      return 'Nadar';
-    case 'wait':
-      return 'Esperar';
-    case 'collect':
-      return 'Agarrar objeto';
-    default:
-      return kind;
-  }
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -96,7 +75,8 @@ const actionText = (action: unknown, opaqueId?: string): string => {
   const id = typeof action.opaqueId === 'string' ? action.opaqueId : opaqueId;
   const catalogEntry = id ? catalogByOpaqueId.get(id) : undefined;
   const kind = typeof action.kind === 'string' ? action.kind : undefined;
-  const label = catalogEntry?.name ?? (kind ? actionKindLabel(kind) : 'Acción registrada');
+  const kindEntry = kind ? humanEntryFor({ kind }) : undefined;
+  const label = catalogEntry?.name ?? kindEntry?.name ?? 'Acción registrada';
   const identifier = id ?? catalogEntry?.opaqueId;
   const parameters: string[] = [];
   if (typeof action.direction === 'string') parameters.push(`dirección: ${action.direction}`);
@@ -332,7 +312,7 @@ function DecisionDetailCard({ detail }: { readonly detail: DecisionDetail | null
           <ul className="decision-action-list">
             {available.map((action: DecisionAvailableAction) => {
               const entry = humanEntryFor(action);
-              const label = action.label || entry?.name || 'Herramienta';
+              const label = entry?.name ?? action.label;
               const description =
                 action.description === undefined
                   ? 'Descripción omitida.'
@@ -380,6 +360,7 @@ export function DecisionInspector({
   const [selectedSupport, setSelectedSupport] = useState<number | null>(null);
   const [selectedNumber, setSelectedNumber] = useState<number | null>(null);
   const [detail, setDetail] = useState<DecisionDetail | null>(null);
+  const [detailRetry, setDetailRetry] = useState(0);
   const [loadingIndex, setLoadingIndex] = useState(true);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -400,6 +381,7 @@ export function DecisionInspector({
         setSelectedSupport(first?.originSupport ?? null);
         setSelectedNumber(first?.number ?? null);
         setDetail(null);
+        setDetailRetry((value) => value + 1);
       } catch (loadError) {
         if (signal?.aborted) return;
         if (loadError instanceof AttemptApiFailure && loadError.code === 'authentication') {
@@ -464,7 +446,7 @@ export function DecisionInspector({
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [api, attemptId, onAuthRequired, selectedNumber]);
+  }, [api, attemptId, detailRetry, onAuthRequired, selectedNumber]);
 
   const bySupport = useMemo(
     () => index?.decisions.filter((item) => item.originSupport === selectedSupport) ?? [],
@@ -567,11 +549,7 @@ export function DecisionInspector({
                     <button
                       className="secondary-button"
                       type="button"
-                      onClick={() => {
-                        const current = selectedNumber;
-                        setSelectedNumber(null);
-                        window.setTimeout(() => setSelectedNumber(current), 0);
-                      }}
+                      onClick={() => setDetailRetry((value) => value + 1)}
                     >
                       Reintentar ficha
                     </button>

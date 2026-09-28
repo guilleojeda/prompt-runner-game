@@ -22,7 +22,6 @@ import {
   type TerrainState,
 } from '../../../shared/game.js';
 import { isModelKey, type ModelKey } from '../../../shared/models.js';
-import type { RobotSkillId } from '../../../shared/robot.js';
 import type { AuthConfig } from './auth.js';
 
 export type { AttemptStatus, AttemptSummary } from '../../../shared/attempt.js';
@@ -418,16 +417,6 @@ function parseReplayRecord(value: unknown): ReplayRecordView | null {
   return isReplayRecord(value) ? value : null;
 }
 
-const robotSkillIds: readonly RobotSkillId[] = [
-  'advance',
-  'retreat',
-  'jump',
-  'crouch',
-  'swim',
-  'wait',
-  'collect',
-];
-
 function parseDecisionIndexItem(value: unknown): DecisionIndexItem | null {
   if (!isRecord(value)) return null;
   const number = requiredNumber(value, 'number');
@@ -514,18 +503,13 @@ function parseDecisionAvailableActions(
   const actions = value.map((entry): DecisionAvailableAction | null => {
     if (!isRecord(entry)) return null;
     const opaqueId = requiredString(entry, 'opaqueId');
-    const labelValue = entry.label ?? entry.humanLabel ?? entry.name;
-    if (!opaqueId || typeof labelValue !== 'string' || labelValue.length === 0) return null;
+    const label = requiredString(entry, 'label');
+    if (!opaqueId || !label) return null;
     if (entry.description !== undefined && typeof entry.description !== 'string') return null;
-    const skillId =
-      typeof entry.skillId === 'string' && robotSkillIds.includes(entry.skillId as RobotSkillId)
-        ? (entry.skillId as RobotSkillId)
-        : undefined;
     return {
       opaqueId,
-      label: labelValue,
+      label,
       ...(entry.description === undefined ? {} : { description: entry.description }),
-      ...(skillId === undefined ? {} : { skillId }),
     };
   });
   if (actions.some((action): action is null => action === null)) return undefined;
@@ -589,8 +573,6 @@ function parseDecisionResult(value: unknown): DecisionResult | null {
     ) {
       return null;
     }
-    if (value.status !== undefined && typeof value.status !== 'string') return null;
-    if (value.reason !== undefined && typeof value.reason !== 'string') return null;
     return {
       kind: 'action',
       action: value.action,
@@ -598,8 +580,6 @@ function parseDecisionResult(value: unknown): DecisionResult | null {
       beforeSupport,
       afterSupport,
       turnsUsed,
-      ...(typeof value.status === 'string' ? { status: value.status } : {}),
-      ...(typeof value.reason === 'string' ? { reason: value.reason } : {}),
     };
   }
   if (value.kind !== 'no-action' || turnsUsed === null || turnsUsed < 0) return null;

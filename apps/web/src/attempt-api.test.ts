@@ -435,4 +435,24 @@ describe('AttemptApiClient', () => {
 
     await expect(client.getDecisionIndex(summary.id)).rejects.toMatchObject({ code: 'server' });
   });
+
+  it('rejects an available action without the required human label', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          attemptId: summary.id,
+          levelId: LEVEL.id,
+          item: { number: 1, decisionId: 'decision-1', originSupport: 0, hasAction: false },
+          observation: null,
+          availableActions: [{ opaqueId: 'tool_1', humanLabel: 'Avanzar' }],
+          choice: null,
+          result: { kind: 'no-action', turnsUsed: 0, status: 'error' },
+        }),
+        { status: 200 },
+      ),
+    );
+    const client = new AttemptApiClient(config, { tokenProvider: () => 'token', fetch: fetchImpl });
+
+    await expect(client.getDecision(summary.id, 1)).rejects.toMatchObject({ code: 'server' });
+  });
 });

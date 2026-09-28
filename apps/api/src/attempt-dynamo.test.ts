@@ -23,7 +23,7 @@ import {
   type BodyStore,
   type CallRecord,
 } from '../../../shared/server/attempt.js';
-import { ATTEMPT_RECORD_VERSION } from '../../../shared/attempt.js';
+import { ATTEMPT_RECORD_VERSION, LOCAL_OBSERVATION_PREFIX } from '../../../shared/attempt.js';
 import { createDefaultDraft, ROBOT_CATALOG } from '../../../shared/robot.js';
 import { createClosedAttemptRecordFixture } from '../../../shared/attempt.fixture.js';
 import {
@@ -551,7 +551,7 @@ describe('Dynamo attempt admission conditions', () => {
             {
               role: 'user',
               content: [
-                { text: `Observación local presente:\n${JSON.stringify(observe(before, LEVEL))}` },
+                { text: `${LOCAL_OBSERVATION_PREFIX}${JSON.stringify(observe(before, LEVEL))}` },
               ],
             },
           ],

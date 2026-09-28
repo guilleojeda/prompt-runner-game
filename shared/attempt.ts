@@ -11,6 +11,9 @@ import type { ModelKey } from './models.js';
 /** Version of the durable attempt record, independent of game rules versions. */
 export const ATTEMPT_RECORD_VERSION = 4 as const;
 
+/** Prefix used for the local observation message in the effective model request. */
+export const LOCAL_OBSERVATION_PREFIX = 'Observación local presente:\n' as const;
+
 export type AttemptStatus =
   'pending' | 'running' | 'victory' | 'defeat' | 'incomplete' | 'cancelled' | 'error';
 
@@ -180,7 +183,6 @@ export interface DecisionAvailableAction {
   readonly label: string;
   /** Omitted when the provider request omitted the description. */
   readonly description?: string;
-  readonly skillId?: RobotSkillId;
 }
 
 export type DecisionChoice =
@@ -205,8 +207,6 @@ export type DecisionResult =
       readonly beforeSupport: number;
       readonly afterSupport: number;
       readonly turnsUsed: number;
-      readonly status?: string;
-      readonly reason?: string;
     }
   | {
       readonly kind: 'no-action';

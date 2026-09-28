@@ -21,6 +21,7 @@ import {
   readModelProfile,
   type ModelProfile,
 } from '../../../shared/models.js';
+import { LOCAL_OBSERVATION_PREFIX } from '../../../shared/attempt.js';
 import { usageFromBedrockResponseBytes, type ProviderUsage } from './usage.js';
 
 export const INFERENCE_PROTOCOL_VERSION = 1 as const;
@@ -590,7 +591,7 @@ const systemPrompt = (instructions: string): string =>
   ].join('\n');
 
 const observationMessage = (observation: JSONValue): string =>
-  `Observación local presente:\n${JSON.stringify(observation)}`;
+  `${LOCAL_OBSERVATION_PREFIX}${JSON.stringify(observation)}`;
 
 const receiptUsage = (receipt: TransportReceipt | null): ProviderUsage =>
   usageFromBedrockResponseBytes(receipt?.bytes ?? null, 'separate');

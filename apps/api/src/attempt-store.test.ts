@@ -9,6 +9,7 @@ import {
   type NormalizedAction,
 } from '../../../shared/game';
 import { createDefaultDraft, type DraftSnapshot } from '../../../shared/robot';
+import { LOCAL_OBSERVATION_PREFIX } from '../../../shared/attempt';
 import { createClosedAttemptRecordFixture } from '../../../shared/attempt.fixture';
 import { DEFAULT_ATTEMPT_CONFIG, readCurrentLevel } from '../../../shared/server/attempt';
 import type { BodyStore, CallRecord, PersistedAttempt } from '../../../shared/server/attempt';
@@ -62,7 +63,7 @@ const decisionRequest = (snapshot: GameSnapshot): Uint8Array =>
           role: 'user',
           content: [
             {
-              text: `Observación local presente:\n${JSON.stringify(observe(snapshot, LEVEL))}`,
+              text: `${LOCAL_OBSERVATION_PREFIX}${JSON.stringify(observe(snapshot, LEVEL))}`,
             },
           ],
         },
@@ -1321,7 +1322,6 @@ describe('attempt lifecycle store', () => {
           opaqueId: 'tool_1',
           label: 'Avanzar',
           description: 'Descripción literal de prueba',
-          skillId: 'advance',
         },
       ],
       choice: {
@@ -1339,7 +1339,7 @@ describe('attempt lifecycle store', () => {
       },
     });
     const serialized = JSON.stringify(detail);
-    expect(serialized).not.toContain('Observación local presente');
+    expect(serialized).not.toContain(LOCAL_OBSERVATION_PREFIX);
     expect(serialized).not.toContain('toolConfig');
     expect(serialized).not.toContain('responseKey');
   });

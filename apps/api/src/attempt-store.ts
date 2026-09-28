@@ -36,6 +36,7 @@ import {
 import { usageFromBedrockResponseBytes } from '../../runner/src/usage.js';
 import {
   ATTEMPT_RECORD_VERSION,
+  LOCAL_OBSERVATION_PREFIX,
   type AnimationPreference,
   type DecisionAvailableAction,
   type DecisionChoice,
@@ -459,7 +460,6 @@ const humanActionFor = (skill: AttemptSkill): DecisionAvailableAction | undefine
     ? {
         opaqueId: skill.opaqueId,
         label: catalog.name,
-        skillId: catalog.id,
       }
     : undefined;
 };
@@ -495,11 +495,10 @@ const projectDecisionRequest = (
         (entry): entry is Record<string, unknown> =>
           isRecord(entry) && typeof entry.text === 'string',
       );
-      const prefix = 'Observación local presente:\n';
       const text = typeof textBlock?.text === 'string' ? textBlock.text : undefined;
-      if (text?.startsWith(prefix)) {
+      if (text?.startsWith(LOCAL_OBSERVATION_PREFIX)) {
         try {
-          observation = projectObservation(JSON.parse(text.slice(prefix.length)));
+          observation = projectObservation(JSON.parse(text.slice(LOCAL_OBSERVATION_PREFIX.length)));
         } catch {
           observation = null;
         }
@@ -796,15 +795,6 @@ const decisionDetailFor = async (
           beforeSupport: group.before.support,
           afterSupport: group.after.support,
           turnsUsed: group.after.turnsUsed,
-          ...(group.after.status !== 'running' ? { status: group.after.status } : {}),
-          ...(group.after.status === 'victory'
-            ? { reason: 'exit_reached' }
-            : group.after.status === 'incomplete'
-              ? { reason: 'turn_limit_reached' }
-              : isRecord(group.action.resolution) &&
-                  typeof group.action.resolution.reason === 'string'
-                ? { reason: group.action.resolution.reason }
-                : {}),
         };
       })()
     : {
