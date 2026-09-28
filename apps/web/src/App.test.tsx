@@ -99,6 +99,8 @@ function emptyAttemptApi(): AttemptApi {
         version: expectedVersion + 1,
       })),
     getReplay: vi.fn(),
+    getDecisionIndex: vi.fn(),
+    getDecision: vi.fn(),
     completePresentation: vi.fn(),
     getQuota: vi.fn().mockResolvedValue({
       day: '2026-09-21',

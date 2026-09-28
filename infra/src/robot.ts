@@ -143,6 +143,7 @@ export function createRobotResources(scope: Construct, props: RobotResourcesProp
     { path: '/attempts/{attemptId}/start', methods: [apigatewayv2.HttpMethod.POST] },
     { path: '/attempts/{attemptId}/cancel', methods: [apigatewayv2.HttpMethod.POST] },
     { path: '/attempts/{attemptId}/replay', methods: [apigatewayv2.HttpMethod.GET] },
+    { path: '/attempts/{attemptId}/decisions', methods: [apigatewayv2.HttpMethod.GET] },
     {
       path: '/attempts/{attemptId}/presentation-complete',
       methods: [apigatewayv2.HttpMethod.POST],

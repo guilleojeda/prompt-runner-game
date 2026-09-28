@@ -13,7 +13,13 @@ import {
 import { LEVEL } from '../../../shared/game.js';
 import type { ReplayRecordView } from '../../../shared/attempt.js';
 import type { AuthSession } from './auth.js';
-import { AttemptApiFailure, type AttemptApi, type AttemptSummary } from './attempt-api.js';
+import {
+  AttemptApiFailure,
+  type AttemptApi,
+  type AttemptSummary,
+  type DecisionDetail,
+  type DecisionIndex,
+} from './attempt-api.js';
 import { AttemptWorkspace, type AttemptWorkspaceHandle } from './AttemptWorkspace.js';
 import { RobotEditor, type RobotEditorHandle } from './RobotEditor.js';
 import type { DraftApi } from './draft-api.js';
@@ -156,6 +162,8 @@ function api(overrides: Partial<AttemptApi> = {}): AttemptApi {
         version: expectedVersion + 1,
       })),
     getReplay: vi.fn(),
+    getDecisionIndex: vi.fn(),
+    getDecision: vi.fn(),
     completePresentation: vi.fn().mockImplementation(async (id: string) => ({
       ...summary('victory'),
       id,
@@ -184,6 +192,191 @@ afterEach(() => {
 });
 
 describe('AttemptWorkspace', () => {
+  it('opens decision inspection from history and from the visible result', async () => {
+    const terminal = {
+      ...summary('victory'),
+      turnsUsed: 1,
+      animationEnabled: false,
+    };
+    const decisionIndex: DecisionIndex = {
+      attemptId: terminal.id,
+      levelId: LEVEL.id,
+      decisions: [{ number: 1, decisionId: 'decision-1', originSupport: 0, hasAction: true }],
+    };
+    const decisionDetail: DecisionDetail = {
+      attemptId: terminal.id,
+      levelId: LEVEL.id,
+      item: decisionIndex.decisions[0]!,
+      observation: null,
+      availableActions: null,
+      choice: { state: 'unknown' },
+      result: {
+        kind: 'action',
+        action: { kind: 'wait' },
+        resolution: {},
+        beforeSupport: 0,
+        afterSupport: 0,
+        turnsUsed: 1,
+      },
+    };
+    const getDecisionIndex = vi.fn().mockResolvedValue(decisionIndex);
+    const getDecision = vi.fn().mockResolvedValue(decisionDetail);
+    const attemptApi = api({
+      listAttempts: vi.fn().mockResolvedValue({ attempts: [terminal] }),
+      getAttempt: vi.fn().mockResolvedValue(terminal),
+      getAnimationPreference: vi.fn().mockResolvedValue({ animationEnabled: false, version: 0 }),
+      getDecisionIndex,
+      getDecision,
+    });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+
+    const history = await screen.findByRole('heading', { name: 'Historial' });
+    fireEvent.click(
+      within(history.closest('section') as HTMLElement).getByRole('button', {
+        name: 'Inspeccionar decisiones',
+      }),
+    );
+    expect(await screen.findByRole('heading', { name: 'Inspeccionar decisiones' })).toBeTruthy();
+    await waitFor(() =>
+      expect(getDecisionIndex).toHaveBeenCalledWith(terminal.id, expect.any(AbortSignal)),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Cerrar inspección' }));
+    fireEvent.click(
+      within(history.closest('section') as HTMLElement).getByRole('button', {
+        name: 'Ver resultado',
+      }),
+    );
+    expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
+    fireEvent.click(
+      within(
+        screen.getByRole('heading', { name: 'Victoria' }).closest('section') as HTMLElement,
+      ).getByRole('button', { name: 'Inspeccionar decisiones' }),
+    );
+    expect(await screen.findByRole('heading', { name: 'Observación' })).toBeTruthy();
+    expect(getDecision).toHaveBeenCalledWith(terminal.id, 1, expect.any(AbortSignal));
+  });
+
+  it('keeps inspection available for an incomplete terminal record and hides it after auth loss', async () => {
+    const incomplete = {
+      ...summary('victory'),
+      turnsUsed: 1,
+      animationEnabled: false,
+      recordComplete: false,
+    };
+    const getDecisionIndex = vi
+      .fn()
+      .mockRejectedValueOnce(new AttemptApiFailure('server', 'El registro está incompleto.', 500))
+      .mockRejectedValueOnce(new AttemptApiFailure('authentication', 'La sesión venció.', 401));
+    const onAuthRequired = vi.fn();
+    const attemptApi = api({
+      listAttempts: vi.fn().mockResolvedValue({ attempts: [incomplete] }),
+      getAttempt: vi.fn().mockResolvedValue(incomplete),
+      getAnimationPreference: vi.fn().mockResolvedValue({ animationEnabled: false, version: 0 }),
+      getDecisionIndex,
+    });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    const view = render(
+      <AttemptWorkspace
+        api={attemptApi}
+        editor={editor}
+        session={session()}
+        authPaused={false}
+        onAuthRequired={onAuthRequired}
+      />,
+    );
+
+    const history = await screen.findByRole('heading', { name: 'Historial' });
+    fireEvent.click(
+      within(history.closest('section') as HTMLElement).getByRole('button', {
+        name: 'Inspeccionar decisiones',
+      }),
+    );
+    expect(await screen.findByRole('heading', { name: 'Inspeccionar decisiones' })).toBeTruthy();
+    await screen.findByRole('alert');
+    expect(onAuthRequired).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Cerrar inspección' }));
+
+    fireEvent.click(
+      within(history.closest('section') as HTMLElement).getByRole('button', {
+        name: 'Ver resultado',
+      }),
+    );
+    expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
+    fireEvent.click(
+      within(
+        screen.getByRole('heading', { name: 'Victoria' }).closest('section') as HTMLElement,
+      ).getByRole('button', { name: 'Inspeccionar decisiones' }),
+    );
+    await waitFor(() => expect(onAuthRequired).toHaveBeenCalledOnce());
+    expect(screen.queryByRole('heading', { name: 'Inspeccionar decisiones' })).toBeNull();
+
+    view.rerender(
+      <AttemptWorkspace
+        api={attemptApi}
+        editor={editor}
+        session={session()}
+        authPaused
+        onAuthRequired={onAuthRequired}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Inspeccionar decisiones' })).toBeNull(),
+    );
+    view.rerender(
+      <AttemptWorkspace
+        api={attemptApi}
+        editor={editor}
+        session={session()}
+        authPaused={false}
+        onAuthRequired={onAuthRequired}
+      />,
+    );
+    expect(screen.queryByRole('heading', { name: 'Inspeccionar decisiones' })).toBeNull();
+  });
+
+  it('closes the inspector before starting a new presentation', async () => {
+    const terminal = { ...summary('victory'), turnsUsed: 1, animationEnabled: false };
+    const running = { ...summary('running'), id: 'attempt-2', animationEnabled: false };
+    const createAttempt = vi.fn().mockResolvedValue({ attempt: running, dispatchConfirmed: true });
+    const attemptApi = api({
+      listAttempts: vi.fn().mockResolvedValue({ attempts: [terminal] }),
+      getAttempt: vi.fn().mockResolvedValue(terminal),
+      createAttempt,
+      getDecisionIndex: vi.fn().mockResolvedValue({
+        attemptId: terminal.id,
+        levelId: LEVEL.id,
+        decisions: [],
+      }),
+    });
+    const editor = {
+      current: {
+        captureSnapshot: vi.fn().mockResolvedValue({ version: 1, draft: createDefaultDraft() }),
+      },
+    } as unknown as { current: RobotEditorHandle | null };
+    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
+    render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+
+    const history = await screen.findByRole('heading', { name: 'Historial' });
+    fireEvent.click(
+      within(history.closest('section') as HTMLElement).getByRole('button', {
+        name: 'Ver resultado',
+      }),
+    );
+    expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
+    fireEvent.click(
+      within(
+        screen.getByRole('heading', { name: 'Victoria' }).closest('section') as HTMLElement,
+      ).getByRole('button', { name: 'Inspeccionar decisiones' }),
+    );
+    expect(await screen.findByRole('heading', { name: 'Inspeccionar decisiones' })).toBeTruthy();
+
+    act(() => (ref.current as AttemptWorkspaceHandle).start());
+    await waitFor(() => expect(createAttempt).toHaveBeenCalledOnce());
+    expect(screen.queryByRole('heading', { name: 'Inspeccionar decisiones' })).toBeNull();
+    expect(await screen.findByRole('button', { name: 'Cancelar' })).toBeTruthy();
+  });
+
   it('persists the visible animation choice and freezes that value for the new attempt', async () => {
     let finishPreferenceSave!: (value: { animationEnabled: boolean; version: number }) => void;
     const putAnimationPreference = vi.fn(
@@ -796,6 +989,7 @@ describe('AttemptWorkspace', () => {
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
     await screen.findByText('Historial');
+    expect(screen.queryByRole('button', { name: 'Inspeccionar decisiones' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Ver resultado' }));
     expect(await screen.findByRole('button', { name: 'Completar reproducción' })).toBeTruthy();
     expect(getReplay).toHaveBeenCalledWith(pending.id);

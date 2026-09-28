@@ -1,6 +1,6 @@
 # Persistencia, historial y cuota
 
-**Borradores, registros y reproducción del nivel principal con llave y puerta.** La API admite intentos, aplica idempotencia y cuota y expone estado, historial y vista de reproducción propios. El ejecutor conserva snapshots y acciones en DynamoDB y bodies en S3 privado. El [contrato lógico del registro](registro-de-ejecucion.md) describe su forma vigente. El diagnóstico y el ranking pertenecen a fases posteriores. Complementa [ejecución](ejecucion.md) y respeta los requisitos de [intentos](../intent/intentos.md), [consumo](../intent/consumo-y-puntaje.md) y [plataforma](../intent/plataforma.md).
+**Borradores, registros, reproducción e inspección del nivel principal con llave y puerta.** La API admite intentos, aplica idempotencia y cuota y expone estado, historial, replay e inspección de decisiones propios. El ejecutor conserva snapshots y acciones en DynamoDB y bodies en S3 privado. El [contrato lógico del registro](registro-de-ejecucion.md) describe su forma vigente. El ranking pertenece a una fase posterior. Complementa [ejecución](ejecucion.md) y respeta los requisitos de [intentos](../intent/intentos.md), [consumo](../intent/consumo-y-puntaje.md) y [plataforma](../intent/plataforma.md).
 
 ## Borrador disponible
 
@@ -29,6 +29,7 @@ La API autenticada expone estas rutas actuales, todas con `no-store` y pertenenc
 | `POST /attempts/{id}/start`   | Reenvía sólo el despacho de un pendiente válido dentro de su plazo.                                                                                                   |
 | `POST /attempts/{id}/cancel`  | Cierra un pendiente o marca la cancelación de un intento en curso.                                                                                                    |
 | `GET /attempts/{id}/replay`   | Proyecta el nivel periódico vigente, estados, acciones y cierre de un intento propio cerrado y completo; no expone auditoría ni bodies.                                 |
+| `GET /attempts/{id}/decisions` | Para un intento propio terminal, devuelve índice de decisiones por orden y casilla de origen; `?decision=<n>` devuelve sólo su observación local, herramientas enviadas, elección y resultado. No entrega bodies ni claves S3. |
 | `POST /attempts/{id}/presentation-complete` | Marca idempotentemente como terminada la presentación de un intento propio terminal; no cambia juego, cuota ni uso.                               |
 | `GET/PUT /animation-preference` | Lee o guarda la preferencia de Animación por usuario, con versión condicional para evitar sobreescrituras entre pestañas.                                               |
 | `GET /quota`                  | Devuelve día argentino, uso, límite, restante y próximo reinicio.                                                                                                     |
@@ -37,7 +38,7 @@ La tabla compartida mantiene el borrador y los intentos mediante claves explíci
 
 ## DynamoDB y S3
 
-El juego usa **DynamoDB on-demand para datos estructurados y S3 privado para conservar completos los requests y responses de inferencia**. No se necesita una base relacional: los accesos actuales son configuración, preferencia de Animación, admisión, cuota, intento por identificador, acciones/estados ordenados e historial propio. No hay endpoint público de bodies, diagnóstico detallado, ranking global ni índice adicional.
+El juego usa **DynamoDB on-demand para datos estructurados y S3 privado para conservar completos los requests y responses de inferencia**. No se necesita una base relacional: los accesos actuales son configuración, preferencia de Animación, admisión, cuota, intento por identificador, acciones/estados ordenados, historial e inspección propios. No hay endpoint de bodies, ranking global ni índice adicional.
 
 | Dato                                 | Autoridad y representación                                                                                                                                                                               |
 | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -59,7 +60,7 @@ Los datos del contrato vigente no tienen TTL ni expiración automática mientras
 
 Cada intento guarda eventos, llamadas, snapshots y métricas completos con ambos valores de Animación. El replay lee esos mismos datos sin cambiar su autoridad. El bloqueo del editor en la pantalla no sustituye el control de versión del borrador ni la idempotencia y cuota del servidor.
 
-El [contrato de registro](registro-de-ejecucion.md) conserva un estado inicial y otro después de cada acción, con referencias encadenadas y resultado explícito. El store de servidor conserva snapshots y llamadas; la vista pública de replay sólo expone la proyección lógica necesaria después de comprobar pertenencia y cierre. Los bodies y el diagnóstico detallado siguen privados. La [marca de presentación](animacion.md#integración-con-probar-y-el-resultado) no guarda progreso por frame.
+El [contrato de registro](registro-de-ejecucion.md) conserva un estado inicial y otro después de cada acción, con referencias encadenadas y resultado explícito. El store de servidor conserva snapshots y llamadas; la vista de replay sólo expone la proyección lógica necesaria después de comprobar pertenencia y cierre. La inspección lee el request efectivo de una decisión propia y proyecta sólo la información local acordada, después de verificar su hash. Los bodies completos y el uso por llamada siguen privados. La [marca de presentación](animacion.md#integración-con-probar-y-el-resultado) no guarda progreso por frame.
 
 ## Tamaño y separación de cuerpos
 

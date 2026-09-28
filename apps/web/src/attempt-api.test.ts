@@ -341,4 +341,118 @@ describe('AttemptApiClient', () => {
 
     await expect(client.getReplay(source.id)).rejects.toMatchObject({ code: 'server' });
   });
+
+  it('loads the decision index and detail without exposing an audit body', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            attemptId: summary.id,
+            levelId: LEVEL.id,
+            decisions: [
+              { number: 1, decisionId: 'decision-1', originSupport: 2, hasAction: true },
+              { number: 2, decisionId: 'decision-2', originSupport: 2, hasAction: false },
+            ],
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            attemptId: summary.id,
+            levelId: LEVEL.id,
+            item: { number: 1, decisionId: 'decision-1', originSupport: 2, hasAction: true },
+            observation: {
+              facing: 'right',
+              here: { objects: ['recompensa-1'] },
+              left: { kind: 'segment', terrain: 'ground' },
+              right: { kind: 'segment', terrain: 'pit' },
+            },
+            availableActions: [
+              { opaqueId: 'tool_1', label: 'Avanzar', description: 'Avanza un tramo.' },
+              { opaqueId: 'tool_6', label: 'Esperar', description: '' },
+            ],
+            choice: {
+              state: 'selected',
+              opaqueId: 'tool_1',
+              action: { kind: 'advance' },
+              parameters: {},
+            },
+            result: {
+              kind: 'action',
+              action: { kind: 'advance' },
+              resolution: { outcome: 'moved', reason: 'moved' },
+              beforeSupport: 2,
+              afterSupport: 3,
+              turnsUsed: 1,
+            },
+          }),
+          { status: 200 },
+        ),
+      );
+    const client = new AttemptApiClient(config, { tokenProvider: () => 'token', fetch: fetchImpl });
+
+    await expect(client.getDecisionIndex(summary.id)).resolves.toEqual({
+      attemptId: summary.id,
+      levelId: LEVEL.id,
+      decisions: [
+        { number: 1, decisionId: 'decision-1', originSupport: 2, hasAction: true },
+        { number: 2, decisionId: 'decision-2', originSupport: 2, hasAction: false },
+      ],
+    });
+    await expect(client.getDecision(summary.id, 1)).resolves.toMatchObject({
+      item: { number: 1, originSupport: 2 },
+      observation: { facing: 'right', here: { objects: ['recompensa-1'] } },
+      availableActions: [
+        { opaqueId: 'tool_1', label: 'Avanzar', description: 'Avanza un tramo.' },
+        { opaqueId: 'tool_6', description: '' },
+      ],
+      choice: { state: 'selected', opaqueId: 'tool_1' },
+      result: { kind: 'action', beforeSupport: 2, afterSupport: 3, turnsUsed: 1 },
+    });
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe(
+      `https://api.example.test/attempts/${summary.id}/decisions`,
+    );
+    expect(fetchImpl.mock.calls[1]?.[0]).toBe(
+      `https://api.example.test/attempts/${summary.id}/decisions?decision=1`,
+    );
+  });
+
+  it('rejects an index that is not chronological', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          attemptId: summary.id,
+          levelId: LEVEL.id,
+          decisions: [{ number: 2, decisionId: 'decision-1', originSupport: 1, hasAction: true }],
+        }),
+        { status: 200 },
+      ),
+    );
+    const client = new AttemptApiClient(config, { tokenProvider: () => 'token', fetch: fetchImpl });
+
+    await expect(client.getDecisionIndex(summary.id)).rejects.toMatchObject({ code: 'server' });
+  });
+
+  it('rejects an available action without the required human label', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          attemptId: summary.id,
+          levelId: LEVEL.id,
+          item: { number: 1, decisionId: 'decision-1', originSupport: 0, hasAction: false },
+          observation: null,
+          availableActions: [{ opaqueId: 'tool_1', humanLabel: 'Avanzar' }],
+          choice: null,
+          result: { kind: 'no-action', turnsUsed: 0, status: 'error' },
+        }),
+        { status: 200 },
+      ),
+    );
+    const client = new AttemptApiClient(config, { tokenProvider: () => 'token', fetch: fetchImpl });
+
+    await expect(client.getDecision(summary.id, 1)).rejects.toMatchObject({ code: 'server' });
+  });
 });

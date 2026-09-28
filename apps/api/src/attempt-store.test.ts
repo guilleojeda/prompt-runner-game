@@ -1,16 +1,18 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { DynamoDBClient, TransactionCanceledException } from '@aws-sdk/client-dynamodb';
 import { marshall } from '@aws-sdk/util-dynamodb';
 import {
   LEVEL,
+  observe,
   resolveAction,
   type GameSnapshot,
   type NormalizedAction,
 } from '../../../shared/game';
 import { createDefaultDraft, type DraftSnapshot } from '../../../shared/robot';
+import { LOCAL_OBSERVATION_PREFIX } from '../../../shared/attempt';
 import { createClosedAttemptRecordFixture } from '../../../shared/attempt.fixture';
 import { DEFAULT_ATTEMPT_CONFIG, readCurrentLevel } from '../../../shared/server/attempt';
-import type { CallRecord, PersistedAttempt } from '../../../shared/server/attempt';
+import type { BodyStore, CallRecord, PersistedAttempt } from '../../../shared/server/attempt';
 import {
   AttemptNotTerminalError,
   DynamoAttemptStore,
@@ -51,6 +53,110 @@ const reasonOfResolvedAction = (resolved: ReturnType<typeof resolveAction>): str
   if (resolved.after.status === 'defeat' && 'reason' in resolved.resolution)
     return resolved.resolution.reason;
   return undefined;
+};
+
+const decisionRequest = (snapshot: GameSnapshot): Uint8Array =>
+  new TextEncoder().encode(
+    JSON.stringify({
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              text: `${LOCAL_OBSERVATION_PREFIX}${JSON.stringify(observe(snapshot, LEVEL))}`,
+            },
+          ],
+        },
+      ],
+      toolConfig: {
+        tools: [
+          {
+            toolSpec: {
+              name: 'tool_1',
+              description: 'Descripción literal de prueba',
+              inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+            },
+          },
+        ],
+      },
+    }),
+  );
+
+const publishInspectableDecision = async (
+  store: MemoryAttemptStore,
+  bodyStore: BodyStore,
+  owner = 'a',
+  requestKeyOverride?: string,
+  rawActionOverride?: unknown,
+) => {
+  const draft = savedDraft().draft;
+  const { attempt } = await store.admit({
+    owner,
+    requestKey: `inspect-${owner}`,
+    expectedVersion: 1,
+    draft,
+    animationEnabled: false,
+  });
+  await store.claim(owner, attempt.id, 'executor');
+  const before = (await store.getSnapshot(owner, attempt.id)) as GameSnapshot;
+  const requestKey =
+    requestKeyOverride ??
+    `attempt/${attempt.id}/decision/${attempt.id}-decision-1/call/1/request.json`;
+  const responseKey = `attempt/${attempt.id}/decision/${attempt.id}-decision-1/call/1/response.json`;
+  const request = await bodyStore.put(requestKey, decisionRequest(before));
+  const started: CallRecord = {
+    attemptId: attempt.id,
+    seq: 1,
+    decisionId: `${attempt.id}-decision-1`,
+    ...modelIdentity,
+    requestKey,
+    responseKey,
+    requestSha256: request.sha256,
+    requestBytes: request.bytes,
+    status: 'started',
+    usage: {
+      inputTokens: null,
+      outputTokens: null,
+      reasoningTokens: null,
+      gameTokens: null,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+    },
+    rawAction: rawActionOverride ?? { name: 'tool_1', input: {}, toolUseId: 'tool-use-1' },
+    createdAt: '2026-09-21T15:00:01.000Z',
+    updatedAt: '2026-09-21T15:00:01.000Z',
+  };
+  await store.beginCall(owner, attempt.id, 'executor', started);
+  await store.finishCall(owner, attempt.id, 'executor', {
+    ...started,
+    status: 'received',
+    responseSha256: 'b'.repeat(64),
+    responseBytes: 1,
+    usage: {
+      inputTokens: 1,
+      outputTokens: 1,
+      reasoningTokens: null,
+      gameTokens: 1,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    },
+  });
+  const resolved = resolveAction(before, { kind: 'advance' }, LEVEL);
+  await store.publishAction(owner, attempt.id, 'executor', {
+    seq: 1,
+    decisionId: started.decisionId,
+    action: resolved.action,
+    resolution: resolved.resolution,
+    beforeStateId: resolved.before.id,
+    afterStateId: resolved.after.id,
+    beforeSnapshot: resolved.before,
+    afterSnapshot: resolved.after,
+    progress: resolved.after.maxSupportReached / LEVEL.segments.length,
+    finalSupport: resolved.after.support,
+    turnsUsed: resolved.after.turnsUsed,
+  });
+  await store.close(owner, attempt.id, 'error', 'test_terminal', 'executor');
+  return attempt.id;
 };
 
 const dynamoHeaderFor = (record: PersistedAttempt): Record<string, unknown> => {
@@ -1192,5 +1298,328 @@ describe('attempt lifecycle store', () => {
     expect(update?.ExpressionAttributeNames).not.toHaveProperty('#requestId');
     expect(update?.ExpressionAttributeNames).not.toHaveProperty('#responseStatus');
     expect(update?.ExpressionAttributeNames).not.toHaveProperty('#errorCode');
+  });
+
+  it('groups calls by decision and projects only the effective local request', async () => {
+    const bodies = new MemoryBodyStore();
+    const store = new MemoryAttemptStore({ draft: savedDraft(), bodyStore: bodies });
+    const attemptId = await publishInspectableDecision(store, bodies);
+
+    await expect(store.getDecisionIndex('a', attemptId)).resolves.toEqual({
+      attemptId,
+      levelId: LEVEL.id,
+      decisions: [
+        { number: 1, decisionId: `${attemptId}-decision-1`, originSupport: 0, hasAction: true },
+      ],
+    });
+    const detail = await store.getDecision('a', attemptId, 1);
+    expect(detail).toMatchObject({
+      attemptId,
+      item: { number: 1, originSupport: 0, hasAction: true },
+      observation: { facing: 'right', here: { objects: [] } },
+      availableActions: [
+        {
+          opaqueId: 'tool_1',
+          label: 'Avanzar',
+          description: 'Descripción literal de prueba',
+        },
+      ],
+      choice: {
+        state: 'selected',
+        opaqueId: 'tool_1',
+        action: { kind: 'advance' },
+        parameters: {},
+      },
+      result: {
+        kind: 'action',
+        action: { kind: 'advance' },
+        beforeSupport: 0,
+        afterSupport: 1,
+        turnsUsed: 1,
+      },
+    });
+    const serialized = JSON.stringify(detail);
+    expect(serialized).not.toContain(LOCAL_OBSERVATION_PREFIX);
+    expect(serialized).not.toContain('toolConfig');
+    expect(serialized).not.toContain('responseKey');
+  });
+
+  it('returns confirmed action data while marking an absent or tampered request unavailable', async () => {
+    const tampered = new TextEncoder().encode('{"tampered":true}');
+    const bodies: BodyStore = {
+      put: vi.fn(async (_key, body) => ({ sha256: 'a'.repeat(64), bytes: body.byteLength })),
+      get: vi.fn(async () => tampered),
+    };
+    const store = new MemoryAttemptStore({ draft: savedDraft(), bodyStore: bodies });
+    const attemptId = await publishInspectableDecision(store, bodies);
+    const detail = await store.getDecision('a', attemptId, 1);
+    expect(detail?.observation).toBeNull();
+    expect(detail?.availableActions).toBeNull();
+    expect(detail?.choice).toMatchObject({ state: 'selected', opaqueId: 'tool_1' });
+    expect(detail?.result).toMatchObject({ kind: 'action', afterSupport: 1 });
+  });
+
+  it('binds request reads to the attempt decision call key before touching the body store', async () => {
+    const bodies = new MemoryBodyStore();
+    const getBody = vi.spyOn(bodies, 'get');
+    const store = new MemoryAttemptStore({ draft: savedDraft(), bodyStore: bodies });
+    const attemptId = await publishInspectableDecision(store, bodies, 'a', 'foreign/request.json');
+
+    const detail = await store.getDecision('a', attemptId, 1);
+    expect(detail?.observation).toBeNull();
+    expect(detail?.availableActions).toBeNull();
+    expect(detail?.result).toMatchObject({ kind: 'action', afterSupport: 1 });
+    expect(getBody).not.toHaveBeenCalled();
+  });
+
+  it('rejects a published action with no matching producer call before reading any request', async () => {
+    const bodies = new MemoryBodyStore();
+    const getBody = vi.spyOn(bodies, 'get');
+    const store = new MemoryAttemptStore({ draft: savedDraft(), bodyStore: bodies });
+    const attemptId = await publishInspectableDecision(store, bodies, 'a', undefined, {
+      name: 'tool_2',
+      input: {},
+      toolUseId: 'wrong-action',
+    });
+
+    await expect(store.getDecision('a', attemptId, 1)).rejects.toThrow(
+      'no tiene una llamada productora',
+    );
+    expect(getBody).not.toHaveBeenCalled();
+  });
+
+  it('groups a technical retry with the later action under one decision number', async () => {
+    const bodies = new MemoryBodyStore();
+    const store = new MemoryAttemptStore({ draft: savedDraft(), bodyStore: bodies });
+    const { attempt } = await store.admit({
+      owner: 'a',
+      requestKey: 'grouped-retry',
+      expectedVersion: 1,
+      draft: savedDraft().draft,
+      animationEnabled: false,
+    });
+    await store.claim('a', attempt.id, 'executor');
+    const before = (await store.getSnapshot('a', attempt.id)) as GameSnapshot;
+    const decisionId = `${attempt.id}-decision-1`;
+    for (const seq of [1, 2]) {
+      const requestKey = `retry/${attempt.id}/${seq}`;
+      const bytes = new Uint8Array([seq]);
+      const request = await bodies.put(requestKey, bytes);
+      const started: CallRecord = {
+        attemptId: attempt.id,
+        seq,
+        decisionId,
+        ...modelIdentity,
+        requestKey,
+        responseKey: `retry-response/${attempt.id}/${seq}`,
+        requestSha256: request.sha256,
+        requestBytes: request.bytes,
+        status: 'started',
+        usage: {
+          inputTokens: null,
+          outputTokens: null,
+          reasoningTokens: null,
+          gameTokens: null,
+          cacheReadTokens: null,
+          cacheWriteTokens: null,
+        },
+        ...(seq === 2 ? { rawAction: { name: 'tool_1', input: {}, toolUseId: 'retry-ok' } } : {}),
+        createdAt: `2026-09-21T15:00:0${seq}.000Z`,
+        updatedAt: `2026-09-21T15:00:0${seq}.000Z`,
+      };
+      await store.beginCall('a', attempt.id, 'executor', started);
+      await store.finishCall('a', attempt.id, 'executor', {
+        ...started,
+        status: seq === 1 ? 'error' : 'received',
+        responseSha256: `${seq}`.repeat(64),
+        responseBytes: 1,
+        usage: {
+          inputTokens: 1,
+          outputTokens: 1,
+          reasoningTokens: null,
+          gameTokens: 1,
+          cacheReadTokens: null,
+          cacheWriteTokens: null,
+        },
+      });
+    }
+    const resolved = resolveAction(before, { kind: 'advance' }, LEVEL);
+    await store.publishAction('a', attempt.id, 'executor', {
+      seq: 1,
+      decisionId,
+      action: resolved.action,
+      resolution: resolved.resolution,
+      beforeStateId: resolved.before.id,
+      afterStateId: resolved.after.id,
+      beforeSnapshot: resolved.before,
+      afterSnapshot: resolved.after,
+      progress: resolved.after.maxSupportReached / LEVEL.segments.length,
+      finalSupport: resolved.after.support,
+      turnsUsed: resolved.after.turnsUsed,
+    });
+    await store.close('a', attempt.id, 'error', 'test_terminal', 'executor');
+
+    await expect(store.getDecisionIndex('a', attempt.id)).resolves.toMatchObject({
+      decisions: [{ number: 1, decisionId, hasAction: true }],
+    });
+    await expect(store.getDecision('a', attempt.id, 1)).resolves.toMatchObject({
+      item: { number: 1, decisionId, hasAction: true },
+      choice: { state: 'selected', opaqueId: 'tool_1' },
+      result: { kind: 'action', afterSupport: 1 },
+    });
+  });
+
+  it('reads the request from the received call whose selection matches the published action', async () => {
+    const bodies = new MemoryBodyStore();
+    const baseDraft = createDefaultDraft();
+    const draft = {
+      ...baseDraft,
+      skills: baseDraft.skills.map((skill) => ({
+        ...skill,
+        enabled: skill.id === 'advance' || skill.id === 'jump',
+      })),
+    };
+    const store = new MemoryAttemptStore({ draft: { version: 1, draft }, bodyStore: bodies });
+    const { attempt } = await store.admit({
+      owner: 'a',
+      requestKey: 'matching-received-call',
+      expectedVersion: 1,
+      draft,
+      animationEnabled: false,
+    });
+    await store.claim('a', attempt.id, 'executor');
+    const before = (await store.getSnapshot('a', attempt.id)) as GameSnapshot;
+    const decisionId = `${attempt.id}-decision-1`;
+    for (const seq of [1, 2]) {
+      const requestKey = `attempt/${attempt.id}/decision/${decisionId}/call/${seq}/request.json`;
+      const request = await bodies.put(
+        requestKey,
+        seq === 1 ? new TextEncoder().encode('{invalid') : decisionRequest(before),
+      );
+      const started: CallRecord = {
+        attemptId: attempt.id,
+        seq,
+        decisionId,
+        ...modelIdentity,
+        requestKey,
+        responseKey: `response/${seq}`,
+        requestSha256: request.sha256,
+        requestBytes: request.bytes,
+        status: 'started',
+        rawAction:
+          seq === 1
+            ? { name: 'tool_3', input: { direction: 'derecha' }, toolUseId: 'jump' }
+            : { name: 'tool_1', input: {}, toolUseId: 'advance' },
+        usage: {
+          inputTokens: null,
+          outputTokens: null,
+          reasoningTokens: null,
+          gameTokens: null,
+          cacheReadTokens: null,
+          cacheWriteTokens: null,
+        },
+        createdAt: `2026-09-21T15:00:0${seq}.000Z`,
+        updatedAt: `2026-09-21T15:00:0${seq}.000Z`,
+      };
+      await store.beginCall('a', attempt.id, 'executor', started);
+      await store.finishCall('a', attempt.id, 'executor', {
+        ...started,
+        status: 'received',
+        responseSha256: `${seq}`.repeat(64),
+        responseBytes: 1,
+        usage: {
+          inputTokens: 1,
+          outputTokens: 1,
+          reasoningTokens: null,
+          gameTokens: 1,
+          cacheReadTokens: null,
+          cacheWriteTokens: null,
+        },
+      });
+    }
+    const resolved = resolveAction(before, { kind: 'advance' }, LEVEL);
+    await store.publishAction('a', attempt.id, 'executor', {
+      seq: 1,
+      decisionId,
+      action: resolved.action,
+      resolution: resolved.resolution,
+      beforeStateId: resolved.before.id,
+      afterStateId: resolved.after.id,
+      beforeSnapshot: resolved.before,
+      afterSnapshot: resolved.after,
+      progress: resolved.after.maxSupportReached / LEVEL.segments.length,
+      finalSupport: resolved.after.support,
+      turnsUsed: resolved.after.turnsUsed,
+    });
+    await store.close('a', attempt.id, 'error', 'test_terminal', 'executor');
+
+    await expect(store.getDecision('a', attempt.id, 1)).resolves.toMatchObject({
+      choice: { state: 'selected', opaqueId: 'tool_1', action: { kind: 'advance' } },
+      availableActions: [{ opaqueId: 'tool_1', label: 'Avanzar' }],
+      result: { kind: 'action', afterSupport: 1 },
+    });
+  });
+
+  it('exposes a terminal no-action decision without inventing a turn or action', async () => {
+    const bodies = new MemoryBodyStore();
+    const store = new MemoryAttemptStore({ draft: savedDraft(), bodyStore: bodies });
+    const { attempt } = await store.admit({
+      owner: 'a',
+      requestKey: 'terminal-no-action-inspection',
+      expectedVersion: 1,
+      draft: savedDraft().draft,
+      animationEnabled: false,
+    });
+    await store.claim('a', attempt.id, 'executor');
+    const call: CallRecord = {
+      attemptId: attempt.id,
+      seq: 1,
+      decisionId: `${attempt.id}-decision-1`,
+      ...modelIdentity,
+      requestKey: `missing/${attempt.id}`,
+      responseKey: `missing-response/${attempt.id}`,
+      requestSha256: 'a'.repeat(64),
+      requestBytes: 1,
+      status: 'invalid',
+      errorCode: 'invalid_response',
+      usage: {
+        inputTokens: null,
+        outputTokens: null,
+        reasoningTokens: null,
+        gameTokens: null,
+        cacheReadTokens: null,
+        cacheWriteTokens: null,
+      },
+      createdAt: '2026-09-21T15:00:01.000Z',
+      updatedAt: '2026-09-21T15:00:02.000Z',
+    };
+    await store.beginCall('a', attempt.id, 'executor', call);
+    await store.finishCall('a', attempt.id, 'executor', {
+      ...call,
+      responseSha256: 'b'.repeat(64),
+      responseBytes: 1,
+    });
+    await store.close('a', attempt.id, 'error', 'invalid_response', 'executor');
+
+    await expect(store.getDecisionIndex('a', attempt.id)).resolves.toMatchObject({
+      decisions: [{ number: 1, originSupport: 0, hasAction: false }],
+    });
+    await expect(store.getDecision('a', attempt.id, 1)).resolves.toMatchObject({
+      observation: null,
+      availableActions: null,
+      choice: { state: 'invalid' },
+      result: { kind: 'no-action', turnsUsed: 0, status: 'error', reason: 'invalid_response' },
+    });
+  });
+
+  it('checks ownership before attempting decision rows or private bodies', async () => {
+    const bodies = new MemoryBodyStore();
+    const getBody = vi.spyOn(bodies, 'get');
+    const store = new MemoryAttemptStore({ draft: savedDraft(), bodyStore: bodies });
+    const attemptId = await publishInspectableDecision(store, bodies);
+
+    await expect(store.getDecisionIndex('other', attemptId)).resolves.toBeUndefined();
+    await expect(store.getDecision('other', attemptId, 1)).resolves.toBeUndefined();
+    expect(getBody).not.toHaveBeenCalled();
   });
 });

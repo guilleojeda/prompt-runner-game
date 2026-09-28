@@ -3,6 +3,14 @@ import type {
   AnimationPreference,
   AttemptStatus,
   AttemptSummary,
+  DecisionAvailableAction,
+  DecisionChoice,
+  DecisionDetail,
+  DecisionIndex,
+  DecisionIndexItem,
+  DecisionObservation,
+  DecisionObservationSide,
+  DecisionResult,
   ReplayRecordView,
 } from '../../../shared/attempt.js';
 import { ATTEMPT_RECORD_VERSION } from '../../../shared/attempt.js';
@@ -17,6 +25,16 @@ import { isModelKey, type ModelKey } from '../../../shared/models.js';
 import type { AuthConfig } from './auth.js';
 
 export type { AttemptStatus, AttemptSummary } from '../../../shared/attempt.js';
+export type {
+  DecisionAvailableAction,
+  DecisionChoice,
+  DecisionDetail,
+  DecisionIndex,
+  DecisionIndexItem,
+  DecisionObservation,
+  DecisionObservationSide,
+  DecisionResult,
+} from '../../../shared/attempt.js';
 
 export interface AttemptsPage {
   readonly attempts: readonly AttemptSummary[];
@@ -56,6 +74,8 @@ export interface AttemptApi {
   startAttempt(id: string, signal?: AbortSignal): Promise<AttemptAdmission>;
   cancelAttempt(id: string, signal?: AbortSignal): Promise<AttemptSummary>;
   getReplay(id: string, signal?: AbortSignal): Promise<ReplayRecordView>;
+  getDecisionIndex(id: string, signal?: AbortSignal): Promise<DecisionIndex>;
+  getDecision(id: string, decisionNumber: number, signal?: AbortSignal): Promise<DecisionDetail>;
   completePresentation(id: string, signal?: AbortSignal): Promise<AttemptSummary>;
   getQuota(signal?: AbortSignal): Promise<QuotaSummary>;
 }
@@ -397,6 +417,208 @@ function parseReplayRecord(value: unknown): ReplayRecordView | null {
   return isReplayRecord(value) ? value : null;
 }
 
+function parseDecisionIndexItem(value: unknown): DecisionIndexItem | null {
+  if (!isRecord(value)) return null;
+  const number = requiredNumber(value, 'number');
+  const decisionId = requiredString(value, 'decisionId');
+  const originSupport = requiredNumber(value, 'originSupport');
+  if (
+    number === null ||
+    !Number.isSafeInteger(number) ||
+    number < 1 ||
+    !decisionId ||
+    originSupport === null ||
+    !Number.isSafeInteger(originSupport) ||
+    originSupport < 0 ||
+    originSupport > LEVEL.segments.length ||
+    typeof value.hasAction !== 'boolean'
+  ) {
+    return null;
+  }
+  return { number, decisionId, originSupport, hasAction: value.hasAction };
+}
+
+function parseDecisionIndex(value: unknown): DecisionIndex | null {
+  if (!isRecord(value) || !Array.isArray(value.decisions)) return null;
+  const attemptId = requiredString(value, 'attemptId');
+  const levelId = requiredString(value, 'levelId');
+  const decisions = value.decisions.map(parseDecisionIndexItem);
+  if (
+    !attemptId ||
+    !levelId ||
+    levelId !== LEVEL.id ||
+    decisions.some((item): item is null => item === null)
+  ) {
+    return null;
+  }
+  const parsed = decisions as DecisionIndexItem[];
+  if (
+    parsed.some((item, index) => item.number !== index + 1) ||
+    new Set(parsed.map((item) => item.decisionId)).size !== parsed.length
+  ) {
+    return null;
+  }
+  return { attemptId, levelId, decisions: parsed };
+}
+
+function parseDecisionObservationSide(value: unknown): DecisionObservationSide | null {
+  if (!isRecord(value) || typeof value.kind !== 'string') return null;
+  if (value.kind === 'boundary') return { kind: 'boundary' };
+  if (value.kind === 'segment') {
+    return typeof value.terrain === 'string' ? { kind: 'segment', terrain: value.terrain } : null;
+  }
+  if (value.kind === 'door') {
+    return (value.state === 'locked' || value.state === 'open') &&
+      typeof value.requiredObjectId === 'string'
+      ? { kind: 'door', state: value.state, requiredObjectId: value.requiredObjectId }
+      : null;
+  }
+  return null;
+}
+
+function parseDecisionObservation(value: unknown): DecisionObservation | null {
+  if (!isRecord(value) || (value.facing !== 'left' && value.facing !== 'right')) return null;
+  if (!isRecord(value.here) || !Array.isArray(value.here.objects)) return null;
+  if (!value.here.objects.every((entry) => typeof entry === 'string')) return null;
+  if (value.here.exit !== undefined && typeof value.here.exit !== 'boolean') return null;
+  const left = parseDecisionObservationSide(value.left);
+  const right = parseDecisionObservationSide(value.right);
+  if (!left || !right) return null;
+  return {
+    facing: value.facing,
+    here: {
+      objects: value.here.objects,
+      exit: value.here.exit === true,
+    },
+    left,
+    right,
+  };
+}
+
+function parseDecisionAvailableActions(
+  value: unknown,
+): readonly DecisionAvailableAction[] | null | undefined {
+  if (value === null) return null;
+  if (!Array.isArray(value)) return undefined;
+  const actions = value.map((entry): DecisionAvailableAction | null => {
+    if (!isRecord(entry)) return null;
+    const opaqueId = requiredString(entry, 'opaqueId');
+    const label = requiredString(entry, 'label');
+    if (!opaqueId || !label) return null;
+    if (entry.description !== undefined && typeof entry.description !== 'string') return null;
+    return {
+      opaqueId,
+      label,
+      ...(entry.description === undefined ? {} : { description: entry.description }),
+    };
+  });
+  if (actions.some((action): action is null => action === null)) return undefined;
+  return actions as DecisionAvailableAction[];
+}
+
+function parseDecisionChoice(value: unknown): DecisionChoice | null | undefined {
+  if (value === null) return null;
+  if (!isRecord(value)) return undefined;
+  if (value.state !== 'selected' && value.state !== 'invalid' && value.state !== 'unknown') {
+    return undefined;
+  }
+  if (value.state === 'selected') {
+    if (
+      typeof value.opaqueId !== 'string' ||
+      !Object.prototype.hasOwnProperty.call(value, 'action') ||
+      !Object.prototype.hasOwnProperty.call(value, 'parameters')
+    ) {
+      return undefined;
+    }
+    return {
+      state: 'selected',
+      opaqueId: value.opaqueId,
+      action: value.action,
+      parameters: value.parameters,
+    };
+  }
+  if (value.state === 'invalid') {
+    if (value.opaqueId !== undefined && typeof value.opaqueId !== 'string') return undefined;
+    if (Object.prototype.hasOwnProperty.call(value, 'action')) return undefined;
+    return {
+      state: 'invalid',
+      ...(typeof value.opaqueId === 'string' ? { opaqueId: value.opaqueId } : {}),
+      ...(Object.prototype.hasOwnProperty.call(value, 'parameters')
+        ? { parameters: value.parameters }
+        : {}),
+    };
+  }
+  return { state: 'unknown' };
+}
+
+function parseDecisionResult(value: unknown): DecisionResult | null {
+  if (!isRecord(value)) return null;
+  const integer = (key: string): number | null => {
+    if (typeof value[key] !== 'number' || !Number.isSafeInteger(value[key])) return null;
+    return value[key];
+  };
+  const beforeSupport = integer('beforeSupport');
+  const afterSupport = integer('afterSupport');
+  const turnsUsed = integer('turnsUsed');
+  if (value.kind === 'action') {
+    if (
+      !Object.prototype.hasOwnProperty.call(value, 'action') ||
+      !Object.prototype.hasOwnProperty.call(value, 'resolution') ||
+      beforeSupport === null ||
+      afterSupport === null ||
+      turnsUsed === null ||
+      beforeSupport < 0 ||
+      afterSupport < 0 ||
+      turnsUsed < 0
+    ) {
+      return null;
+    }
+    return {
+      kind: 'action',
+      action: value.action,
+      resolution: value.resolution,
+      beforeSupport,
+      afterSupport,
+      turnsUsed,
+    };
+  }
+  if (value.kind !== 'no-action' || turnsUsed === null || turnsUsed < 0) return null;
+  if (typeof value.status !== 'string') return null;
+  if (value.reason !== undefined && typeof value.reason !== 'string') return null;
+  return {
+    kind: 'no-action',
+    turnsUsed,
+    status: value.status,
+    ...(typeof value.reason === 'string' ? { reason: value.reason } : {}),
+  };
+}
+
+function parseDecisionDetail(value: unknown): DecisionDetail | null {
+  if (!isRecord(value)) return null;
+  const attemptId = requiredString(value, 'attemptId');
+  const levelId = requiredString(value, 'levelId');
+  const item = parseDecisionIndexItem(value.item);
+  if (!attemptId || !levelId || levelId !== LEVEL.id || !item) return null;
+  const observation =
+    value.observation === null ? null : parseDecisionObservation(value.observation);
+  if (value.observation !== null && !observation) return null;
+  const availableActions = parseDecisionAvailableActions(value.availableActions);
+  if (availableActions === undefined) return null;
+  const choice = parseDecisionChoice(value.choice);
+  if (choice === undefined) return null;
+  const result = parseDecisionResult(value.result);
+  if (!result) return null;
+  return {
+    attemptId,
+    levelId,
+    item,
+    observation,
+    availableActions,
+    choice,
+    result,
+  };
+}
+
 async function readBody(response: Response): Promise<unknown> {
   try {
     return await response.json();
@@ -544,6 +766,32 @@ export class AttemptApiClient implements AttemptApi {
         return parseReplayRecord(value.record);
       },
       'No se pudo cargar el registro para reproducirlo.',
+      signal,
+    );
+  }
+
+  public getDecisionIndex(id: string, signal?: AbortSignal): Promise<DecisionIndex> {
+    return this.request(
+      'GET',
+      `attempts/${encodeURIComponent(id)}/decisions`,
+      undefined,
+      parseDecisionIndex,
+      'No se pudo cargar el índice de decisiones.',
+      signal,
+    );
+  }
+
+  public getDecision(
+    id: string,
+    decisionNumber: number,
+    signal?: AbortSignal,
+  ): Promise<DecisionDetail> {
+    return this.request(
+      'GET',
+      `attempts/${encodeURIComponent(id)}/decisions?decision=${encodeURIComponent(decisionNumber)}`,
+      undefined,
+      parseDecisionDetail,
+      'No se pudo cargar la decisión.',
       signal,
     );
   }

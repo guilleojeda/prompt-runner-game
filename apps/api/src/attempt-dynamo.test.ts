@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   ConditionalCheckFailedException,
   TransactionCanceledException,
@@ -11,6 +12,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createInitialState,
   LEVEL,
+  observe,
   resolveAction,
   type GameSnapshot,
   type NormalizedAction,
@@ -21,8 +23,8 @@ import {
   type BodyStore,
   type CallRecord,
 } from '../../../shared/server/attempt.js';
-import { ATTEMPT_RECORD_VERSION } from '../../../shared/attempt.js';
-import { createDefaultDraft } from '../../../shared/robot.js';
+import { ATTEMPT_RECORD_VERSION, LOCAL_OBSERVATION_PREFIX } from '../../../shared/attempt.js';
+import { createDefaultDraft, ROBOT_CATALOG } from '../../../shared/robot.js';
 import { createClosedAttemptRecordFixture } from '../../../shared/attempt.fixture.js';
 import {
   AdmissionConflictError,
@@ -448,6 +450,301 @@ describe('Dynamo attempt admission conditions', () => {
       collectedObjectIds: [],
       objectPoints: 0,
     });
+  });
+
+  it('projects the decision index from Dynamo call/action/state rows and checks ownership first', async () => {
+    const harness = new DynamoHarness();
+    const record = createClosedAttemptRecordFixture();
+    const { attemptId, actionCount } = seedClosedReplay(harness);
+    const header = harness.read('USER#owner', `ATTEMPT#${attemptId}`);
+    if (!header) throw new Error('test setup did not persist the attempt header');
+    header.calls = actionCount;
+    harness.put(header);
+    for (const action of record.actions) {
+      harness.put({
+        PK: `ATTEMPT#${attemptId}`,
+        SK: `CALL#${String(action.seq).padStart(8, '0')}`,
+        entity: 'call',
+        attemptId,
+        seq: action.seq,
+        decisionId: action.decisionId,
+        requestKey: `attempt/${attemptId}/decision/${action.decisionId}/call/${action.seq}/request.json`,
+        responseKey: `attempt/${attemptId}/decision/${action.decisionId}/call/${action.seq}/response.json`,
+        requestSha256: '0'.repeat(64),
+        requestBytes: 0,
+        status: 'received',
+        usage: {
+          inputTokens: 1,
+          outputTokens: 1,
+          reasoningTokens: null,
+          gameTokens: 1,
+          cacheReadTokens: null,
+          cacheWriteTokens: null,
+        },
+        modelKey: 'claude-sonnet-4.6',
+        modelId: 'global.anthropic.claude-sonnet-4-6',
+        region: 'us-east-1',
+        profileVersion: 'claude-sonnet-4.6-global-v1',
+        rawAction: { name: 'tool_1', input: {}, toolUseId: `tool-use-${action.seq}` },
+        createdAt: '2026-09-21T12:00:00.000Z',
+        updatedAt: '2026-09-21T12:00:00.000Z',
+      });
+    }
+
+    const store = storeFor(harness);
+    const index = await store.getDecisionIndex('owner', attemptId);
+    expect(index?.decisions).toHaveLength(actionCount);
+    expect(index?.decisions[0]).toMatchObject({
+      number: 1,
+      decisionId: 'fixture-decision-1',
+      originSupport: 0,
+      hasAction: true,
+    });
+    expect(index?.decisions.at(-1)).toMatchObject({
+      number: actionCount,
+      originSupport: 9,
+      hasAction: true,
+    });
+
+    harness.send.mockClear();
+    await expect(store.getDecisionIndex('other', attemptId)).resolves.toBeUndefined();
+    expect(
+      harness.send.mock.calls.some(([command]) => command.constructor.name === 'QueryCommand'),
+    ).toBe(false);
+  });
+
+  it('projects local request observations and deterministic outcomes across the closed-door route', async () => {
+    const harness = new DynamoHarness();
+    const record = createClosedAttemptRecordFixture();
+    const { attemptId, actionCount } = seedClosedReplay(harness);
+    const header = harness.read('USER#owner', `ATTEMPT#${attemptId}`);
+    if (!header) throw new Error('test setup did not persist the attempt header');
+    header.calls = actionCount;
+    header.skills = ROBOT_CATALOG.map((entry) => ({
+      id: entry.id,
+      opaqueId: entry.opaqueId,
+      description: '',
+      inputSchema: entry.inputSchema,
+    }));
+    harness.put(header);
+
+    const requestBodies = new Map<string, Uint8Array>();
+    const sha256 = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
+    const bodyStore: BodyStore = {
+      put: async () => {
+        throw new Error('test body store is read-only');
+      },
+      get: async (key) => requestBodies.get(key),
+    };
+    const toolName = new Map(ROBOT_CATALOG.map((entry) => [entry.id, entry.opaqueId]));
+    for (const action of record.actions) {
+      const before = record.snapshots[action.seq - 1];
+      if (!before) throw new Error('test fixture is missing the action origin snapshot');
+      const normalized = action.action;
+      const input =
+        normalized.kind === 'jump' || normalized.kind === 'crouch'
+          ? { direction: normalized.direction === 'left' ? 'izquierda' : 'derecha' }
+          : {};
+      const body = new TextEncoder().encode(
+        JSON.stringify({
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { text: `${LOCAL_OBSERVATION_PREFIX}${JSON.stringify(observe(before, LEVEL))}` },
+              ],
+            },
+          ],
+          toolConfig: {
+            tools: ROBOT_CATALOG.map((entry) => ({
+              toolSpec: {
+                name: entry.opaqueId,
+                ...(entry.id === 'advance' ? { description: 'Descripción literal' } : {}),
+                inputSchema: entry.inputSchema,
+              },
+            })),
+          },
+        }),
+      );
+      const requestKey = `attempt/${attemptId}/decision/${action.decisionId}/call/${action.seq}/request.json`;
+      requestBodies.set(requestKey, body);
+      harness.put({
+        PK: `ATTEMPT#${attemptId}`,
+        SK: `CALL#${String(action.seq).padStart(8, '0')}`,
+        entity: 'call',
+        attemptId,
+        seq: action.seq,
+        decisionId: action.decisionId,
+        requestKey,
+        responseKey: `response/${action.seq}`,
+        requestSha256: sha256(body),
+        requestBytes: body.byteLength,
+        status: 'received',
+        usage: {
+          inputTokens: 1,
+          outputTokens: 1,
+          reasoningTokens: null,
+          gameTokens: 1,
+          cacheReadTokens: null,
+          cacheWriteTokens: null,
+        },
+        modelKey: 'claude-sonnet-4.6',
+        modelId: 'global.anthropic.claude-sonnet-4-6',
+        region: 'us-east-1',
+        profileVersion: 'claude-sonnet-4.6-global-v1',
+        rawAction: {
+          name: toolName.get(normalized.kind),
+          input,
+          toolUseId: `tool-use-${action.seq}`,
+        },
+        createdAt: '2026-09-21T12:00:00.000Z',
+        updatedAt: '2026-09-21T12:00:00.000Z',
+      });
+    }
+
+    const store = storeFor(harness, bodyStore);
+    const boundary = await store.getDecision('owner', attemptId, 1);
+    expect(boundary?.observation).toMatchObject({
+      here: { objects: [] },
+      left: { kind: 'boundary' },
+    });
+    expect(boundary?.availableActions?.[0]).toMatchObject({
+      opaqueId: 'tool_1',
+      label: 'Avanzar',
+      description: 'Descripción literal',
+    });
+    expect(boundary?.availableActions?.[1]).not.toHaveProperty('description');
+
+    const periodic = await store.getDecision('owner', attemptId, 6);
+    expect(periodic?.observation).toMatchObject({
+      right: { kind: 'segment', terrain: 'barrier_high' },
+    });
+    expect(periodic?.item.originSupport).toBe(4);
+
+    const locked = await store.getDecision('owner', attemptId, 10);
+    expect(locked?.observation).toMatchObject({
+      right: { kind: 'door', state: 'locked', requiredObjectId: 'llave-1' },
+    });
+    expect(locked?.result).toMatchObject({
+      kind: 'action',
+      beforeSupport: 8,
+      afterSupport: 8,
+      resolution: { outcome: 'no_op', reason: 'door_locked' },
+    });
+
+    const collectedKey = await store.getDecision('owner', attemptId, 13);
+    expect(collectedKey?.observation).toMatchObject({ here: { objects: ['llave-1'] } });
+    expect(collectedKey?.result).toMatchObject({
+      beforeSupport: 6,
+      afterSupport: 6,
+      resolution: { outcome: 'picked_up', objectId: 'llave-1' },
+    });
+
+    const openDoor = await store.getDecision('owner', attemptId, 16);
+    expect(openDoor?.observation).toMatchObject({
+      right: { kind: 'door', state: 'open', requiredObjectId: 'llave-1' },
+    });
+    expect(openDoor?.item.originSupport).toBe(8);
+    expect(
+      (await store.getDecisionIndex('owner', attemptId))?.decisions.slice(9, 15),
+    ).toMatchObject([
+      { number: 10, originSupport: 8 },
+      { number: 11, originSupport: 8 },
+      { number: 12, originSupport: 7 },
+      { number: 13, originSupport: 6 },
+      { number: 14, originSupport: 6 },
+      { number: 15, originSupport: 7 },
+    ]);
+  });
+
+  it.each([
+    {
+      name: 'non-contiguous retry group',
+      callDecisionIds: [
+        'fixture-decision-1',
+        'fixture-decision-2',
+        'fixture-decision-1',
+        ...Array.from({ length: 14 }, (_, index) => `fixture-decision-${index + 3}`),
+      ],
+    },
+    {
+      name: 'action order mismatch',
+      callDecisionIds: [
+        'fixture-decision-2',
+        'fixture-decision-1',
+        ...Array.from({ length: 15 }, (_, index) => `fixture-decision-${index + 3}`),
+      ],
+    },
+  ])('rejects $name instead of inventing decision chronology', async ({ callDecisionIds }) => {
+    const harness = new DynamoHarness();
+    const record = createClosedAttemptRecordFixture();
+    const { attemptId } = seedClosedReplay(harness);
+    const header = harness.read('USER#owner', `ATTEMPT#${attemptId}`);
+    if (!header) throw new Error('test setup did not persist the attempt header');
+    header.calls = callDecisionIds.length;
+    harness.put(header);
+    for (const [index, decisionId] of callDecisionIds.entries()) {
+      const seq = index + 1;
+      harness.put({
+        PK: `ATTEMPT#${attemptId}`,
+        SK: `CALL#${String(seq).padStart(8, '0')}`,
+        entity: 'call',
+        attemptId,
+        seq,
+        decisionId,
+        requestKey: `request/${seq}`,
+        responseKey: `response/${seq}`,
+        requestSha256: '0'.repeat(64),
+        requestBytes: 0,
+        status: 'received',
+        usage: {
+          inputTokens: 1,
+          outputTokens: 1,
+          reasoningTokens: null,
+          gameTokens: 1,
+          cacheReadTokens: null,
+          cacheWriteTokens: null,
+        },
+        modelKey: 'claude-sonnet-4.6',
+        modelId: 'global.anthropic.claude-sonnet-4-6',
+        region: 'us-east-1',
+        profileVersion: 'claude-sonnet-4.6-global-v1',
+        rawAction: { name: 'tool_1', input: {}, toolUseId: `tool-use-${seq}` },
+        createdAt: '2026-09-21T12:00:00.000Z',
+        updatedAt: '2026-09-21T12:00:00.000Z',
+      });
+    }
+    expect(record.actions).toHaveLength(17);
+    await expect(storeFor(harness).getDecisionIndex('owner', attemptId)).rejects.toBeInstanceOf(
+      ReplayRecordError,
+    );
+  });
+
+  it('rejects decision inspection before querying private rows for an active attempt', async () => {
+    const harness = new DynamoHarness();
+    const { attemptId } = seedAttempt(harness, { status: 'running' });
+    const store = storeFor(harness);
+    harness.send.mockClear();
+
+    await expect(store.getDecisionIndex('owner', attemptId)).rejects.toThrow(
+      'Las decisiones todavía no están disponibles',
+    );
+    expect(
+      harness.send.mock.calls.some(([command]) => command.constructor.name === 'QueryCommand'),
+    ).toBe(false);
+  });
+
+  it('rejects a terminal attempt whose durable record is incomplete', async () => {
+    const harness = new DynamoHarness();
+    const { attemptId } = seedClosedReplay(harness);
+    const header = harness.read('USER#owner', `ATTEMPT#${attemptId}`);
+    if (!header) throw new Error('test setup did not persist the attempt header');
+    header.recordComplete = false;
+    harness.put(header);
+
+    await expect(storeFor(harness).getDecisionIndex('owner', attemptId)).rejects.toBeInstanceOf(
+      ReplayRecordError,
+    );
   });
 
   it('rejects a stored model profile that differs from the current catalog', async () => {

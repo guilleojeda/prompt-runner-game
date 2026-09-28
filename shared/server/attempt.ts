@@ -6,6 +6,8 @@ import type {
   AttemptActionRecord,
   AttemptActionView,
   AttemptClosure,
+  DecisionDetail,
+  DecisionIndex,
   AttemptMetrics,
   ReplayRecordView,
   AttemptStatus as SharedAttemptStatus,
@@ -175,6 +177,12 @@ export type AttemptStore = {
   admit(input: AdmitInput): Promise<AdmitResult>;
   get(owner: string, attemptId: string): Promise<PersistedAttempt | undefined>;
   getReplayRecord(owner: string, attemptId: string): Promise<ReplayRecordView | undefined>;
+  getDecisionIndex(owner: string, attemptId: string): Promise<DecisionIndex | undefined>;
+  getDecision(
+    owner: string,
+    attemptId: string,
+    decisionNumber: number,
+  ): Promise<DecisionDetail | undefined>;
   getAnimationPreference(owner: string): Promise<AnimationPreference>;
   putAnimationPreference(
     owner: string,
@@ -340,7 +348,7 @@ const expectedTerminalReason = (
   return undefined;
 };
 
-const readSnapshot = (value: unknown): GameSnapshot => {
+export const readSnapshot = (value: unknown): GameSnapshot => {
   if (
     !isObject(value) ||
     Object.prototype.hasOwnProperty.call(value, 'exitEnabled') ||
@@ -392,7 +400,7 @@ const readSnapshot = (value: unknown): GameSnapshot => {
   };
 };
 
-const readAction = (value: unknown): AttemptActionRecord => {
+export const readAction = (value: unknown): AttemptActionRecord => {
   if (
     !isObject(value) ||
     !isInteger(value.seq) ||
