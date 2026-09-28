@@ -912,6 +912,53 @@ describe('Dynamo attempt admission conditions', () => {
     ).toBe(false);
   });
 
+  it('keeps a valid terminal no-action decision anchored to the final snapshot', async () => {
+    const harness = new DynamoHarness();
+    const { attemptId } = seedAttempt(harness, {
+      status: 'error',
+      reason: 'invalid_response',
+      calls: 1,
+    });
+    seedCall(harness, attemptId, {
+      status: 'invalid',
+      errorCode: 'invalid_response',
+      responseSha256: 'b'.repeat(64),
+      responseBytes: 1,
+    });
+
+    const detail = await storeFor(harness).getDecision('owner', attemptId, 1);
+    expect(detail).toMatchObject({
+      item: { number: 1, originSupport: 0, hasAction: false },
+      choice: { state: 'invalid' },
+      result: { kind: 'no-action', turnsUsed: 0, status: 'error' },
+    });
+  });
+
+  it('rejects a no-action record whose initial support is outside the level', async () => {
+    const harness = new DynamoHarness();
+    const { attemptId } = seedAttempt(harness, {
+      status: 'error',
+      reason: 'invalid_response',
+      calls: 1,
+    });
+    seedCall(harness, attemptId, {
+      status: 'invalid',
+      errorCode: 'invalid_response',
+      responseSha256: 'b'.repeat(64),
+      responseBytes: 1,
+    });
+    const state = harness.read(`ATTEMPT#${attemptId}`, 'STATE#state-0');
+    if (!state) throw new Error('test setup did not persist the initial state');
+    harness.put({
+      ...state,
+      snapshot: { ...(state.snapshot as Record<string, unknown>), support: 99 },
+    });
+
+    await expect(storeFor(harness).getDecisionIndex('owner', attemptId)).rejects.toBeInstanceOf(
+      ReplayRecordError,
+    );
+  });
+
   it('rejects a terminal attempt whose durable record is incomplete', async () => {
     const harness = new DynamoHarness();
     const { attemptId } = seedClosedReplay(harness);

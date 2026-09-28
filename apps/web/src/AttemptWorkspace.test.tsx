@@ -257,6 +257,165 @@ describe('AttemptWorkspace', () => {
     expect(getDecision).toHaveBeenCalledWith(terminal.id, 1, expect.any(AbortSignal));
   });
 
+  it('inspects history B without replacing result A while A presentation acknowledgement is pending', async () => {
+    const attemptA = {
+      ...summary('victory'),
+      turnsUsed: 8,
+      animationEnabled: true,
+      presentationComplete: false,
+    };
+    const attemptB = {
+      ...summary('incomplete'),
+      id: 'attempt-2',
+      createdAt: '2026-09-21T12:00:30.000Z',
+      turnsUsed: 0,
+      animationEnabled: false,
+      presentationComplete: true,
+    };
+    setCurrentRecovery(
+      'prompt-runner:attempt-recovery',
+      JSON.stringify({ sub: 'subject-a', attemptId: attemptA.id }),
+    );
+    let finishMark!: (value: AttemptSummary) => void;
+    const completePresentation = vi.fn(
+      () =>
+        new Promise<AttemptSummary>((resolve) => {
+          finishMark = resolve;
+        }),
+    );
+    const getDecisionIndex = vi.fn().mockResolvedValue({
+      attemptId: attemptB.id,
+      levelId: LEVEL.id,
+      decisions: [],
+    });
+    const attemptApi = api({
+      listAttempts: vi.fn().mockResolvedValue({ attempts: [attemptA, attemptB] }),
+      getAttempt: vi
+        .fn()
+        .mockImplementation((id: string) =>
+          Promise.resolve(id === attemptB.id ? attemptB : attemptA),
+        ),
+      getReplay: vi.fn().mockResolvedValue(replayRecord(attemptA.id)),
+      completePresentation,
+      getDecisionIndex,
+    });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Recursos listos' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Completar reproducción' }));
+    expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
+    await waitFor(() => expect(completePresentation).toHaveBeenCalledWith(attemptA.id));
+
+    const history = screen.getByRole('heading', { name: 'Historial' }).closest('section');
+    expect(history).not.toBeNull();
+    const historyRows = within(history as HTMLElement).getAllByRole('listitem');
+    fireEvent.click(
+      within(historyRows[1] as HTMLElement).getByRole('button', {
+        name: 'Inspeccionar decisiones',
+      }),
+    );
+    expect(await screen.findByRole('heading', { name: 'Inspeccionar decisiones' })).toBeTruthy();
+    expect(
+      screen.getByText('Intento inspeccionado: Recorrido incompleto · 2026-09-21T12:00:30.000Z'),
+    ).toBeTruthy();
+    expect(screen.queryByText(/Intento inspeccionado: Victoria ·/)).toBeNull();
+    await waitFor(() =>
+      expect(getDecisionIndex).toHaveBeenCalledWith(attemptB.id, expect.any(AbortSignal)),
+    );
+    expect(screen.getByRole('heading', { name: 'Victoria' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Recorrido incompleto' })).toBeNull();
+
+    await act(async () => {
+      finishMark({ ...attemptA, presentationComplete: true });
+      await Promise.resolve();
+    });
+    expect(completePresentation).toHaveBeenCalledTimes(1);
+    expect(completePresentation).toHaveBeenCalledWith(attemptA.id);
+    expect(screen.getByRole('heading', { name: 'Inspeccionar decisiones' })).toBeTruthy();
+    expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toBeNull();
+  });
+
+  it('retries acknowledgement for result A after inspecting B and keeps B open', async () => {
+    const attemptA = {
+      ...summary('victory'),
+      turnsUsed: 8,
+      animationEnabled: true,
+      presentationComplete: false,
+    };
+    const attemptB = {
+      ...summary('incomplete'),
+      id: 'attempt-2',
+      turnsUsed: 0,
+      animationEnabled: false,
+      presentationComplete: true,
+    };
+    setCurrentRecovery(
+      'prompt-runner:attempt-recovery',
+      JSON.stringify({ sub: 'subject-a', attemptId: attemptA.id }),
+    );
+    let finishRetry!: (value: AttemptSummary) => void;
+    const completePresentation = vi
+      .fn()
+      .mockRejectedValueOnce(new AttemptApiFailure('server', 'No se guardó.', 500))
+      .mockImplementationOnce(
+        () =>
+          new Promise<AttemptSummary>((resolve) => {
+            finishRetry = resolve;
+          }),
+      );
+    const getDecisionIndex = vi.fn().mockResolvedValue({
+      attemptId: attemptB.id,
+      levelId: LEVEL.id,
+      decisions: [],
+    });
+    const attemptApi = api({
+      listAttempts: vi.fn().mockResolvedValue({ attempts: [attemptA, attemptB] }),
+      getAttempt: vi
+        .fn()
+        .mockImplementation((id: string) =>
+          Promise.resolve(id === attemptB.id ? attemptB : attemptA),
+        ),
+      getReplay: vi.fn().mockResolvedValue(replayRecord(attemptA.id)),
+      completePresentation,
+      getDecisionIndex,
+    });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Recursos listos' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Completar reproducción' }));
+    expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
+    expect(await screen.findByText(/No se pudo guardar el cierre/)).toBeTruthy();
+
+    const history = screen.getByRole('heading', { name: 'Historial' }).closest('section');
+    expect(history).not.toBeNull();
+    const historyRows = within(history as HTMLElement).getAllByRole('listitem');
+    fireEvent.click(
+      within(historyRows[1] as HTMLElement).getByRole('button', {
+        name: 'Inspeccionar decisiones',
+      }),
+    );
+    expect(await screen.findByRole('heading', { name: 'Inspeccionar decisiones' })).toBeTruthy();
+    await waitFor(() =>
+      expect(getDecisionIndex).toHaveBeenCalledWith(attemptB.id, expect.any(AbortSignal)),
+    );
+    expect(screen.getByRole('heading', { name: 'Victoria' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Recorrido incompleto' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reintentar cierre de presentación' }));
+    await waitFor(() => expect(completePresentation).toHaveBeenCalledTimes(2));
+    expect(completePresentation).toHaveBeenLastCalledWith(attemptA.id);
+    expect(await screen.findByText('Guardando el cierre de la presentación…')).toBeTruthy();
+
+    await act(async () => {
+      finishRetry({ ...attemptA, presentationComplete: true });
+      await Promise.resolve();
+    });
+    expect(screen.getByRole('heading', { name: 'Inspeccionar decisiones' })).toBeTruthy();
+    expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toBeNull();
+  });
+
   it('keeps inspection available for an incomplete terminal record and hides it after auth loss', async () => {
     const incomplete = {
       ...summary('victory'),

@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LEVEL } from '../../../shared/game.js';
 import {
+  AttemptApiFailure,
   AttemptApiClient,
   type AttemptApi,
   type DecisionDetail,
@@ -96,8 +97,12 @@ describe('DecisionInspector', () => {
     render(<DecisionInspector api={api} attemptId="attempt-1" onClose={vi.fn()} />);
 
     expect(await screen.findByRole('heading', { name: 'Inspeccionar decisiones' })).toBeTruthy();
-    expect(await screen.findByRole('button', { name: 'Casilla 2, 2 decisiones' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Casilla 5, 1 decisión' })).toBeTruthy();
+    expect(
+      await screen.findByRole('button', { name: /Casilla 2, pozo, recompensa, 2 decisiones/ }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole('button', { name: /Casilla 5, barrera periódica, 1 decisión/ }),
+    ).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Todas las decisiones, en orden' })).toBeTruthy();
     expect(screen.getAllByRole('button', { name: /Decisión [123]/ })).toHaveLength(5);
     expect(await screen.findByRole('heading', { name: 'Observación' })).toBeTruthy();
@@ -110,6 +115,25 @@ describe('DecisionInspector', () => {
     expect(screen.queryByText('Parámetros: {}')).toBeNull();
     expect(screen.queryByText('Acción registrada: Avanzar.')).toBeNull();
     expect(screen.queryByText(/prompt|response|uso|razonamiento/i)).toBeNull();
+  });
+
+  it('shows the door requirement and map context to assistive technology', async () => {
+    const doorDetail: DecisionDetail = {
+      ...detail(1),
+      observation: {
+        facing: 'right',
+        here: { objects: [], exit: false },
+        left: { kind: 'segment', terrain: 'ground' },
+        right: { kind: 'door', state: 'locked', requiredObjectId: 'llave-1' },
+      },
+    };
+    const api = inspectorApi({ getDecision: vi.fn().mockResolvedValue(doorDetail) });
+    render(<DecisionInspector api={api} attemptId="attempt-1" onClose={vi.fn()} />);
+
+    expect(await screen.findByText('A la derecha: puerta cerrada; requiere llave.')).toBeTruthy();
+    expect(
+      screen.getByRole('button', { name: /Casilla 9, suelo, puerta, sin decisiones/ }),
+    ).toBeTruthy();
   });
 
   it('shows meaningful action parameters while omitting empty parameter objects', async () => {
@@ -181,7 +205,9 @@ describe('DecisionInspector', () => {
     render(<DecisionInspector api={api} attemptId="attempt-1" onClose={vi.fn()} />);
 
     await screen.findByRole('heading', { name: 'Observación' });
-    fireEvent.click(screen.getByRole('button', { name: 'Casilla 5, 1 decisión' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: /Casilla 5, barrera periódica, 1 decisión/ }),
+    );
 
     const supportList = screen.getByRole('heading', {
       name: 'Decisiones en la casilla 5',
@@ -197,14 +223,16 @@ describe('DecisionInspector', () => {
     expect(screen.getByText('Consumió el turno 3.')).toBeTruthy();
   });
 
-  it('activates map selection from the keyboard', async () => {
+  it('activates map selection through the native button', async () => {
     const api = inspectorApi();
     render(<DecisionInspector api={api} attemptId="attempt-1" onClose={vi.fn()} />);
 
     await screen.findByRole('heading', { name: 'Observación' });
-    const support = screen.getByRole('button', { name: 'Casilla 5, 1 decisión' });
+    const support = screen.getByRole('button', {
+      name: /Casilla 5, barrera periódica, 1 decisión/,
+    });
     support.focus();
-    fireEvent.keyDown(support, { key: 'Enter' });
+    fireEvent.click(support);
 
     expect(await screen.findByRole('heading', { name: 'Decisiones en la casilla 5' })).toBeTruthy();
     expect(support.getAttribute('aria-pressed')).toBe('true');
@@ -228,8 +256,41 @@ describe('DecisionInspector', () => {
     render(<DecisionInspector api={failingApi} attemptId="attempt-1" onClose={vi.fn()} />);
     expect(await screen.findByRole('alert')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Reintentar inspección' }));
-    expect(await screen.findByRole('button', { name: 'Casilla 2, 2 decisiones' })).toBeTruthy();
+    expect(
+      await screen.findByRole('button', { name: /Casilla 2, pozo, recompensa, 2 decisiones/ }),
+    ).toBeTruthy();
     expect(getDecisionIndex).toHaveBeenCalledTimes(2);
+  });
+
+  it('ignores a late index retry after the inspector is closed', async () => {
+    let finishRetry!: (error: unknown) => void;
+    const lateRetry = new Promise<DecisionIndex>((_resolve, reject) => {
+      finishRetry = reject;
+    });
+    const getDecisionIndex = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('sin red'))
+      .mockReturnValueOnce(lateRetry);
+    const onAuthRequired = vi.fn();
+    const view = render(
+      <DecisionInspector
+        api={inspectorApi({ getDecisionIndex })}
+        attemptId="attempt-1"
+        onAuthRequired={onAuthRequired}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Reintentar inspección' }));
+    await waitFor(() => expect(getDecisionIndex).toHaveBeenCalledTimes(2));
+    view.unmount();
+
+    await act(async () => {
+      finishRetry(new AttemptApiFailure('authentication', 'La sesión venció.', 401));
+      await Promise.resolve();
+    });
+    expect(onAuthRequired).not.toHaveBeenCalled();
   });
 
   it('retries a failed decision detail without losing the selected decision', async () => {
