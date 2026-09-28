@@ -40,6 +40,7 @@ button:focus-visible {
   margin: 0 auto;
   padding: 7rem 0;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   align-content: center;
   gap: 1.25rem;
 }
@@ -273,6 +274,7 @@ h1 {
   color: #d8b36a;
   font-size: 0.86rem;
   font-weight: 700;
+  overflow-wrap: anywhere;
 }
 
 .decision-map {
