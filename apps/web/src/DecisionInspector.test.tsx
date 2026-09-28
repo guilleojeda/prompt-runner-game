@@ -115,11 +115,14 @@ describe('DecisionInspector', () => {
   it('shows meaningful action parameters while omitting empty parameter objects', async () => {
     const detailWithParameters: DecisionDetail = {
       ...detail(1),
+      availableActions: [
+        { opaqueId: 'tool_3', label: 'Saltar', description: 'Salta en la dirección indicada.' },
+      ],
       choice: {
         state: 'selected',
-        opaqueId: 'tool_5',
+        opaqueId: 'tool_3',
         action: { kind: 'jump', direction: 'right' },
-        parameters: { direction: 'derecha' },
+        parameters: { direction: 'derecha', modo: 'experimental' },
       },
       result: {
         kind: 'action',
@@ -133,8 +136,32 @@ describe('DecisionInspector', () => {
     const api = inspectorApi({ getDecision: vi.fn().mockResolvedValue(detailWithParameters) });
     render(<DecisionInspector api={api} attemptId="attempt-1" onClose={vi.fn()} />);
 
-    expect(await screen.findByText('Parámetros: {"direction":"derecha"}')).toBeTruthy();
+    expect(await screen.findByText('Elección válida: tool_3 (Saltar).')).toBeTruthy();
+    expect(
+      screen.getByText('Parámetros: {"direction":"derecha","modo":"experimental"}'),
+    ).toBeTruthy();
+    expect(screen.queryByText(/right/)).toBeNull();
     expect(screen.queryByText('Parámetros: {}')).toBeNull();
+  });
+
+  it('translates an internal direction only for an unknown recorded action', async () => {
+    const unknownChoiceDetail: DecisionDetail = {
+      ...detail(1),
+      choice: { state: 'unknown' },
+      result: {
+        kind: 'action',
+        action: { kind: 'jump', direction: 'right' },
+        resolution: { outcome: 'moved', reason: 'moved' },
+        beforeSupport: 2,
+        afterSupport: 3,
+        turnsUsed: 1,
+      },
+    };
+    const api = inspectorApi({ getDecision: vi.fn().mockResolvedValue(unknownChoiceDetail) });
+    render(<DecisionInspector api={api} attemptId="attempt-1" onClose={vi.fn()} />);
+
+    expect(await screen.findByText('Acción registrada: Saltar · dirección: derecha.')).toBeTruthy();
+    expect(screen.queryByText(/dirección: right/)).toBeNull();
   });
 
   it('shows the recorded action in the result only when the choice is unknown', async () => {
