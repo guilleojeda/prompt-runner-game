@@ -68,7 +68,17 @@ const humanEntryFor = (action: {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
-const actionText = (action: unknown, opaqueId?: string): string => {
+const directionLabel = (direction: string): string => {
+  if (direction === 'left') return 'izquierda';
+  if (direction === 'right') return 'derecha';
+  return direction;
+};
+
+const actionText = (
+  action: unknown,
+  opaqueId?: string,
+  options?: { readonly showInternalDirection?: boolean },
+): string => {
   if (!isRecord(action)) {
     const catalogEntry = opaqueId ? catalogByOpaqueId.get(opaqueId) : undefined;
     return catalogEntry ? `${catalogEntry.opaqueId} (${catalogEntry.name})` : 'Acción registrada';
@@ -78,15 +88,10 @@ const actionText = (action: unknown, opaqueId?: string): string => {
   const kind = typeof action.kind === 'string' ? action.kind : undefined;
   const kindEntry = kind ? humanEntryFor({ kind }) : undefined;
   const label = catalogEntry?.name ?? kindEntry?.name ?? 'Acción registrada';
-  const identifier = id ?? catalogEntry?.opaqueId;
+  const identifier = id ?? catalogEntry?.opaqueId ?? kindEntry?.opaqueId;
   const parameters: string[] = [];
-  if (typeof action.direction === 'string') parameters.push(`dirección: ${action.direction}`);
-  if (isRecord(action.parameters)) {
-    for (const [key, value] of Object.entries(action.parameters)) {
-      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-        parameters.push(`${key}: ${String(value)}`);
-      }
-    }
+  if (options?.showInternalDirection && typeof action.direction === 'string') {
+    parameters.push(`dirección: ${directionLabel(action.direction)}`);
   }
   return `${identifier ? `${identifier} (${label})` : label}${
     parameters.length > 0 ? ` · ${parameters.join(' · ')}` : ''
@@ -172,7 +177,7 @@ const actionResultText = (result: DecisionResult, choice: DecisionChoice | null)
     ];
     return details;
   }
-  const recordedAction = actionText(result.action);
+  const recordedAction = actionText(result.action, undefined, { showInternalDirection: true });
   const details = [
     ...(choice?.state === 'unknown' && recordedAction !== 'Acción registrada'
       ? [`Acción registrada: ${recordedAction}.`]
