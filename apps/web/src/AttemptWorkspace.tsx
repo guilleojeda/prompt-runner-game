@@ -483,7 +483,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     const [replayRecord, setReplayRecord] = useState<ReplayRecordView | null>(null);
     const [playbackKind, setPlaybackKind] = useState<PlaybackKind | null>(null);
     const [playbackReachedEnd, setPlaybackReachedEnd] = useState(false);
-    const [decisionInspectorOpen, setDecisionInspectorOpen] = useState(false);
+    const [decisionInspectorTarget, setDecisionInspectorTarget] = useState<AttemptSummary | null>(
+      null,
+    );
     const [completionBusy, setCompletionBusy] = useState(false);
     const generationRef = useRef(0);
     const frozenRef = useRef<FrozenAdmission | null>(null);
@@ -513,6 +515,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     >(async () => undefined);
     const sessionSub = session.identity.sub;
     const sessionSubRef = useRef(sessionSub);
+    const clearDecisionInspector = useCallback((): void => {
+      setDecisionInspectorTarget(null);
+    }, []);
 
     useEffect(() => {
       const previousSub = sessionSubRef.current;
@@ -543,15 +548,15 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         setReplayRecord(null);
         setPlaybackKind(null);
         setPlaybackReachedEnd(false);
-        setDecisionInspectorOpen(false);
+        clearDecisionInspector();
         setCompletionBusy(false);
         sessionSubRef.current = sessionSub;
       }
-    }, [sessionSub]);
+    }, [clearDecisionInspector, sessionSub]);
 
     useEffect(() => {
-      if (authPaused) queueMicrotask(() => setDecisionInspectorOpen(false));
-    }, [authPaused]);
+      if (authPaused) queueMicrotask(clearDecisionInspector);
+    }, [authPaused, clearDecisionInspector]);
 
     useEffect(() => {
       attemptRef.current = attempt;
@@ -757,7 +762,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         setPlaybackKind(kind);
         setReplayRecord(null);
         setPlaybackReachedEnd(false);
-        setDecisionInspectorOpen(false);
+        clearDecisionInspector();
         setError(null);
         completionOperationRef.current += 1;
         completionBusyRef.current = false;
@@ -797,7 +802,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           setMode('replay-error');
         }
       },
-      [api, onAuthRequired],
+      [api, clearDecisionInspector, onAuthRequired],
     );
 
     const refreshPreferenceOnFocus = useCallback((): void => {
@@ -822,7 +827,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           completionAttemptRef.current = null;
           setCompletionBusy(false);
           setPlaybackReachedEnd(false);
-          setDecisionInspectorOpen(false);
+          clearDecisionInspector();
         }
         attemptRef.current = next;
         setAttempt(next);
@@ -866,7 +871,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           );
         }
       },
-      [beginReplay, sessionSub],
+      [beginReplay, clearDecisionInspector, sessionSub],
     );
 
     const listAllAttempts = useCallback(
@@ -1156,7 +1161,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         return;
       }
       startLockRef.current = true;
-      setDecisionInspectorOpen(false);
+      clearDecisionInspector();
       completionOperationRef.current += 1;
       completionBusyRef.current = false;
       completionAttemptRef.current = null;
@@ -1248,7 +1253,16 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         setError(attemptErrorMessage(admissionError));
         if (isAuthenticationFailure(admissionError)) onAuthRequired?.();
       }
-    }, [api, authPaused, busy, editor, onAuthRequired, sessionSub, startServerAttempt]);
+    }, [
+      api,
+      authPaused,
+      busy,
+      clearDecisionInspector,
+      editor,
+      onAuthRequired,
+      sessionSub,
+      startServerAttempt,
+    ]);
 
     useImperativeHandle(
       ref,
@@ -1366,7 +1380,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         operationEpochRef.current += 1;
         const operationEpoch = operationEpochRef.current;
         const previousMode: WorkspaceMode = modeRef.current === 'result' ? 'result' : 'idle';
-        setDecisionInspectorOpen(false);
+        clearDecisionInspector();
         setMode('opening');
         setError(null);
         try {
@@ -1390,62 +1404,38 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           setError(attemptErrorMessage(openError));
         }
       },
-      [api, applyAttempt, busy, onAuthRequired],
+      [api, applyAttempt, busy, clearDecisionInspector, onAuthRequired],
     );
 
     const openDecisionInspector = useCallback((): void => {
-      if (busy || !attemptRef.current || !isTerminal(attemptRef.current.status)) {
+      const current = attemptRef.current;
+      if (busy || !current || !isTerminal(current.status)) {
         return;
       }
+      setDecisionInspectorTarget(current);
       setError(null);
-      setDecisionInspectorOpen(true);
     }, [busy]);
 
     const openDecisionInspectorFromHistory = useCallback(
-      async (id: string): Promise<void> => {
+      (id: string): void => {
         if (busy) return;
-        const operationGeneration = generationRef.current;
-        operationEpochRef.current += 1;
-        const operationEpoch = operationEpochRef.current;
-        const previousMode: WorkspaceMode = modeRef.current === 'result' ? 'result' : 'idle';
-        setDecisionInspectorOpen(false);
-        setMode('opening');
-        setError(null);
-        try {
-          const next = await api.getAttempt(id);
-          if (
-            generationRef.current !== operationGeneration ||
-            operationEpochRef.current !== operationEpoch
-          ) {
-            return;
-          }
-          if (!isTerminal(next.status) || !next.presentationComplete) {
-            setError(
-              !isTerminal(next.status)
-                ? 'Este intento todavía no está cerrado para inspeccionar.'
-                : 'Primero hay que terminar la presentación para inspeccionar este intento.',
-            );
-            setMode(isTerminal(next.status) ? 'result' : previousMode);
-            return;
-          }
-          attemptRef.current = next;
-          setAttempt(next);
-          setHistory((current) => current.map((item) => (item.id === next.id ? next : item)));
-          setMode('result');
-          setDecisionInspectorOpen(true);
-        } catch (inspectOpenError) {
-          if (
-            generationRef.current !== operationGeneration ||
-            operationEpochRef.current !== operationEpoch
-          ) {
-            return;
-          }
-          if (isAuthenticationFailure(inspectOpenError)) onAuthRequired?.();
-          setError(attemptErrorMessage(inspectOpenError));
-          setMode(previousMode);
+        const target = history.find((item) => item.id === id);
+        if (!target) {
+          setError('No se encontró ese intento en el historial. Volvé a cargar las consultas.');
+          return;
         }
+        if (!isTerminal(target.status) || !target.presentationComplete) {
+          setError(
+            !isTerminal(target.status)
+              ? 'Este intento todavía no está cerrado para inspeccionar.'
+              : 'Primero hay que terminar la presentación para inspeccionar este intento.',
+          );
+          return;
+        }
+        setDecisionInspectorTarget(target);
+        setError(null);
       },
-      [api, busy, onAuthRequired],
+      [busy, history],
     );
 
     const openReplayFromHistory = useCallback(
@@ -1454,7 +1444,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         const operationGeneration = generationRef.current;
         operationEpochRef.current += 1;
         const operationEpoch = operationEpochRef.current;
-        setDecisionInspectorOpen(false);
+        clearDecisionInspector();
         setMode('opening');
         setError(null);
         try {
@@ -1500,7 +1490,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           setMode('result');
         }
       },
-      [api, applyAttempt, beginReplay, busy, onAuthRequired],
+      [api, applyAttempt, beginReplay, busy, clearDecisionInspector, onAuthRequired],
     );
 
     const replayCurrentAttempt = useCallback((): void => {
@@ -1756,9 +1746,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     };
 
     const handleDecisionInspectorAuthRequired = useCallback((): void => {
-      setDecisionInspectorOpen(false);
+      clearDecisionInspector();
       onAuthRequired?.();
-    }, [onAuthRequired]);
+    }, [clearDecisionInspector, onAuthRequired]);
 
     return (
       <section className="attempt-workspace" aria-labelledby="attempt-workspace-title">
@@ -1986,13 +1976,14 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           />
         )}
 
-        {mode === 'result' && attempt && decisionInspectorOpen && !authPaused && (
+        {decisionInspectorTarget && !authPaused && (
           <DecisionInspector
-            key={`${sessionSub}:${attempt.id}`}
+            key={`${sessionSub}:${decisionInspectorTarget.id}`}
             api={api}
-            attemptId={attempt.id}
+            attemptId={decisionInspectorTarget.id}
+            targetLabel={`${statusLabel(decisionInspectorTarget.status)} · ${decisionInspectorTarget.createdAt}`}
             onAuthRequired={handleDecisionInspectorAuthRequired}
-            onClose={() => setDecisionInspectorOpen(false)}
+            onClose={clearDecisionInspector}
           />
         )}
 

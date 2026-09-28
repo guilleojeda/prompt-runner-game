@@ -27,9 +27,9 @@ import {
 } from '../../../shared/models.js';
 import {
   createInitialState,
-  isSemanticallyValidActionResolution,
   LEVEL,
   normalizeSelection,
+  progressFor,
   scoreAttempt,
   type GameSnapshot,
 } from '../../../shared/game.js';
@@ -57,8 +57,6 @@ import {
   collectionSummaryOf,
   readAttemptScoreParameters,
   readCurrentLevel,
-  readAction,
-  readSnapshot,
   validateActionPublication,
   replayRecordViewOf,
   summaryOf,
@@ -643,7 +641,7 @@ const selectionForCall = (
 type DecisionGroup = Readonly<{
   readonly item: DecisionIndexItem;
   readonly calls: readonly CallRecord[];
-  readonly action?: ReturnType<typeof readAction>;
+  readonly action?: ReplayRecordView['actions'][number];
   readonly before?: GameSnapshot;
   readonly after?: GameSnapshot;
 }>;
@@ -690,45 +688,32 @@ const decisionDataFor = (
   )
     throw new ReplayRecordError('Las llamadas del intento no tienen una secuencia válida.');
 
-  const snapshots = new Map<string, GameSnapshot>();
-  for (const rawSnapshot of rawSnapshots) {
-    if (!isRecord(rawSnapshot) || typeof rawSnapshot.stateId !== 'string')
-      throw new ReplayRecordError('Falta una referencia de estado del intento.');
-    const snapshot = readSnapshot(rawSnapshot.snapshot);
-    if (snapshot.id !== rawSnapshot.stateId || snapshots.has(snapshot.id))
-      throw new ReplayRecordError('Las referencias de estado del intento no son únicas.');
-    snapshots.set(snapshot.id, snapshot);
-  }
-  if (
-    snapshots.size !== attempt.sequence + 1 ||
-    !snapshots.has('state-0') ||
-    [...snapshots.values()].some((snapshot) => snapshot.terrain.length !== LEVEL.segments.length)
-  )
-    throw new ReplayRecordError('Los estados conservados del intento están incompletos.');
+  const replay = replayRecordViewOf(attempt, rawActions, rawSnapshots);
+  const snapshots = new Map(replay.snapshots.map((snapshot) => [snapshot.id, snapshot]));
   for (let seq = 0; seq <= attempt.sequence; seq += 1) {
     const snapshot = snapshots.get(`state-${seq}`);
     if (!snapshot || snapshot.turnsUsed !== seq) {
       throw new ReplayRecordError('Los estados conservados no siguen el orden de turnos.');
     }
   }
-
-  const actions = rawActions.map(readAction).sort((left, right) => left.seq - right.seq);
-  if (actions.length !== attempt.sequence) {
-    throw new ReplayRecordError('Las acciones publicadas del intento están incompletas.');
+  const initial = snapshots.get('state-0');
+  const final = snapshots.get(`state-${attempt.sequence}`);
+  if (
+    !initial ||
+    !final ||
+    attempt.finalSupport !== final.support ||
+    attempt.progress !== progressFor(final, LEVEL)
+  ) {
+    throw new ReplayRecordError('El encabezado no coincide con los estados conservados.');
   }
-  const actionByDecision = new Map<string, ReturnType<typeof readAction>>();
+
+  const actionByDecision = new Map<string, ReplayRecordView['actions'][number]>();
+  const actions = replay.actions;
   for (const [index, action] of actions.entries()) {
-    const before = snapshots.get(action.beforeStateId);
-    const after = snapshots.get(action.afterStateId);
     if (
       action.seq !== index + 1 ||
-      !before ||
-      !after ||
-      before.id !== `state-${index}` ||
-      after.id !== `state-${index + 1}` ||
-      before.status !== 'running' ||
-      after.turnsUsed !== before.turnsUsed + 1 ||
-      !isSemanticallyValidActionResolution(action.action, before, after, action.resolution) ||
+      action.before.id !== `state-${index}` ||
+      action.after.id !== `state-${index + 1}` ||
       actionByDecision.has(action.decisionId)
     )
       throw new ReplayRecordError('Las acciones publicadas contradicen el registro del intento.');

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type KeyboardEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { LEVEL, type LevelSegment } from '../../../shared/game.js';
 import { ROBOT_CATALOG, type RobotCatalogEntry, type RobotSkillId } from '../../../shared/robot.js';
 import {
@@ -17,6 +17,7 @@ import {
 interface DecisionInspectorProps {
   readonly api: AttemptApi;
   readonly attemptId: string;
+  readonly targetLabel?: string;
   readonly onAuthRequired?: () => void;
   readonly onClose: () => void;
 }
@@ -44,7 +45,8 @@ const terrainLabel = (terrain: string): string => {
 const sideLabel = (side: DecisionObservationSide): string => {
   if (side.kind === 'boundary') return 'límite del recorrido';
   if (side.kind === 'door') {
-    return side.state === 'open' ? 'puerta abierta' : 'puerta cerrada';
+    const state = side.state === 'open' ? 'puerta abierta' : 'puerta cerrada';
+    return `${state}; requiere ${objectLabel(side.requiredObjectId)}`;
   }
   if (side.kind === 'segment' && side.terrain) return terrainLabel(side.terrain);
   return side.kind;
@@ -196,16 +198,17 @@ const errorText = (error: unknown): string => {
   return 'No se pudo cargar la inspección. Podés reintentar.';
 };
 
-const mapSupportLabel = (support: number, count: number): string =>
-  `Casilla ${support}${count > 0 ? `, ${count} ${count === 1 ? 'decisión' : 'decisiones'}` : ', sin decisiones'}`;
-
-const activateOnKeyboard = (
-  event: KeyboardEvent<HTMLButtonElement>,
-  onSelect: () => void,
-): void => {
-  if (event.key !== 'Enter' && event.key !== ' ') return;
-  event.preventDefault();
-  onSelect();
+const mapSupportLabel = (
+  support: number,
+  count: number,
+  location: string,
+  object: string | null,
+  door: boolean,
+): string => {
+  const features = [location, ...(object ? [object] : []), ...(door ? ['puerta'] : [])];
+  const decisionCount =
+    count > 0 ? `${count} ${count === 1 ? 'decisión' : 'decisiones'}` : 'sin decisiones';
+  return `Casilla ${support}, ${features.join(', ')}, ${decisionCount}`;
 };
 
 function StaticLevelMap({
@@ -231,6 +234,7 @@ function StaticLevelMap({
         const marker = support === 0 ? 'Inicio' : support === LEVEL.exit.support ? 'Salida' : null;
         const object = LEVEL.objects.find((entry) => entry.support === support);
         const door = LEVEL.door?.support === support;
+        const location = marker ?? segmentLabel(LEVEL.segments[support - 1]);
         return (
           <button
             className={`decision-map-cell${selectedSupport === support ? ' is-selected' : ''}${
@@ -239,14 +243,17 @@ function StaticLevelMap({
             key={support}
             type="button"
             aria-pressed={selectedSupport === support}
-            aria-label={mapSupportLabel(support, count)}
+            aria-label={mapSupportLabel(
+              support,
+              count,
+              location,
+              object ? objectLabel(object.id) : null,
+              door,
+            )}
             onClick={() => onSelect(support)}
-            onKeyDown={(event) => activateOnKeyboard(event, () => onSelect(support))}
           >
             <span className="decision-map-cell-number">{support}</span>
-            <span className="decision-map-cell-name">
-              {marker ?? segmentLabel(LEVEL.segments[support - 1])}
-            </span>
+            <span className="decision-map-cell-name">{location}</span>
             {object && <span className="decision-map-cell-object">{objectLabel(object.id)}</span>}
             {door && <span className="decision-map-cell-door">puerta</span>}
             <span className="decision-map-cell-count">
@@ -275,7 +282,6 @@ function DecisionCard({
         type="button"
         aria-pressed={selected}
         onClick={onSelect}
-        onKeyDown={(event) => activateOnKeyboard(event, onSelect)}
       >
         <span>Decisión {item.number}</span>
         <span>
@@ -370,6 +376,7 @@ function DecisionDetailCard({ detail }: { readonly detail: DecisionDetail | null
 export function DecisionInspector({
   api,
   attemptId,
+  targetLabel,
   onAuthRequired,
   onClose,
 }: DecisionInspectorProps) {
@@ -382,14 +389,23 @@ export function DecisionInspector({
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
+  const indexRequestRef = useRef(0);
+  const indexControllerRef = useRef<AbortController | null>(null);
 
   const loadIndex = useCallback(
     async (signal?: AbortSignal): Promise<void> => {
+      const requestId = ++indexRequestRef.current;
+      const ownedController = signal ? null : new AbortController();
+      if (ownedController) {
+        indexControllerRef.current?.abort();
+        indexControllerRef.current = ownedController;
+      }
+      const requestSignal = signal ?? ownedController?.signal;
       setLoadingIndex(true);
       setError(null);
       try {
-        const loaded = await api.getDecisionIndex(attemptId, signal);
-        if (signal?.aborted) return;
+        const loaded = await api.getDecisionIndex(attemptId, requestSignal);
+        if (requestSignal?.aborted || indexRequestRef.current !== requestId) return;
         if (loaded.attemptId !== attemptId || loaded.levelId !== LEVEL.id) {
           throw new AttemptApiFailure('server', 'El índice no coincide con el intento abierto.');
         }
@@ -400,13 +416,49 @@ export function DecisionInspector({
         setDetail(null);
         setDetailRetry((value) => value + 1);
       } catch (loadError) {
-        if (signal?.aborted) return;
+        if (requestSignal?.aborted || indexRequestRef.current !== requestId) return;
         if (loadError instanceof AttemptApiFailure && loadError.code === 'authentication') {
           onAuthRequired?.();
         }
         setError(errorText(loadError));
       } finally {
-        if (!signal?.aborted) setLoadingIndex(false);
+        if (indexRequestRef.current === requestId && !requestSignal?.aborted) {
+          if (ownedController && indexControllerRef.current === ownedController) {
+            indexControllerRef.current = null;
+          }
+          setLoadingIndex(false);
+        }
+      }
+    },
+    [api, attemptId, onAuthRequired],
+  );
+
+  const loadDecision = useCallback(
+    async (number: number, signal: AbortSignal): Promise<void> => {
+      if (signal.aborted) return;
+      setLoadingDetail(true);
+      setDetailError(null);
+      try {
+        const loaded = await api.getDecision(attemptId, number, signal);
+        if (signal.aborted) return;
+        if (
+          loaded.attemptId !== attemptId ||
+          loaded.levelId !== LEVEL.id ||
+          loaded.item.number !== number
+        ) {
+          setDetailError('La ficha recibida no coincide con la decisión elegida.');
+          return;
+        }
+        setDetail(loaded);
+      } catch (loadError: unknown) {
+        if (signal.aborted) return;
+        if (loadError instanceof AttemptApiFailure && loadError.code === 'authentication') {
+          onAuthRequired?.();
+        }
+        setDetailError(errorText(loadError));
+        setDetail(null);
+      } finally {
+        if (!signal.aborted) setLoadingDetail(false);
       }
     },
     [api, attemptId, onAuthRequired],
@@ -418,6 +470,9 @@ export function DecisionInspector({
     return () => {
       window.clearTimeout(timer);
       controller.abort();
+      indexRequestRef.current += 1;
+      indexControllerRef.current?.abort();
+      indexControllerRef.current = null;
     };
   }, [loadIndex]);
 
@@ -427,43 +482,11 @@ export function DecisionInspector({
     }
     const controller = new AbortController();
     const number = selectedNumber;
-    const timer = window.setTimeout(() => {
-      if (controller.signal.aborted) return;
-      setLoadingDetail(true);
-      setDetailError(null);
-      void Promise.resolve()
-        .then(() => api.getDecision(attemptId, number, controller.signal))
-        .then((loaded) => {
-          if (
-            controller.signal.aborted ||
-            loaded.attemptId !== attemptId ||
-            loaded.levelId !== LEVEL.id ||
-            loaded.item.number !== number
-          ) {
-            if (!controller.signal.aborted) {
-              setDetailError('La ficha recibida no coincide con la decisión elegida.');
-            }
-            return;
-          }
-          setDetail(loaded);
-        })
-        .catch((loadError: unknown) => {
-          if (controller.signal.aborted) return;
-          if (loadError instanceof AttemptApiFailure && loadError.code === 'authentication') {
-            onAuthRequired?.();
-          }
-          setDetailError(errorText(loadError));
-          setDetail(null);
-        })
-        .finally(() => {
-          if (!controller.signal.aborted) setLoadingDetail(false);
-        });
-    }, 0);
+    void Promise.resolve().then(() => loadDecision(number, controller.signal));
     return () => {
-      window.clearTimeout(timer);
       controller.abort();
     };
-  }, [api, attemptId, detailRetry, onAuthRequired, selectedNumber]);
+  }, [detailRetry, loadDecision, selectedNumber]);
 
   const bySupport = useMemo(
     () => index?.decisions.filter((item) => item.originSupport === selectedSupport) ?? [],
@@ -489,6 +512,9 @@ export function DecisionInspector({
         <div>
           <p className="card-kicker">Mapa para el jugador</p>
           <h3 id="decision-inspector-title">Inspeccionar decisiones</h3>
+          {targetLabel && (
+            <p className="decision-inspector-target">Intento inspeccionado: {targetLabel}</p>
+          )}
           <p>Consultá las decisiones guardadas del recorrido sin volver a ejecutarlo.</p>
         </div>
         <button className="secondary-button" type="button" onClick={onClose}>

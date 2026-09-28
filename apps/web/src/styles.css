@@ -268,6 +268,13 @@ h1 {
   color: #b9b4a8;
 }
 
+.decision-inspector-target {
+  margin: 0 0 0.2rem;
+  color: #d8b36a;
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
 .decision-map {
   display: grid;
   grid-template-columns: repeat(11, minmax(4.2rem, 1fr));
@@ -446,6 +453,8 @@ h1 {
   color: #b9b4a8;
   font-size: 0.87rem;
   line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .decision-parameters {
