@@ -199,14 +199,20 @@ describe('SavedRobots', () => {
         nextCursor: 'next',
       })
       .mockResolvedValueOnce({ robots: [summary('robot-a', 2), summary('robot-c', 1)] });
-    const savedApi = api({ listRobots });
+    const getRobot = vi.fn().mockImplementation(async (id: string) => savedRobot({ id }));
+    const savedApi = api({ listRobots, getRobot });
     render(<SavedRobots api={savedApi} editor={editor()} session={session()} />);
 
     expect(await screen.findAllByRole('button', { name: /Mismo nombre.*Cargar/ })).toHaveLength(2);
     fireEvent.click(screen.getByRole('button', { name: 'Cargar más' }));
     await waitFor(() =>
-      expect(screen.getAllByRole('button', { name: /Mismo nombre.*Cargar/ })).toHaveLength(2),
+      expect(screen.getAllByRole('button', { name: /Mismo nombre.*Cargar/ })).toHaveLength(3),
     );
+    for (const [index, expectedId] of ['robot-a', 'robot-b', 'robot-c'].entries()) {
+      fireEvent.click(screen.getAllByRole('button', { name: /Mismo nombre.*Cargar/ })[index]!);
+      await waitFor(() => expect(getRobot).toHaveBeenCalledTimes(index + 1));
+      expect(getRobot.mock.calls[index]?.[0]).toBe(expectedId);
+    }
     expect(listRobots).toHaveBeenLastCalledWith('next');
   });
 
@@ -461,6 +467,94 @@ describe('SavedRobots', () => {
     await waitFor(() => expect(screen.queryByText('Seleccionado:')).toBeNull());
     expect(getRobot).toHaveBeenCalledTimes(2);
     expect(screen.getByText(/Eliminaste «Explorador»/)).toBeTruthy();
+    confirm.mockRestore();
+  });
+
+  it('resolves a stale delete without changing the active draft and asks for confirmation again', async () => {
+    const activeDraft = { ...createDefaultDraft(), instructions: 'Cambios locales.' };
+    const remote = savedRobot({
+      version: 2,
+      draft: { ...createDefaultDraft(), instructions: 'Versión remota.' },
+    });
+    const editorRef = editor(activeDraft);
+    const deleteRobot = vi
+      .fn()
+      .mockRejectedValueOnce(new SavedRobotApiFailure('conflict', 'stale', 409, remote))
+      .mockResolvedValueOnce({ deleted: true });
+    const savedApi = api({ deleteRobot });
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /Explorador.*Cargar/ }));
+    await waitFor(() => expect(editorRef.current?.applyDraft).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole('button', { name: 'Eliminar' }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Actualizar versión para Eliminar' })).toBeTruthy(),
+    );
+    expect(screen.getAllByText(/confirmá «Eliminar» nuevamente/)).toHaveLength(1);
+    expect(screen.queryByText(/«Guardar» está bloqueado/)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Actualizar versión para Eliminar' }));
+    await waitFor(() =>
+      expect(screen.getByText(/cambió.*Confirmá «Eliminar» nuevamente/)).toBeTruthy(),
+    );
+    expect(editorRef.current?.applyDraft).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Eliminar' }));
+    await waitFor(() => expect(deleteRobot).toHaveBeenLastCalledWith('robot-a', 2));
+    expect(deleteRobot).toHaveBeenCalledTimes(2);
+    expect(confirm).toHaveBeenCalledTimes(2);
+    expect(editorRef.current?.applyDraft).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(/Eliminaste «Explorador»/)).toBeTruthy();
+    confirm.mockRestore();
+  });
+
+  it('switches conflict resolution from delete to save after creating a new copy', async () => {
+    const changedDraft = { ...createDefaultDraft(), instructions: 'Cambios locales.' };
+    const deleteRemote = savedRobot({ id: 'robot-a', version: 2 });
+    const newCopy = savedRobot({
+      id: 'robot-new',
+      name: 'Nueva copia',
+      version: 1,
+      draft: createDefaultDraft(),
+    });
+    const saveRemote = savedRobot({ ...newCopy, version: 2 });
+    const editorRef = editor();
+    const captureSnapshot = editorRef.current?.captureSnapshot as ReturnType<typeof vi.fn>;
+    const saveRobot = vi
+      .fn()
+      .mockResolvedValueOnce(newCopy)
+      .mockRejectedValueOnce(new SavedRobotApiFailure('conflict', 'stale', 409, saveRemote));
+    const deleteRobot = vi
+      .fn()
+      .mockRejectedValueOnce(new SavedRobotApiFailure('conflict', 'stale', 409, deleteRemote));
+    const savedApi = api({ saveRobot, deleteRobot });
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /Explorador.*Cargar/ }));
+    await waitFor(() => expect(editorRef.current?.applyDraft).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole('button', { name: 'Eliminar' }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Actualizar versión para Eliminar' })).toBeTruthy(),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar como nueva' }));
+    fireEvent.change(screen.getByLabelText('Nombre para la nueva copia'), {
+      target: { value: 'Nueva copia' },
+    });
+    fireEvent.submit(screen.getByLabelText('Nombre para la nueva copia').closest('form')!);
+    await waitFor(() =>
+      expect(screen.getByText('Guardaste «Nueva copia» como robot nuevo.')).toBeTruthy(),
+    );
+
+    captureSnapshot.mockResolvedValue({ version: 1, draft: changedDraft });
+    fireEvent.click(screen.getByRole('button', { name: /^Guardar$/ }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Cargar versión remota' })).toBeTruthy(),
+    );
+    expect(screen.queryByRole('button', { name: 'Actualizar versión para Eliminar' })).toBeNull();
+    expect(editorRef.current?.applyDraft).toHaveBeenCalledTimes(1);
     confirm.mockRestore();
   });
 });

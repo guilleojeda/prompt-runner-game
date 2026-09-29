@@ -15,6 +15,7 @@ import { SavedRobotApiFailure, type SavedRobotApi } from './saved-robot-api.js';
 type NameFormMode = 'new' | null;
 type SavedOperation = 'load' | 'save' | 'delete' | null;
 type ErrorKind = 'list' | 'load' | 'save' | 'new' | 'delete' | null;
+type ConflictKind = 'save' | 'delete' | null;
 
 interface PendingCreate {
   readonly id: string;
@@ -129,6 +130,7 @@ export function SavedRobots({
   const [error, setError] = useState<string | null>(null);
   const [errorKind, setErrorKind] = useState<ErrorKind>(null);
   const [conflict, setConflict] = useState<SavedRobot | null>(null);
+  const [conflictKind, setConflictKind] = useState<ConflictKind>(null);
   const [listAttempt, setListAttempt] = useState(0);
   const generationRef = useRef(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -203,6 +205,7 @@ export function SavedRobots({
     setErrorKind(null);
     setMessage(null);
     setConflict(null);
+    setConflictKind(null);
     const generation = generationRef.current;
     try {
       if (!isCurrent(generation)) return;
@@ -325,12 +328,14 @@ export function SavedRobots({
       setName(saved.name);
       updateListWith(saved);
       setConflict(null);
+      setConflictKind(null);
       setNameMode(null);
       setMessage(`Guardaste «${saved.name}».`);
     } catch (saveError) {
       if (!isCurrent(generation)) return;
       if (saveError instanceof SavedRobotApiFailure && saveError.code === 'conflict') {
         setConflict(saveError.current ?? null);
+        setConflictKind('save');
         setError(
           saveError.current
             ? 'El robot guardado cambió en otra pestaña. Cargá la versión remota o usá «Guardar como nueva» para conservar el borrador visible. «Guardar» está bloqueado hasta resolver el conflicto.'
@@ -403,6 +408,7 @@ export function SavedRobots({
       setNameMode(null);
       updateListWith(saved);
       setConflict(null);
+      setConflictKind(null);
       setMessage(`Guardaste «${saved.name}» como robot nuevo.`);
     } catch (saveError) {
       if (!isCurrent(generation)) return;
@@ -417,6 +423,7 @@ export function SavedRobots({
       setErrorKind('new');
       if (saveError instanceof SavedRobotApiFailure && saveError.code === 'conflict') {
         setConflict(saveError.current ?? null);
+        setConflictKind('save');
       }
       if (isAuthError(saveError)) onAuthRequired?.();
     } finally {
@@ -513,15 +520,25 @@ export function SavedRobots({
           }
         }
       } else {
-        setError(apiErrorMessage(deleteError, 'No se pudo eliminar el robot guardado.'));
-        setErrorKind('delete');
-        if (isMissingError(deleteError)) {
-          setSelected(null);
-          setName('');
-          setRobots((items) => items.filter((item) => item.id !== current.id));
-        }
-        if (deleteError instanceof SavedRobotApiFailure && deleteError.code === 'conflict') {
+        if (
+          deleteError instanceof SavedRobotApiFailure &&
+          deleteError.code === 'conflict' &&
+          deleteError.current
+        ) {
           setConflict(deleteError.current ?? null);
+          setConflictKind('delete');
+          setError(null);
+          setErrorKind(null);
+        } else {
+          setConflict(null);
+          setConflictKind(null);
+          setError(apiErrorMessage(deleteError, 'No se pudo eliminar el robot guardado.'));
+          setErrorKind('delete');
+          if (isMissingError(deleteError)) {
+            setSelected(null);
+            setName('');
+            setRobots((items) => items.filter((item) => item.id !== current.id));
+          }
         }
       }
       if (isAuthError(deleteError)) onAuthRequired?.();
@@ -533,11 +550,23 @@ export function SavedRobots({
   const handleUseConflict = async (): Promise<void> => {
     if (!conflict || busy) return;
     const generation = generationRef.current;
+    const conflictResolutionKind = conflictKind;
     setOperation('load');
     setError(null);
     setErrorKind(null);
     try {
       if (!isCurrent(generation)) return;
+      if (conflictResolutionKind === 'delete') {
+        setSelected(conflict);
+        setName(conflict.name);
+        updateListWith(conflict);
+        setConflict(null);
+        setConflictKind(null);
+        setMessage(
+          `La copia «${conflict.name}» cambió. Confirmá «Eliminar» nuevamente para borrarla. Tu configuración actual sigue intacta.`,
+        );
+        return;
+      }
       const applied = await editor.current?.applyDraft(conflict.draft);
       if (!isCurrent(generation)) return;
       if (!applied) {
@@ -549,6 +578,7 @@ export function SavedRobots({
       setName(conflict.name);
       updateListWith(conflict);
       setConflict(null);
+      setConflictKind(null);
       setMessage(`Cargaste la versión remota de «${conflict.name}».`);
     } catch (loadError) {
       if (isCurrent(generation)) {
@@ -776,9 +806,9 @@ export function SavedRobots({
       {conflict && (
         <div className="saved-robots-conflict" role="alert">
           <p>
-            Hay una versión más nueva de «{conflict.name}» guardada en otra pestaña. «Guardar» está
-            bloqueado hasta que cargues esa versión o guardes el borrador visible como una copia
-            nueva.
+            {conflictKind === 'delete'
+              ? `La copia «${conflict.name}» cambió en otra pestaña. Actualizá su versión y confirmá «Eliminar» nuevamente; tu configuración actual sigue intacta.`
+              : `Hay una versión más nueva de «${conflict.name}» guardada en otra pestaña. «Guardar» está bloqueado hasta que cargues esa versión o guardes el borrador visible como una copia nueva.`}
           </p>
           <div className="editor-actions">
             <button
@@ -787,7 +817,9 @@ export function SavedRobots({
               onClick={() => void handleUseConflict()}
               disabled={busy}
             >
-              Cargar versión remota
+              {conflictKind === 'delete'
+                ? 'Actualizar versión para Eliminar'
+                : 'Cargar versión remota'}
             </button>
           </div>
         </div>
