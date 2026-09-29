@@ -112,6 +112,48 @@ describe('SavedRobotApiClient', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['zero', 0],
+    ['negative', -1],
+    ['fractional', 1.5],
+    ['unsafe integer', Number.MAX_SAFE_INTEGER + 1],
+  ])('rejects a response with a %s version', async (_label, version) => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(JSON.stringify(robot('robot-a', version)), { status: 200 }));
+    const client = new SavedRobotApiClient(config, {
+      tokenProvider: () => 'access-token',
+      fetch: fetchImpl,
+    });
+
+    await expect(client.getRobot('robot-a')).rejects.toMatchObject({
+      code: 'server',
+      status: 200,
+    });
+  });
+
+  it('rejects a saved robot whose summary model does not match its draft model', async () => {
+    const saved = robot();
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ...saved,
+          modelKey: 'gpt-5.4',
+        }),
+        { status: 200 },
+      ),
+    );
+    const client = new SavedRobotApiClient(config, {
+      tokenProvider: () => 'access-token',
+      fetch: fetchImpl,
+    });
+
+    await expect(client.getRobot('robot-a')).rejects.toMatchObject({
+      code: 'server',
+      status: 200,
+    });
+  });
+
   it('does not convert an aborted write into an ambiguous failure', async () => {
     const controller = new AbortController();
     const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => {
