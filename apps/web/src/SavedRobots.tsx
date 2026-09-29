@@ -668,6 +668,7 @@ export function SavedRobots({
             type="button"
             onClick={() => {
               setNameMode('new');
+              setNewName(pendingCreate?.name ?? '');
               setError(null);
               setErrorKind(null);
               setMessage(null);
