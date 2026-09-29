@@ -11,7 +11,7 @@ El pool se configura con **`EmailSendingAccount=COGNITO_DEFAULT`**, remitente ad
 Se aceptan inicialmente estas condiciones del servicio:
 
 - **50 emails diarios no ajustables**, compartidos por las operaciones de envío, con reinicio publicado a las 09:00 UTC. La discrepancia documental sobre alcance cuenta/pool se conserva en [la referencia](../reference/identidad.md); no se presume capacidad adicional por crear pools.
-- El límite incluye altas, reenvíos y recuperación. El acceso normal con contraseña no requiere otro email. Esta cuota de correo es independiente de los cien intentos diarios por usuario y de los cien usuarios simultáneos del juego.
+- El límite incluye altas, reenvíos y recuperación. El acceso normal con contraseña no requiere otro email. Esta cuota de correo limita cuántas altas pueden completarse en un día; no limita el total de cuentas que el juego puede conservar.
 - Se usan **mensajes estándar de Cognito**, sin personalizar asunto o cuerpo. Managed Login y la aplicación están en español; la primera versión no exige traducir los correos estándar.
 - Si el proveedor impide un envío por cuota o por error, se informa el impedimento y se permite reintentar cuando corresponda. Un alta puede haber dejado un usuario `UNCONFIRMED`; se conserva ese estado y se ofrece reenvío, sin marcar la casilla como verificada para sortear el límite.
 

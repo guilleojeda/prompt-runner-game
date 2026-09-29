@@ -55,7 +55,7 @@ No se encontraron otras cuotas on-demand con esos nombres de modelo en las respu
 
 No aparecieron cuotas con nombre Harness ni Email de Cognito en las respuestas consultadas. No se encontró historial de solicitudes de aumento para los servicios consultados.
 
-Estas cuotas no equivalen a una medición de 100 usuarios simultáneos: la concurrencia de Lambda depende de cuántas solicitudes estén ejecutándose y de su duración. No se hicieron pruebas de carga ni se modificaron los límites.
+Estas cuotas describen ritmos de solicitudes y ejecuciones concurrentes, no un límite de cien cuentas totales. La concurrencia de Lambda depende de cuántas solicitudes estén ejecutándose y de su duración. En esta consulta del 16 de septiembre no se hicieron pruebas de carga ni se modificaron los límites.
 
 ## Correo SES
 
