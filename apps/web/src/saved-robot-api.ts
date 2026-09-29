@@ -65,7 +65,7 @@ const requiredString = (value: Record<string, unknown>, key: string): string | n
   typeof value[key] === 'string' && value[key].trim() !== '' ? value[key] : null;
 
 const requiredVersion = (value: Record<string, unknown>): number | null =>
-  typeof value.version === 'number' && Number.isInteger(value.version) && value.version >= 0
+  typeof value.version === 'number' && Number.isSafeInteger(value.version) && value.version >= 1
     ? value.version
     : null;
 
@@ -99,7 +99,9 @@ function parseSavedRobot(value: unknown): SavedRobot | null {
   const summary = parseSummary(value);
   if (!summary) return null;
   try {
-    return { ...summary, draft: validateDraft(value.draft) };
+    const draft = validateDraft(value.draft);
+    if (summary.modelKey !== draft.modelKey) return null;
+    return { ...summary, draft };
   } catch {
     return null;
   }

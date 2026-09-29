@@ -138,6 +138,18 @@ describe('SavedRobots', () => {
     expect((create as HTMLButtonElement).disabled).toBe(true);
   });
 
+  it('exposes one create control and preserves the entered name while the form is open', async () => {
+    const savedApi = api({ listRobots: vi.fn().mockResolvedValue({ robots: [] }) });
+    render(<SavedRobots api={savedApi} editor={editor()} session={session()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Guardar como nueva' }));
+    expect(screen.getAllByRole('button', { name: 'Guardar como nueva' })).toHaveLength(1);
+
+    const input = screen.getByLabelText('Nombre para la nueva copia');
+    fireEvent.change(input, { target: { value: 'Defensa' } });
+    expect((input as HTMLInputElement).value).toBe('Defensa');
+  });
+
   it('accepts an 80-code-point Unicode name without truncating it in the input', async () => {
     const editorRef = editor();
     const saveRobot = vi

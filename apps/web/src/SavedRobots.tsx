@@ -374,7 +374,6 @@ export function SavedRobots({
     setOperation('save');
     setError(null);
     setErrorKind(null);
-    setErrorKind(null);
     setMessage(null);
     try {
       if (!pendingCreateRef.current) {
@@ -662,22 +661,23 @@ export function SavedRobots({
         </div>
       )}
 
-      <div className="saved-robots-actions">
-        <button
-          className="primary-button"
-          type="button"
-          onClick={() => {
-            setNameMode('new');
-            setNewName(pendingCreate?.name ?? '');
-            setError(null);
-            setErrorKind(null);
-            setMessage(null);
-          }}
-          disabled={paused || locked || listBusy || operation !== null}
-        >
-          Guardar como nueva
-        </button>
-      </div>
+      {nameMode !== 'new' && (
+        <div className="saved-robots-actions">
+          <button
+            className="primary-button"
+            type="button"
+            onClick={() => {
+              setNameMode('new');
+              setError(null);
+              setErrorKind(null);
+              setMessage(null);
+            }}
+            disabled={paused || locked || listBusy || operation !== null}
+          >
+            Guardar como nueva
+          </button>
+        </div>
+      )}
 
       {selected && (
         <form
