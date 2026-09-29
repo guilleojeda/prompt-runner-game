@@ -27,6 +27,36 @@ export interface DraftSnapshot {
   readonly draft: RobotDraft;
 }
 
+/** A named copy of a robot, independent of the active draft and any level. */
+export interface SavedRobotSummary {
+  readonly id: string;
+  readonly name: string;
+  readonly version: number;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly modelKey: ModelKey;
+}
+
+export interface SavedRobot extends SavedRobotSummary {
+  readonly draft: RobotDraft;
+}
+
+export const MAX_SAVED_ROBOT_NAME_LENGTH = 80;
+
+export const validateSavedRobotName = (value: unknown): string => {
+  if (typeof value !== 'string') {
+    throw new DraftValidationError('invalid', 'Ingresá un nombre para el robot.');
+  }
+  const name = value.trim();
+  if (!name || [...name].length > MAX_SAVED_ROBOT_NAME_LENGTH || /[\r\n]/u.test(name)) {
+    throw new DraftValidationError(
+      'invalid',
+      `El nombre debe tener entre 1 y ${MAX_SAVED_ROBOT_NAME_LENGTH} caracteres en una línea.`,
+    );
+  }
+  return name;
+};
+
 export interface RobotCatalogEntry {
   readonly id: RobotSkillId;
   readonly name: string;

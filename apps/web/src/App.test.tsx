@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 
 import { StrictMode } from 'react';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { User } from 'oidc-client-ts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
 import { AuthFailure, type AuthClient, type AuthConfig, type AuthSession } from './auth.js';
 import { DraftApiClient, type DraftApi } from './draft-api.js';
+import type { SavedRobotApi } from './saved-robot-api.js';
 import { AttemptApiFailure, type AttemptApi, type AttemptSummary } from './attempt-api.js';
 import type { PendingConfirmationClient } from './pending-confirmation.js';
 import {
@@ -14,6 +15,7 @@ import {
   ROBOT_CATALOG_VERSION,
   ROBOT_SCHEMA_VERSION,
   type DraftSnapshot,
+  type SavedRobot,
 } from '../../../shared/robot.js';
 import { createClosedAttemptRecordFixture } from '../../../shared/attempt.fixture.js';
 import { LEVEL } from '../../../shared/game.js';
@@ -841,5 +843,123 @@ describe('access screen', () => {
     ).toBeTruthy();
     expect(screen.queryByText('Tu cuenta está confirmada y la sesión es válida.')).toBeNull();
     expect(screen.getByRole('button', { name: 'Volver a ingresar' })).toBeTruthy();
+  });
+
+  it('loads an attempt configuration, saves it as a copy, then tests the visible draft', async () => {
+    window.sessionStorage.clear();
+    const authClient = client({ initialize: vi.fn().mockResolvedValue(session()) });
+    const sourceSummary: AttemptSummary = {
+      id: 'attempt-source',
+      createdAt: '2026-09-21T12:00:00.000Z',
+      updatedAt: '2026-09-21T12:00:01.000Z',
+      status: 'victory',
+      cancelRequested: false,
+      levelId: LEVEL.id,
+      modelKey: 'claude-sonnet-4.6',
+      modelLabel: 'Claude Sonnet 4.6',
+      modelId: 'global.anthropic.claude-sonnet-4-6',
+      turnsUsed: 17,
+      maxTurns: LEVEL.maxTurns,
+      calls: 17,
+      inputTokens: null,
+      outputTokens: null,
+      reasoningTokens: null,
+      gameTokens: 700,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+      score: 321,
+      collectedObjectIds: ['recompensa-1', 'llave-1'],
+      objectPoints: 25,
+      progress: 1,
+      finalSupport: LEVEL.exit.support,
+      animationEnabled: false,
+      presentationComplete: true,
+      recordComplete: true,
+    };
+    const sourceSerialized = JSON.stringify(sourceSummary);
+    const recovered = { ...createDefaultDraft(), instructions: 'Desde la victoria' };
+    const draftApi: DraftApi = {
+      getDraft: vi.fn().mockResolvedValue({ version: 0, draft: createDefaultDraft() }),
+      putDraft: vi.fn().mockImplementation(async (version: number, draft) => ({
+        version: version + 1,
+        draft,
+      })),
+    };
+    const saved: SavedRobot = {
+      id: '11111111-1111-4111-8111-111111111111',
+      name: 'Desde intento',
+      version: 1,
+      createdAt: '2026-09-29T12:00:00.000Z',
+      updatedAt: '2026-09-29T12:00:00.000Z',
+      modelKey: recovered.modelKey,
+      draft: recovered,
+    };
+    const savedRobotApi: SavedRobotApi = {
+      listRobots: vi.fn().mockResolvedValue({ robots: [] }),
+      getRobot: vi.fn().mockResolvedValue(saved),
+      saveRobot: vi.fn().mockResolvedValue(saved),
+      deleteRobot: vi.fn().mockResolvedValue({ deleted: true }),
+    };
+    const createAttempt = vi.fn().mockResolvedValue({
+      attempt: { ...sourceSummary, id: 'attempt-new' },
+      dispatchConfirmed: true,
+    });
+    const attemptApi = {
+      ...emptyAttemptApi(),
+      listAttempts: vi
+        .fn()
+        .mockResolvedValueOnce({ attempts: [sourceSummary] })
+        .mockResolvedValue({ attempts: [] }),
+      getConfiguration: vi
+        .fn()
+        .mockResolvedValue({ attemptId: 'attempt-source', draft: recovered }),
+      createAttempt,
+    } as AttemptApi;
+    render(
+      <App
+        authClient={authClient}
+        draftApi={draftApi}
+        savedRobotApi={savedRobotApi}
+        attemptApi={attemptApi}
+        configLoader={async () => config}
+      />,
+    );
+
+    expect(await screen.findByRole('heading', { name: 'Historial' })).toBeTruthy();
+    const history = screen
+      .getByRole('heading', { name: 'Historial' })
+      .closest('section') as HTMLElement;
+    const sourceRow = within(history).getAllByRole('listitem')[0]!;
+    fireEvent.click(within(sourceRow).getByRole('button', { name: 'Ver configuración' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Usar esta configuración' }));
+    expect(await screen.findByDisplayValue('Desde la victoria')).toBeTruthy();
+
+    await waitFor(() => {
+      expect(
+        (screen.getByRole('button', { name: 'Guardar como nueva' }) as HTMLButtonElement).disabled,
+      ).toBe(false);
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar como nueva' }));
+    fireEvent.change(screen.getByLabelText('Nombre para la nueva copia'), {
+      target: { value: 'Desde intento' },
+    });
+    fireEvent.submit(screen.getByLabelText('Nombre para la nueva copia').closest('form')!);
+    await waitFor(() => expect(savedRobotApi.saveRobot).toHaveBeenCalledOnce());
+    expect((savedRobotApi.saveRobot as ReturnType<typeof vi.fn>).mock.calls[0]?.[3]).toEqual(
+      recovered,
+    );
+
+    await waitFor(() => {
+      expect((screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement).disabled).toBe(
+        false,
+      );
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Probar' }));
+    await waitFor(() => expect(createAttempt).toHaveBeenCalledOnce());
+    const sentDraft = createAttempt.mock.calls[0]?.[2];
+    expect(sentDraft.instructions).toBe('Desde la victoria');
+    expect(createAttempt.mock.calls[0]?.[0]).not.toBe('attempt-source');
+    expect(savedRobotApi.saveRobot).toHaveBeenCalledOnce();
+    expect(JSON.stringify(sourceSummary)).toBe(sourceSerialized);
   });
 });

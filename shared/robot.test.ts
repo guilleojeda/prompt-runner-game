@@ -9,6 +9,7 @@ import {
   draftByteLength,
   draftsEqual,
   validateDraft,
+  validateSavedRobotName,
 } from './robot';
 import { DEFAULT_MODEL_KEY, MODEL_CATALOG } from './models';
 
@@ -182,5 +183,16 @@ describe('current robot draft contract', () => {
     expect(() => validateDraft({ ...draft, modelKey: 'global.openai.arbitrary' })).toThrow(
       DraftValidationError,
     );
+  });
+});
+
+describe('saved robot name', () => {
+  it('trims the label while preserving its case and allowing duplicate labels', () => {
+    expect(validateSavedRobotName('  Robot azul  ')).toBe('Robot azul');
+    expect(validateSavedRobotName('🦾'.repeat(80))).toBe('🦾'.repeat(80));
+  });
+
+  it.each([null, '', '   ', 'x'.repeat(81), 'línea\notra'])('rejects invalid names', (name) => {
+    expect(() => validateSavedRobotName(name)).toThrowError(DraftValidationError);
   });
 });

@@ -65,6 +65,7 @@ export function createRobotResources(scope: Construct, props: RobotResourcesProp
         'dynamodb:PutItem',
         'dynamodb:UpdateItem',
         'dynamodb:Query',
+        'dynamodb:DeleteItem',
       ],
       resources: [draftTable.tableArn],
     }),
@@ -106,6 +107,7 @@ export function createRobotResources(scope: Construct, props: RobotResourcesProp
         apigatewayv2.CorsHttpMethod.GET,
         apigatewayv2.CorsHttpMethod.PUT,
         apigatewayv2.CorsHttpMethod.POST,
+        apigatewayv2.CorsHttpMethod.DELETE,
         apigatewayv2.CorsHttpMethod.OPTIONS,
       ],
       allowHeaders: ['Authorization', 'Content-Type'],
@@ -138,6 +140,15 @@ export function createRobotResources(scope: Construct, props: RobotResourcesProp
     readonly path: string;
     readonly methods: apigatewayv2.HttpMethod[];
   }> = [
+    { path: '/robots', methods: [apigatewayv2.HttpMethod.GET] },
+    {
+      path: '/robots/{uuid}',
+      methods: [
+        apigatewayv2.HttpMethod.GET,
+        apigatewayv2.HttpMethod.PUT,
+        apigatewayv2.HttpMethod.DELETE,
+      ],
+    },
     { path: '/attempts', methods: [apigatewayv2.HttpMethod.GET, apigatewayv2.HttpMethod.POST] },
     { path: '/attempts/{attemptId}', methods: [apigatewayv2.HttpMethod.GET] },
     { path: '/attempts/{attemptId}/start', methods: [apigatewayv2.HttpMethod.POST] },

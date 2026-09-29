@@ -11,7 +11,12 @@ import {
   createDynamoDraftStore,
   type DraftStore,
 } from './draft.js';
-import { DraftValidationError, type RobotDraft, validateDraft } from '../../../shared/robot.js';
+import {
+  DraftValidationError,
+  type RobotDraft,
+  validateDraft,
+  validateSavedRobotName,
+} from '../../../shared/robot.js';
 import {
   AdmissionConflictError,
   AttemptDecisionsPendingError,
@@ -26,6 +31,15 @@ import {
   S3BodyStore,
   type AttemptStore,
 } from './attempt-store.js';
+import {
+  SavedRobotConflictError,
+  SavedRobotCursorError,
+  SavedRobotIncompatibleError,
+  SavedRobotStorageError,
+  createDynamoSavedRobotStore,
+  validateSavedRobotId,
+  type SavedRobotStore,
+} from './saved-robots.js';
 import { summaryOf, type PersistedAttempt } from '../../../shared/server/attempt.js';
 
 const APPLICATION_SCOPE = 'prompt-runner/robot';
@@ -42,6 +56,7 @@ interface HandlerDependencies {
   readonly clientId?: string;
   readonly userInfoUrl?: string;
   readonly attemptStore?: AttemptStore;
+  readonly savedRobotStore?: SavedRobotStore;
   readonly dispatch?: (attemptId: string, owner: string) => Promise<void>;
 }
 
@@ -399,6 +414,86 @@ const putInput = (value: unknown): { expectedVersion: number; draft: RobotDraft 
   }
 };
 
+const savedRobotPutInput = (
+  value: unknown,
+): {
+  expectedVersion: number;
+  name: string;
+  draft: RobotDraft;
+} => {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    Array.isArray(value) ||
+    !Object.prototype.hasOwnProperty.call(value, 'expectedVersion') ||
+    !Object.prototype.hasOwnProperty.call(value, 'name') ||
+    !Object.prototype.hasOwnProperty.call(value, 'draft') ||
+    Object.keys(value).some((key) => !['expectedVersion', 'name', 'draft'].includes(key))
+  ) {
+    throw new ApiError(400, 'invalid', 'La solicitud debe incluir expectedVersion, name y draft.');
+  }
+  const input = value as { expectedVersion: unknown; name: unknown; draft: unknown };
+  if (
+    typeof input.expectedVersion !== 'number' ||
+    !Number.isSafeInteger(input.expectedVersion) ||
+    input.expectedVersion < 0 ||
+    input.expectedVersion === Number.MAX_SAFE_INTEGER
+  ) {
+    throw new ApiError(400, 'invalid', 'expectedVersion debe ser un entero no negativo.');
+  }
+  let name: string;
+  try {
+    name = validateSavedRobotName(input.name);
+  } catch (error) {
+    if (error instanceof DraftValidationError) {
+      throw new ApiError(400, error.code, error.message, { cause: error });
+    }
+    throw error;
+  }
+  try {
+    return { expectedVersion: input.expectedVersion, name, draft: validateDraft(input.draft) };
+  } catch (error) {
+    if (error instanceof DraftValidationError) {
+      throw new ApiError(error.code === 'too_large' ? 413 : 400, error.code, error.message, {
+        cause: error,
+      });
+    }
+    throw error;
+  }
+};
+
+const savedRobotDeleteInput = (value: unknown): { expectedVersion: number } => {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    Array.isArray(value) ||
+    !Object.prototype.hasOwnProperty.call(value, 'expectedVersion') ||
+    Object.keys(value).some((key) => key !== 'expectedVersion')
+  ) {
+    throw new ApiError(400, 'invalid', 'La solicitud debe incluir expectedVersion.');
+  }
+  const expectedVersion = (value as { expectedVersion: unknown }).expectedVersion;
+  if (
+    typeof expectedVersion !== 'number' ||
+    !Number.isSafeInteger(expectedVersion) ||
+    expectedVersion < 0 ||
+    expectedVersion === Number.MAX_SAFE_INTEGER
+  ) {
+    throw new ApiError(400, 'invalid', 'expectedVersion debe ser un entero no negativo.');
+  }
+  return { expectedVersion };
+};
+
+const savedRobotIdInput = (value: string): string => {
+  try {
+    return validateSavedRobotId(decodeURIComponent(value));
+  } catch (error) {
+    throw new ApiError(400, 'invalid', 'El identificador de la configuración no es válido.', {
+      cause: error,
+    });
+  }
+};
+
 const currentConflict = (error: DraftConflictError): Record<string, unknown> => ({
   code: 'conflict',
   message: error.message,
@@ -430,6 +525,8 @@ export const handleRequest = async (
     const method = event.requestContext.http.method.toUpperCase();
     const parts = pathParts(event);
     const isDraft = parts.length === 1 && parts[0] === 'draft';
+    const isSavedRobotCollection = parts.length === 1 && parts[0] === 'robots';
+    const isSavedRobotItem = parts.length === 2 && parts[0] === 'robots';
     const isAttemptCollection = parts.length === 1 && parts[0] === 'attempts';
     const isAttemptRequest = parts.length === 2 && parts[0] === 'attempt-requests';
     const isAttemptItem = parts.length === 2 && parts[0] === 'attempts';
@@ -448,6 +545,8 @@ export const handleRequest = async (
     const isQuota = parts.length === 1 && parts[0] === 'quota';
     const supported =
       (isDraft && (method === 'GET' || method === 'PUT')) ||
+      (isSavedRobotCollection && method === 'GET') ||
+      (isSavedRobotItem && (method === 'GET' || method === 'PUT' || method === 'DELETE')) ||
       (isAttemptCollection && (method === 'GET' || method === 'POST')) ||
       (isAttemptRequest && method === 'GET') ||
       (isAttemptItem && method === 'GET') ||
@@ -475,6 +574,45 @@ export const handleRequest = async (
     }
     const config = configFrom(dependencies);
     const identity = await verifyIdentity(event, { ...config, fetch: dependencies.fetch });
+    if (isSavedRobotCollection || isSavedRobotItem) {
+      const savedRobotStore = dependencies.savedRobotStore ?? createDynamoSavedRobotStore();
+      if (isSavedRobotCollection) {
+        return respond(
+          event,
+          200,
+          'ok',
+          await savedRobotStore.list(identity.sub, event.queryStringParameters?.cursor, 20),
+        );
+      }
+      const id = savedRobotIdInput(parts[1]);
+      if (method === 'GET') {
+        const robot = await savedRobotStore.get(identity.sub, id);
+        if (!robot) throw new ApiError(404, 'not_found', 'Configuración no encontrada.');
+        return respond(event, 200, 'ok', robot);
+      }
+      if (method === 'PUT') {
+        const input = savedRobotPutInput(requestBody(event));
+        return respond(
+          event,
+          200,
+          'ok',
+          await savedRobotStore.put(
+            identity.sub,
+            id,
+            input.expectedVersion,
+            input.name,
+            input.draft,
+          ),
+        );
+      }
+      const input = savedRobotDeleteInput(requestBody(event));
+      return respond(
+        event,
+        200,
+        'ok',
+        await savedRobotStore.delete(identity.sub, id, input.expectedVersion),
+      );
+    }
     const draftStore = dependencies.store ?? createDynamoDraftStore();
     if (isDraft && method === 'GET') {
       return respond(event, 200, 'ok', await draftStore.get(identity.sub));
@@ -603,6 +741,37 @@ export const handleRequest = async (
     }
     throw new ApiError(404, 'not_found', 'Ruta no encontrada.');
   } catch (error) {
+    if (error instanceof SavedRobotCursorError) {
+      return respond(event, 400, 'invalid', {
+        code: 'invalid',
+        message: error.message,
+      });
+    }
+    if (error instanceof SavedRobotConflictError) {
+      if (!error.current) {
+        return respond(event, 404, 'not_found', {
+          code: 'not_found',
+          message: 'Configuración no encontrada.',
+        });
+      }
+      return respond(event, 409, 'conflict', {
+        code: 'conflict',
+        message: error.message,
+        current: error.current,
+      });
+    }
+    if (error instanceof SavedRobotIncompatibleError) {
+      return respond(event, 500, 'stored_robot_incompatible', {
+        code: 'stored_robot_incompatible',
+        message: 'La configuración guardada no es compatible con la versión actual.',
+      });
+    }
+    if (error instanceof SavedRobotStorageError) {
+      return respond(event, 503, 'dependency_unavailable', {
+        code: 'dependency_unavailable',
+        message: 'No se pudo acceder a las configuraciones guardadas.',
+      });
+    }
     if (error instanceof DraftConflictError) {
       return respond(event, 409, 'conflict', currentConflict(error));
     }

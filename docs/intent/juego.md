@@ -1,6 +1,6 @@
 # Juego y niveles
 
-Este documento es canónico para las reglas del mundo, el reloj, las acciones, los objetos, la puerta, la salida y el contenido de niveles del juego. El contrato vigente usa un único nivel principal con terreno periódico, recompensa y llave recogibles, puerta y salida libre. El recorrido de transferencia pertenece a una fase posterior. La especificación vigente se distribuye en esta carpeta y se indexa desde [README.md](../../README.md).
+Este documento es canónico para las reglas del mundo, el reloj, las acciones, los objetos, la puerta, la salida y el contenido del nivel vigente. El contrato actual usa un único recorrido con terreno periódico, recompensa y llave recogibles, puerta y salida libre. La especificación vigente se distribuye en esta carpeta y se indexa desde [README.md](../../README.md).
 
 Las etiquetas siguientes distinguen el grado de decisión:
 
@@ -117,9 +117,9 @@ La salida del apoyo 10 no exige llave ni tiene estados de apertura. Llegar a ell
 
 Las recompensas opcionales se ubican antes de la activación automática de la victoria. Los valores y requisitos son datos del nivel y se aplican solo a los objetos realmente recogidos en ese intento.
 
-## Niveles y transferencia
+## Nivel vigente
 
-El recorrido principal vigente es el definido arriba. Un recorrido corto de transferencia se incorporará en una fase posterior y combinará las mecánicas disponibles entonces. No hay selector de nivel ni otro nivel activo.
+El recorrido vigente es el definido arriba. No hay selector de nivel ni otro nivel activo. Las configuraciones guardadas del robot no contienen un nivel; se podrán recuperar cuando se incorporen otros recorridos en trabajos posteriores.
 
 El nivel principal vigente presenta esta progresión:
 
@@ -129,7 +129,7 @@ El nivel principal vigente presenta esta progresión:
 - la barrera periódica baja/alta;
 - la plataforma periódica suelo/pozo.
 
-La recompensa está en el apoyo 2; la llave, en el 6; la puerta, en el acceso al 9; y la salida, en el 10. El recorrido de transferencia reordenará o combinará las mecánicas disponibles en una situación nueva; no requiere generación procedural.
+La recompensa está en el apoyo 2; la llave, en el 6; la puerta, en el acceso al 9; y la salida, en el 10.
 
 Para cada nivel se debe verificar, además de que exista una ruta física, que una política basada en la observación actual y las herramientas disponibles pueda escogerla:
 
@@ -143,7 +143,7 @@ Un corredor vacío que exige volver sin una señal local es un nivel inválido p
 
 ## Defaults permitidos y pendientes
 
-El contenido vigente fija los períodos y desfases descritos arriba, un límite de 24 acciones, el valor de 25 puntos de `recompensa-1` y el valor cero de `llave-1`. Los límites del recorrido y la puerta cerrada son no-op; las habilidades sin efecto tienen resolución determinista. La configuración inicial limitada y la frase de orientación se fijan en [agente.md](agente.md). El recorrido de transferencia se definirá en su fase.
+El contenido vigente fija los períodos y desfases descritos arriba, un límite de 24 acciones, el valor de 25 puntos de `recompensa-1` y el valor cero de `llave-1`. Los límites del recorrido y la puerta cerrada son no-op; las habilidades sin efecto tienen resolución determinista. La configuración inicial limitada y la frase de orientación se fijan en [agente.md](agente.md).
 
 ## Verificación de comportamiento
 
@@ -156,7 +156,7 @@ La verificación debe cubrir el comportamiento, no depender solo de que se dibuj
 - comprobar que el nivel principal tiene una solución dentro del límite con la observación local y las herramientas disponibles;
 - reproducir los casos de no-op y de colisión como las causas registradas.
 
-Verificar rutas victoriosas con y sin recompensa dentro del límite; la acción de recogida cambia el turno que se encuentra en barrera y plataforma. Comprobar que sólo el objeto local puede recogerse, que el inventario conserva su identidad sin duplicados y que el no-op por ausencia de objeto consume un turno. Una ruta debe pasar de largo la llave, encontrar la puerta cerrada, retroceder, recogerla, abrir la puerta y ganar en la salida; otra debe recogerla antes de llegar a la puerta. En ambos casos la salida queda libre. El recorrido de transferencia se verificará en su fase posterior.
+Verificar rutas victoriosas con y sin recompensa dentro del límite; la acción de recogida cambia el turno que se encuentra en barrera y plataforma. Comprobar que sólo el objeto local puede recogerse, que el inventario conserva su identidad sin duplicados y que el no-op por ausencia de objeto consume un turno. Una ruta debe pasar de largo la llave, encontrar la puerta cerrada, retroceder, recogerla, abrir la puerta y ganar en la salida; otra debe recogerla antes de llegar a la puerta. En ambos casos la salida queda libre.
 
 Las pruebas pueden usar un adaptador de agente de prueba o un controlador de referencia para el motor. Eso sirve para validar reglas y resolución y no reemplaza la inferencia real requerida por la experiencia.
 

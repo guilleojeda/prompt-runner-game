@@ -1,6 +1,6 @@
 # Persistencia, historial y cuota
 
-**Borradores, registros, reproducción, inspección y comparación del nivel principal con llave y puerta.** La API admite intentos, aplica idempotencia y cuota y expone estado, historial, replay, inspección de decisiones y configuración propia fijada en cada intento. El ejecutor conserva snapshots y acciones en DynamoDB y bodies en S3 privado. El [contrato lógico del registro](registro-de-ejecucion.md) describe su forma vigente. La clasificación de victorias cargadas se deriva en la web del historial propio. Complementa [ejecución](ejecucion.md) y respeta los requisitos de [intentos](../intent/intentos.md), [consumo](../intent/consumo-y-puntaje.md) y [plataforma](../intent/plataforma.md).
+**Borradores, robots guardados, registros, reproducción, inspección y comparación del nivel principal con llave y puerta.** La API admite intentos, aplica idempotencia y cuota y expone estado, historial, replay, inspección de decisiones y configuración propia fijada en cada intento. El ejecutor conserva snapshots y acciones en DynamoDB y bodies en S3 privado. El [contrato lógico del registro](registro-de-ejecucion.md) describe su forma vigente. La clasificación de victorias cargadas se deriva en la web del historial propio. Complementa [ejecución](ejecucion.md) y respeta los requisitos de [intentos](../intent/intentos.md), [consumo](../intent/consumo-y-puntaje.md) y [plataforma](../intent/plataforma.md).
 
 ## Borrador disponible
 
@@ -15,6 +15,14 @@ El contrato compartido vigente valida forma y catálogo; reconstruye IDs/schemas
 El borrador vigente contiene sólo el esquema y catálogo actuales y usa Sonnet 4.6. GET y PUT no convierten formatos previos ni asignan un modelo alternativo a claves retiradas. Un formato, habilidad o clave de modelo desconocidos se rechaza explícitamente; su dato de prueba puede permanecer ignorado o eliminarse si interfiere. La edición vigente conserva control de versión, validación de tamaño y conflictos.
 
 La admisión compara el contenido semántico y condiciona la transacción sobre la versión y representación raw realmente leídas de DynamoDB. El intento fija el nivel, reglas, herramientas y perfil únicos vigentes. Las llamadas nuevas registran modelo, perfil y región además de sus cuerpos. No hay migración masiva ni otra tabla de preferencias.
+
+## Robots guardados
+
+La biblioteca conserva varias copias nombradas por cuenta, separadas del único `DRAFT` editable y de los snapshots inmutables de intentos. Cada ítem usa `PK=USER#<sub>`, `SK=ROBOT#<uuid>`, ID estable, nombre, versión, fechas y el `RobotDraft` validado: modelo, habilidades, descripciones e instrucciones. No guarda nivel, resultado ni referencia a un intento. La tabla existente alcanza para leer por ID y listar por prefijo con paginación; no hay índice ni tabla adicional. Las copias persisten entre sesiones sin caducidad automática bajo el contrato vigente.
+
+Las rutas JWT con scope `prompt-runner/robot` son `GET /robots` para resúmenes paginados, `GET /robots/{id}` para una copia completa, `PUT /robots/{id}` para crear con `expectedVersion=0` o guardar cambios con versión vigente, y `DELETE /robots/{id}` para borrar con versión vigente. El `sub` validado decide la partición; un ID ajeno o inexistente devuelve 404. El nombre es una etiqueta, no la clave única. Las escrituras y los borrados son condicionales: un conflicto devuelve 409 con la versión propia actual. Si se pierde una respuesta, el cliente consulta el mismo ID antes de repetir, evitando duplicados y sobrescrituras. El tamaño y la validez de `RobotDraft` siguen el contrato del borrador; un nombre inválido se rechaza sin cambiar datos.
+
+Guardar una copia no cambia `DRAFT`. Cargarla actualiza el borrador mediante el mecanismo normal de control de versión, sin cambiar la copia; **Guardar** en la biblioteca reemplaza esa copia sólo por acción explícita. Eliminarla deja el borrador y los intentos anteriores intactos. Estas rutas no admiten ni despachan intentos, no leen S3 y no consumen cuota ni inferencia. Una configuración de un intento terminal puede cargarse al borrador y guardarse después como nueva copia.
 
 ## Intentos y reproducción disponibles
 
@@ -39,12 +47,13 @@ La tabla compartida mantiene el borrador y los intentos mediante claves explíci
 
 ## DynamoDB y S3
 
-El juego usa **DynamoDB on-demand para datos estructurados y S3 privado para conservar completos los requests y responses de inferencia**. No se necesita una base relacional: los accesos actuales son configuración, preferencia de Animación, admisión, cuota, intento por identificador, acciones/estados ordenados, historial e inspección propios. No hay endpoint de bodies, ranking global ni índice adicional.
+El juego usa **DynamoDB on-demand para datos estructurados y S3 privado para conservar completos los requests y responses de inferencia**. No se necesita una base relacional: los accesos actuales son borrador, robots guardados, preferencia de Animación, admisión, cuota, intento por identificador, acciones/estados ordenados, historial e inspección propios. No hay endpoint de bodies, ranking global ni índice adicional.
 
 | Dato                                 | Autoridad y representación                                                                                                                                                                               |
 | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Propietario                          | El `sub` validado por Amazon Cognito determina el propietario y aísla sus datos.                                                                                                                         |
 | Borrador                             | Documento DynamoDB por usuario con versión para controlar ediciones concurrentes.                                                                                                                        |
+| Robots guardados                     | Ítems por usuario e ID con nombre, versión y copia validada del robot, independientes del nivel y del borrador activo.                                                                                   |
 | Configuración del intento            | Versión inmutable del borrador visible al pulsar Probar, con instrucciones, selección, descripciones, IDs opacos y schemas.                                                                              |
 | Presentación                         | Una preferencia por usuario inicia en `true`; cada admisión fija `animationEnabled`. `presentationComplete` distingue el cierre del juego de una animación automática pendiente. No forma parte del payload del modelo ni del puntaje. |
 | Nivel, motor, protocolo e inferencia | Versiones publicadas inmutables; cada intento fija las que usó.                                                                                                                                          |

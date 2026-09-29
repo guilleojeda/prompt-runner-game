@@ -9,6 +9,8 @@ import {
   loadAuthConfig,
 } from './auth.js';
 import { createDraftApiClient, type DraftApi } from './draft-api.js';
+import { createSavedRobotApiClient, type SavedRobotApi } from './saved-robot-api.js';
+import { SavedRobots } from './SavedRobots.js';
 import { RobotEditor, type RobotEditorHandle } from './RobotEditor.js';
 import { createAttemptApiClient, type AttemptApi } from './attempt-api.js';
 import { AttemptWorkspace, type AttemptWorkspaceHandle } from './AttemptWorkspace.js';
@@ -33,11 +35,13 @@ type ConfirmationOperation = 'confirm' | 'resend' | null;
 export interface AppProps {
   authClient?: AuthClient;
   draftApi?: DraftApi;
+  savedRobotApi?: SavedRobotApi;
   attemptApi?: AttemptApi;
   confirmationClient?: PendingConfirmationClient;
   configLoader?: () => Promise<AuthConfig>;
   clientFactory?: (config: AuthConfig) => AuthClient;
   draftApiFactory?: (config: AuthConfig, tokenProvider: () => string) => DraftApi;
+  savedRobotApiFactory?: (config: AuthConfig, tokenProvider: () => string) => SavedRobotApi;
   attemptApiFactory?: (config: AuthConfig, tokenProvider: () => string) => AttemptApi;
   confirmationClientFactory?: (config: AuthConfig) => PendingConfirmationClient;
 }
@@ -246,11 +250,14 @@ function ErrorNotice({
 export function App({
   authClient,
   draftApi,
+  savedRobotApi,
   attemptApi,
   confirmationClient,
   configLoader = loadAuthConfig,
   clientFactory = createAuthClient,
   draftApiFactory = (config, tokenProvider) => createDraftApiClient(config, tokenProvider),
+  savedRobotApiFactory = (config, tokenProvider) =>
+    createSavedRobotApiClient(config, tokenProvider),
   attemptApiFactory = (config, tokenProvider) => createAttemptApiClient(config, tokenProvider),
   confirmationClientFactory = createDefaultConfirmationClient,
 }: AppProps) {
@@ -269,6 +276,7 @@ export function App({
   const [logoutChoiceBusy, setLogoutChoiceBusy] = useState(false);
   const [apiAuthError, setApiAuthError] = useState(false);
   const [editorApi, setEditorApi] = useState<DraftApi | null>(draftApi ?? null);
+  const [savedApi, setSavedApi] = useState<SavedRobotApi | null>(savedRobotApi ?? null);
   const [runnerApi, setRunnerApi] = useState<AttemptApi | null>(attemptApi ?? null);
   const [editorConfig, setEditorConfig] = useState<AuthConfig | null>(null);
   const [attemptBusy, setAttemptBusy] = useState(false);
@@ -277,12 +285,14 @@ export function App({
   const clientRef = useRef<AuthClient | null>(authClient ?? null);
   const configRef = useRef<AuthConfig | null>(null);
   const draftApiRef = useRef<DraftApi | null>(draftApi ?? null);
+  const savedApiRef = useRef<SavedRobotApi | null>(savedRobotApi ?? null);
   const runnerApiRef = useRef<AttemptApi | null>(attemptApi ?? null);
   const currentSessionRef = useRef<AuthSession | null>(null);
   const editorRef = useRef<RobotEditorHandle | null>(null);
   const attemptWorkspaceRef = useRef<AttemptWorkspaceHandle | null>(null);
   const logoutAttemptRef = useRef(0);
   const draftApiFactoryRef = useRef(draftApiFactory);
+  const savedRobotApiFactoryRef = useRef(savedRobotApiFactory);
   const attemptApiFactoryRef = useRef(attemptApiFactory);
   const confirmationRef = useRef<PendingConfirmationClient | null>(confirmationClient ?? null);
   const initializationRef = useRef<Promise<AuthSession | null> | null>(null);
@@ -320,6 +330,11 @@ export function App({
             () => currentSessionRef.current?.user.access_token ?? '',
           );
           setEditorApi(draftApiRef.current);
+          savedApiRef.current ??= savedRobotApiFactoryRef.current(
+            config,
+            () => currentSessionRef.current?.user.access_token ?? '',
+          );
+          setSavedApi(savedApiRef.current);
           runnerApiRef.current ??= attemptApiFactoryRef.current(
             config,
             () => currentSessionRef.current?.user.access_token ?? '',
@@ -329,6 +344,11 @@ export function App({
           const config = await configLoader();
           configRef.current = config;
           setEditorConfig(config);
+          savedApiRef.current ??= savedRobotApiFactoryRef.current(
+            config,
+            () => currentSessionRef.current?.user.access_token ?? '',
+          );
+          setSavedApi(savedApiRef.current);
           runnerApiRef.current ??= attemptApiFactoryRef.current(
             config,
             () => currentSessionRef.current?.user.access_token ?? '',
@@ -672,6 +692,20 @@ export function App({
                 onAuthRequired={handleApiAuthRequired}
               />
             )}
+            {savedApi &&
+              editorApi &&
+              editorConfig &&
+              session.user.scopes.includes(editorConfig.apiScope) && (
+                <SavedRobots
+                  key={session.identity.sub}
+                  api={savedApi}
+                  editor={editorRef}
+                  session={session}
+                  paused={renewing || phase !== 'account' || apiAuthError}
+                  locked={attemptBusy || configurationBusy || !attemptPreferenceReady}
+                  onAuthRequired={handleApiAuthRequired}
+                />
+              )}
             {runnerApi &&
               editorApi &&
               editorConfig &&
