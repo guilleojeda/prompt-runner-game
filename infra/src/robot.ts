@@ -129,9 +129,9 @@ export function createRobotResources(scope: Construct, props: RobotResourcesProp
     authorizationScopes: [ROBOT_SCOPE],
   });
 
-  // Attempt admission, status/history, replay, presentation state, preference,
-  // cancellation, and quota are all
-  // handled by this same identity-checked Lambda. Keeping every route behind
+  // Attempt admission, status/history, saved configuration, replay, presentation
+  // state, preference, cancellation, and quota are handled by this Lambda.
+  // Keeping every route behind
   // the same JWT authorizer prevents an accidental unauthenticated recovery
   // or cancellation endpoint as the API grows.
   const authenticatedRoutes: Array<{
@@ -143,6 +143,7 @@ export function createRobotResources(scope: Construct, props: RobotResourcesProp
     { path: '/attempts/{attemptId}/start', methods: [apigatewayv2.HttpMethod.POST] },
     { path: '/attempts/{attemptId}/cancel', methods: [apigatewayv2.HttpMethod.POST] },
     { path: '/attempts/{attemptId}/replay', methods: [apigatewayv2.HttpMethod.GET] },
+    { path: '/attempts/{attemptId}/configuration', methods: [apigatewayv2.HttpMethod.GET] },
     { path: '/attempts/{attemptId}/decisions', methods: [apigatewayv2.HttpMethod.GET] },
     {
       path: '/attempts/{attemptId}/presentation-complete',

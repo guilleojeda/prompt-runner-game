@@ -307,7 +307,7 @@ describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, 
       },
     });
     const routes = Object.values(synthesized.findResources('AWS::ApiGatewayV2::Route'));
-    expect(routes).toHaveLength(14);
+    expect(routes).toHaveLength(15);
     for (const route of routes) {
       expect(route.Properties).toMatchObject({
         AuthorizationType: 'JWT',
@@ -323,6 +323,7 @@ describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, 
         'POST /attempts/{attemptId}/start',
         'POST /attempts/{attemptId}/cancel',
         'GET /attempts/{attemptId}/replay',
+        'GET /attempts/{attemptId}/configuration',
         'GET /attempts/{attemptId}/decisions',
         'POST /attempts/{attemptId}/presentation-complete',
         'GET /attempt-requests/{requestKey}',

@@ -4,7 +4,7 @@ Juego educativo de AWS User Group AI Argentina. El participante configura las ha
 
 **Web publicada:** [Abrir la aplicación](https://d1ilpq1n58tzqo.cloudfront.net).
 
-**Estado del proyecto:** acceso Cognito, configuración persistida y ejecución real del nivel principal con recompensa, llave y puerta mediante AgentCore Runtime, Strands y Bedrock. Probar guarda la configuración visible y fija el intento; la animación opcional presenta las acciones guardadas antes del resultado. El historial propio permite volver a ver los intentos del contrato vigente e inspeccionar sus decisiones sin inferencia. La comparación y el segundo recorrido corresponden a fases posteriores. El nombre del juego es provisional.
+**Estado del proyecto:** acceso Cognito, configuración persistida y ejecución real del nivel principal con recompensa, llave y puerta mediante AgentCore Runtime, Strands y Bedrock. Probar guarda la configuración visible y fija el intento; la animación opcional presenta las acciones guardadas antes del resultado. El historial propio permite volver a ver intentos del contrato vigente, inspeccionar sus decisiones, comparar victorias cargadas y recuperar una configuración anterior para probarla de nuevo. El segundo recorrido corresponde a una fase posterior. El nombre del juego es provisional.
 
 ## Desarrollo local
 
@@ -96,7 +96,7 @@ Las consultas de servicios se conservan por tema, con fecha, fuentes y límites 
 
 ## Arquitectura
 
-**Decisión final de ejecución:** AgentCore Runtime con Strands TypeScript y el proveedor nativo de Amazon Bedrock, mediante Converse sin streaming. Sonnet 4.6 es el único perfil operativo. No se usa Mantle. El registro conserva snapshots y resoluciones, y React/SVG compone la animación a partir de esos datos. El flujo publicado es Probar → cálculo con controles bloqueados → animación opcional a velocidad fija, hacia adelante y sin controles → resultado. La comparación y el segundo recorrido quedan para fases posteriores.
+**Decisión final de ejecución:** AgentCore Runtime con Strands TypeScript y el proveedor nativo de Amazon Bedrock, mediante Converse sin streaming. Sonnet 4.6 es el único perfil operativo. No se usa Mantle. El registro conserva snapshots y resoluciones, y React/SVG compone la animación a partir de esos datos. El flujo publicado es Probar → cálculo con controles bloqueados → animación opcional a velocidad fija, hacia adelante y sin controles → resultado. El historial propio compara victorias cargadas; el segundo recorrido queda para una fase posterior.
 
 Están aprobados el contrato de registro, el reproductor, DynamoDB on-demand con S3 privado para cuerpos de inferencia, un único ambiente, la política diaria de cuota y Cognito Essentials con Managed Login. La primera versión usa el correo predeterminado de Cognito, aceptando sus 50 emails diarios y mensajes estándar; SES se incorporará en una fase posterior sobre el mismo user pool. El frontend React estático está publicado en S3 privado mediante CloudFront con Origin Access Control, usando CDK y GitHub Actions.
 

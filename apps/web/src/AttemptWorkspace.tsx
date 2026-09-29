@@ -14,6 +14,7 @@ import {
   type AttemptApi,
   type AttemptStatus,
   type AttemptSummary,
+  type AttemptConfiguration,
   type AttemptsPage,
   type QuotaSummary,
 } from './attempt-api.js';
@@ -23,9 +24,10 @@ import {
   writeAttemptRecovery,
 } from './attempt-recovery.js';
 import type { RobotEditorHandle } from './RobotEditor.js';
-import type { RobotDraft } from '../../../shared/robot.js';
+import { ROBOT_CATALOG, type RobotDraft } from '../../../shared/robot.js';
 import type { AnimationPreference, ReplayRecordView } from '../../../shared/attempt.js';
 import { LEVEL } from '../../../shared/game.js';
+import { MODEL_CATALOG } from '../../../shared/models.js';
 import { DecisionInspector } from './DecisionInspector.js';
 import { ReplayScene } from './replay/ReplayScene.js';
 
@@ -76,9 +78,18 @@ interface AttemptWorkspaceProps {
   readonly session: AuthSession;
   readonly authPaused?: boolean;
   readonly onBusyChange?: (busy: boolean) => void;
+  readonly onConfigurationBusyChange?: (busy: boolean) => void;
   readonly onPreferenceReadyChange?: (ready: boolean) => void;
   readonly onAuthRequired?: () => void;
 }
+
+type ConfigurationState = {
+  readonly targetId: string;
+  readonly status: 'loading' | 'ready' | 'applying' | 'error';
+  readonly configuration?: AttemptConfiguration;
+  readonly message?: string;
+  readonly applied?: boolean;
+};
 
 export interface AttemptWorkspaceHandle {
   start(): void;
@@ -254,14 +265,59 @@ function objectCollectionStatus(attempt: AttemptSummary): string {
   return `${details.join(' · ')} · valor total: ${attempt.objectPoints.toLocaleString('es-AR')} puntos`;
 }
 
+function stableHistoryOrder(left: AttemptSummary, right: AttemptSummary): number {
+  const byDate = right.createdAt.localeCompare(left.createdAt);
+  return byDate === 0 ? left.id.localeCompare(right.id) : byDate;
+}
+
+function comparableVictories(attempts: readonly AttemptSummary[]): readonly AttemptSummary[] {
+  return attempts
+    .filter(
+      (attempt) => attempt.status === 'victory' && attempt.recordComplete && attempt.score !== null,
+    )
+    .sort((left, right) => {
+      const byScore = (right.score ?? 0) - (left.score ?? 0);
+      return byScore === 0 ? stableHistoryOrder(left, right) : byScore;
+    });
+}
+
+function formatHistoryScope(count: number, hasMore: boolean): string {
+  return hasMore
+    ? `${count} cargados · hay más intentos para consultar`
+    : `${count} cargados · todo el historial disponible está visible`;
+}
+
+function rankFor(attempts: readonly AttemptSummary[], index: number): number {
+  const score = attempts[index]?.score;
+  return attempts.findIndex((attempt) => attempt.score === score) + 1;
+}
+
+function historyComparisonMetrics(attempt: AttemptSummary): string {
+  return `${attempt.turnsUsed} / ${attempt.maxTurns} turnos · ${formatMetric(attempt.gameTokens)} tokens para puntaje · ${attempt.collectedObjectIds.length} objetos · ${attempt.modelLabel} · ${attempt.createdAt}`;
+}
+
+function historyDetailMetrics(attempt: AttemptSummary): string {
+  return `Avance: ${formatProgress(attempt.progress)} · ${historyComparisonMetrics(attempt)}`;
+}
+
+function modelLabel(modelKey: RobotDraft['modelKey']): string {
+  return MODEL_CATALOG.find((model) => model.key === modelKey)?.label ?? 'Modelo no disponible';
+}
+
 function ResultCard({
   attempt,
   onReplay,
   onInspect,
+  onConfiguration,
+  configurationBusy,
+  busy,
 }: {
   attempt: AttemptSummary;
   onReplay: () => void;
   onInspect?: () => void;
+  onConfiguration: () => void;
+  configurationBusy: boolean;
+  busy: boolean;
 }) {
   return (
     <section className="attempt-result" aria-labelledby="attempt-result-title">
@@ -281,13 +337,33 @@ function ResultCard({
         <p className="attempt-reason">Causa registrada: {reasonLabel(attempt.reason)}</p>
       )}
       {attempt.recordComplete && attempt.turnsUsed > 0 && (
-        <button className="secondary-button replay-again" type="button" onClick={onReplay}>
+        <button
+          className="secondary-button replay-again"
+          type="button"
+          onClick={onReplay}
+          disabled={busy}
+        >
           Ver de nuevo
         </button>
       )}
       {onInspect && (
-        <button className="secondary-button replay-again" type="button" onClick={onInspect}>
+        <button
+          className="secondary-button replay-again"
+          type="button"
+          onClick={onInspect}
+          disabled={busy}
+        >
           Inspeccionar decisiones
+        </button>
+      )}
+      {isTerminal(attempt.status) && (
+        <button
+          className="secondary-button replay-again"
+          type="button"
+          onClick={onConfiguration}
+          disabled={busy || configurationBusy}
+        >
+          {configurationBusy ? 'Cargando configuración…' : 'Ver configuración'}
         </button>
       )}
       <dl className="attempt-metrics">
@@ -370,6 +446,8 @@ function HistoryList({
   onOpen,
   onReplay,
   onInspect,
+  onConfiguration,
+  configurationBusyId,
   onMore,
 }: {
   attempts: readonly AttemptSummary[];
@@ -378,8 +456,18 @@ function HistoryList({
   onOpen: (id: string) => void;
   onReplay: (id: string) => void;
   onInspect?: (id: string) => void;
+  onConfiguration: (id: string) => void;
+  configurationBusyId: string | null;
   onMore: () => void;
 }) {
+  const ranked = comparableVictories(attempts);
+  const victoriesWithoutScore = attempts.filter(
+    (item) => item.status === 'victory' && item.score === null,
+  );
+  const victoriesWithoutCompleteRecord = attempts.filter(
+    (item) => item.status === 'victory' && item.score !== null && !item.recordComplete,
+  );
+  const nonVictories = attempts.filter((item) => item.status !== 'victory');
   return (
     <section className="attempt-history" aria-labelledby="attempt-history-title">
       <div className="attempt-section-heading">
@@ -387,8 +475,84 @@ function HistoryList({
           <p className="card-kicker">Tus recorridos</p>
           <h3 id="attempt-history-title">Historial</h3>
         </div>
-        <span className="history-count">{attempts.length} cargados</span>
+        <span className="history-count">
+          {formatHistoryScope(attempts.length, nextCursor !== undefined)}
+        </span>
       </div>
+      <section className="history-ranking" aria-labelledby="history-ranking-title">
+        <div className="history-subheading">
+          <h4 id="history-ranking-title">Tus mejores soluciones</h4>
+          <span>{ranked.length} comparables</span>
+        </div>
+        <p>
+          Sólo incluye victorias con registro completo y puntaje conocido del nivel vigente. Los
+          puntos ordenan de mayor a menor; los empates conservan la misma posición. La comparación
+          usa los tokens de juego registrados, y cada modelo puede contar tokens con un tokenizador
+          distinto.
+        </p>
+        {ranked.length === 0 ? (
+          <p className="history-empty">
+            Todavía no hay victorias comparables entre los intentos cargados.
+          </p>
+        ) : (
+          <div className="history-ranking-list">
+            {ranked.map((item, index) => (
+              <article className="history-ranking-card" key={item.id}>
+                <div>
+                  <strong>
+                    #{rankFor(ranked, index)} · {item.score!.toLocaleString('es-AR')} puntos
+                  </strong>
+                  <span>{historyComparisonMetrics(item)}</span>
+                </div>
+                <div className="history-actions">
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() => onOpen(item.id)}
+                    disabled={busy}
+                  >
+                    Abrir resultado
+                  </button>
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() => onConfiguration(item.id)}
+                    disabled={busy || configurationBusyId === item.id}
+                  >
+                    {configurationBusyId === item.id
+                      ? 'Cargando configuración…'
+                      : 'Ver configuración'}
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+      {(victoriesWithoutScore.length > 0 ||
+        victoriesWithoutCompleteRecord.length > 0 ||
+        nonVictories.length > 0) && (
+        <div className="history-exclusions">
+          {victoriesWithoutScore.length > 0 && (
+            <p>
+              <strong>Victorias sin puntaje exacto:</strong> {victoriesWithoutScore.length}. Se
+              conservan para consultar el resultado y la configuración.
+            </p>
+          )}
+          {victoriesWithoutCompleteRecord.length > 0 && (
+            <p>
+              <strong>Victorias con registro incompleto:</strong>{' '}
+              {victoriesWithoutCompleteRecord.length}. Se conservan fuera de la clasificación.
+            </p>
+          )}
+          {nonVictories.length > 0 && (
+            <p>
+              <strong>Otros resultados:</strong> {nonVictories.length}. Se conservan con su avance y
+              métricas, fuera de la clasificación.
+            </p>
+          )}
+        </div>
+      )}
       {attempts.length === 0 ? (
         <p className="history-empty">Todavía no hay intentos guardados.</p>
       ) : (
@@ -397,15 +561,22 @@ function HistoryList({
             <li key={item.id}>
               <div>
                 <strong>{statusLabel(item.status)}</strong>
-                <span>
-                  {item.turnsUsed} / {item.maxTurns} turnos · {item.modelLabel} · {item.createdAt}
-                </span>
+                <span>{historyDetailMetrics(item)}</span>
                 <span>{objectCollectionStatus(item)}</span>
                 {item.status === 'victory' && (
                   <span>
                     Puntaje:{' '}
                     {item.score === null ? 'desconocido' : item.score.toLocaleString('es-AR')}
                   </span>
+                )}
+                {item.status === 'victory' && item.score === null && (
+                  <span>Fuera de clasificación: puntaje exacto no disponible.</span>
+                )}
+                {item.status === 'victory' && item.score !== null && !item.recordComplete && (
+                  <span>Fuera de clasificación: registro incompleto.</span>
+                )}
+                {item.status !== 'victory' && (
+                  <span>Fuera de clasificación: {statusLabel(item.status)}.</span>
                 )}
               </div>
               <div className="history-actions">
@@ -437,6 +608,18 @@ function HistoryList({
                     Inspeccionar decisiones
                   </button>
                 )}
+                {isTerminal(item.status) && (
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() => onConfiguration(item.id)}
+                    disabled={busy || configurationBusyId === item.id}
+                  >
+                    {configurationBusyId === item.id
+                      ? 'Cargando configuración…'
+                      : 'Ver configuración'}
+                  </button>
+                )}
               </div>
             </li>
           ))}
@@ -451,6 +634,110 @@ function HistoryList({
   );
 }
 
+function ConfigurationPreview({
+  state,
+  busy,
+  onApply,
+  onClose,
+}: {
+  state: {
+    readonly targetId: string;
+    readonly status: 'loading' | 'ready' | 'applying' | 'error';
+    readonly configuration?: AttemptConfiguration;
+    readonly message?: string;
+    readonly applied?: boolean;
+  };
+  busy: boolean;
+  onApply: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <section className="attempt-configuration" aria-labelledby="attempt-configuration-title">
+      <div className="attempt-section-heading">
+        <div>
+          <p className="card-kicker">Configuración fijada</p>
+          <h3 id="attempt-configuration-title">Configuración del intento</h3>
+        </div>
+        <button className="text-button" type="button" onClick={onClose} disabled={busy}>
+          Cerrar
+        </button>
+      </div>
+      <p className="configuration-attempt-id">Intento: {state.targetId}</p>
+      {state.status === 'loading' && (
+        <p className="attempt-message" role="status">
+          Cargando la configuración guardada…
+        </p>
+      )}
+      {state.status === 'error' && state.message && (
+        <div className="attempt-error" role="alert">
+          <p>{state.message}</p>
+        </div>
+      )}
+      {state.configuration && (
+        <>
+          <dl className="configuration-facts">
+            <div>
+              <dt>Modelo</dt>
+              <dd>{modelLabel(state.configuration.draft.modelKey)}</dd>
+            </div>
+            <div>
+              <dt>Habilidades activas</dt>
+              <dd>
+                {state.configuration.draft.skills
+                  .filter((skill) => skill.enabled)
+                  .map(
+                    (skill) =>
+                      ROBOT_CATALOG.find((entry) => entry.id === skill.id)?.name ??
+                      'Habilidad no disponible',
+                  )
+                  .join(', ') || 'ninguna'}
+              </dd>
+            </div>
+          </dl>
+          <div className="configuration-preview-copy">
+            <h4>Instrucciones generales</h4>
+            <p>{state.configuration.draft.instructions || 'Sin instrucciones.'}</p>
+            <h4>Habilidades y descripciones guardadas</h4>
+            <ul>
+              {state.configuration.draft.skills.map((skill) =>
+                (() => {
+                  const entry = ROBOT_CATALOG.find((candidate) => candidate.id === skill.id);
+                  const description =
+                    skill.description === undefined
+                      ? 'omitida'
+                      : skill.description === ''
+                        ? 'vacía'
+                        : skill.description;
+                  return (
+                    <li key={skill.id}>
+                      <strong>{entry?.name ?? 'Habilidad no disponible'}</strong> ·{' '}
+                      {skill.enabled ? 'Enviada al agente' : 'No enviada al agente'} · Descripción:{' '}
+                      {description}
+                    </li>
+                  );
+                })(),
+              )}
+            </ul>
+          </div>
+          {state.applied && (
+            <p className="configuration-applied" role="status">
+              Configuración cargada en el editor. Se guarda como una edición normal.
+            </p>
+          )}
+          <button
+            className="primary-button"
+            type="button"
+            onClick={onApply}
+            disabled={busy || state.status === 'applying'}
+          >
+            {state.status === 'applying' ? 'Aplicando configuración…' : 'Usar esta configuración'}
+          </button>
+        </>
+      )}
+    </section>
+  );
+}
+
 export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorkspaceProps>(
   function AttemptWorkspace(
     {
@@ -459,6 +746,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       session,
       authPaused = false,
       onBusyChange,
+      onConfigurationBusyChange,
       onPreferenceReadyChange,
       onAuthRequired,
     }: AttemptWorkspaceProps,
@@ -486,6 +774,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     const [decisionInspectorTarget, setDecisionInspectorTarget] = useState<AttemptSummary | null>(
       null,
     );
+    const [configurationState, setConfigurationState] = useState<ConfigurationState | null>(null);
     const [completionBusy, setCompletionBusy] = useState(false);
     const generationRef = useRef(0);
     const frozenRef = useRef<FrozenAdmission | null>(null);
@@ -497,6 +786,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     const completionBusyRef = useRef(false);
     const completionAttemptRef = useRef<string | null>(null);
     const completionOperationRef = useRef(0);
+    const configurationOperationRef = useRef(0);
+    const configurationControllerRef = useRef<AbortController | null>(null);
+    const configurationApplyingRef = useRef(false);
     const animationEnabledRef = useRef(true);
     const preferenceVersionRef = useRef(0);
     const preferenceGenerationRef = useRef(0);
@@ -518,6 +810,14 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     const clearDecisionInspector = useCallback((): void => {
       setDecisionInspectorTarget(null);
     }, []);
+    const clearConfiguration = useCallback((): void => {
+      configurationOperationRef.current += 1;
+      configurationControllerRef.current?.abort();
+      configurationControllerRef.current = null;
+      configurationApplyingRef.current = false;
+      onConfigurationBusyChange?.(false);
+      setConfigurationState(null);
+    }, [onConfigurationBusyChange]);
 
     useEffect(() => {
       const previousSub = sessionSubRef.current;
@@ -530,6 +830,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         frozenRef.current = null;
         clearAttemptRecovery(previousSub);
         replayEpochRef.current += 1;
+        clearConfiguration();
         completionOperationRef.current += 1;
         completionBusyRef.current = false;
         completionAttemptRef.current = null;
@@ -552,7 +853,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         setCompletionBusy(false);
         sessionSubRef.current = sessionSub;
       }
-    }, [clearDecisionInspector, sessionSub]);
+    }, [clearConfiguration, clearDecisionInspector, sessionSub]);
 
     useEffect(() => {
       if (authPaused) queueMicrotask(clearDecisionInspector);
@@ -750,6 +1051,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
 
     const beginReplay = useCallback(
       async (target: AttemptSummary, kind: PlaybackKind): Promise<void> => {
+        if (configurationApplyingRef.current) return;
         if (kind === 'manual' && target.turnsUsed === 0) {
           setReplayRecord(null);
           setPlaybackKind(null);
@@ -759,6 +1061,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         }
         const generation = generationRef.current;
         const epoch = ++replayEpochRef.current;
+        clearConfiguration();
         setPlaybackKind(kind);
         setReplayRecord(null);
         setPlaybackReachedEnd(false);
@@ -802,7 +1105,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           setMode('replay-error');
         }
       },
-      [api, clearDecisionInspector, onAuthRequired],
+      [api, clearConfiguration, clearDecisionInspector, onAuthRequired],
     );
 
     const refreshPreferenceOnFocus = useCallback((): void => {
@@ -828,6 +1131,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           setCompletionBusy(false);
           setPlaybackReachedEnd(false);
           clearDecisionInspector();
+          clearConfiguration();
         }
         attemptRef.current = next;
         setAttempt(next);
@@ -871,7 +1175,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           );
         }
       },
-      [beginReplay, clearDecisionInspector, sessionSub],
+      [beginReplay, clearConfiguration, clearDecisionInspector, sessionSub],
     );
 
     const listAllAttempts = useCallback(
@@ -1155,6 +1459,8 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       if (
         startLockRef.current ||
         busy ||
+        configurationApplyingRef.current ||
+        configurationState?.status === 'applying' ||
         authPaused ||
         (modeRef.current === 'result' && attemptRef.current?.status === 'running')
       ) {
@@ -1162,6 +1468,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       }
       startLockRef.current = true;
       clearDecisionInspector();
+      clearConfiguration();
       completionOperationRef.current += 1;
       completionBusyRef.current = false;
       completionAttemptRef.current = null;
@@ -1259,6 +1566,8 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       busy,
       clearDecisionInspector,
       editor,
+      clearConfiguration,
+      configurationState,
       onAuthRequired,
       sessionSub,
       startServerAttempt,
@@ -1375,7 +1684,8 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
 
     const openAttempt = useCallback(
       async (id: string): Promise<void> => {
-        if (busy) return;
+        if (busy || configurationApplyingRef.current) return;
+        clearConfiguration();
         const operationGeneration = generationRef.current;
         operationEpochRef.current += 1;
         const operationEpoch = operationEpochRef.current;
@@ -1404,12 +1714,106 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           setError(attemptErrorMessage(openError));
         }
       },
-      [api, applyAttempt, busy, clearDecisionInspector, onAuthRequired],
+      [api, applyAttempt, busy, clearConfiguration, clearDecisionInspector, onAuthRequired],
     );
+
+    const openConfiguration = useCallback(
+      async (id: string): Promise<void> => {
+        if (busy || authPaused || configurationApplyingRef.current) return;
+        const generation = generationRef.current;
+        const operation = ++configurationOperationRef.current;
+        configurationControllerRef.current?.abort();
+        const controller = new AbortController();
+        configurationControllerRef.current = controller;
+        setConfigurationState({ targetId: id, status: 'loading' });
+        try {
+          const configuration = await api.getConfiguration(id, controller.signal);
+          if (
+            controller.signal.aborted ||
+            generationRef.current !== generation ||
+            configurationOperationRef.current !== operation
+          ) {
+            return;
+          }
+          if (configuration.attemptId !== id) {
+            throw new AttemptApiFailure(
+              'server',
+              'La configuración recibida no coincide con el intento consultado.',
+            );
+          }
+          setConfigurationState({ targetId: id, status: 'ready', configuration });
+        } catch (configurationError) {
+          if (
+            controller.signal.aborted ||
+            generationRef.current !== generation ||
+            configurationOperationRef.current !== operation
+          ) {
+            return;
+          }
+          if (isAuthenticationFailure(configurationError)) onAuthRequired?.();
+          setConfigurationState({
+            targetId: id,
+            status: 'error',
+            message: attemptErrorMessage(configurationError),
+          });
+        } finally {
+          if (configurationControllerRef.current === controller) {
+            configurationControllerRef.current = null;
+          }
+        }
+      },
+      [api, authPaused, busy, onAuthRequired],
+    );
+
+    const applyConfiguration = useCallback(async (): Promise<void> => {
+      const current = configurationState;
+      const configuration = current?.configuration;
+      if (
+        !configuration ||
+        busy ||
+        authPaused ||
+        current.status === 'applying' ||
+        configurationApplyingRef.current
+      )
+        return;
+      const generation = generationRef.current;
+      const operation = configurationOperationRef.current;
+      configurationApplyingRef.current = true;
+      onConfigurationBusyChange?.(true);
+      setConfigurationState({ ...current, status: 'applying', message: undefined });
+      try {
+        const applied = await editor.current?.applyDraft(configuration.draft);
+        if (
+          generationRef.current !== generation ||
+          configurationOperationRef.current !== operation ||
+          !configurationState
+        ) {
+          return;
+        }
+        setConfigurationState((state) =>
+          state && state.targetId === configuration.attemptId
+            ? {
+                ...state,
+                status: applied === true ? 'ready' : 'error',
+                applied: applied === true,
+                ...(applied
+                  ? {}
+                  : {
+                      message:
+                        'No se pudo aplicar la configuración. El editor conserva su contenido y muestra la causa.',
+                    }),
+              }
+            : state,
+        );
+      } finally {
+        configurationApplyingRef.current = false;
+        onConfigurationBusyChange?.(false);
+      }
+    }, [authPaused, busy, configurationState, editor, onConfigurationBusyChange]);
 
     const openDecisionInspector = useCallback((): void => {
       const current = attemptRef.current;
-      if (busy || !current || !isTerminal(current.status)) {
+      if (busy || configurationApplyingRef.current || !current || !isTerminal(current.status)) {
         return;
       }
       setDecisionInspectorTarget(current);
@@ -1418,7 +1822,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
 
     const openDecisionInspectorFromHistory = useCallback(
       (id: string): void => {
-        if (busy) return;
+        if (busy || configurationApplyingRef.current) return;
         const target = history.find((item) => item.id === id);
         if (!target) {
           setError('No se encontró ese intento en el historial. Volvé a cargar las consultas.');
@@ -1440,11 +1844,12 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
 
     const openReplayFromHistory = useCallback(
       async (id: string): Promise<void> => {
-        if (busy) return;
+        if (busy || configurationApplyingRef.current) return;
         const operationGeneration = generationRef.current;
         operationEpochRef.current += 1;
         const operationEpoch = operationEpochRef.current;
         clearDecisionInspector();
+        clearConfiguration();
         setMode('opening');
         setError(null);
         try {
@@ -1490,7 +1895,15 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           setMode('result');
         }
       },
-      [api, applyAttempt, beginReplay, busy, clearDecisionInspector, onAuthRequired],
+      [
+        api,
+        applyAttempt,
+        beginReplay,
+        busy,
+        clearConfiguration,
+        clearDecisionInspector,
+        onAuthRequired,
+      ],
     );
 
     const replayCurrentAttempt = useCallback((): void => {
@@ -1973,6 +2386,21 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             attempt={attempt}
             onReplay={replayCurrentAttempt}
             onInspect={openDecisionInspector}
+            onConfiguration={() => void openConfiguration(attempt.id)}
+            configurationBusy={
+              configurationState?.targetId === attempt.id &&
+              (configurationState.status === 'loading' || configurationState.status === 'applying')
+            }
+            busy={busy || configurationState?.status === 'applying'}
+          />
+        )}
+
+        {configurationState && (
+          <ConfigurationPreview
+            state={configurationState}
+            busy={busy || authPaused || configurationState.status === 'applying'}
+            onApply={() => void applyConfiguration()}
+            onClose={clearConfiguration}
           />
         )}
 
@@ -2009,10 +2437,17 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           <HistoryList
             attempts={history}
             nextCursor={historyCursor}
-            busy={busy || loadingHistory}
+            busy={busy || loadingHistory || configurationState?.status === 'applying'}
             onOpen={(id) => void openAttempt(id)}
             onReplay={(id) => void openReplayFromHistory(id)}
             onInspect={(id) => void openDecisionInspectorFromHistory(id)}
+            onConfiguration={(id) => void openConfiguration(id)}
+            configurationBusyId={
+              configurationState &&
+              (configurationState.status === 'loading' || configurationState.status === 'applying')
+                ? configurationState.targetId
+                : null
+            }
             onMore={() => void loadMore()}
           />
         )}

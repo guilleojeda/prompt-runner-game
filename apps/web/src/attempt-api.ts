@@ -1,4 +1,4 @@
-import type { RobotDraft } from '../../../shared/robot.js';
+import { validateDraft, type RobotDraft } from '../../../shared/robot.js';
 import type {
   AnimationPreference,
   AttemptStatus,
@@ -54,6 +54,11 @@ export interface AttemptAdmission {
   readonly dispatchConfirmed: boolean;
 }
 
+export interface AttemptConfiguration {
+  readonly attemptId: string;
+  readonly draft: RobotDraft;
+}
+
 export interface AttemptApi {
   getAnimationPreference(signal?: AbortSignal): Promise<AnimationPreference>;
   putAnimationPreference(
@@ -70,6 +75,7 @@ export interface AttemptApi {
   ): Promise<AttemptAdmission>;
   getAttemptRequest(requestKey: string, signal?: AbortSignal): Promise<AttemptSummary>;
   getAttempt(id: string, signal?: AbortSignal): Promise<AttemptSummary>;
+  getConfiguration(id: string, signal?: AbortSignal): Promise<AttemptConfiguration>;
   listAttempts(cursor?: string, signal?: AbortSignal): Promise<AttemptsPage>;
   startAttempt(id: string, signal?: AbortSignal): Promise<AttemptAdmission>;
   cancelAttempt(id: string, signal?: AbortSignal): Promise<AttemptSummary>;
@@ -287,6 +293,19 @@ function parseAnimationPreference(value: unknown): AnimationPreference | null {
   const version = requiredNumber(value, 'version');
   if (version === null || !Number.isSafeInteger(version) || version < 0) return null;
   return { animationEnabled: value.animationEnabled, version };
+}
+
+function parseAttemptConfiguration(value: unknown): AttemptConfiguration | null {
+  if (!isRecord(value)) return null;
+  const keys = Object.keys(value);
+  if (keys.length !== 2 || !keys.includes('attemptId') || !keys.includes('draft')) return null;
+  const attemptId = requiredString(value, 'attemptId');
+  if (!attemptId) return null;
+  try {
+    return { attemptId, draft: validateDraft(value.draft) };
+  } catch {
+    return null;
+  }
 }
 
 const gameStatuses = ['running', 'victory', 'defeat', 'incomplete'] as const;
@@ -715,6 +734,17 @@ export class AttemptApiClient implements AttemptApi {
         return parseAttempt(value.attempt);
       },
       'No se pudo consultar el intento.',
+      signal,
+    );
+  }
+
+  public getConfiguration(id: string, signal?: AbortSignal): Promise<AttemptConfiguration> {
+    return this.request(
+      'GET',
+      `attempts/${encodeURIComponent(id)}/configuration`,
+      undefined,
+      parseAttemptConfiguration,
+      'No se pudo cargar la configuración del intento.',
       signal,
     );
   }

@@ -88,6 +88,7 @@ function emptyAttemptApi(): AttemptApi {
     createAttempt: vi.fn(),
     getAttemptRequest: vi.fn(),
     getAttempt: vi.fn(),
+    getConfiguration: vi.fn(),
     listAttempts: vi.fn().mockResolvedValue({ attempts: [] }),
     startAttempt: vi.fn(),
     cancelAttempt: vi.fn(),

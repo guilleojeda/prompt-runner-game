@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
-import { createDefaultDraft } from '../../../shared/robot';
+import { createDefaultDraft, validateDraft } from '../../../shared/robot';
 import * as attemptStoreModule from './attempt-store';
-import { MemoryAttemptStore } from './attempt-store';
+import { AttemptStoreError, MemoryAttemptStore } from './attempt-store';
 import { handleRequest } from './handler';
 
 const eventFor = (
@@ -377,5 +377,178 @@ describe('attempt API projection and dispatch recovery', () => {
     } finally {
       vi.restoreAllMocks();
     }
+  });
+
+  it("returns only the owner's validated terminal draft, preserving omitted and empty descriptions", async () => {
+    const baseDraft = createDefaultDraft();
+    const draft = validateDraft({
+      ...baseDraft,
+      instructions: 'Preferí tomar decisiones cortas.',
+      skills: baseDraft.skills.map((skill, index) => {
+        if (index === 0) {
+          return { id: skill.id, enabled: skill.enabled };
+        }
+        return { ...skill, enabled: index < 2, description: '' };
+      }),
+    });
+    const bodyStore = { get: vi.fn(), put: vi.fn() };
+    const attemptStore = new MemoryAttemptStore({
+      draft: { version: 7, draft },
+      bodyStore,
+    });
+    const dependencies = {
+      store: { get: vi.fn(), put: vi.fn() },
+      attemptStore,
+      dispatch: vi.fn(),
+      fetch: vi.fn(
+        async () => new Response(JSON.stringify({ sub: 'owner', email_verified: true })),
+      ),
+      clientId: 'client',
+      userInfoUrl: 'https://cognito.example.test/userinfo',
+    };
+    const { attempt } = await attemptStore.admit({
+      owner: 'owner',
+      requestKey: 'configuration-terminal',
+      expectedVersion: 7,
+      draft,
+      animationEnabled: false,
+    });
+    await attemptStore.requestCancel('owner', attempt.id);
+
+    const quotaBefore = await attemptStore.quota('owner');
+    const callsBefore = await attemptStore.getCalls('owner', attempt.id);
+    const response = await handleRequest(
+      eventFor('GET', `/attempts/${encodeURIComponent(attempt.id)}/configuration`),
+      dependencies,
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers?.['cache-control']).toBe('no-store');
+    expect(responseBody(response)).toEqual({ attemptId: attempt.id, draft });
+    expect(bodyStore.get).not.toHaveBeenCalled();
+    expect(dependencies.dispatch).not.toHaveBeenCalled();
+    expect(await attemptStore.getCalls('owner', attempt.id)).toEqual(callsBefore);
+    expect(await attemptStore.quota('owner')).toEqual(quotaBefore);
+    expect(draft.skills[0] as unknown as Record<string, unknown>).not.toHaveProperty('description');
+    expect(draft.skills[1]).toHaveProperty('description', '');
+  });
+
+  it('rejects configuration reads for pending attempts without changing execution state', async () => {
+    const draft = createDefaultDraft();
+    const bodyStore = { get: vi.fn(), put: vi.fn() };
+    const attemptStore = new MemoryAttemptStore({ draft: { version: 1, draft }, bodyStore });
+    const dispatch = vi.fn();
+    const dependencies = {
+      store: { get: vi.fn(), put: vi.fn() },
+      attemptStore,
+      dispatch,
+      fetch: vi.fn(
+        async () => new Response(JSON.stringify({ sub: 'owner', email_verified: true })),
+      ),
+      clientId: 'client',
+      userInfoUrl: 'https://cognito.example.test/userinfo',
+    };
+    const { attempt } = await attemptStore.admit({
+      owner: 'owner',
+      requestKey: 'configuration-pending',
+      expectedVersion: 1,
+      draft,
+      animationEnabled: false,
+    });
+    const quotaBefore = await attemptStore.quota('owner');
+
+    const response = await handleRequest(
+      eventFor('GET', `/attempts/${encodeURIComponent(attempt.id)}/configuration`),
+      dependencies,
+    );
+
+    expect(response.statusCode).toBe(409);
+    expect(responseBody(response)).toEqual({
+      code: 'configuration_pending',
+      message: 'La configuración solo está disponible para un intento cerrado.',
+    });
+    expect(bodyStore.get).not.toHaveBeenCalled();
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(await attemptStore.get('owner', attempt.id)).toMatchObject({ status: 'pending' });
+    expect(await attemptStore.quota('owner')).toEqual(quotaBefore);
+  });
+
+  it('reports an incompatible terminal snapshot without exposing the store error', async () => {
+    const draft = createDefaultDraft();
+    const attemptStore = new MemoryAttemptStore({ draft: { version: 1, draft } });
+    vi.spyOn(attemptStore, 'get').mockRejectedValue(
+      new AttemptStoreError('El intento guardado tiene una configuración incompatible.'),
+    );
+    const response = await handleRequest(eventFor('GET', '/attempts/incompatible/configuration'), {
+      store: { get: vi.fn(), put: vi.fn() },
+      attemptStore,
+      fetch: vi.fn(
+        async () => new Response(JSON.stringify({ sub: 'owner', email_verified: true })),
+      ),
+      clientId: 'client',
+      userInfoUrl: 'https://cognito.example.test/userinfo',
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(responseBody(response)).toEqual({
+      code: 'configuration_incompatible',
+      message: 'La configuración del intento no es compatible con la versión actual.',
+    });
+    expect(JSON.stringify(responseBody(response))).not.toContain(
+      'El intento guardado tiene una configuración incompatible.',
+    );
+  });
+
+  it('returns 404 for missing or foreign configuration before any private body read', async () => {
+    const draft = createDefaultDraft();
+    const bodyStore = { get: vi.fn(), put: vi.fn() };
+    const attemptStore = new MemoryAttemptStore({ draft: { version: 1, draft }, bodyStore });
+    const get = vi.spyOn(attemptStore, 'get');
+    const dependencies = {
+      store: { get: vi.fn(), put: vi.fn() },
+      attemptStore,
+      dispatch: vi.fn(),
+      fetch: vi.fn(
+        async () => new Response(JSON.stringify({ sub: 'owner', email_verified: true })),
+      ),
+      clientId: 'client',
+      userInfoUrl: 'https://cognito.example.test/userinfo',
+    };
+    const { attempt } = await attemptStore.admit({
+      owner: 'owner',
+      requestKey: 'configuration-owner',
+      expectedVersion: 1,
+      draft,
+      animationEnabled: false,
+    });
+    const quotaBefore = await attemptStore.quota('owner');
+
+    const foreign = await handleRequest(
+      eventFor(
+        'GET',
+        `/attempts/${encodeURIComponent(attempt.id)}/configuration`,
+        undefined,
+        'other',
+      ),
+      {
+        ...dependencies,
+        fetch: vi.fn(
+          async () => new Response(JSON.stringify({ sub: 'other', email_verified: true })),
+        ),
+      },
+    );
+    const missing = await handleRequest(
+      eventFor('GET', '/attempts/missing-configuration/configuration'),
+      dependencies,
+    );
+
+    expect(foreign.statusCode).toBe(404);
+    expect(missing.statusCode).toBe(404);
+    expect(responseBody(foreign)).toEqual({ code: 'not_found', message: 'Intento no encontrado.' });
+    expect(responseBody(missing)).toEqual({ code: 'not_found', message: 'Intento no encontrado.' });
+    expect(get).toHaveBeenNthCalledWith(1, 'other', attempt.id);
+    expect(get).toHaveBeenNthCalledWith(2, 'owner', 'missing-configuration');
+    expect(bodyStore.get).not.toHaveBeenCalled();
+    expect(await attemptStore.quota('owner')).toEqual(quotaBefore);
   });
 });
