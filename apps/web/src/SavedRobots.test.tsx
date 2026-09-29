@@ -148,6 +148,13 @@ describe('SavedRobots', () => {
     const input = screen.getByLabelText('Nombre para la nueva copia');
     fireEvent.change(input, { target: { value: 'Defensa' } });
     expect((input as HTMLInputElement).value).toBe('Defensa');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar como nueva' }));
+    expect(screen.getAllByRole('button', { name: 'Guardar como nueva' })).toHaveLength(1);
+    expect((screen.getByLabelText('Nombre para la nueva copia') as HTMLInputElement).value).toBe(
+      '',
+    );
   });
 
   it('accepts an 80-code-point Unicode name without truncating it in the input', async () => {
