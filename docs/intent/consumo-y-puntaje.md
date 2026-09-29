@@ -116,7 +116,7 @@ Se puede mostrar también la posición de finalización para explicar un retroce
 
 Sólo las victorias se clasifican como soluciones. Las derrotas, los límites de turnos, las cancelaciones y los errores conservan sus métricas y avance para diagnóstico, pero quedan fuera del ranking de soluciones completadas. Un intento que muere enseguida no es mejor por haber gastado menos.
 
-La comparación ordena las victorias propias del nivel vigente por puntos descendentes. Todos los intentos usan las mismas reglas de puntuación; el segundo recorrido tendrá su propia clasificación por nivel cuando exista. La pantalla indica cuántos intentos del historial paginado se cargaron y no presenta esa lista como un ranking global de todos los intentos.
+La comparación ordena las victorias propias del nivel vigente por puntos descendentes. Todos los intentos usan las mismas reglas de puntuación. La pantalla indica cuántos intentos del historial paginado se cargaron y no presenta esa lista como un ranking global de todos los intentos.
 
 El historial propio o un ranking de la sesión alcanza para el núcleo. No se exige un leaderboard público persistente. Las comparaciones pueden mostrar modelo, configuración de inferencia y descripciones usadas para dar contexto, pero esas diferencias no se ocultan ni se tratan como equivalencia.
 

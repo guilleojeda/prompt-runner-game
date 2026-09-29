@@ -101,6 +101,220 @@ h1 {
   box-shadow: 0 1.5rem 4rem rgba(0, 0, 0, 0.22);
 }
 
+.saved-robots {
+  width: min(100%, 62rem);
+  padding: 1.5rem;
+  border: 1px solid rgba(242, 239, 232, 0.14);
+  border-radius: 1rem;
+  background: rgba(242, 239, 232, 0.07);
+  box-shadow: 0 1.5rem 4rem rgba(0, 0, 0, 0.22);
+}
+
+.saved-robots-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1.5rem;
+  margin-bottom: 1.2rem;
+}
+
+.saved-robots-heading h2 {
+  margin-bottom: 0.45rem;
+  color: #f7f1e1;
+  font-size: clamp(1.5rem, 3vw, 2rem);
+}
+
+.saved-robots-intro {
+  max-width: 42rem;
+  margin-bottom: 0;
+  color: #b9b4a8;
+  line-height: 1.5;
+}
+
+.saved-robots-list-wrap {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.saved-robots-list {
+  display: grid;
+  gap: 0.55rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.saved-robot-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.8rem;
+  border: 1px solid rgba(242, 239, 232, 0.14);
+  border-radius: 0.55rem;
+  color: #f7f1e1;
+  background: rgba(20, 19, 15, 0.3);
+  text-align: left;
+  cursor: pointer;
+}
+
+.saved-robot-item:hover:not(:disabled),
+.saved-robot-item:focus-visible,
+.saved-robot-item.is-selected {
+  border-color: #f2c879;
+  background: rgba(216, 179, 106, 0.14);
+}
+
+.saved-robot-item-main {
+  display: grid;
+  min-width: 0;
+  gap: 0.25rem;
+}
+
+.saved-robot-item-main strong {
+  overflow-wrap: anywhere;
+}
+
+.saved-robot-item-main span,
+.saved-robot-item-date {
+  color: #b9b4a8;
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.saved-robot-item-date,
+.saved-robot-item-load {
+  flex: 0 0 auto;
+  text-align: right;
+}
+
+.saved-robot-item-load {
+  padding: 0.35rem 0.55rem;
+  border: 1px solid rgba(216, 179, 106, 0.65);
+  border-radius: 0.4rem;
+  color: #f2c879;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.saved-robots-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  align-items: center;
+  margin-top: 1rem;
+}
+
+.saved-robots-name-form,
+.saved-robots-selected-form {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 1rem;
+  padding: 0.9rem;
+  border: 1px solid rgba(216, 179, 106, 0.4);
+  border-radius: 0.6rem;
+  background: rgba(20, 19, 15, 0.3);
+}
+
+.saved-robots-name-form label,
+.saved-robots-selected-form label {
+  color: #f2efe8;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.saved-robots-name-form input,
+.saved-robots-selected-form input {
+  width: 100%;
+  min-height: 2.7rem;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid rgba(242, 239, 232, 0.3);
+  border-radius: 0.45rem;
+  color: #f7f1e1;
+  background: rgba(20, 19, 15, 0.65);
+  font: inherit;
+}
+
+.saved-robots-name-form input:focus,
+.saved-robots-selected-form input:focus {
+  border-color: #d8b36a;
+  outline: 3px solid rgba(242, 200, 121, 0.3);
+  outline-offset: 1px;
+}
+
+.saved-robots-empty,
+.saved-robots-selected,
+.saved-robots-message,
+.saved-robots-error {
+  margin: 0 0 1rem;
+  color: #b9b4a8;
+  line-height: 1.5;
+}
+
+.saved-robots-message,
+.saved-robots-error {
+  padding: 0.7rem 0.8rem;
+  border-radius: 0.45rem;
+}
+
+.saved-robots-message {
+  border: 1px solid rgba(155, 197, 158, 0.45);
+  color: #bde0bf;
+  background: rgba(66, 104, 69, 0.2);
+}
+
+.saved-robots-error {
+  border: 1px solid rgba(237, 146, 128, 0.5);
+  color: #f0b0a2;
+  background: rgba(118, 47, 42, 0.22);
+}
+
+.saved-robots-error p {
+  margin: 0 0 0.7rem;
+}
+
+.saved-robots-conflict {
+  display: grid;
+  gap: 0.7rem;
+  margin-top: 1rem;
+  padding: 0.9rem;
+  border: 1px solid rgba(216, 179, 106, 0.5);
+  border-radius: 0.6rem;
+  background: rgba(216, 179, 106, 0.1);
+}
+
+.saved-robots-conflict p {
+  margin: 0;
+  color: #ead6a7;
+  line-height: 1.45;
+}
+
+.saved-robots-selected {
+  margin-top: 1rem;
+  margin-bottom: 0;
+  color: #bde0bf;
+  font-size: 0.88rem;
+}
+
+.saved-robots-pending {
+  margin: 0;
+  color: #ead6a7;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.saved-robots-control-error {
+  margin: 0;
+  color: #f0b0a2;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.danger-button {
+  color: #f0b0a2;
+}
+
 .attempt-workspace {
   width: min(100%, 62rem);
   padding: 1.5rem;

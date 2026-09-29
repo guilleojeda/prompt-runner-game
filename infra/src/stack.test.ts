@@ -299,7 +299,7 @@ describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, 
       CorsConfiguration: {
         AllowCredentials: false,
         AllowHeaders: ['Authorization', 'Content-Type'],
-        AllowMethods: ['GET', 'PUT', 'POST', 'OPTIONS'],
+        AllowMethods: ['GET', 'PUT', 'POST', 'DELETE', 'OPTIONS'],
         AllowOrigins: [
           { 'Fn::Join': ['', ['https://', { 'Fn::GetAtt': [expect.any(String), 'DomainName'] }]] },
           'http://localhost:5173',
@@ -307,7 +307,7 @@ describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, 
       },
     });
     const routes = Object.values(synthesized.findResources('AWS::ApiGatewayV2::Route'));
-    expect(routes).toHaveLength(15);
+    expect(routes).toHaveLength(19);
     for (const route of routes) {
       expect(route.Properties).toMatchObject({
         AuthorizationType: 'JWT',
@@ -317,6 +317,10 @@ describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, 
       expect([
         'GET /draft',
         'PUT /draft',
+        'GET /robots',
+        'GET /robots/{uuid}',
+        'PUT /robots/{uuid}',
+        'DELETE /robots/{uuid}',
         'GET /attempts',
         'POST /attempts',
         'GET /attempts/{attemptId}',
@@ -369,7 +373,7 @@ describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, 
       }),
     );
     expect(JSON.stringify(statements)).not.toContain('dynamodb:Scan');
-    expect(JSON.stringify(statements)).not.toContain('dynamodb:DeleteItem');
+    expect(JSON.stringify(statements)).toContain('dynamodb:DeleteItem');
     const apiPolicyJson = JSON.stringify(runtimePolicies[0].Properties.PolicyDocument);
     expect(apiPolicyJson).toContain('s3:GetObject');
     const bodyBucketEntry = Object.entries(synthesized.findResources('AWS::S3::Bucket')).find(

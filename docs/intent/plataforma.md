@@ -1,6 +1,6 @@
 # Plataforma y operación
 
-Especificación acordada del producto. El código disponible implementa acceso Cognito, editor y API Lambda, ejecución periódica del nivel principal con llave y puerta mediante Runtime/Strands/Bedrock, intentos en DynamoDB y cuerpos privados en S3, comparación de victorias propias cargadas y publicación mediante CDK y GitHub Actions. La URL pública está en [README](../../README.md). La capacidad de cien usuarios aún requiere comprobación; el recorrido de transferencia pertenece a una fase posterior. [Índice de documentación](../../README.md).
+Especificación acordada del producto. El código disponible implementa acceso Cognito, editor y API Lambda, ejecución periódica del nivel principal con llave y puerta mediante Runtime/Strands/Bedrock, intentos en DynamoDB y cuerpos privados en S3, configuraciones de robot guardadas, comparación de victorias propias cargadas y publicación mediante CDK y GitHub Actions. La URL pública está en [README](../../README.md). La capacidad de cien usuarios requiere comprobación con el recorrido vigente. [Índice de documentación](../../README.md).
 
 ## Tecnologías y restricciones confirmadas
 

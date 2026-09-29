@@ -1,6 +1,6 @@
 # Experiencia y alcance
 
-Especificación vigente de la experiencia. El acceso, la preparación persistida y los intentos reales del nivel principal con recompensa, llave y puerta están implementados, con Esperar, Agarrar objeto, animación opcional, resultado directo, cancelación, historial, reproducción, inspección de decisiones y comparación de victorias propias. El recorrido de transferencia pertenece a una fase posterior. Se relaciona con [intentos](intentos.md), [agente](agente.md), [reglas del juego](juego.md), [consumo y puntaje](consumo-y-puntaje.md) y [plataforma](plataforma.md).
+Especificación vigente de la experiencia. El acceso, la preparación persistida y los intentos reales del nivel principal con recompensa, llave y puerta están implementados, con Esperar, Agarrar objeto, animación opcional, resultado directo, cancelación, historial, reproducción, inspección de decisiones, comparación de victorias propias y configuraciones de robot guardadas. Se relaciona con [intentos](intentos.md), [agente](agente.md), [reglas del juego](juego.md), [consumo y puntaje](consumo-y-puntaje.md) y [plataforma](plataforma.md).
 
 ## Propósito y participantes
 
@@ -15,7 +15,7 @@ La interfaz está en español y debe poder entenderse sin conocer AWS ni program
 - **Sesión colaborativa:** los presentadores operan una única interfaz desde una computadora de escritorio conectada a un proyector. El público propone habilidades, descripciones e instrucciones y observa los resultados. Los asistentes no necesitan teléfono, cuenta ni conexión propia para participar verbalmente.
 - **Juego individual:** cada participante entra a la aplicación web desde un navegador de escritorio, crea una cuenta con email verificado y usa las mismas mecánicas y posibilidades de edición. El registro, la cuota y el guardado se definen en [plataforma](plataforma.md).
 
-La primera versión no requiere soporte para celulares o tablets. El booth y el juego individual usan las mismas reglas y el nivel principal vigente; sólo cambia quién opera la interfaz. El recorrido de transferencia se incorporará en una fase posterior. La pantalla compartida debe mantener texto reconocible, obstáculos distinguibles y resultados visibles desde el proyector.
+La primera versión no requiere soporte para celulares o tablets. El booth y el juego individual usan las mismas reglas y el nivel principal vigente; sólo cambia quién opera la interfaz. La pantalla compartida debe mantener texto reconocible, obstáculos distinguibles y resultados visibles desde el proyector.
 
 ## Preparación disponible
 
@@ -24,6 +24,14 @@ La vista privada muestra las habilidades, sus descripciones e instrucciones y gu
 Un conflicto conserva el texto local y permite revisar la versión guardada antes de elegir cuál conservar. La resolución vuelve a comprobar la versión para no pisar una tercera edición. La renovación de la misma sesión pausa las escrituras y bloquea los controles del editor sin descartar cambios pendientes; otra identidad nunca hereda esos cambios. Al cerrar sesión con cambios sin confirmar se ofrece esperar/reintentar o descartar explícitamente los cambios locales pendientes. Una escritura ya enviada puede haber quedado guardada; salir no promete revertirla y no espera indefinidamente a la red. La cola local se detiene. La advertencia nativa al salir no garantiza guardar después de un cierre abrupto.
 
 La pantalla está en español y se opera con teclado. Probar congela lo visible, confirma su guardado y admite un intento con control de versión. Se bloquean los controles, incluido cerrar sesión, hasta presentar el resultado; durante cálculo sólo Cancelar es operativo. Los errores de acceso o red permiten recuperar la sesión o consulta sin crear otro intento. El historial propio es paginado y abre resultados conservados. Si hay varios intentos activos desde otras sesiones, se elige cuál retomar antes de entrar en su cálculo; no se impone una exclusión global por usuario.
+
+## Configuraciones de robot guardadas
+
+El borrador activo es la edición que usa **Probar**. Cada cuenta puede guardar además varias copias nombradas del robot: modelo, habilidades, descripciones e instrucciones, sin nivel ni resultado. **Guardar como nueva** crea una copia desde el contenido visible confirmado; la lista privada permite abrirla de nuevo entre sesiones. **Cargar** coloca una copia en el editor mediante la conciliación de guardados pendientes. No inicia un intento.
+
+Editar el borrador después de cargar una copia no la modifica. En la copia seleccionada, **Guardar** reemplaza explícitamente su nombre y contenido con control de versión; **Eliminar** requiere confirmación y borra sólo esa copia. Un conflicto o una respuesta de escritura incierta se comprueba antes de reintentar, sin sobrescribir cambios de otra pestaña. Las copias guardadas, el borrador y los snapshots de intentos tienen vidas independientes: eliminar una copia no cambia el borrador ni los intentos anteriores. Desde un intento propio terminal se puede recuperar su configuración al editor y luego guardarla como copia nueva.
+
+Las operaciones de esta biblioteca no llaman al modelo ni consumen intentos de la cuota. Las escrituras y la carga se bloquean durante cálculo, animación automática, renovación de sesión y cambio de cuenta; las respuestas tardías no se aplican a otra identidad. La lista distingue las copias por ID estable aunque tengan el mismo nombre y muestra estados de carga, error y conflicto recuperables.
 
 No hay selector de nivel: se juega el único nivel vigente, `principal-puerta-v4`. La interfaz explica que una llave abre la puerta anterior a la salida libre; el resultado y el historial distinguen la llave recogida del valor de la recompensa. El toggle **Animación** está disponible y su preferencia se guarda en el servidor por usuario; cada intento conserva el valor elegido. Esperar y Agarrar objeto pueden habilitarse en el editor. Las referencias de recuperación de la pestaña no sustituyen el registro del servidor. Durante una admisión ya iniciada, la pestaña puede conservar transitoriamente la clave, versión, elección de Animación y snapshot exactos en `sessionStorage` para reintentar la misma solicitud tras una respuesta perdida. La referencia foreground conserva el intento cuyo cálculo o resultado todavía se debe recuperar y pasa al nuevo intento al admitirlo. No se conserva evidencia local de que una presentación ya se vio. El resultado se muestra al llegar al último frame o al elegir **Ver resultado** y el ACK se envía en segundo plano; si falla, el resultado sigue disponible y ofrece reintentar el ACK. Si se recarga mientras el servidor aún informa `presentationComplete=false`, la reproducción vuelve a empezar. Estas referencias no guardan un borrador alternativo ni funcionan como preferencia.
 
@@ -80,7 +88,7 @@ La vista de resultado muestra si el recorrido terminó en victoria, derrota, lí
 
 ## Contenido educativo y alcance
 
-La configuración inicial tiene una limitación real en capacidades, descripciones o instrucciones. La frase de preferir la derecha forma parte de las instrucciones iniciales y es editable según [agente](agente.md). El catálogo y la física del nivel principal están en [juego](juego.md); el recorrido de transferencia llegará en una fase posterior.
+La configuración inicial tiene una limitación real en capacidades, descripciones o instrucciones. La frase de preferir la derecha forma parte de las instrucciones iniciales y es editable según [agente](agente.md). El catálogo y la física del nivel principal están en [juego](juego.md).
 
 La experiencia puede mostrar resultados auténticos de una ejecución, incluyendo una derrota causada por una acción registrada. No garantiza que una descripción incorrecta produzca siempre una derrota, que agregar herramientas perjudique al modelo o que una descripción larga sea peor. La calibración educativa se realiza después de contar con una versión funcionando.
 
