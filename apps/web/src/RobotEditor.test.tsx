@@ -213,6 +213,48 @@ describe('RobotEditor', () => {
     expect(screen.getByDisplayValue('Edición local pendiente')).toBeTruthy();
   });
 
+  it('preserves the local draft and reports a cross-tab conflict while applying', async () => {
+    vi.useFakeTimers();
+    let rejectSave!: (error: DraftApiFailure) => void;
+    const putDraft = vi.fn().mockReturnValue(
+      new Promise<never>((_resolve, reject) => {
+        rejectSave = reject;
+      }),
+    );
+    const editorRef = createRef<RobotEditorHandle>();
+    render(<RobotEditor ref={editorRef} api={api({ putDraft })} session={session()} />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    fireEvent.change(screen.getByLabelText('Qué debe tener en cuenta el robot'), {
+      target: { value: 'Mi edición sin confirmar' },
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(600);
+    });
+    expect(putDraft).toHaveBeenCalledOnce();
+
+    const applying = editorRef.current?.applyDraft({
+      ...createDefaultDraft(),
+      instructions: 'Configuración recuperada',
+    });
+    await act(async () => {
+      rejectSave(
+        new DraftApiFailure(
+          'conflict',
+          'Otra pestaña guardó una configuración distinta.',
+          409,
+          snapshot(1, { ...createDefaultDraft(), instructions: 'Cambio remoto' }),
+        ),
+      );
+      expect(await applying).toBe(false);
+    });
+    expect(screen.getByDisplayValue('Mi edición sin confirmar')).toBeTruthy();
+    expect(screen.getByText(/Otra pestaña guardó una versión distinta/)).toBeTruthy();
+    expect(screen.queryByDisplayValue('Configuración recuperada')).toBeNull();
+  });
+
   it('does not replace an edit typed while a pending save is being flushed', async () => {
     vi.useFakeTimers();
     let resolveSave!: (value: DraftSnapshot) => void;

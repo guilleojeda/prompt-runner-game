@@ -638,6 +638,7 @@ function ConfigurationPreview({
   state,
   busy,
   onApply,
+  onRetry,
   onClose,
 }: {
   state: {
@@ -649,14 +650,21 @@ function ConfigurationPreview({
   };
   busy: boolean;
   onApply: () => void;
+  onRetry: () => void;
   onClose: () => void;
 }) {
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    if (state.status === 'loading') headingRef.current?.focus();
+  }, [state.status, state.targetId]);
   return (
     <section className="attempt-configuration" aria-labelledby="attempt-configuration-title">
       <div className="attempt-section-heading">
         <div>
           <p className="card-kicker">Configuración fijada</p>
-          <h3 id="attempt-configuration-title">Configuración del intento</h3>
+          <h3 id="attempt-configuration-title" ref={headingRef} tabIndex={-1}>
+            Configuración del intento
+          </h3>
         </div>
         <button className="text-button" type="button" onClick={onClose} disabled={busy}>
           Cerrar
@@ -671,6 +679,11 @@ function ConfigurationPreview({
       {state.status === 'error' && state.message && (
         <div className="attempt-error" role="alert">
           <p>{state.message}</p>
+          {!state.configuration && (
+            <button className="secondary-button" type="button" onClick={onRetry} disabled={busy}>
+              Reintentar carga
+            </button>
+          )}
         </div>
       )}
       {state.configuration && (
@@ -789,6 +802,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     const configurationOperationRef = useRef(0);
     const configurationControllerRef = useRef<AbortController | null>(null);
     const configurationApplyingRef = useRef(false);
+    const configurationTriggerRef = useRef<HTMLElement | null>(null);
     const animationEnabledRef = useRef(true);
     const preferenceVersionRef = useRef(0);
     const preferenceGenerationRef = useRef(0);
@@ -815,9 +829,15 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       configurationControllerRef.current?.abort();
       configurationControllerRef.current = null;
       configurationApplyingRef.current = false;
+      configurationTriggerRef.current = null;
       onConfigurationBusyChange?.(false);
       setConfigurationState(null);
     }, [onConfigurationBusyChange]);
+    const closeConfiguration = useCallback((): void => {
+      const trigger = configurationTriggerRef.current;
+      clearConfiguration();
+      if (trigger?.isConnected) trigger.focus();
+    }, [clearConfiguration]);
 
     useEffect(() => {
       const previousSub = sessionSubRef.current;
@@ -1718,8 +1738,12 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     );
 
     const openConfiguration = useCallback(
-      async (id: string): Promise<void> => {
+      async (id: string, rememberTrigger = true): Promise<void> => {
         if (busy || authPaused || configurationApplyingRef.current) return;
+        if (rememberTrigger) {
+          configurationTriggerRef.current =
+            document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        }
         const generation = generationRef.current;
         const operation = ++configurationOperationRef.current;
         configurationControllerRef.current?.abort();
@@ -1806,8 +1830,13 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             : state,
         );
       } finally {
-        configurationApplyingRef.current = false;
-        onConfigurationBusyChange?.(false);
+        if (
+          generationRef.current === generation &&
+          configurationOperationRef.current === operation
+        ) {
+          configurationApplyingRef.current = false;
+          onConfigurationBusyChange?.(false);
+        }
       }
     }, [authPaused, busy, configurationState, editor, onConfigurationBusyChange]);
 
@@ -2400,7 +2429,8 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             state={configurationState}
             busy={busy || authPaused || configurationState.status === 'applying'}
             onApply={() => void applyConfiguration()}
-            onClose={clearConfiguration}
+            onRetry={() => void openConfiguration(configurationState.targetId, false)}
+            onClose={closeConfiguration}
           />
         )}
 

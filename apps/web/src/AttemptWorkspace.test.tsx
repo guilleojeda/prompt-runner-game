@@ -1993,7 +1993,17 @@ describe('AttemptWorkspace', () => {
       },
       { ...summary('victory'), id: 'score-zero', score: 0, gameTokens: 2_000 },
       { ...summary('victory'), id: 'score-unknown', score: null, gameTokens: null },
+      {
+        ...summary('victory'),
+        id: 'score-incomplete-record',
+        score: 400,
+        gameTokens: 300,
+        recordComplete: false,
+      },
       { ...summary('defeat'), id: 'defeat-1', score: null, gameTokens: 400 },
+      { ...summary('incomplete'), id: 'turn-limit-1', turnsUsed: 24, gameTokens: 500 },
+      { ...summary('cancelled'), id: 'cancelled-1', turnsUsed: 1, gameTokens: 200 },
+      { ...summary('error'), id: 'error-1', turnsUsed: 3, gameTokens: null },
     ];
     const later = {
       ...summary('victory'),
@@ -2015,13 +2025,14 @@ describe('AttemptWorkspace', () => {
     const history = await screen.findByRole('heading', { name: 'Historial' });
     expect(
       within(history.closest('section') as HTMLElement).getByText(
-        '6 cargados · hay más intentos para consultar',
+        '10 cargados · hay más intentos para consultar',
       ),
     ).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Tus mejores soluciones' })).toBeTruthy();
     expect(screen.getByText('#1 · 200 puntos')).toBeTruthy();
     expect(screen.getAllByText('#2 · 100 puntos')).toHaveLength(2);
     expect(screen.getByText('#4 · 0 puntos')).toBeTruthy();
+    expect(screen.queryByText('#1 · 400 puntos')).toBeNull();
     const ranking = screen
       .getByRole('heading', { name: 'Tus mejores soluciones' })
       .closest('section') as HTMLElement;
@@ -2029,13 +2040,32 @@ describe('AttemptWorkspace', () => {
     expect(rankingCards[1]?.textContent).toContain('2026-09-21T12:00:01.000Z');
     expect(rankingCards[2]?.textContent).toContain('2026-09-21T12:00:00.000Z');
     expect(screen.getByText(/Victorias sin puntaje exacto:/)).toBeTruthy();
+    expect(screen.getByText(/Victorias con registro incompleto:/)).toBeTruthy();
     expect(screen.getByText(/Otros resultados:/)).toBeTruthy();
+    for (const status of ['Derrota', 'Recorrido incompleto', 'Cancelado', 'Error de ejecución']) {
+      expect(within(history.closest('section') as HTMLElement).getByText(status)).toBeTruthy();
+    }
     expect(screen.getAllByText(/tokens para puntaje/).length).toBeGreaterThan(0);
     expect(screen.getByRole('button', { name: 'Cargar 20 más' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Cargar 20 más' }));
     expect(await screen.findByText('#1 · 300 puntos')).toBeTruthy();
-    expect(screen.getByText('7 cargados · todo el historial disponible está visible')).toBeTruthy();
+    expect(
+      screen.getByText('11 cargados · todo el historial disponible está visible'),
+    ).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Cargar 20 más' })).toBeNull();
+  });
+
+  it('explains an empty history and an empty comparable set without starting inference', async () => {
+    const attemptApi = api({ listAttempts: vi.fn().mockResolvedValue({ attempts: [] }) });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+
+    expect(await screen.findByText('Todavía no hay intentos guardados.')).toBeTruthy();
+    expect(screen.getByText('0 cargados · todo el historial disponible está visible')).toBeTruthy();
+    expect(
+      screen.getByText('Todavía no hay victorias comparables entre los intentos cargados.'),
+    ).toBeTruthy();
+    expect(attemptApi.createAttempt).not.toHaveBeenCalled();
   });
 
   it('previews and applies a history configuration without creating an attempt', async () => {
@@ -2057,7 +2087,7 @@ describe('AttemptWorkspace', () => {
       getConfiguration: vi.fn().mockResolvedValue({ attemptId: terminal.id, draft: recovered }),
     });
     const editor = { current: { applyDraft } } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    const view = render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
 
     const history = await screen.findByRole('heading', { name: 'Historial' });
     const configurationButtons = within(history.closest('section') as HTMLElement).getAllByRole(
@@ -2078,8 +2108,95 @@ describe('AttemptWorkspace', () => {
     expect(configurationRows[1]?.textContent).toContain('Retroceder');
     expect(configurationRows[1]?.textContent).toContain('No enviada al agente');
     expect(configurationRows[1]?.textContent).toContain('Descripción: vacía');
+    view.rerender(
+      <AttemptWorkspace api={attemptApi} editor={editor} session={session()} authPaused />,
+    );
+    const applyButton = screen.getByRole('button', { name: 'Usar esta configuración' });
+    expect((applyButton as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(applyButton);
+    expect(applyDraft).not.toHaveBeenCalled();
+    view.rerender(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Usar esta configuración' }));
     await waitFor(() => expect(applyDraft).toHaveBeenCalledWith(recovered));
+    expect(attemptApi.createAttempt).not.toHaveBeenCalled();
+  });
+
+  it('moves keyboard focus into the configuration and returns it to the history control', async () => {
+    const terminal = { ...summary('victory'), id: 'attempt-focus', score: 100, gameTokens: 700 };
+    const attemptApi = api({
+      listAttempts: vi.fn().mockResolvedValue({ attempts: [terminal] }),
+      getAttempt: vi.fn().mockResolvedValue(terminal),
+      getConfiguration: vi
+        .fn()
+        .mockResolvedValue({ attemptId: terminal.id, draft: createDefaultDraft() }),
+    });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+
+    const history = await screen.findByRole('heading', { name: 'Historial' });
+    const opener = within(history.closest('section') as HTMLElement).getAllByRole('button', {
+      name: 'Ver configuración',
+    })[0]!;
+    opener.focus();
+    fireEvent.click(opener);
+    const heading = await screen.findByRole('heading', { name: 'Configuración del intento' });
+    expect(document.activeElement).toBe(heading);
+    fireEvent.click(screen.getByRole('button', { name: 'Cerrar' }));
+    expect(document.activeElement).toBe(opener);
+
+    const row = within(history.closest('section') as HTMLElement).getAllByRole('listitem')[0]!;
+    fireEvent.click(within(row).getByRole('button', { name: 'Ver resultado' }));
+    const result = await screen.findByRole('heading', { name: 'Victoria' });
+    const resultOpener = within(result.closest('section') as HTMLElement).getByRole('button', {
+      name: 'Ver configuración',
+    });
+    resultOpener.focus();
+    fireEvent.click(resultOpener);
+    expect(await screen.findByRole('heading', { name: 'Configuración del intento' })).toBe(
+      document.activeElement,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Cerrar' }));
+    expect(document.activeElement).toBe(resultOpener);
+  });
+
+  it('keeps a failed configuration load in focus and retries it from the panel', async () => {
+    const terminal = { ...summary('victory'), id: 'attempt-retry', score: 100, gameTokens: 700 };
+    let rejectLoad!: (error: AttemptApiFailure) => void;
+    const getConfiguration = vi
+      .fn()
+      .mockReturnValueOnce(
+        new Promise((_resolve, reject) => {
+          rejectLoad = reject;
+        }),
+      )
+      .mockResolvedValueOnce({ attemptId: terminal.id, draft: createDefaultDraft() });
+    const attemptApi = api({
+      listAttempts: vi.fn().mockResolvedValue({ attempts: [terminal] }),
+      getConfiguration,
+    });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+
+    const history = await screen.findByRole('heading', { name: 'Historial' });
+    const opener = within(history.closest('section') as HTMLElement).getAllByRole('button', {
+      name: 'Ver configuración',
+    })[0]!;
+    opener.focus();
+    fireEvent.click(opener);
+    const heading = await screen.findByRole('heading', { name: 'Configuración del intento' });
+    expect(
+      within(heading.closest('section') as HTMLElement).getByText(
+        'Cargando la configuración guardada…',
+      ),
+    ).toBeTruthy();
+    await act(async () => {
+      rejectLoad(new AttemptApiFailure('network', 'No se pudo consultar.'));
+    });
+    expect((await screen.findByRole('alert')).textContent).toContain('No se pudo consultar.');
+    expect(document.activeElement).toBe(heading);
+    fireEvent.click(screen.getByRole('button', { name: 'Reintentar carga' }));
+    expect(await screen.findByRole('button', { name: 'Usar esta configuración' })).toBeTruthy();
+    expect(getConfiguration).toHaveBeenCalledTimes(2);
     expect(attemptApi.createAttempt).not.toHaveBeenCalled();
   });
 
@@ -2197,6 +2314,82 @@ describe('AttemptWorkspace', () => {
       await Promise.resolve();
     });
     expect(screen.queryByRole('heading', { name: 'Configuración del intento' })).toBeNull();
+  });
+
+  it('keeps the second account locked when an old configuration application finishes late', async () => {
+    const terminal = {
+      ...summary('victory'),
+      id: 'attempt-apply-race',
+      score: 100,
+      gameTokens: 700,
+    };
+    const finishApply: Array<(applied: boolean) => void> = [];
+    const applyDraft = vi.fn().mockImplementation(
+      () =>
+        new Promise<boolean>((resolve) => {
+          finishApply.push(resolve);
+        }),
+    );
+    const onConfigurationBusyChange = vi.fn();
+    const attemptApi = api({
+      listAttempts: vi.fn().mockResolvedValue({ attempts: [terminal] }),
+      getConfiguration: vi
+        .fn()
+        .mockResolvedValue({ attemptId: terminal.id, draft: createDefaultDraft() }),
+    });
+    const editor = { current: { applyDraft } } as unknown as { current: RobotEditorHandle | null };
+    const view = render(
+      <AttemptWorkspace
+        api={attemptApi}
+        editor={editor}
+        session={session()}
+        onConfigurationBusyChange={onConfigurationBusyChange}
+      />,
+    );
+    const openFromHistory = async (): Promise<void> => {
+      const history = await screen.findByRole('heading', { name: 'Historial' });
+      const button = within(history.closest('section') as HTMLElement).getAllByRole('button', {
+        name: 'Ver configuración',
+      })[0] as HTMLButtonElement;
+      await waitFor(() => expect(button.disabled).toBe(false));
+      fireEvent.click(button);
+      fireEvent.click(await screen.findByRole('button', { name: 'Usar esta configuración' }));
+    };
+
+    await openFromHistory();
+    await waitFor(() => expect(finishApply).toHaveLength(1));
+    view.rerender(
+      <AttemptWorkspace
+        api={attemptApi}
+        editor={editor}
+        session={session(
+          'b@example.com',
+          Math.floor(Date.now() / 1000) + 600,
+          'token-b',
+          'subject-b',
+        )}
+        onConfigurationBusyChange={onConfigurationBusyChange}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Configuración del intento' })).toBeNull(),
+    );
+    await openFromHistory();
+    await waitFor(() => expect(finishApply).toHaveLength(2));
+    expect(onConfigurationBusyChange.mock.lastCall?.[0]).toBe(true);
+
+    await act(async () => {
+      finishApply[0]!(false);
+      await Promise.resolve();
+    });
+    expect(screen.getByText('Aplicando configuración…')).toBeTruthy();
+    expect(onConfigurationBusyChange.mock.lastCall?.[0]).toBe(true);
+
+    await act(async () => {
+      finishApply[1]!(true);
+      await Promise.resolve();
+    });
+    expect(onConfigurationBusyChange.mock.lastCall?.[0]).toBe(false);
   });
 
   it('uses a recovered draft for a new Probar request while the source attempt stays unchanged', async () => {
