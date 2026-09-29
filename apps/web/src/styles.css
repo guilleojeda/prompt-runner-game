@@ -613,6 +613,163 @@ h1 {
   font-size: 0.82rem;
 }
 
+.history-ranking {
+  margin-bottom: 1rem;
+  padding: 0.9rem;
+  border: 1px solid rgba(155, 197, 158, 0.42);
+  border-radius: 0.6rem;
+  background: rgba(66, 104, 69, 0.12);
+}
+
+.history-ranking > p,
+.history-exclusions p {
+  margin: 0 0 0.7rem;
+  color: #b9b4a8;
+  line-height: 1.45;
+}
+
+.history-ranking > p:last-child,
+.history-exclusions p:last-child {
+  margin-bottom: 0;
+}
+
+.history-subheading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.history-subheading h4 {
+  margin: 0;
+  color: #f7f1e1;
+  font-size: 1rem;
+}
+
+.history-subheading span {
+  color: #bde0bf;
+  font-size: 0.8rem;
+}
+
+.history-ranking-list {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.history-ranking-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  padding: 0.7rem;
+  border: 1px solid rgba(155, 197, 158, 0.28);
+  border-radius: 0.45rem;
+  background: rgba(20, 19, 15, 0.3);
+}
+
+.history-ranking-card > div:first-child {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.history-ranking-card strong {
+  color: #f7f1e1;
+}
+
+.history-ranking-card span {
+  color: #b9b4a8;
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.history-exclusions {
+  display: grid;
+  gap: 0.25rem;
+  margin-bottom: 0.8rem;
+  padding: 0.7rem 0.8rem;
+  border-left: 3px solid #d8b36a;
+  background: rgba(216, 179, 106, 0.1);
+}
+
+.attempt-configuration {
+  margin-top: 1rem;
+  padding: 1rem;
+  border: 1px solid rgba(216, 179, 106, 0.42);
+  border-radius: 0.7rem;
+  background: rgba(20, 19, 15, 0.3);
+}
+
+.configuration-attempt-id {
+  margin: 0 0 0.8rem;
+  color: #d8b36a;
+  font-size: 0.86rem;
+  overflow-wrap: anywhere;
+}
+
+.configuration-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem;
+  margin: 0 0 1rem;
+}
+
+.configuration-facts div {
+  padding: 0.65rem 0.7rem;
+  border: 1px solid rgba(242, 239, 232, 0.1);
+  border-radius: 0.45rem;
+  background: rgba(242, 239, 232, 0.04);
+}
+
+.configuration-facts dt,
+.configuration-preview-copy h4 {
+  color: #d8b36a;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.configuration-facts dd {
+  margin: 0.2rem 0 0;
+  color: #f7f1e1;
+  overflow-wrap: anywhere;
+}
+
+.configuration-preview-copy {
+  margin-bottom: 1rem;
+  padding: 0.8rem;
+  border: 1px solid rgba(242, 239, 232, 0.1);
+  border-radius: 0.45rem;
+  background: rgba(20, 19, 15, 0.24);
+}
+
+.configuration-preview-copy h4 {
+  margin: 0 0 0.35rem;
+}
+
+.configuration-preview-copy p,
+.configuration-preview-copy ul {
+  margin: 0 0 0.8rem;
+  color: #b9b4a8;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.configuration-preview-copy ul {
+  padding-left: 1.2rem;
+}
+
+.configuration-preview-copy li + li {
+  margin-top: 0.25rem;
+}
+
+.configuration-applied {
+  margin: 0 0 0.8rem;
+  color: #bde0bf;
+  line-height: 1.45;
+}
+
 .history-empty {
   margin-bottom: 0;
 }
@@ -1137,7 +1294,8 @@ button:disabled {
   .attempt-result-heading,
   .attempt-section-heading,
   .attempt-running,
-  .history-list li {
+  .history-list li,
+  .history-ranking-card {
     display: block;
   }
 
@@ -1152,6 +1310,10 @@ button:disabled {
 
   .history-actions {
     margin-top: 0.75rem;
+  }
+
+  .configuration-facts {
+    grid-template-columns: 1fr;
   }
 
   .attempt-metrics {

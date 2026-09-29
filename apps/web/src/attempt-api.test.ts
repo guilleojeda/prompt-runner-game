@@ -72,6 +72,63 @@ describe('AttemptApiClient', () => {
     );
   });
 
+  it('loads and strictly validates the terminal attempt configuration', async () => {
+    const draft = createDefaultDraft();
+    const preservedDraft = {
+      ...draft,
+      skills: draft.skills.map((skill, index) =>
+        index === 0 ? { id: skill.id, enabled: skill.enabled } : skill,
+      ),
+    };
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ attemptId: 'attempt-1', draft: preservedDraft }), {
+        status: 200,
+      }),
+    );
+    const client = new AttemptApiClient(config, {
+      tokenProvider: () => 'access-token',
+      fetch: fetchImpl,
+    });
+
+    const result = await client.getConfiguration('attempt 1');
+
+    expect(result).toEqual({ attemptId: 'attempt-1', draft: preservedDraft });
+    expect(result.draft.skills[0]).not.toHaveProperty('description');
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe(
+      'https://api.example.test/attempts/attempt%201/configuration',
+    );
+    expect(fetchImpl.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({
+        method: 'GET',
+        headers: expect.objectContaining({ Authorization: 'Bearer access-token' }),
+      }),
+    );
+  });
+
+  it('rejects an attempt configuration with extra fields or an obsolete draft', async () => {
+    const draft = createDefaultDraft();
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ attemptId: 'attempt-1', draft, extra: true }), {
+          status: 200,
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            attemptId: 'attempt-1',
+            draft: { ...draft, catalogVersion: 2 },
+          }),
+          { status: 200 },
+        ),
+      );
+    const client = new AttemptApiClient(config, { tokenProvider: () => 'token', fetch: fetchImpl });
+
+    await expect(client.getConfiguration('attempt-1')).rejects.toMatchObject({ code: 'server' });
+    await expect(client.getConfiguration('attempt-1')).rejects.toMatchObject({ code: 'server' });
+  });
+
   it('keeps the current server-normalized model identity on an attempt summary', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(

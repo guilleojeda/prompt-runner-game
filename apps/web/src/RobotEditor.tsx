@@ -29,6 +29,7 @@ export interface RobotEditorHandle {
   discardPending(): void;
   flushPending(): Promise<boolean>;
   captureSnapshot(): Promise<DraftSnapshot | null>;
+  applyDraft(draft: RobotDraft): Promise<boolean>;
   releaseAttemptLock(): void;
 }
 
@@ -37,6 +38,7 @@ export interface RobotEditorProps {
   session: AuthSession;
   paused?: boolean;
   locked?: boolean;
+  tryLocked?: boolean;
   onTry?: () => void;
   onAuthRequired?: () => void;
 }
@@ -102,7 +104,7 @@ function isCurrent(
 }
 
 export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(function RobotEditor(
-  { api, session, paused = false, locked = false, onTry, onAuthRequired },
+  { api, session, paused = false, locked = false, tryLocked = false, onTry, onAuthRequired },
   ref,
 ) {
   const [draft, setDraft] = useState<RobotDraft | null>(null);
@@ -442,6 +444,51 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     return null;
   };
 
+  const applyDraft = async (nextDraft: RobotDraft): Promise<boolean> => {
+    if (pausedRef.current || lockedRef.current || status === 'loading' || conflict !== null) {
+      return false;
+    }
+    const generation = generationRef.current;
+    const visibleAtStart = draftRef.current;
+    if (!visibleAtStart) {
+      return false;
+    }
+    const frozenVisible = cloneDraft(visibleAtStart);
+    const initialInFlight = inFlightRef.current;
+    if (initialInFlight && !(await initialInFlight.promise)) {
+      return false;
+    }
+    if (!draftRef.current || !draftsEqual(draftRef.current, frozenVisible)) {
+      return false;
+    }
+    if (!(await flushPending())) {
+      return false;
+    }
+    if (
+      !isCurrent(generationRef, generation, sessionRef.current) ||
+      pausedRef.current ||
+      lockedRef.current ||
+      conflict !== null ||
+      !draftRef.current ||
+      !draftsEqual(draftRef.current, frozenVisible)
+    ) {
+      return false;
+    }
+    const copy = cloneDraft(nextDraft);
+    draftRef.current = copy;
+    setDraft(copy);
+    setConflict(null);
+    setRetryMode(null);
+    if (confirmedRef.current && draftsEqual(copy, confirmedRef.current.draft)) {
+      setStatus('clean');
+      setMessage(null);
+    } else {
+      setStatus('dirty');
+      setMessage(null);
+    }
+    return true;
+  };
+
   const retry = (): void => {
     const target = reconciliationRef.current;
     if (target && retryMode === 'reconcile') {
@@ -475,6 +522,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     },
     flushPending,
     captureSnapshot,
+    applyDraft,
     releaseAttemptLock: () => setAttemptClickLocked(false),
   }));
 
@@ -731,7 +779,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
                   setAttemptClickLocked(true);
                   onTry();
                 }}
-                disabled={disabled || status === 'conflict'}
+                disabled={disabled || tryLocked || status === 'conflict'}
               >
                 Probar
               </button>

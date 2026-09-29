@@ -49,11 +49,16 @@ vi.mock('./replay/ReplayScene.js', () => ({
   ),
 }));
 
-function session(): AuthSession {
+function session(
+  email = 'a@example.com',
+  expiresAt = Math.floor(Date.now() / 1000) + 600,
+  accessToken = 'token',
+  sub = 'subject-a',
+): AuthSession {
   return {
-    identity: { sub: 'subject-a', email: 'a@example.com' },
+    identity: { sub, email },
     user: new User({
-      access_token: 'token',
+      access_token: accessToken,
       token_type: 'Bearer',
       scope: 'openid email prompt-runner/robot',
       profile: {
@@ -61,10 +66,10 @@ function session(): AuthSession {
         aud: 'client',
         iat: 1,
         exp: 9999999999,
-        sub: 'subject-a',
-        email: 'a@example.com',
+        sub,
+        email,
       },
-      expires_at: Math.floor(Date.now() / 1000) + 600,
+      expires_at: expiresAt,
     }),
   };
 }
@@ -153,6 +158,7 @@ function api(overrides: Partial<AttemptApi> = {}): AttemptApi {
       .fn()
       .mockRejectedValue(new AttemptApiFailure('not_found', 'not found', 404)),
     getAttempt: vi.fn().mockResolvedValue(summary('running')),
+    getConfiguration: vi.fn(),
     listAttempts: vi.fn().mockResolvedValue({ attempts: [] }),
     getAnimationPreference: vi.fn().mockResolvedValue({ animationEnabled: true, version: 0 }),
     putAnimationPreference: vi
@@ -929,6 +935,7 @@ describe('AttemptWorkspace', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Ver de nuevo' }));
     expect(await screen.findByRole('button', { name: 'Completar reproducción' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Ver configuración' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Recursos listos' }));
     fireEvent.click(screen.getByRole('button', { name: 'Completar reproducción' }));
     expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
@@ -1965,5 +1972,292 @@ describe('AttemptWorkspace', () => {
     expect(
       within(historySection as HTMLElement).queryByText('Admitido, esperando inicio'),
     ).toBeNull();
+  });
+
+  it('ranks only loaded complete victories, keeps ties and zero scores, and labels the loaded scope', async () => {
+    const ranked = [
+      { ...summary('victory'), id: 'score-200', score: 200, gameTokens: 800 },
+      {
+        ...summary('victory'),
+        id: 'score-100-a',
+        createdAt: '2026-09-21T12:00:01.000Z',
+        score: 100,
+        gameTokens: 900,
+      },
+      {
+        ...summary('victory'),
+        id: 'score-100-b',
+        createdAt: '2026-09-21T12:00:00.000Z',
+        score: 100,
+        gameTokens: 1_100,
+      },
+      { ...summary('victory'), id: 'score-zero', score: 0, gameTokens: 2_000 },
+      { ...summary('victory'), id: 'score-unknown', score: null, gameTokens: null },
+      { ...summary('defeat'), id: 'defeat-1', score: null, gameTokens: 400 },
+    ];
+    const later = {
+      ...summary('victory'),
+      id: 'score-300-later',
+      score: 300,
+      gameTokens: 600,
+      createdAt: '2026-09-21T12:02:00.000Z',
+    };
+    const listAttempts = vi
+      .fn()
+      .mockResolvedValueOnce({ attempts: ranked, nextCursor: 'more' })
+      .mockResolvedValueOnce({ attempts: ranked, nextCursor: 'more' })
+      .mockResolvedValueOnce({ attempts: [later] })
+      .mockResolvedValueOnce({ attempts: [later] });
+    const attemptApi = api({ listAttempts });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+
+    const history = await screen.findByRole('heading', { name: 'Historial' });
+    expect(
+      within(history.closest('section') as HTMLElement).getByText(
+        '6 cargados · hay más intentos para consultar',
+      ),
+    ).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Tus mejores soluciones' })).toBeTruthy();
+    expect(screen.getByText('#1 · 200 puntos')).toBeTruthy();
+    expect(screen.getAllByText('#2 · 100 puntos')).toHaveLength(2);
+    expect(screen.getByText('#4 · 0 puntos')).toBeTruthy();
+    const ranking = screen
+      .getByRole('heading', { name: 'Tus mejores soluciones' })
+      .closest('section') as HTMLElement;
+    const rankingCards = within(ranking).getAllByRole('article');
+    expect(rankingCards[1]?.textContent).toContain('2026-09-21T12:00:01.000Z');
+    expect(rankingCards[2]?.textContent).toContain('2026-09-21T12:00:00.000Z');
+    expect(screen.getByText(/Victorias sin puntaje exacto:/)).toBeTruthy();
+    expect(screen.getByText(/Otros resultados:/)).toBeTruthy();
+    expect(screen.getAllByText(/tokens para puntaje/).length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: 'Cargar 20 más' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Cargar 20 más' }));
+    expect(await screen.findByText('#1 · 300 puntos')).toBeTruthy();
+    expect(screen.getByText('7 cargados · todo el historial disponible está visible')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Cargar 20 más' })).toBeNull();
+  });
+
+  it('previews and applies a history configuration without creating an attempt', async () => {
+    const terminal = { ...summary('victory'), id: 'attempt-config', score: 100, gameTokens: 700 };
+    const recoveredBase = { ...createDefaultDraft(), instructions: 'Recuperada desde el intento' };
+    const recovered = {
+      ...recoveredBase,
+      skills: recoveredBase.skills.map((skill) =>
+        skill.id === 'advance'
+          ? { id: skill.id, enabled: true }
+          : skill.id === 'retreat'
+            ? { id: skill.id, enabled: false, description: '' }
+            : skill,
+      ),
+    };
+    const applyDraft = vi.fn().mockResolvedValue(true);
+    const attemptApi = api({
+      listAttempts: vi.fn().mockResolvedValue({ attempts: [terminal] }),
+      getConfiguration: vi.fn().mockResolvedValue({ attemptId: terminal.id, draft: recovered }),
+    });
+    const editor = { current: { applyDraft } } as unknown as { current: RobotEditorHandle | null };
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+
+    const history = await screen.findByRole('heading', { name: 'Historial' });
+    const configurationButtons = within(history.closest('section') as HTMLElement).getAllByRole(
+      'button',
+      { name: 'Ver configuración' },
+    );
+    fireEvent.click(configurationButtons[0]!);
+    expect(await screen.findByRole('heading', { name: 'Configuración del intento' })).toBeTruthy();
+    expect(screen.getByText('Recuperada desde el intento')).toBeTruthy();
+    expect(screen.getByText('Claude Sonnet 4.6')).toBeTruthy();
+    const configuration = screen
+      .getByRole('heading', { name: 'Configuración del intento' })
+      .closest('section') as HTMLElement;
+    const configurationRows = within(configuration).getAllByRole('listitem');
+    expect(configurationRows[0]?.textContent).toContain('Avanzar');
+    expect(configurationRows[0]?.textContent).toContain('Enviada al agente');
+    expect(configurationRows[0]?.textContent).toContain('Descripción: omitida');
+    expect(configurationRows[1]?.textContent).toContain('Retroceder');
+    expect(configurationRows[1]?.textContent).toContain('No enviada al agente');
+    expect(configurationRows[1]?.textContent).toContain('Descripción: vacía');
+    fireEvent.click(screen.getByRole('button', { name: 'Usar esta configuración' }));
+    await waitFor(() => expect(applyDraft).toHaveBeenCalledWith(recovered));
+    expect(attemptApi.createAttempt).not.toHaveBeenCalled();
+  });
+
+  it('shows a failed configuration apply and keeps the editor content available', async () => {
+    const terminal = {
+      ...summary('victory'),
+      id: 'attempt-config-failure',
+      score: 100,
+      gameTokens: 700,
+    };
+    const recovered = { ...createDefaultDraft(), instructions: 'No se puede aplicar' };
+    const applyDraft = vi.fn().mockResolvedValue(false);
+    const attemptApi = api({
+      listAttempts: vi.fn().mockResolvedValue({ attempts: [terminal] }),
+      getConfiguration: vi.fn().mockResolvedValue({ attemptId: terminal.id, draft: recovered }),
+    });
+    const editor = { current: { applyDraft } } as unknown as { current: RobotEditorHandle | null };
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+
+    const history = await screen.findByRole('heading', { name: 'Historial' });
+    fireEvent.click(
+      within(history.closest('section') as HTMLElement).getAllByRole('button', {
+        name: 'Ver configuración',
+      })[0]!,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Usar esta configuración' }));
+    expect((await screen.findByRole('alert')).textContent).toContain(
+      'No se pudo aplicar la configuración',
+    );
+    expect(applyDraft).toHaveBeenCalledWith(recovered);
+  });
+
+  it('discards a late configuration response after opening another attempt', async () => {
+    const first = { ...summary('victory'), id: 'attempt-first', score: 100, gameTokens: 500 };
+    const second = { ...summary('defeat'), id: 'attempt-second' };
+    let resolveConfiguration!: (value: {
+      attemptId: string;
+      draft: ReturnType<typeof createDefaultDraft>;
+    }) => void;
+    const getConfiguration = vi.fn().mockReturnValue(
+      new Promise<{ attemptId: string; draft: ReturnType<typeof createDefaultDraft> }>(
+        (resolve) => {
+          resolveConfiguration = resolve;
+        },
+      ),
+    );
+    const attemptApi = api({
+      listAttempts: vi.fn().mockResolvedValue({ attempts: [first, second] }),
+      getAttempt: vi.fn().mockResolvedValue(second),
+      getConfiguration,
+    });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    const history = await screen.findByRole('heading', { name: 'Historial' });
+    fireEvent.click(
+      within(history.closest('section') as HTMLElement).getAllByRole('button', {
+        name: 'Ver configuración',
+      })[0]!,
+    );
+    const rows = within(history.closest('section') as HTMLElement).getAllByRole('listitem');
+    fireEvent.click(within(rows[1]!).getByRole('button', { name: 'Ver resultado' }));
+    resolveConfiguration({ attemptId: first.id, draft: createDefaultDraft() });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.queryByRole('heading', { name: 'Configuración del intento' })).toBeNull();
+    expect(await screen.findByRole('heading', { name: 'Derrota' })).toBeTruthy();
+  });
+
+  it('discards a late configuration response after the account changes', async () => {
+    const terminal = {
+      ...summary('victory'),
+      id: 'attempt-account-race',
+      score: 100,
+      gameTokens: 500,
+    };
+    let resolveConfiguration!: (value: {
+      attemptId: string;
+      draft: ReturnType<typeof createDefaultDraft>;
+    }) => void;
+    const getConfiguration = vi.fn().mockReturnValue(
+      new Promise<{ attemptId: string; draft: ReturnType<typeof createDefaultDraft> }>(
+        (resolve) => {
+          resolveConfiguration = resolve;
+        },
+      ),
+    );
+    const attemptApi = api({
+      listAttempts: vi.fn().mockResolvedValue({ attempts: [terminal] }),
+      getConfiguration,
+    });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    const view = render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    const history = await screen.findByRole('heading', { name: 'Historial' });
+    fireEvent.click(
+      within(history.closest('section') as HTMLElement).getAllByRole('button', {
+        name: 'Ver configuración',
+      })[0]!,
+    );
+    view.rerender(
+      <AttemptWorkspace
+        api={attemptApi}
+        editor={editor}
+        session={session(
+          'b@example.com',
+          Math.floor(Date.now() / 1000) + 600,
+          'token-b',
+          'subject-b',
+        )}
+      />,
+    );
+    resolveConfiguration({ attemptId: terminal.id, draft: createDefaultDraft() });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.queryByRole('heading', { name: 'Configuración del intento' })).toBeNull();
+  });
+
+  it('uses a recovered draft for a new Probar request while the source attempt stays unchanged', async () => {
+    const source = { ...summary('victory'), id: 'attempt-source', score: 321, gameTokens: 700 };
+    const recovered = { ...createDefaultDraft(), instructions: 'Desde la victoria' };
+    let currentDraft = createDefaultDraft();
+    let finishApply!: (value: boolean) => void;
+    const applyDraft = vi.fn().mockImplementation(async (draft: typeof recovered) => {
+      currentDraft = draft;
+      return new Promise<boolean>((resolve) => {
+        finishApply = resolve;
+      });
+    });
+    const captureSnapshot = vi
+      .fn()
+      .mockImplementation(async () => ({ version: 4, draft: currentDraft }));
+    const createAttempt = vi.fn().mockResolvedValue({
+      attempt: { ...summary('running'), id: 'attempt-new' },
+      dispatchConfirmed: true,
+    });
+    const attemptApi = api({
+      createAttempt,
+      listAttempts: vi.fn().mockResolvedValue({ attempts: [source] }),
+      getConfiguration: vi.fn().mockResolvedValue({ attemptId: source.id, draft: recovered }),
+    });
+    const editor = {
+      current: { applyDraft, captureSnapshot },
+    } as unknown as { current: RobotEditorHandle | null };
+    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
+    render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+
+    const history = await screen.findByRole('heading', { name: 'Historial' });
+    fireEvent.click(
+      within(history.closest('section') as HTMLElement).getAllByRole('button', {
+        name: 'Ver configuración',
+      })[0]!,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Usar esta configuración' }));
+    await waitFor(() => expect(applyDraft).toHaveBeenCalledWith(recovered));
+    expect(await screen.findByText('Aplicando configuración…')).toBeTruthy();
+    (ref.current as AttemptWorkspaceHandle).start();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(createAttempt).not.toHaveBeenCalled();
+    await act(async () => {
+      finishApply(true);
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      (ref.current as AttemptWorkspaceHandle).start();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(createAttempt).toHaveBeenCalledOnce());
+    const [requestKey, expectedVersion, sentDraft] = createAttempt.mock.calls[0] ?? [];
+    expect(requestKey).not.toBe(source.id);
+    expect(expectedVersion).toBe(4);
+    expect(sentDraft).toEqual(recovered);
+    expect(source.score).toBe(321);
+    expect(screen.queryByRole('button', { name: 'Ver configuración' })).toBeNull();
   });
 });

@@ -61,7 +61,7 @@ La aprobación de una cancelación o el cierre por error impide nuevas acciones.
 
 ### Fases posteriores
 
-La inspección de decisiones conserva el prompt y response completos en el servidor sin mostrarlos al jugador. Las fases 9 y 10 incorporarán comparación y recorrido de transferencia.
+La inspección de decisiones conserva el prompt y response completos en el servidor sin mostrarlos al jugador. La comparación de victorias propias usa los resúmenes del historial; el recorrido de transferencia corresponde a una fase posterior.
 
 ## Inferencia
 

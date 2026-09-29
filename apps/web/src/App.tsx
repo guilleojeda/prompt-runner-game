@@ -272,6 +272,7 @@ export function App({
   const [runnerApi, setRunnerApi] = useState<AttemptApi | null>(attemptApi ?? null);
   const [editorConfig, setEditorConfig] = useState<AuthConfig | null>(null);
   const [attemptBusy, setAttemptBusy] = useState(false);
+  const [configurationBusy, setConfigurationBusy] = useState(false);
   const [attemptPreferenceReady, setAttemptPreferenceReady] = useState(false);
   const clientRef = useRef<AuthClient | null>(authClient ?? null);
   const configRef = useRef<AuthConfig | null>(null);
@@ -647,7 +648,11 @@ export function App({
         />
       )}
       {phase === 'account' && session && (
-        <AccountCard identity={session.identity} onLogout={logout} busy={attemptBusy || renewing} />
+        <AccountCard
+          identity={session.identity}
+          onLogout={logout}
+          busy={attemptBusy || configurationBusy || renewing}
+        />
       )}
       {session &&
         (phase === 'account' ||
@@ -662,6 +667,7 @@ export function App({
                 session={session}
                 paused={renewing || phase !== 'account' || apiAuthError}
                 locked={attemptBusy || !attemptPreferenceReady}
+                tryLocked={configurationBusy}
                 onTry={runnerApi ? () => attemptWorkspaceRef.current?.start() : undefined}
                 onAuthRequired={handleApiAuthRequired}
               />
@@ -677,6 +683,7 @@ export function App({
                   session={session}
                   authPaused={renewing || phase !== 'account' || apiAuthError}
                   onBusyChange={handleAttemptBusyChange}
+                  onConfigurationBusyChange={setConfigurationBusy}
                   onPreferenceReadyChange={setAttemptPreferenceReady}
                   onAuthRequired={handleApiAuthRequired}
                 />

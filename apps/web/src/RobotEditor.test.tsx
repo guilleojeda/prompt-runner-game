@@ -116,6 +116,18 @@ describe('RobotEditor', () => {
     expect((selector as HTMLSelectElement).disabled).toBe(true);
   });
 
+  it('blocks Probar while a recovered configuration is applying but keeps editing available', async () => {
+    render(<RobotEditor api={api()} session={session()} onTry={vi.fn()} tryLocked />);
+    await screen.findByLabelText('Qué debe tener en cuenta el robot');
+
+    expect((screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    expect(
+      (screen.getByLabelText('Qué debe tener en cuenta el robot') as HTMLTextAreaElement).disabled,
+    ).toBe(false);
+  });
+
   it('captures the visible default and persists version zero before returning the attempt snapshot', async () => {
     const putDraft = vi.fn().mockResolvedValue(snapshot(1));
     const editorRef = createRef<RobotEditorHandle>();
@@ -140,6 +152,99 @@ describe('RobotEditor', () => {
     const result = captured as unknown as DraftSnapshot;
     expect(result.version).toBe(1);
     expect(result.draft.instructions).toBe(putDraft.mock.calls[0]?.[1].instructions);
+  });
+
+  it('applies a recovered configuration after pending work and saves it as a normal edit', async () => {
+    const putDraft = vi.fn().mockImplementation(async (version: number, draft: RobotDraft) => ({
+      version: version + 1,
+      draft,
+    }));
+    const editorRef = createRef<RobotEditorHandle>();
+    render(<RobotEditor ref={editorRef} api={api({ putDraft })} session={session()} />);
+    await screen.findByDisplayValue(
+      'Siempre preferí ir a la derecha, a menos que tengas un buen motivo para no hacerlo',
+    );
+
+    const recovered = { ...createDefaultDraft(), instructions: 'Configuración recuperada' };
+    await act(async () => {
+      expect(await editorRef.current?.applyDraft(recovered)).toBe(true);
+    });
+
+    expect(screen.getByDisplayValue('Configuración recuperada')).toBeTruthy();
+    await waitFor(() => expect(putDraft).toHaveBeenCalledOnce(), { timeout: 2_000 });
+    expect(putDraft.mock.calls[0]?.[0]).toBe(0);
+    expect(putDraft.mock.calls[0]?.[1]).toMatchObject({ instructions: 'Configuración recuperada' });
+  });
+
+  it('keeps local content when a pending save cannot be reconciled before applying a configuration', async () => {
+    vi.useFakeTimers();
+    let rejectSave!: (error: DraftApiFailure) => void;
+    const putDraft = vi.fn().mockReturnValue(
+      new Promise<never>((_resolve, reject) => {
+        rejectSave = reject;
+      }),
+    );
+    const editorRef = createRef<RobotEditorHandle>();
+    render(<RobotEditor ref={editorRef} api={api({ putDraft })} session={session()} />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    fireEvent.change(screen.getByLabelText('Qué debe tener en cuenta el robot'), {
+      target: { value: 'Edición local pendiente' },
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(600);
+    });
+    expect(putDraft).toHaveBeenCalledOnce();
+
+    let result: boolean | undefined;
+    const applying = editorRef.current?.applyDraft({
+      ...createDefaultDraft(),
+      instructions: 'No debe reemplazar',
+    });
+    await act(async () => {
+      rejectSave(
+        new DraftApiFailure('network', 'No se pudo guardar.', undefined, undefined, false),
+      );
+      result = await applying;
+    });
+    expect(result).toBe(false);
+    expect(screen.getByDisplayValue('Edición local pendiente')).toBeTruthy();
+  });
+
+  it('does not replace an edit typed while a pending save is being flushed', async () => {
+    vi.useFakeTimers();
+    let resolveSave!: (value: DraftSnapshot) => void;
+    const firstSave = new Promise<DraftSnapshot>((resolve) => {
+      resolveSave = resolve;
+    });
+    const putDraft = vi.fn().mockReturnValue(firstSave);
+    const editorRef = createRef<RobotEditorHandle>();
+    render(<RobotEditor ref={editorRef} api={api({ putDraft })} session={session()} />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const instructions = screen.getByLabelText('Qué debe tener en cuenta el robot');
+    fireEvent.change(instructions, { target: { value: 'Antes de aplicar' } });
+    await act(async () => {
+      vi.advanceTimersByTime(600);
+    });
+    expect(putDraft).toHaveBeenCalledOnce();
+
+    const applying = editorRef.current?.applyDraft({
+      ...createDefaultDraft(),
+      instructions: 'Configuración antigua',
+    });
+    fireEvent.change(instructions, { target: { value: 'Edición escrita durante la espera' } });
+    await act(async () => {
+      resolveSave(snapshot(1, { ...createDefaultDraft(), instructions: 'Antes de aplicar' }));
+      expect(await applying).toBe(false);
+    });
+
+    expect(screen.getByDisplayValue('Edición escrita durante la espera')).toBeTruthy();
+    expect(screen.queryByDisplayValue('Configuración antigua')).toBeNull();
   });
 
   it('debounces edits, allows one write in flight, and sends later text over the confirmed version', async () => {

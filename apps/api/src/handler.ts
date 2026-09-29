@@ -341,6 +341,32 @@ const summaryResponse = (attempt: PersistedAttempt): Record<string, unknown> => 
   attempt: summaryOf(attempt),
 });
 
+const incompatibleConfiguration = (cause: unknown): ApiError =>
+  new ApiError(
+    409,
+    'configuration_incompatible',
+    'La configuración del intento no es compatible con la versión actual.',
+    { cause },
+  );
+
+const configurationResponse = (attempt: PersistedAttempt): Record<string, unknown> => {
+  if (attempt.status === 'pending' || attempt.status === 'running') {
+    throw new ApiError(
+      409,
+      'configuration_pending',
+      'La configuración solo está disponible para un intento cerrado.',
+    );
+  }
+
+  let draft: RobotDraft;
+  try {
+    draft = validateDraft(attempt.draft);
+  } catch (error) {
+    throw incompatibleConfiguration(error);
+  }
+  return { attemptId: attempt.id, draft };
+};
+
 const putInput = (value: unknown): { expectedVersion: number; draft: RobotDraft } => {
   if (
     typeof value !== 'object' ||
@@ -412,6 +438,8 @@ export const handleRequest = async (
       parts[0] === 'attempts' &&
       (parts[2] === 'start' || parts[2] === 'cancel');
     const isAttemptReplay = parts.length === 3 && parts[0] === 'attempts' && parts[2] === 'replay';
+    const isAttemptConfiguration =
+      parts.length === 3 && parts[0] === 'attempts' && parts[2] === 'configuration';
     const isAttemptDecisions =
       parts.length === 3 && parts[0] === 'attempts' && parts[2] === 'decisions';
     const isPresentationComplete =
@@ -425,6 +453,7 @@ export const handleRequest = async (
       (isAttemptItem && method === 'GET') ||
       (isAttemptAction && method === 'POST') ||
       (isAttemptReplay && method === 'GET') ||
+      (isAttemptConfiguration && method === 'GET') ||
       (isAttemptDecisions && method === 'GET') ||
       (isPresentationComplete && method === 'POST') ||
       (isAnimationPreference && (method === 'GET' || method === 'PUT')) ||
@@ -533,6 +562,20 @@ export const handleRequest = async (
       const record = await attemptStore.getReplayRecord(identity.sub, attemptId);
       if (!record) throw new ApiError(404, 'not_found', 'Intento no encontrado.');
       return respond(event, 200, 'ok', { record });
+    }
+    if (isAttemptConfiguration) {
+      const attemptId = decodeURIComponent(parts[1]);
+      let attempt: PersistedAttempt | undefined;
+      try {
+        attempt = await attemptStore.get(identity.sub, attemptId);
+      } catch (error) {
+        if (error instanceof DraftValidationError || error instanceof AttemptStoreError) {
+          throw incompatibleConfiguration(error);
+        }
+        throw error;
+      }
+      if (!attempt) throw new ApiError(404, 'not_found', 'Intento no encontrado.');
+      return respond(event, 200, 'ok', configurationResponse(attempt));
     }
     if (isAttemptDecisions) {
       const attemptId = decodeURIComponent(parts[1]);
