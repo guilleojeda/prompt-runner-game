@@ -50,13 +50,22 @@ export function createAuthenticationResources(
     },
     autoVerifiedAttributes: ['email'],
     deletionProtection: 'ACTIVE',
-    emailConfiguration: { emailSendingAccount: 'COGNITO_DEFAULT' },
+    emailConfiguration: {
+      emailSendingAccount: 'DEVELOPER',
+      sourceArn: 'arn:aws:ses:us-east-1:387483252302:identity/dondeaprendoaws.com',
+      from: 'hello@dondeaprendoaws.com',
+    },
     policies: {
       signInPolicy: { allowedFirstAuthFactors: ['PASSWORD'] },
     },
     usernameAttributes: ['email'],
     usernameConfiguration: { caseSensitive: false },
-    verificationMessageTemplate: { defaultEmailOption: 'CONFIRM_WITH_CODE' },
+    verificationMessageTemplate: {
+      defaultEmailOption: 'CONFIRM_WITH_CODE',
+      emailSubject: 'Tu código de verificación para el juego',
+      emailMessage:
+        '<html><body><p>Tu código de verificación es: <strong>{####}</strong>.</p><p>Ingresalo en la pantalla donde lo solicitaste para confirmar tu email o restablecer tu contraseña. Si no pediste este código, podés ignorar este mensaje.</p></body></html>',
+    },
     userPoolTags: { Application: 'prompt-runner-game' },
   });
   userPool.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN, {

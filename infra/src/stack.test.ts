@@ -146,13 +146,24 @@ describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, 
       AdminCreateUserConfig: { AllowAdminCreateUserOnly: false },
       AutoVerifiedAttributes: ['email'],
       DeletionProtection: 'ACTIVE',
-      EmailConfiguration: { EmailSendingAccount: 'COGNITO_DEFAULT' },
+      EmailConfiguration: {
+        EmailSendingAccount: 'DEVELOPER',
+        SourceArn: 'arn:aws:ses:us-east-1:387483252302:identity/dondeaprendoaws.com',
+        From: 'hello@dondeaprendoaws.com',
+      },
       Policies: { SignInPolicy: { AllowedFirstAuthFactors: ['PASSWORD'] } },
       UserPoolTier: 'ESSENTIALS',
       UsernameAttributes: ['email'],
-      VerificationMessageTemplate: { DefaultEmailOption: 'CONFIRM_WITH_CODE' },
+      VerificationMessageTemplate: {
+        DefaultEmailOption: 'CONFIRM_WITH_CODE',
+        EmailSubject: 'Tu código de verificación para el juego',
+        EmailMessage:
+          '<html><body><p>Tu código de verificación es: <strong>{####}</strong>.</p><p>Ingresalo en la pantalla donde lo solicitaste para confirmar tu email o restablecer tu contraseña. Si no pediste este código, podés ignorar este mensaje.</p></body></html>',
+      },
     });
-    expect(pool.Properties.EmailConfiguration).toEqual({ EmailSendingAccount: 'COGNITO_DEFAULT' });
+    expect(
+      pool.Properties.VerificationMessageTemplate.EmailMessage.match(/\{####\}/g),
+    ).toHaveLength(1);
     expect(pool.Properties).not.toHaveProperty('SmsConfiguration');
     expect(pool.Properties).not.toHaveProperty('LambdaConfig');
     expect(pool.Properties).not.toHaveProperty('MfaConfiguration');
