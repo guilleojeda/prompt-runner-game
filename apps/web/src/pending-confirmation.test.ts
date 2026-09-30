@@ -129,6 +129,32 @@ describe('pending Cognito confirmation', () => {
     await expect(client.resend('pending@example.com')).rejects.toMatchObject({ code: 'account' });
   });
 
+  it.each([
+    ['CodeDeliveryFailureException', 'network'],
+    ['LimitExceededException', 'rate-limit'],
+    ['TooManyRequestsException', 'rate-limit'],
+  ])('allows a resend retry after %s without confirming the account', async (error, code) => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ __type: error }), { status: 400 }))
+      .mockResolvedValueOnce(new Response('{}', { status: 200 }));
+    const client = new CognitoPendingConfirmationClient(config, { fetch: fetchImpl });
+
+    await expect(client.resend('pending@example.com')).rejects.toMatchObject({ code });
+    await expect(client.resend('pending@example.com')).resolves.toBeUndefined();
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    for (const [, request] of fetchImpl.mock.calls) {
+      expect(request?.headers).toMatchObject({
+        'X-Amz-Target': 'AWSCognitoIdentityProviderService.ResendConfirmationCode',
+      });
+      expect(JSON.parse(String(request?.body))).toEqual({
+        ClientId: config.clientId,
+        Username: 'pending@example.com',
+      });
+    }
+  });
+
   it('rejects an email without making a network request', async () => {
     const fetchImpl = vi.fn<typeof fetch>();
     const client = new CognitoPendingConfirmationClient(config, { fetch: fetchImpl });

@@ -9,7 +9,10 @@ import { AuthFailure, type AuthClient, type AuthConfig, type AuthSession } from 
 import { DraftApiClient, type DraftApi } from './draft-api.js';
 import type { SavedRobotApi } from './saved-robot-api.js';
 import { AttemptApiFailure, type AttemptApi, type AttemptSummary } from './attempt-api.js';
-import type { PendingConfirmationClient } from './pending-confirmation.js';
+import {
+  CognitoPendingConfirmationClient,
+  type PendingConfirmationClient,
+} from './pending-confirmation.js';
 import {
   createDefaultDraft,
   ROBOT_CATALOG_VERSION,
@@ -252,6 +255,56 @@ describe('access screen', () => {
       screen.queryByText('Te enviamos un nuevo código. Usá ese código para confirmar tu email.'),
     ).toBeNull();
   });
+
+  it.each(['CodeDeliveryFailureException', 'LimitExceededException', 'TooManyRequestsException'])(
+    'keeps confirmation pending and recovers after resend %s',
+    async (error) => {
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(new Response('{}', { status: 200 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ __type: error }), { status: 400 }))
+        .mockResolvedValueOnce(new Response('{}', { status: 200 }))
+        .mockResolvedValueOnce(new Response('{}', { status: 200 }));
+      const authClient = client();
+      const confirmationClient = new CognitoPendingConfirmationClient(config, { fetch: fetchImpl });
+      render(<App authClient={authClient} confirmationClient={confirmationClient} />);
+
+      fireEvent.click(
+        await screen.findByRole('button', { name: 'Confirmar una cuenta pendiente' }),
+      );
+      fireEvent.change(screen.getByRole('textbox', { name: 'Email' }), {
+        target: { value: 'pending@example.com' },
+      });
+      const sentMessage = 'Te enviamos un nuevo código. Usá ese código para confirmar tu email.';
+      fireEvent.click(screen.getByRole('button', { name: 'Reenviar código' }));
+      expect(await screen.findByText(sentMessage)).toBeTruthy();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Reenviar código' }));
+      expect((await screen.findByRole('alert')).textContent).toContain(
+        error === 'CodeDeliveryFailureException'
+          ? 'No se pudo completar la confirmación'
+          : 'Se alcanzó un límite de reenvío',
+      );
+      expect(screen.queryByText(sentMessage)).toBeNull();
+      expect(screen.getByRole('heading', { name: 'Retomá tu cuenta' })).toBeTruthy();
+      expect(screen.queryByRole('button', { name: 'Cerrar sesión' })).toBeNull();
+      expect(authClient.beginLogin).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Reenviar código' }));
+      expect(await screen.findByText(sentMessage)).toBeTruthy();
+      expect(screen.queryByRole('alert')).toBeNull();
+      fireEvent.change(screen.getByRole('textbox', { name: 'Código de confirmación' }), {
+        target: { value: '123456' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Confirmar email' }));
+      expect(
+        await screen.findByText('Email confirmado. Ahora ingresá para continuar.'),
+      ).toBeTruthy();
+      expect(screen.queryByRole('button', { name: 'Cerrar sesión' })).toBeNull();
+      expect(authClient.beginLogin).not.toHaveBeenCalled();
+      expect(fetchImpl).toHaveBeenCalledTimes(4);
+    },
+  );
 
   it('keeps a remote logout failure without rendering the prior identity', async () => {
     const authClient = client({

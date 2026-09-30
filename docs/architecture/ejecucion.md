@@ -1,6 +1,6 @@
 # Ejecución del juego y del agente
 
-**Ejecución periódica del nivel principal con puerta y Sonnet 4.6.** AgentCore Runtime con Strands en TypeScript y Amazon Bedrock mediante su integración nativa reúne la coordinación del intento, el motor determinista y el registro. El nivel `principal-puerta-v4` conserva el resultado y permite consultar y reproducir intentos del contrato vigente. Sonnet 4.6 es el único modelo operativo. Los requisitos están en [la especificación](../../README.md#documentación-del-producto); Cognito usa su correo predeterminado inicialmente y SES se incorpora después; el frontend se publica en S3 privado mediante CloudFront con Origin Access Control, según [acceso y entrega](acceso-y-entrega.md).
+**Ejecución periódica del nivel principal con puerta y Sonnet 4.6.** AgentCore Runtime con Strands en TypeScript y Amazon Bedrock mediante su integración nativa reúne la coordinación del intento, el motor determinista y el registro. El nivel `principal-puerta-v4` conserva el resultado y permite consultar y reproducir intentos del contrato vigente. Sonnet 4.6 es el único modelo operativo. Los requisitos están en [la especificación](../../README.md#documentación-del-producto); el User Pool de Cognito está configurado para enviar sus códigos mediante SES, según [acceso y entrega](acceso-y-entrega.md); el frontend se publica en S3 privado mediante CloudFront con Origin Access Control.
 
 ## Componentes y responsabilidades
 

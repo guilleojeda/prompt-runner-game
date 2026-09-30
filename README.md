@@ -31,7 +31,7 @@ El comando verifica formato, lint, tipos, pruebas del motor, agente, persistenci
 
 ## Acceso
 
-El registro y la recuperación se realizan en las páginas de Cognito en español, con email y contraseña. La cuenta se habilita después de confirmar el código recibido. Si abandonaste la confirmación, podés retomarla desde la opción de cuenta pendiente en la web: usá el código recibido o solicitá otro, y después iniciá sesión. El correo predeterminado tiene un límite compartido de 50 envíos diarios para altas, reenvíos y recuperación; entrar con contraseña no envía otro correo. Se usan los mensajes estándar de Cognito.
+El registro y la recuperación se realizan en las páginas de Cognito en español, con email y contraseña. La cuenta se habilita después de confirmar el código recibido. Si abandonaste la confirmación, podés retomarla desde la opción de cuenta pendiente en la web: usá el código recibido o solicitá otro, y después iniciá sesión. El User Pool está configurado para enviar los códigos mediante SES desde `hello@dondeaprendoaws.com`, con el asunto **Tu código de verificación para el juego** y una instrucción en español para usarlo en la pantalla donde lo solicitaste. Entrar con contraseña no envía otro correo. La disponibilidad y el ritmo de entrega dependen del estado y las cuotas efectivos de SES.
 
 Una recarga conserva la sesión en la misma pestaña. Si ya no hay una sesión válida, se vuelve a ingresar a la misma cuenta. Cerrar sesión elimina el estado local, revoca la renovación y cierra la sesión administrada de Cognito. Los detalles y límites están en [acceso y entrega](docs/architecture/acceso-y-entrega.md).
 
@@ -100,7 +100,7 @@ Las consultas de servicios se conservan por tema, con fecha, fuentes y límites 
 
 **Decisión final de ejecución:** AgentCore Runtime con Strands TypeScript y el proveedor nativo de Amazon Bedrock, mediante Converse sin streaming. Sonnet 4.6 es el único perfil operativo. No se usa Mantle. El registro conserva snapshots y resoluciones, y React/SVG compone la animación a partir de esos datos. El flujo publicado es Probar → cálculo con controles bloqueados → animación opcional a velocidad fija, hacia adelante y sin controles → resultado. El historial propio compara victorias cargadas. Las configuraciones guardadas del robot no contienen nivel y pueden seguir usándose cuando se agreguen recorridos en otro trabajo.
 
-Están aprobados el contrato de registro, el reproductor, DynamoDB on-demand con S3 privado para cuerpos de inferencia, un único ambiente, la política diaria de cuota y Cognito Essentials con Managed Login. La primera versión usa el correo predeterminado de Cognito, aceptando sus 50 emails diarios y mensajes estándar; SES se incorporará en una fase posterior sobre el mismo user pool. El frontend React estático está publicado en S3 privado mediante CloudFront con Origin Access Control, usando CDK y GitHub Actions.
+Están aprobados el contrato de registro, el reproductor, DynamoDB on-demand con S3 privado para cuerpos de inferencia, un único ambiente, la política diaria de cuota y Cognito Essentials con Managed Login. El User Pool está configurado para enviar confirmaciones, reenvíos y recuperación mediante SES en el mismo pool, con el remitente y la plantilla en español descritos arriba. El frontend React estático está publicado en S3 privado mediante CloudFront con Origin Access Control, usando CDK y GitHub Actions.
 
 | Documento | Contenido |
 |---|---|
@@ -108,7 +108,7 @@ Están aprobados el contrato de registro, el reproductor, DynamoDB on-demand con
 | [Persistencia y cuota](docs/architecture/datos.md) | DynamoDB/S3, registro completo, historial y política diaria aprobados. |
 | [Registro de ejecución](docs/architecture/registro-de-ejecucion.md) | Snapshots, acciones y resultados, fases, cierre y datos necesarios para reproducir. |
 | [Animación](docs/architecture/animacion.md) | Sprites por capas, clips y reacciones, reproducción continua a velocidad fija y extensión del perfil vigente. |
-| [Acceso y entrega](docs/architecture/acceso-y-entrega.md) | Cognito inicialmente, SES posterior, publicación en S3 privado con CloudFront, un ambiente y CI/CD automático. |
+| [Acceso y entrega](docs/architecture/acceso-y-entrega.md) | Cognito con correo nativo por SES, publicación en S3 privado con CloudFront, un ambiente y CI/CD automático. |
 
 ## Cómo mantener esta documentación
 

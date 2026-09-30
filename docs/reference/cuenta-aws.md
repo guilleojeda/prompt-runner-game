@@ -1,8 +1,8 @@
 # Estado observado de la cuenta AWS
 
-Consultas de lectura del **16 de septiembre de 2026**, entre **17:48:54 y 17:59:35 UTC**. Cuenta confirmada por STS: **387483252302**. Región consultada: **us-east-1**.
+Cuenta confirmada por STS: **387483252302**. Región: **us-east-1**. El correo se comprobó el **30 de septiembre de 2026**; las demás secciones conservan las consultas del **16 de septiembre**, entre **17:48:54 y 17:59:35 UTC**.
 
-Este documento registra una observación fechada. No acredita un despliegue, una inferencia exitosa, la capacidad del juego o la configuración futura de CI. No se crearon recursos, enviaron emails, ejecutaron modelos ni solicitaron aumentos. Las credenciales temporales se usaron fuera del repositorio y se eliminaron localmente al terminar las consultas.
+Este documento registra observaciones fechadas. No acredita por sí solo un despliegue, una inferencia exitosa o la capacidad del juego. Las consultas originales fueron de lectura; la preparación operativa de correo se describe en su sección. Las credenciales temporales se usan fuera del repositorio y se eliminan localmente al terminar.
 
 ## Bedrock: catálogo, perfiles y disponibilidad
 
@@ -59,13 +59,18 @@ Estas cuotas describen ritmos de solicitudes y ejecuciones concurrentes, no un l
 
 ## Correo SES
 
-`SESv2.GetAccount` devolvió:
+El 30 de septiembre de 2026, `SESv2.GetAccount` confirmó acceso de producción aprobado (`ReviewDetails.Status=GRANTED`):
 
 - `SendingEnabled=true`.
-- `ProductionAccessEnabled=false`.
-- `Max24HourSend=200`, `MaxSendRate=1`, `SentLast24Hours=0`.
+- `ProductionAccessEnabled=true`.
+- `Max24HourSend=50000`, `MaxSendRate=14`.
+- Estado `HEALTHY` y supresión de destinos por `BOUNCE` y `COMPLAINT`.
 
-`ListEmailIdentities` devolvió cero identidades y cero dominios verificados. Por tanto, no se acreditó un emisor propio listo para registro abierto mediante SES en esta región. Esto no impide por sí mismo la modalidad de email predeterminado administrado por Cognito, que tiene otro contrato y otro límite, descritos en [identidad](identidad.md).
+La identidad `dondeaprendoaws.com` está verificada para enviar; Easy DKIM usa RSA de 2048 bits, firma habilitada y estado `SUCCESS`. Sus tres CNAME se publicaron en la zona Route 53 del dominio, administrada en la cuenta `719535286359`, sin cambiar NS ni los MX de Google. La identidad pertenece a la cuenta del juego y está en la misma región que Cognito.
+
+El remitente es `hello@dondeaprendoaws.com`, un alias de Google Workspace recibido por el dueño en `gojeda@dreamoncloud.com`. Se comprobó la recepción de un mensaje SES con firma DKIM del dominio. El forwarding de rebotes y quejas de SES está habilitado; el operador revisa esa casilla y resuelve los destinos afectados antes de insistir. No se añade SNS ni una Lambda de correo. El rol nativo `AWSServiceRoleForAmazonCognitoIdpEmailService` está preparado. Identidad, DNS, rol y solicitud de producción son operaciones únicas fuera de CDK; el envío y la plantilla del User Pool se administran mediante el circuito declarativo descrito en [acceso y entrega](../architecture/acceso-y-entrega.md).
+
+Las cuotas son las efectivas en esa lectura y no garantizan recepción ni capacidad permanente. El consumo cambia con los envíos y se consulta con `sesv2 get-account`; no se debe agotar la cuota para verificar errores de interfaz. El remitente, el texto español y los códigos de alta, reenvío y recuperación requieren verificación en el flujo publicado, según [identidad](identidad.md).
 
 ## Bootstrap CDK
 
