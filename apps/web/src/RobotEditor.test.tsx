@@ -435,7 +435,12 @@ describe('RobotEditor', () => {
 
   it('warns before leaving while edits are unconfirmed and clears the warning after save', async () => {
     const saved = { ...createDefaultDraft(), instructions: 'Texto pendiente' };
-    const draftApi = api({ putDraft: vi.fn().mockResolvedValue(snapshot(1, saved)) });
+    let resolveSave!: (value: DraftSnapshot) => void;
+    const pendingSave = new Promise<DraftSnapshot>((resolve) => {
+      resolveSave = resolve;
+    });
+    const putDraft = vi.fn().mockReturnValue(pendingSave);
+    const draftApi = api({ putDraft });
     render(<RobotEditor api={draftApi} session={session()} />);
     await screen.findByDisplayValue(
       'Siempre preferí ir a la derecha, a menos que tengas un buen motivo para no hacerlo',
@@ -446,7 +451,13 @@ describe('RobotEditor', () => {
     const pendingEvent = new Event('beforeunload', { cancelable: true });
     window.dispatchEvent(pendingEvent);
     expect(pendingEvent.defaultPrevented).toBe(true);
-    await waitFor(() => expect(screen.getByText('Guardado')).toBeTruthy(), { timeout: 2_000 });
+    await waitFor(() => expect(putDraft).toHaveBeenCalledOnce(), { timeout: 2_000 });
+    expect(await screen.findByText('Guardando…')).toBeTruthy();
+    await act(async () => {
+      resolveSave(snapshot(1, saved));
+      await pendingSave;
+    });
+    expect(await screen.findByText('Guardado')).toBeTruthy();
     const savedEvent = new Event('beforeunload', { cancelable: true });
     window.dispatchEvent(savedEvent);
     expect(savedEvent.defaultPrevented).toBe(false);
