@@ -146,6 +146,7 @@ h1 {
 
 .saved-robot-item {
   display: flex;
+  flex-wrap: wrap;
   width: 100%;
   align-items: center;
   justify-content: space-between;
@@ -168,6 +169,7 @@ h1 {
 
 .saved-robot-item-main {
   display: grid;
+  flex: 1 1 18rem;
   min-width: 0;
   gap: 0.25rem;
 }
