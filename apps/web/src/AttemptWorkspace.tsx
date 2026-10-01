@@ -823,7 +823,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     const sessionSub = session.identity.sub;
     const sessionSubRef = useRef(sessionSub);
     useEffect(() => {
-      if (mode === 'admitting' || mode === 'preparing-replay') {
+      if (mode === 'admitting' || mode === 'replaying') {
         presentationRef.current?.scrollIntoView?.({
           block: 'start',
           behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
