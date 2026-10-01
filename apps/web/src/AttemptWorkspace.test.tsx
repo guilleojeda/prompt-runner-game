@@ -241,8 +241,9 @@ describe('AttemptWorkspace', () => {
       await screen.findByRole('heading', { name: 'Preparando intento' });
       expect(scroll).toHaveBeenCalledOnce();
       await screen.findByRole('heading', { name: 'Reproducción del intento' }, { timeout: 4_000 });
-      expect(scroll).toHaveBeenCalledTimes(2);
+      expect(scroll).toHaveBeenCalledOnce();
       fireEvent.click(screen.getByRole('button', { name: 'Recursos listos' }));
+      expect(scroll).toHaveBeenCalledTimes(2);
       fireEvent.click(screen.getByRole('button', { name: 'Completar reproducción' }));
       await screen.findByRole('heading', { name: 'Victoria' });
       expect(scroll).toHaveBeenCalledTimes(2);

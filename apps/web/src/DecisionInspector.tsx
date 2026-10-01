@@ -265,7 +265,7 @@ function StaticLevelMap({
         const object = LEVEL.objects.find((entry) => entry.support === support);
         const door =
           LEVEL.door?.support === support ? `Puerta en acceso ${support - 1}–${support}` : null;
-        const location = marker ?? 'Apoyo';
+        const location = marker ?? 'Casilla';
         const segment =
           support > 0 && support <= LEVEL.segments.length
             ? `Tramo ${support - 1}–${support}: ${segmentLabel(LEVEL.segments[support - 1])}`
