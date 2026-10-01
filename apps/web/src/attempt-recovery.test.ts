@@ -13,6 +13,12 @@ import {
 } from './attempt-recovery.js';
 
 const STORAGE_KEY = 'prompt-runner:attempt-recovery';
+const addedModelKeys = [
+  'claude-sonnet-5.5',
+  'claude-opus-5.5',
+  'openai-gpt-6.1-sol',
+  'openai-gpt-6-luna',
+] as const;
 
 afterEach(() => window.sessionStorage.clear());
 
@@ -36,6 +42,21 @@ describe('attempt recovery references', () => {
         catalogVersion: ROBOT_CATALOG_VERSION,
       },
     });
+  });
+
+  it.each(addedModelKeys)('round trips %s in a frozen admission snapshot', (modelKey) => {
+    const draft = { ...createDefaultDraft(), modelKey };
+    const reference = {
+      sub: 'subject-a',
+      requestKey: `request-${modelKey}`,
+      expectedVersion: 4,
+      draft,
+      animationEnabled: true,
+    };
+
+    writeAttemptRecovery(reference);
+
+    expect(readAttemptRecovery('subject-a')).toEqual(reference);
   });
 
   it('round trips a current foreground attempt reference without a local draft', () => {

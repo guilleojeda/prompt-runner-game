@@ -35,6 +35,29 @@ const summary = {
   recordComplete: true,
 } as const;
 
+const addedModelProfiles = [
+  {
+    key: 'claude-sonnet-5.5',
+    label: 'Claude Sonnet 5.5',
+    modelId: 'global.anthropic.claude-sonnet-5-5',
+  },
+  {
+    key: 'claude-opus-5.5',
+    label: 'Claude Opus 5.5',
+    modelId: 'global.anthropic.claude-opus-5-5',
+  },
+  {
+    key: 'openai-gpt-6.1-sol',
+    label: 'GPT-6.1 Sol',
+    modelId: 'us.openai.gpt-6.1-sol',
+  },
+  {
+    key: 'openai-gpt-6-luna',
+    label: 'GPT-6 Luna',
+    modelId: 'global.openai.gpt-6-luna',
+  },
+] as const;
+
 afterEach(() => vi.restoreAllMocks());
 
 describe('AttemptApiClient', () => {
@@ -104,6 +127,47 @@ describe('AttemptApiClient', () => {
       }),
     );
   });
+
+  it.each(addedModelProfiles)(
+    'accepts a server summary with the frozen $key identity',
+    async ({ key, label, modelId }) => {
+      const selected = { ...summary, modelKey: key, modelLabel: label, modelId };
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response(JSON.stringify({ attempt: selected }), { status: 200 }));
+      const client = new AttemptApiClient(config, {
+        tokenProvider: () => 'token',
+        fetch: fetchImpl,
+      });
+
+      await expect(client.getAttempt('attempt-1')).resolves.toMatchObject({
+        modelKey: key,
+        modelLabel: label,
+        modelId,
+      });
+    },
+  );
+
+  it.each(addedModelProfiles)(
+    'recovers a frozen $key attempt configuration without changing its model',
+    async ({ key }) => {
+      const draft = { ...createDefaultDraft(), modelKey: key };
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ attemptId: 'attempt-1', draft }), { status: 200 }),
+        );
+      const client = new AttemptApiClient(config, {
+        tokenProvider: () => 'token',
+        fetch: fetchImpl,
+      });
+
+      await expect(client.getConfiguration('attempt-1')).resolves.toEqual({
+        attemptId: 'attempt-1',
+        draft,
+      });
+    },
+  );
 
   it('rejects an attempt configuration with extra fields or an obsolete draft', async () => {
     const draft = createDefaultDraft();

@@ -3,6 +3,12 @@ import { createDefaultDraft } from '../../../shared/robot.js';
 import { DraftApiClient, DraftApiFailure } from './draft-api.js';
 
 const config = { apiBaseUrl: 'https://api.example.test/', apiScope: 'prompt-runner/robot' };
+const addedModelKeys = [
+  'claude-sonnet-5.5',
+  'claude-opus-5.5',
+  'openai-gpt-6.1-sol',
+  'openai-gpt-6-luna',
+] as const;
 
 describe('DraftApiClient', () => {
   it.each(['https://api.example.test/', 'https://api.example.test'])(
@@ -43,6 +49,28 @@ describe('DraftApiClient', () => {
       });
     },
   );
+
+  it.each(addedModelKeys)('keeps %s when reading and saving the server draft', async (modelKey) => {
+    const draft = { ...createDefaultDraft(), modelKey };
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ version: 4, draft }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ version: 5, draft }), { status: 200 }));
+    const client = new DraftApiClient(config, {
+      tokenProvider: () => 'access-token',
+      fetch: fetchImpl,
+    });
+
+    await expect(client.getDraft()).resolves.toMatchObject({ version: 4, draft: { modelKey } });
+    await expect(client.putDraft(4, draft)).resolves.toMatchObject({
+      version: 5,
+      draft: { modelKey },
+    });
+    expect(JSON.parse(String(fetchImpl.mock.calls[1]?.[1]?.body))).toEqual({
+      expectedVersion: 4,
+      draft,
+    });
+  });
 
   it('preserves the server conflict snapshot and marks lost PUT responses ambiguous', async () => {
     const current = { version: 2, draft: createDefaultDraft() };

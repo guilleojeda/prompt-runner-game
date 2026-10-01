@@ -12,10 +12,8 @@ import {
   AGENT_RUNTIME_NAME,
   AGENT_RUNTIME_ROLE_NAME,
   ATTEMPT_BODIES_BUCKET_PREFIX,
-  foundationModelIdFor,
   STARTER_LAMBDA_ROLE_NAME,
 } from './execution.js';
-import { MODEL_CATALOG } from '../../shared/models.js';
 
 // CDK's first template synthesis pays one-time construct startup cost; this
 // timeout gives infrastructure assertions room for that cost without changing
@@ -543,16 +541,39 @@ describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, 
       }),
     );
     const runnerPolicyJson = JSON.stringify(runnerPolicy?.Properties.PolicyDocument);
-    for (const profile of MODEL_CATALOG) {
-      expect(runnerPolicyJson).toContain(`inference-profile/${profile.modelId}`);
-      expect(
-        runnerPolicyJson.match(
-          new RegExp(`foundation-model/${foundationModelIdFor(profile)}(?=")`, 'gu'),
-        ),
-      ).toHaveLength(2);
-    }
+    const modelStatement = runnerPolicy?.Properties.PolicyDocument.Statement.find(
+      (statement: { Sid?: string }) => statement.Sid === 'InvokeApprovedBedrockModels',
+    );
+    expect(modelStatement.Action).toBe('bedrock:InvokeModel');
+    const expectedModels = [
+      'anthropic.claude-sonnet-4-6',
+      'anthropic.claude-sonnet-5-5',
+      'anthropic.claude-opus-5-5',
+      'openai.gpt-6-luna',
+    ];
+    const expectedResources = expectedModels.flatMap((id) => [
+      `arn:aws:bedrock:us-east-1:387483252302:inference-profile/global.${id}`,
+      `arn:aws:bedrock:::foundation-model/${id}`,
+      `arn:aws:bedrock:us-east-1::foundation-model/${id}`,
+    ]);
+    expectedResources.push(
+      'arn:aws:bedrock:us-east-1:387483252302:inference-profile/us.openai.gpt-6.1-sol',
+      ...['us-east-1', 'us-east-2', 'us-west-2'].map(
+        (region) => `arn:aws:bedrock:${region}::foundation-model/openai.gpt-6.1-sol`,
+      ),
+    );
+    expect(modelStatement.Resource).toHaveLength(expectedResources.length);
+    expect(new Set(modelStatement.Resource)).toEqual(
+      new Set(
+        expectedResources.map((arn) => ({
+          'Fn::Join': ['', ['arn:', { Ref: 'AWS::Partition' }, arn.slice('arn:aws'.length)]],
+        })),
+      ),
+    );
     expect(runnerPolicyJson).not.toContain('inference-profile/*');
-    expect(runnerPolicyJson).not.toContain('gpt-6');
+    expect(runnerPolicyJson).not.toContain('bedrock:InvokeModelWithResponseStream');
+    expect(runnerPolicyJson).not.toContain('global.openai.gpt-6.1-sol');
+    expect(runnerPolicyJson).not.toContain('foundation-model/us.');
     expect(runnerPolicyJson).not.toContain('claude-sonnet-5-v1');
     expect(JSON.stringify(runnerPolicy?.Properties.PolicyDocument)).not.toContain(
       'bedrock-agentcore:InvokeAgentRuntime',

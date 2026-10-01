@@ -49,7 +49,7 @@ El límite de configuración es 65.536 bytes de JSON UTF-8, incluidos los contra
 
 ## Probar y consultar resultados
 
-Claude Sonnet 4.6 es el único modelo disponible para intentos nuevos, exclusivamente mediante Bedrock. Cada intento vigente conserva ese modelo y sus parámetros. Sonnet 5, GPT-5.6 Sol, Opus 5 y Opus 5.5 se implementarán en fase 12, después de SES; GPT-6 Luna y Sol siguen diferidos.
+El selector ofrece un catálogo cerrado de cinco modelos mediante Bedrock: Claude Sonnet 4.6, Claude Sonnet 5.5, Claude Opus 5.5, GPT-6.1 Sol y GPT-6 Luna. Sonnet 4.6 sigue siendo el default. El borrador y las copias guardadas conservan la clave elegida; el servidor resuelve el perfil y cada intento fija su modelo y parámetros. El catálogo de código no acredita por sí solo acceso, cuota ni inferencia real en el ambiente publicado: esos requisitos se verifican para cada perfil antes de afirmar que está operativo.
 
 Sonnet 4.6 cuenta con verificación de inferencia nativa, victoria, continuidad y cancelación. Los errores conservan el intento y no cambian de modelo. La arquitectura admite unas cien cuentas totales como referencia; las cuotas efectivas limitan el ritmo de uso, sin prometer cien intentos simultáneos.
 
@@ -91,14 +91,14 @@ Las consultas de servicios se conservan por tema, con fecha, fuentes y límites 
 | Referencia | Contenido |
 |---|---|
 | [AgentCore](docs/reference/agentcore.md) | Runtime con Strands, controles de memoria/contexto, TypeScript, tareas asíncronas y cuotas. |
-| [Bedrock](docs/reference/bedrock.md) | Sonnet 5/4.6, APIs, selección de herramientas, tokens, caché y tarifas. |
+| [Bedrock](docs/reference/bedrock.md) | Perfiles del catálogo vigente, APIs, selección de herramientas, tokens, caché y tarifas consultadas. |
 | [Identidad y correo](docs/reference/identidad.md) | Cognito, verificación de email, OTP, SES, interfaces y costos. |
 | [Datos y entrega](docs/reference/datos-y-entrega.md) | DynamoDB, S3, Lambda/API Gateway, CDK, publicación web y GitHub Actions. |
 | [Cuenta AWS](docs/reference/cuenta-aws.md) | Resultados de consultas de lectura al entorno y lo que esas consultas no verifican. |
 
 ## Arquitectura
 
-**Decisión final de ejecución:** AgentCore Runtime con Strands TypeScript y el proveedor nativo de Amazon Bedrock, mediante Converse sin streaming. Sonnet 4.6 es el único perfil operativo. No se usa Mantle. El registro conserva snapshots y resoluciones, y React/SVG compone la animación a partir de esos datos. El flujo publicado es Probar → cálculo con controles bloqueados → animación opcional a velocidad fija, hacia adelante y sin controles → resultado. El historial propio compara victorias cargadas. Las configuraciones guardadas del robot no contienen nivel y pueden seguir usándose cuando se agreguen recorridos en otro trabajo.
+**Decisión final de ejecución:** AgentCore Runtime con Strands TypeScript y el proveedor nativo de Amazon Bedrock, mediante Converse sin streaming. El catálogo de intentos tiene cinco perfiles finitos y Sonnet 4.6 es el default; el estado de acceso e inferencia real se verifica por modelo y cuenta. No se usa Mantle. El registro conserva snapshots y resoluciones, y React/SVG compone la animación a partir de esos datos. El flujo publicado es Probar → cálculo con controles bloqueados → animación opcional a velocidad fija, hacia adelante y sin controles → resultado. El historial propio compara victorias cargadas. Las configuraciones guardadas del robot no contienen nivel y pueden seguir usándose cuando se agreguen recorridos en otro trabajo.
 
 Están aprobados el contrato de registro, el reproductor, DynamoDB on-demand con S3 privado para cuerpos de inferencia, un único ambiente, la política diaria de cuota y Cognito Essentials con Managed Login. El User Pool está configurado para enviar confirmaciones, reenvíos y recuperación mediante SES en el mismo pool, con el remitente y la plantilla en español descritos arriba. El frontend React estático está publicado en S3 privado mediante CloudFront con Origin Access Control, usando CDK y GitHub Actions.
 

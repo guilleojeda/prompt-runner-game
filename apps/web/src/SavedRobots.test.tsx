@@ -83,9 +83,33 @@ function api(overrides: Partial<SavedRobotApi> = {}): SavedRobotApi {
   };
 }
 
+const addedModelChoices = [
+  { key: 'claude-sonnet-5.5', label: 'Claude Sonnet 5.5' },
+  { key: 'claude-opus-5.5', label: 'Claude Opus 5.5' },
+  { key: 'openai-gpt-6.1-sol', label: 'GPT-6.1 Sol' },
+  { key: 'openai-gpt-6-luna', label: 'GPT-6 Luna' },
+] as const;
+
 afterEach(() => cleanup());
 
 describe('SavedRobots', () => {
+  it.each(addedModelChoices)('loads a saved $key model into the editor', async ({ key, label }) => {
+    const draft = { ...createDefaultDraft(), modelKey: key };
+    const robot = savedRobot({ modelKey: key, draft });
+    const editorRef = editor();
+    const savedApi = api({
+      listRobots: vi.fn().mockResolvedValue({ robots: [robot], nextCursor: undefined }),
+      getRobot: vi.fn().mockResolvedValue(robot),
+    });
+    render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
+
+    expect(await screen.findByText(new RegExp(label))).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /Explorador/ }));
+
+    await waitFor(() => expect(editorRef.current?.applyDraft).toHaveBeenCalledWith(draft));
+    expect(savedApi.getRobot).toHaveBeenCalledWith(robot.id);
+  });
+
   it('loads a selected copy into the editor and creates a named copy from its snapshot', async () => {
     const editorRef = editor();
     const savedApi = api();

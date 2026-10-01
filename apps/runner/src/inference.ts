@@ -85,6 +85,8 @@ export interface DecisionExecutionOptions {
   readonly requestHandler?: RequestHandler<HttpRequest, HttpResponse, HttpHandlerOptions>;
 }
 
+type NativeResponseValidator = (bytes: Uint8Array, receipt: TransportReceipt) => void;
+
 export interface DecisionAction {
   readonly name: string;
   readonly input: JSONValue;
@@ -245,6 +247,53 @@ const profileFromSnapshot = (value: unknown): Readonly<ModelProfile> | null => {
     return null;
   }
 };
+
+const hasOnlyKeys = (value: Record<string, unknown>, allowed: readonly string[]): boolean =>
+  Object.keys(value).every((key) => allowed.includes(key));
+
+const isValidNativeReasoningBlock = (value: unknown): boolean => {
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  if (keys.length !== 1) return false;
+
+  if (own(value, 'reasoningText')) {
+    const reasoningText = value.reasoningText;
+    if (!isRecord(reasoningText) || !hasOnlyKeys(reasoningText, ['text', 'signature']))
+      return false;
+    const text = reasoningText.text;
+    const signature = reasoningText.signature;
+    if (
+      typeof text !== 'string' ||
+      (signature !== undefined && (typeof signature !== 'string' || signature.length === 0))
+    ) {
+      return false;
+    }
+    return text.length > 0 || typeof signature === 'string';
+  }
+
+  if (own(value, 'redactedContent')) {
+    const redactedContent = value.redactedContent;
+    return (
+      typeof redactedContent === 'string' &&
+      redactedContent.length > 0 &&
+      redactedContent.length % 4 === 0 &&
+      /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(redactedContent)
+    );
+  }
+
+  return false;
+};
+
+const isValidNativeToolUse = (value: unknown): boolean =>
+  isRecord(value) &&
+  (Object.keys(value).length === 3 || Object.keys(value).length === 4) &&
+  hasOnlyKeys(value, ['toolUseId', 'name', 'input', 'type']) &&
+  (!own(value, 'type') || value.type === 'tool_use') &&
+  typeof value.toolUseId === 'string' &&
+  value.toolUseId.length > 0 &&
+  typeof value.name === 'string' &&
+  value.name.length > 0 &&
+  isRecord(value.input);
 
 const validateInput = (
   input: DecisionInput,
@@ -470,6 +519,7 @@ export class AuditedRequestHandler implements RequestHandler<
     private readonly delegate: RequestHandler<HttpRequest, HttpResponse, HttpHandlerOptions>,
     private readonly audit: DecisionAudit,
     private readonly responseAuditTimeoutMs = DEFAULT_RESPONSE_AUDIT_TIMEOUT_MS,
+    private readonly validateNativeResponse?: NativeResponseValidator,
   ) {
     this.metadata = delegate.metadata;
   }
@@ -577,6 +627,13 @@ export class AuditedRequestHandler implements RequestHandler<
       throw error;
     }
     this.receipts.push(receipt);
+    if (
+      output.response.statusCode >= 200 &&
+      output.response.statusCode < 300 &&
+      this.validateNativeResponse
+    ) {
+      this.validateNativeResponse(responseBytes, receipt);
+    }
     output.response.body = Readable.from([responseBytes]);
     return output;
   }
@@ -696,18 +753,43 @@ const validateNativeResponseContent = (
   bytes: Uint8Array,
   usage: ProviderUsage,
   receipt: TransportReceipt,
+  model: Readonly<ModelProfile>,
 ): void => {
   let payload: unknown;
   try {
     payload = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
   } catch {
-    return;
+    throw new DecisionFailure(
+      'invalid_response',
+      'Bedrock returned a response that was not valid JSON.',
+      usage,
+      receipt,
+    );
   }
-  if (!isRecord(payload) || !isRecord(payload.output) || !isRecord(payload.output.message)) {
-    return;
+  if (isRecord(payload) && payload.stopReason === 'max_tokens') {
+    throw new DecisionFailure(
+      'truncated',
+      'The model response reached its output limit.',
+      usage,
+      receipt,
+    );
   }
-  const content = payload.output.message.content;
-  if (!Array.isArray(content)) return;
+  if (
+    !isRecord(payload) ||
+    !isRecord(payload.output) ||
+    !isRecord(payload.output.message) ||
+    payload.output.message.role !== 'assistant' ||
+    payload.stopReason !== 'tool_use' ||
+    !Array.isArray(payload.output.message.content)
+  ) {
+    throw new DecisionFailure(
+      'invalid_response',
+      'Bedrock returned a response without a valid assistant tool message.',
+      usage,
+      receipt,
+    );
+  }
+  const content: unknown[] = payload.output.message.content;
   const recognized = new Set(['toolUse', 'reasoningContent', 'text']);
   const blocks = content.filter(isRecord);
   if (
@@ -715,18 +797,26 @@ const validateNativeResponseContent = (
     blocks.some((block) => {
       const keys = Object.keys(block);
       return keys.length !== 1 || !recognized.has(keys[0] ?? '');
-    })
+    }) ||
+    blocks.some(
+      (block) =>
+        (own(block, 'toolUse') && !isValidNativeToolUse(block.toolUse)) ||
+        (own(block, 'text') && typeof block.text !== 'string') ||
+        (own(block, 'reasoningContent') &&
+          (model.protocol.reasoningContent !== 'allowed' ||
+            !isValidNativeReasoningBlock(block.reasoningContent))),
+    )
   ) {
     throw new DecisionFailure(
       'invalid_response',
-      'The model response contained an unknown content block.',
+      'The model response contained an unknown or malformed content block.',
       usage,
       receipt,
     );
   }
   const toolCount = blocks.filter((block) => own(block, 'toolUse')).length;
   const textCount = blocks.filter((block) => own(block, 'text')).length;
-  if (toolCount !== 1 || textCount > 0 || blocks.some((block) => own(block, 'reasoningContent'))) {
+  if (toolCount !== 1 || textCount > 0) {
     throw new DecisionFailure(
       'invalid_response',
       'The model response must contain exactly one tool and only permitted reasoning blocks.',
@@ -736,11 +826,35 @@ const validateNativeResponseContent = (
   }
 };
 
+const isValidStrandsReasoningBlock = (value: unknown): boolean => {
+  if (!isRecord(value) || value.type !== 'reasoningBlock') return false;
+  if (!hasOnlyKeys(value, ['type', 'text', 'signature', 'redactedContent'])) return false;
+  const text = value.text;
+  const signature = value.signature;
+  const redactedContent = value.redactedContent;
+  if (redactedContent !== undefined) {
+    return (
+      redactedContent instanceof Uint8Array &&
+      redactedContent.byteLength > 0 &&
+      text === undefined &&
+      signature === undefined
+    );
+  }
+  if (
+    typeof text !== 'string' ||
+    (signature !== undefined && (typeof signature !== 'string' || signature.length === 0))
+  ) {
+    return false;
+  }
+  return text.length > 0 || typeof signature === 'string';
+};
+
 const validateResponse = (
   result: Awaited<ReturnType<Agent['invoke']>>,
   tools: readonly DecisionTool[],
   usage: ProviderUsage,
   receipt: TransportReceipt,
+  model: Readonly<ModelProfile>,
 ): DecisionAction => {
   if (result.stopReason === 'maxTokens') {
     throw new DecisionFailure(
@@ -761,7 +875,13 @@ const validateResponse = (
   const content = result.lastMessage.content;
   const toolBlocks = content.filter((block) => block.type === 'toolUseBlock');
   const nonToolBlocks = content.filter((block) => block.type !== 'toolUseBlock');
-  if (toolBlocks.length !== 1 || nonToolBlocks.length > 0) {
+  if (
+    toolBlocks.length !== 1 ||
+    nonToolBlocks.some(
+      (block) =>
+        model.protocol.reasoningContent !== 'allowed' || !isValidStrandsReasoningBlock(block),
+    )
+  ) {
     throw new DecisionFailure(
       'invalid_response',
       'The model response must contain exactly one tool and only permitted reasoning blocks.',
@@ -840,14 +960,27 @@ export const executeDecision = async (
     ? AbortSignal.any([options.signal, timeoutController.signal])
     : timeoutController.signal;
   const delegate = options.requestHandler ?? new NodeHttpHandler({ requestTimeout: timeoutMs });
-  const transport = new AuditedRequestHandler(delegate, audit, responseAuditTimeoutMs);
+  const transport = new AuditedRequestHandler(
+    delegate,
+    audit,
+    responseAuditTimeoutMs,
+    (bytes, receipt) => validateNativeResponseContent(bytes, receiptUsage(receipt), receipt, model),
+  );
 
   try {
+    const additionalRequestFields: JSONValue | undefined =
+      model.protocol.thinking === 'adaptive'
+        ? {
+            thinking: { type: 'adaptive' },
+            output_config: { effort: model.protocol.effort },
+          }
+        : undefined;
     const bedrockModel = new BedrockModel({
       modelId: model.modelId,
       region: model.region,
       maxTokens: model.maxTokens,
       stream: model.protocol.stream,
+      ...(additionalRequestFields === undefined ? {} : { additionalRequestFields }),
       clientConfig: {
         maxAttempts: 1,
         requestHandler: transport,
@@ -895,8 +1028,7 @@ export const executeDecision = async (
       );
     }
     const usage = receiptUsage(receipt);
-    validateNativeResponseContent(receipt.bytes, usage, receipt);
-    const action = validateResponse(result, input.tools, usage, receipt);
+    const action = validateResponse(result, input.tools, usage, receipt, model);
     return {
       action,
       usage,
@@ -904,8 +1036,11 @@ export const executeDecision = async (
       durationMs: performance.now() - startedAt,
     };
   } catch (error) {
-    if (error instanceof DecisionFailure) {
-      throw error;
+    const decisionFailure = errorChain(error).find(
+      (candidate): candidate is DecisionFailure => candidate instanceof DecisionFailure,
+    );
+    if (decisionFailure) {
+      throw decisionFailure;
     }
     const receipt = transport.latestReceipt();
     if (timeoutController.signal.aborted) {

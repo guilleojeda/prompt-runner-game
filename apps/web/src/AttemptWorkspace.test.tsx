@@ -9,6 +9,7 @@ import {
   ROBOT_CATALOG_VERSION,
   ROBOT_SCHEMA_VERSION,
   type DraftSnapshot,
+  type RobotDraft,
 } from '../../../shared/robot.js';
 import { LEVEL } from '../../../shared/game.js';
 import type { ReplayRecordView } from '../../../shared/attempt.js';
@@ -104,6 +105,29 @@ function summary(status: AttemptSummary['status'] = 'running'): AttemptSummary {
     recordComplete: true,
   };
 }
+
+const addedModelProfiles = [
+  {
+    key: 'claude-sonnet-5.5',
+    label: 'Claude Sonnet 5.5',
+    modelId: 'global.anthropic.claude-sonnet-5-5',
+  },
+  {
+    key: 'claude-opus-5.5',
+    label: 'Claude Opus 5.5',
+    modelId: 'global.anthropic.claude-opus-5-5',
+  },
+  {
+    key: 'openai-gpt-6.1-sol',
+    label: 'GPT-6.1 Sol',
+    modelId: 'us.openai.gpt-6.1-sol',
+  },
+  {
+    key: 'openai-gpt-6-luna',
+    label: 'GPT-6 Luna',
+    modelId: 'global.openai.gpt-6-luna',
+  },
+] as const;
 
 function replayRecord(id = 'attempt-1'): ReplayRecordView {
   // AttemptWorkspace mocks ReplayScene; this 8-action transport fixture tests
@@ -1359,46 +1383,49 @@ describe('AttemptWorkspace', () => {
     expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toBeNull();
   });
 
-  it('freezes the current model in the admission payload and labels the returned result', async () => {
-    const selectedDraft = createDefaultDraft();
-    const completed = {
-      ...summary('victory'),
-      modelKey: 'claude-sonnet-4.6' as const,
-      modelLabel: 'Claude Sonnet 4.6',
-      modelId: 'global.anthropic.claude-sonnet-4-6',
-      reasoningTokens: 17,
-    };
-    const createAttempt = vi
-      .fn()
-      .mockResolvedValue({ attempt: completed, dispatchConfirmed: true });
-    const attemptApi = api({ createAttempt });
-    const editor = {
-      current: {
-        captureSnapshot: vi.fn().mockResolvedValue({ version: 4, draft: selectedDraft }),
-      },
-    } as unknown as { current: RobotEditorHandle | null };
-    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
-    render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
-    await screen.findByText('Historial');
+  it.each(addedModelProfiles)(
+    'freezes $key in the admission payload and labels the returned result',
+    async ({ key, label, modelId }) => {
+      const selectedDraft = { ...createDefaultDraft(), modelKey: key };
+      const completed: AttemptSummary = {
+        ...summary('victory'),
+        modelKey: key,
+        modelLabel: label,
+        modelId,
+        reasoningTokens: 17,
+      };
+      const createAttempt = vi
+        .fn()
+        .mockResolvedValue({ attempt: completed, dispatchConfirmed: true });
+      const attemptApi = api({ createAttempt });
+      const editor = {
+        current: {
+          captureSnapshot: vi.fn().mockResolvedValue({ version: 4, draft: selectedDraft }),
+        },
+      } as unknown as { current: RobotEditorHandle | null };
+      const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
+      render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+      await screen.findByText('Historial');
 
-    await act(async () => {
-      (ref.current as AttemptWorkspaceHandle).start();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+      await act(async () => {
+        (ref.current as AttemptWorkspaceHandle).start();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
 
-    expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
-    expect(createAttempt).toHaveBeenCalledWith(
-      expect.any(String),
-      4,
-      expect.objectContaining({ modelKey: 'claude-sonnet-4.6' }),
-      true,
-    );
-    expect(await screen.findByText('Modelo: Claude Sonnet 4.6')).toBeTruthy();
-    expect(
-      screen.getByText('Razonamiento (incluido en salida)').parentElement?.textContent,
-    ).toContain('17');
-  });
+      expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
+      expect(createAttempt).toHaveBeenCalledWith(
+        expect.any(String),
+        4,
+        expect.objectContaining({ modelKey: key }),
+        true,
+      );
+      expect(await screen.findByText(`Modelo: ${label}`)).toBeTruthy();
+      expect(
+        screen.getByText('Razonamiento (incluido en salida)').parentElement?.textContent,
+      ).toContain('17');
+    },
+  );
 
   it('keeps the captured key and draft through admission, then exposes cancel and terminal metrics', async () => {
     const attemptApi = api();
@@ -1438,7 +1465,11 @@ describe('AttemptWorkspace', () => {
   it('flushes A then B before admitting the captured B snapshot with its confirmed version', async () => {
     let resolveA!: (value: DraftSnapshot) => void;
     const draftA = { ...createDefaultDraft(), instructions: 'A' };
-    const draftB = { ...createDefaultDraft(), instructions: 'B' };
+    const draftB: RobotDraft = {
+      ...createDefaultDraft(),
+      modelKey: 'openai-gpt-6.1-sol',
+      instructions: 'B',
+    };
     const putDraft = vi
       .fn<DraftApi['putDraft']>()
       .mockReturnValueOnce(
@@ -1471,12 +1502,14 @@ describe('AttemptWorkspace', () => {
     );
 
     const instructions = await screen.findByLabelText('Qué debe tener en cuenta el robot');
+    const modelSelector = await screen.findByLabelText('Modelo para el próximo intento');
     await screen.findByText('Historial');
     fireEvent.change(instructions, { target: { value: 'A' } });
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 650));
     });
     fireEvent.change(instructions, { target: { value: 'B' } });
+    fireEvent.change(modelSelector, { target: { value: 'openai-gpt-6.1-sol' } });
     await act(async () => {
       (workspaceRef.current as AttemptWorkspaceHandle).start();
       await Promise.resolve();
@@ -1492,11 +1525,14 @@ describe('AttemptWorkspace', () => {
     await screen.findByRole('button', { name: 'Cancelar' });
     expect(putDraft).toHaveBeenCalledTimes(2);
     expect(putDraft.mock.calls[1]?.[0]).toBe(1);
-    expect(putDraft.mock.calls[1]?.[1]).toMatchObject({ instructions: 'B' });
+    expect(putDraft.mock.calls[1]?.[1]).toMatchObject({
+      instructions: 'B',
+      modelKey: 'openai-gpt-6.1-sol',
+    });
     expect(createAttempt).toHaveBeenCalledWith(
       expect.any(String),
       2,
-      expect.objectContaining({ instructions: 'B' }),
+      expect.objectContaining({ instructions: 'B', modelKey: 'openai-gpt-6.1-sol' }),
       true,
     );
   });
@@ -2394,8 +2430,12 @@ describe('AttemptWorkspace', () => {
 
   it('uses a recovered draft for a new Probar request while the source attempt stays unchanged', async () => {
     const source = { ...summary('victory'), id: 'attempt-source', score: 321, gameTokens: 700 };
-    const recovered = { ...createDefaultDraft(), instructions: 'Desde la victoria' };
-    let currentDraft = createDefaultDraft();
+    const recovered: RobotDraft = {
+      ...createDefaultDraft(),
+      modelKey: 'openai-gpt-6-luna',
+      instructions: 'Desde la victoria',
+    };
+    let currentDraft: RobotDraft = createDefaultDraft();
     let finishApply!: (value: boolean) => void;
     const applyDraft = vi.fn().mockImplementation(async (draft: typeof recovered) => {
       currentDraft = draft;
@@ -2407,7 +2447,13 @@ describe('AttemptWorkspace', () => {
       .fn()
       .mockImplementation(async () => ({ version: 4, draft: currentDraft }));
     const createAttempt = vi.fn().mockResolvedValue({
-      attempt: { ...summary('running'), id: 'attempt-new' },
+      attempt: {
+        ...summary('running'),
+        id: 'attempt-new',
+        modelKey: 'openai-gpt-6-luna',
+        modelLabel: 'GPT-6 Luna',
+        modelId: 'global.openai.gpt-6-luna',
+      },
       dispatchConfirmed: true,
     });
     const attemptApi = api({
@@ -2450,6 +2496,7 @@ describe('AttemptWorkspace', () => {
     expect(requestKey).not.toBe(source.id);
     expect(expectedVersion).toBe(4);
     expect(sentDraft).toEqual(recovered);
+    expect((sentDraft as typeof recovered).modelKey).toBe('openai-gpt-6-luna');
     expect(source.score).toBe(321);
     expect(screen.queryByRole('button', { name: 'Ver configuración' })).toBeNull();
   });

@@ -1,5 +1,5 @@
 import { ConditionalCheckFailedException, type DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { marshall } from '@aws-sdk/util-dynamodb';
+import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import { describe, expect, it, vi } from 'vitest';
 import { createDefaultDraft } from '../../../shared/robot';
 import { DraftIncompatibleError, createDynamoDraftStore } from './draft';
@@ -83,6 +83,32 @@ describe('Dynamo draft store', () => {
 
     expect(send.mock.calls[0][0].input.Item.PK).toEqual({ S: 'USER#user-a' });
     expect(send.mock.calls[1][0].input.Item.PK).toEqual({ S: 'USER#user-b' });
+  });
+
+  it.each([
+    'claude-sonnet-5.5',
+    'claude-opus-5.5',
+    'openai-gpt-6.1-sol',
+    'openai-gpt-6-luna',
+  ] as const)('persists and reads back the selected model %s', async (modelKey) => {
+    const draft = { ...createDefaultDraft(), modelKey };
+    const send = vi
+      .fn()
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({
+        Item: marshall({
+          PK: 'USER#user-a',
+          SK: 'DRAFT',
+          version: 1,
+          updatedAt: '2026-09-21T00:00:00.000Z',
+          draft,
+        }),
+      });
+    const store = createDynamoDraftStore({ client: commandClient(send), tableName: 'Drafts' });
+
+    await store.put('user-a', 0, draft);
+    expect(unmarshall(send.mock.calls[0]![0].input.Item)).toMatchObject({ draft });
+    await expect(store.get('user-a')).resolves.toMatchObject({ version: 1, draft });
   });
 
   it('rejects the previous draft contract without writing a migration', async () => {

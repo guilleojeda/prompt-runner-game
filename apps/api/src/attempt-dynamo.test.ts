@@ -382,6 +382,33 @@ const storeFor = (harness: DynamoHarness, bodyStore?: BodyStore) =>
     now: () => new Date('2026-09-21T15:00:00.000Z'),
   });
 
+const addedModelProfiles = [
+  {
+    key: 'claude-sonnet-5.5',
+    label: 'Claude Sonnet 5.5',
+    modelId: 'global.anthropic.claude-sonnet-5-5',
+    profileVersion: 'claude-sonnet-5.5-global-v1',
+  },
+  {
+    key: 'claude-opus-5.5',
+    label: 'Claude Opus 5.5',
+    modelId: 'global.anthropic.claude-opus-5-5',
+    profileVersion: 'claude-opus-5.5-global-v1',
+  },
+  {
+    key: 'openai-gpt-6.1-sol',
+    label: 'GPT-6.1 Sol',
+    modelId: 'us.openai.gpt-6.1-sol',
+    profileVersion: 'openai-gpt-6.1-sol-us-v1',
+  },
+  {
+    key: 'openai-gpt-6-luna',
+    label: 'GPT-6 Luna',
+    modelId: 'global.openai.gpt-6-luna',
+    profileVersion: 'openai-gpt-6-luna-global-v1',
+  },
+] as const;
+
 const legacyResponseBody = new TextEncoder().encode(
   JSON.stringify({
     output: {
@@ -476,6 +503,97 @@ const legacyDecisionFixture = (
 };
 
 describe('Dynamo attempt admission conditions', () => {
+  it.each(addedModelProfiles)(
+    'persists the frozen $key identity on admission and call records',
+    async ({ key: modelKey, label, modelId, profileVersion }) => {
+      const harness = new DynamoHarness();
+      const draft = { ...createDefaultDraft(), modelKey };
+      harness.put({
+        PK: 'USER#owner',
+        SK: 'DRAFT',
+        version: 1,
+        updatedAt: '2026-09-21T14:00:00.000Z',
+        draft,
+      });
+      const store = storeFor(harness);
+      const result = await store.admit({
+        owner: 'owner',
+        requestKey: `model-${modelKey}`,
+        expectedVersion: 1,
+        draft,
+        animationEnabled: false,
+      });
+
+      expect(result).toMatchObject({
+        admitted: true,
+        attempt: { modelKey, modelLabel: label, modelId },
+      });
+      const persisted = await store.get('owner', result.attempt.id);
+      expect(persisted).toMatchObject({
+        draft: { modelKey },
+        config: { model: { key: modelKey, label, modelId, profileVersion } },
+      });
+      expect(harness.read('USER#owner', `ATTEMPT#${result.attempt.id}`)).toMatchObject({
+        modelKey,
+        modelLabel: label,
+        modelId,
+      });
+
+      const transactionCount = harness.send.mock.calls.filter(([command]) =>
+        Boolean(command.input.TransactItems),
+      ).length;
+      const duplicate = await store.admit({
+        owner: 'owner',
+        requestKey: `model-${modelKey}`,
+        expectedVersion: 999,
+        draft,
+        animationEnabled: false,
+      });
+      expect(duplicate).toMatchObject({ admitted: false, attempt: { id: result.attempt.id } });
+      expect(
+        harness.send.mock.calls.filter(([command]) => Boolean(command.input.TransactItems)),
+      ).toHaveLength(transactionCount);
+
+      const runnerId = `runner-${modelKey}`;
+      expect(await store.claim('owner', result.attempt.id, runnerId)).toMatchObject({
+        status: 'running',
+        modelKey,
+      });
+      const started: CallRecord = {
+        attemptId: result.attempt.id,
+        seq: 1,
+        decisionId: `${result.attempt.id}-decision-1`,
+        modelKey: 'claude-sonnet-4.6',
+        modelId: 'global.anthropic.claude-sonnet-4-6',
+        region: 'us-east-1',
+        profileVersion: 'claude-sonnet-4.6-global-v1',
+        requestKey: `attempt/${result.attempt.id}/decision/${result.attempt.id}-decision-1/call/1/request.json`,
+        responseKey: `attempt/${result.attempt.id}/decision/${result.attempt.id}-decision-1/call/1/response.json`,
+        requestSha256: 'a'.repeat(64),
+        requestBytes: 10,
+        status: 'started',
+        usage: {
+          inputTokens: null,
+          outputTokens: null,
+          reasoningTokens: null,
+          gameTokens: null,
+          cacheReadTokens: null,
+          cacheWriteTokens: null,
+        },
+        createdAt: '2026-09-21T15:00:01.000Z',
+        updatedAt: '2026-09-21T15:00:01.000Z',
+      };
+      await expect(
+        store.beginCall('owner', result.attempt.id, runnerId, started),
+      ).resolves.toMatchObject({ modelKey, modelId, profileVersion });
+      expect(harness.read(`ATTEMPT#${result.attempt.id}`, 'CALL#00000001')).toMatchObject({
+        modelKey,
+        modelId,
+        profileVersion,
+      });
+    },
+  );
+
   it('rejects v2 and v3 durable attempt records under the current v4 contract', async () => {
     for (const recordVersion of [2, 3]) {
       const harness = new DynamoHarness();
