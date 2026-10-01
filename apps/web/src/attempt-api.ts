@@ -17,6 +17,7 @@ import { ATTEMPT_RECORD_VERSION } from '../../../shared/attempt.js';
 import {
   isSemanticallyValidActionResolution,
   LEVEL,
+  SUPPORTED_LEVELS,
   type LevelDefinition,
   type LevelSegment,
   type TerrainState,
@@ -353,7 +354,7 @@ const sameValue = (left: unknown, right: unknown): boolean =>
   JSON.stringify(stableValue(left)) === JSON.stringify(stableValue(right));
 
 function isReplayLevel(value: unknown): value is LevelDefinition {
-  return isRecord(value) && sameValue(value, LEVEL);
+  return isRecord(value) && SUPPORTED_LEVELS.some((level) => sameValue(value, level));
 }
 
 function terrainAllowedByLevel(value: unknown, segments: readonly LevelSegment[]): boolean {
@@ -369,7 +370,7 @@ function terrainAllowedByLevel(value: unknown, segments: readonly LevelSegment[]
   );
 }
 
-function isReplayAction(value: unknown): boolean {
+function isReplayAction(value: unknown, level: LevelDefinition): boolean {
   if (
     !isRecord(value) ||
     typeof value.seq !== 'number' ||
@@ -393,22 +394,23 @@ function isReplayAction(value: unknown): boolean {
     value.before,
     value.after,
     value.resolution,
+    level,
   );
 }
 
 function isReplayRecord(value: unknown): value is ReplayRecordView {
+  if (!isRecord(value) || !isRecord(value.config) || !isReplayLevel(value.config.level))
+    return false;
+  const level = value.config.level;
   if (
-    !isRecord(value) ||
     value.recordVersion !== ATTEMPT_RECORD_VERSION ||
     typeof value.id !== 'string' ||
     typeof value.createdAt !== 'string' ||
     typeof value.updatedAt !== 'string' ||
-    !isRecord(value.config) ||
-    !isReplayLevel(value.config.level) ||
     !Array.isArray(value.snapshots) ||
     !value.snapshots.every(isGameSnapshot) ||
     !Array.isArray(value.actions) ||
-    !value.actions.every(isReplayAction) ||
+    !value.actions.every((action) => isReplayAction(action, level)) ||
     !isRecord(value.closure) ||
     typeof value.closure.status !== 'string' ||
     !terminalStatuses.includes(value.closure.status as AttemptStatus) ||

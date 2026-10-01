@@ -64,8 +64,8 @@ export interface GameRules {
   readonly score: ScoreRules;
 }
 
-/** The current level: seven original segments followed by three clear ground segments. */
-export const LEVEL: LevelDefinition = Object.freeze({
+/** The original timing remains readable for attempts already admitted. */
+export const PREVIOUS_LEVEL: LevelDefinition = Object.freeze({
   id: 'principal-puerta-v4',
   version: 4,
   rulesVersion: RULES_VERSION,
@@ -97,6 +97,19 @@ export const LEVEL: LevelDefinition = Object.freeze({
   door: Object.freeze({ support: 9, requiredObjectId: 'llave-1' }),
   exit: Object.freeze({ support: 10 }),
 });
+
+/** Shift the three-turn platform so collecting the reward no longer makes it clear on arrival. */
+export const LEVEL: LevelDefinition = Object.freeze({
+  ...PREVIOUS_LEVEL,
+  version: 5,
+  segments: Object.freeze(
+    PREVIOUS_LEVEL.segments.map((segment) =>
+      segment.type === 'platform' ? Object.freeze({ ...segment, offset: 1 }) : segment,
+    ),
+  ),
+});
+
+export const SUPPORTED_LEVELS = Object.freeze([PREVIOUS_LEVEL, LEVEL]);
 
 const BASE_SCORE_RULES = {
   base: 1000,
@@ -685,14 +698,15 @@ export const isSemanticallyValidActionResolution = (
   beforeValue: unknown,
   afterValue: unknown,
   resolutionValue: unknown,
+  level: LevelDefinition = LEVEL,
 ): boolean => {
   if (
     !isNormalizedAction(actionValue) ||
     !isActionResolution(resolutionValue) ||
     !isSemanticSnapshot(beforeValue) ||
     !isSemanticSnapshot(afterValue) ||
-    !isValidObjectPartition(beforeValue, LEVEL) ||
-    !isValidObjectPartition(afterValue, LEVEL)
+    !isValidObjectPartition(beforeValue, level) ||
+    !isValidObjectPartition(afterValue, level)
   ) {
     return false;
   }
@@ -700,7 +714,7 @@ export const isSemanticallyValidActionResolution = (
   const before = beforeValue;
   const after = afterValue;
   const resolution = resolutionValue;
-  if (before.status !== 'running' || isPastClosedDoor(before.support, before.inventory, LEVEL)) {
+  if (before.status !== 'running' || isPastClosedDoor(before.support, before.inventory, level)) {
     return false;
   }
   if (
@@ -711,16 +725,16 @@ export const isSemanticallyValidActionResolution = (
       before.inventory.length !== 0 ||
       !sameIds(
         before.remainingObjects,
-        LEVEL.objects.map((object) => object.id),
+        level.objects.map((object) => object.id),
       ))
   ) {
     return false;
   }
   if (
-    before.turnsUsed >= LEVEL.maxTurns ||
+    before.turnsUsed >= level.maxTurns ||
     after.turnsUsed !== before.turnsUsed + 1 ||
     before.phaseTurn !== before.turnsUsed ||
-    !sameTerrain(before.terrain, effectiveTerrain(LEVEL, before.phaseTurn))
+    !sameTerrain(before.terrain, effectiveTerrain(level, before.phaseTurn))
   ) {
     return false;
   }
@@ -731,7 +745,7 @@ export const isSemanticallyValidActionResolution = (
   let expectedRemainingObjects = before.remainingObjects;
   let expectedInventory = before.inventory;
   if (actionValue.kind === 'collect') {
-    const object = LEVEL.objects.find(
+    const object = level.objects.find(
       (candidate) =>
         candidate.support === before.support && before.remainingObjects.includes(candidate.id),
     );
@@ -751,7 +765,7 @@ export const isSemanticallyValidActionResolution = (
     if (!direction) return false;
     expectedFacing = direction;
     const targetSupport = before.support + (direction === 'right' ? 1 : -1);
-    if (targetSupport < 0 || targetSupport > LEVEL.segments.length) {
+    if (targetSupport < 0 || targetSupport > level.segments.length) {
       if (
         resolution.outcome !== 'no_op' ||
         resolution.reason !== (direction === 'right' ? 'right_boundary' : 'left_boundary')
@@ -759,7 +773,7 @@ export const isSemanticallyValidActionResolution = (
         return false;
       }
     } else {
-      const door = LEVEL.door;
+      const door = level.door;
       if (door?.support === targetSupport && !before.inventory.includes(door.requiredObjectId)) {
         if (resolution.outcome !== 'no_op' || resolution.reason !== 'door_locked') return false;
       } else {
@@ -795,12 +809,12 @@ export const isSemanticallyValidActionResolution = (
     return false;
   }
   const fatal = resolution.outcome === 'fall' || resolution.outcome === 'collision';
-  const reachesExit = resolution.outcome === 'moved' && expectedSupport === LEVEL.exit.support;
+  const reachesExit = resolution.outcome === 'moved' && expectedSupport === level.exit.support;
   const expectedStatus: GameStatus = fatal
     ? 'defeat'
     : reachesExit
       ? 'victory'
-      : before.turnsUsed + 1 >= LEVEL.maxTurns
+      : before.turnsUsed + 1 >= level.maxTurns
         ? 'incomplete'
         : 'running';
   if (after.status !== expectedStatus) return false;
@@ -808,7 +822,7 @@ export const isSemanticallyValidActionResolution = (
   const expectedPhaseTurn = expectedStatus === 'running' ? before.phaseTurn + 1 : before.phaseTurn;
   return (
     after.phaseTurn === expectedPhaseTurn &&
-    sameTerrain(after.terrain, effectiveTerrain(LEVEL, expectedPhaseTurn))
+    sameTerrain(after.terrain, effectiveTerrain(level, expectedPhaseTurn))
   );
 };
 

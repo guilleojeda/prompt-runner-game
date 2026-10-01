@@ -195,11 +195,11 @@ function PendingConfirmationCard({
 function AccountCard({
   identity,
   onLogout,
-  busy,
+  disabled,
 }: {
   identity: AuthIdentity;
   onLogout: () => void;
-  busy: boolean;
+  disabled: boolean;
 }) {
   return (
     <section className="auth-card account-card" aria-labelledby="account-title">
@@ -216,10 +216,10 @@ function AccountCard({
           className="secondary-button"
           type="button"
           onClick={onLogout}
-          disabled={busy}
+          disabled={disabled}
           aria-label="Cerrar sesión"
         >
-          {busy ? 'Cerrando sesión…' : 'Cerrar sesión'}
+          Cerrar sesión
         </button>
       </div>
     </section>
@@ -671,7 +671,7 @@ export function App({
         <AccountCard
           identity={session.identity}
           onLogout={logout}
-          busy={attemptBusy || configurationBusy || renewing}
+          disabled={attemptBusy || configurationBusy || renewing}
         />
       )}
       {session &&

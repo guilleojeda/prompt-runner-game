@@ -133,7 +133,7 @@ const catalogEntries: RobotCatalogEntry[] = [
     id: 'collect',
     name: 'Agarrar objeto',
     opaqueId: 'tool_7',
-    description: 'Intenta recoger un objeto del apoyo actual.',
+    description: 'Intenta recoger un objeto de la casilla actual.',
     inputSchema: noArguments,
   },
 ];

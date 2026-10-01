@@ -3,7 +3,7 @@
 import { readFile } from 'node:fs/promises';
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { LEVEL } from '../../../../shared/game.js';
+import { LEVEL, PREVIOUS_LEVEL } from '../../../../shared/game.js';
 import { prepareReplay } from './prepare.js';
 import { ReplayScene } from './ReplayScene.js';
 import { doorVictoryRecord, replayRecordForActions } from './replay.test-support.js';
@@ -56,77 +56,82 @@ afterEach(() => {
 });
 
 describe('ReplayScene', () => {
-  it('preflights current symbols, transitions terrain together, follows ten segments, and completes after a time jump', async () => {
-    const record = doorVictoryRecord();
-    const prepared = prepareReplay(record);
-    const ready = vi.fn();
-    const complete = vi.fn();
-    const error = vi.fn();
-    render(<ReplayScene record={record} onReady={ready} onComplete={complete} onError={error} />);
+  it.each([PREVIOUS_LEVEL, LEVEL])(
+    'preflights symbols, draws timing version $version faithfully, and completes',
+    async (level) => {
+      const record = doorVictoryRecord(level);
+      const prepared = prepareReplay(record);
+      const ready = vi.fn();
+      const complete = vi.fn();
+      const error = vi.fn();
+      render(<ReplayScene record={record} onReady={ready} onComplete={complete} onError={error} />);
 
-    expect(screen.getByRole('status').textContent).toContain('Preparando animación');
-    await waitFor(() => expect(pendingFrames.size).toBe(1));
-    expect(fetch).toHaveBeenCalledOnce();
-    await nextFrame(1000);
-    expect(ready).toHaveBeenCalledOnce();
-    expect(complete).not.toHaveBeenCalled();
+      expect(screen.getByRole('status').textContent).toContain('Preparando animación');
+      await waitFor(() => expect(pendingFrames.size).toBe(1));
+      expect(fetch).toHaveBeenCalledOnce();
+      await nextFrame(1000);
+      expect(ready).toHaveBeenCalledOnce();
+      expect(complete).not.toHaveBeenCalled();
 
-    const scene = screen.getByRole('img');
-    expect(scene.getAttribute('data-profile')).toBe(LEVEL.id);
-    expect(scene.getAttribute('data-action-index')).toBe('0');
-    expect(scene.querySelector('text')?.textContent).toBe(`Turno 1 / ${record.actions.length}`);
-    expect(scene.getAttribute('data-camera-x')).toBe('0');
-    expect(
-      [...scene.querySelectorAll('[data-replay-layer]')].map((layer) =>
-        layer.getAttribute('data-replay-layer'),
-      ),
-    ).toEqual(['backdrop', 'terrain-back', 'objects', 'robot', 'terrain-front']);
-    expect(scene.querySelector('[data-object-id="recompensa-1"]')).not.toBeNull();
-    expect(scene.querySelector('[data-object-id="llave-1"]')?.getAttribute('href')).toContain(
-      '#key-object',
-    );
-    expect(
-      scene.querySelector('[data-door-state="locked"]')?.getAttribute('data-door-support'),
-    ).toBe('9');
-    expect(scene.querySelector('[data-exit-state="free"]')?.getAttribute('data-exit-support')).toBe(
-      '10',
-    );
-    expect(scene.querySelector('[data-terrain-symbol="barrier_low"]')).not.toBeNull();
-    expect(scene.querySelector('[data-terrain-symbol="barrier_high"]')).toBeNull();
-    expect(scene.querySelector('[data-terrain-art="platform-ground"]')).not.toBeNull();
+      const scene = screen.getByRole('img');
+      expect(scene.getAttribute('data-profile')).toBe(LEVEL.id);
+      expect(scene.getAttribute('data-action-index')).toBe('0');
+      expect(scene.querySelector('text')?.textContent).toBe(`Turno 1 / ${record.actions.length}`);
+      expect(scene.getAttribute('data-camera-x')).toBe('0');
+      expect(
+        [...scene.querySelectorAll('[data-replay-layer]')].map((layer) =>
+          layer.getAttribute('data-replay-layer'),
+        ),
+      ).toEqual(['backdrop', 'terrain-back', 'objects', 'robot', 'terrain-front']);
+      expect(scene.querySelector('[data-object-id="recompensa-1"]')).not.toBeNull();
+      expect(scene.querySelector('[data-object-id="llave-1"]')?.getAttribute('href')).toContain(
+        '#key-object',
+      );
+      expect(
+        scene.querySelector('[data-door-state="locked"]')?.getAttribute('data-door-support'),
+      ).toBe('9');
+      expect(
+        scene.querySelector('[data-exit-state="free"]')?.getAttribute('data-exit-support'),
+      ).toBe('10');
+      expect(scene.querySelector('[data-terrain-symbol="barrier_low"]')).not.toBeNull();
+      expect(scene.querySelector('[data-terrain-symbol="barrier_high"]')).toBeNull();
+      expect(scene.querySelector('[data-terrain-art="platform-ground"]') !== null).toBe(
+        level.version === 4,
+      );
 
-    await nextFrame(1720);
-    expect(scene.getAttribute('data-terrain-transition-progress')).toBe('0');
-    await nextFrame(1830);
-    expect(Number(scene.getAttribute('data-terrain-transition-progress'))).toBeCloseTo(0.5);
-    expect(
-      scene.querySelector('[data-terrain-symbol="barrier_low"]')?.getAttribute('opacity'),
-    ).toBe('0.5');
-    expect(
-      scene.querySelector('[data-terrain-symbol="barrier_high"]')?.getAttribute('opacity'),
-    ).toBe('0.5');
-    const platform = scene.querySelector(
-      '[data-replay-layer="terrain-back"] [data-segment-type="platform"]',
-    );
-    expect(
-      [...platform!.querySelectorAll('[data-terrain-state]')].map((tile) =>
-        tile.getAttribute('data-terrain-state'),
-      ),
-    ).toEqual(['ground', 'pit']);
+      await nextFrame(1720);
+      expect(scene.getAttribute('data-terrain-transition-progress')).toBe('0');
+      await nextFrame(1830);
+      expect(Number(scene.getAttribute('data-terrain-transition-progress'))).toBeCloseTo(0.5);
+      expect(
+        scene.querySelector('[data-terrain-symbol="barrier_low"]')?.getAttribute('opacity'),
+      ).toBe('0.5');
+      expect(
+        scene.querySelector('[data-terrain-symbol="barrier_high"]')?.getAttribute('opacity'),
+      ).toBe('0.5');
+      const platform = scene.querySelector(
+        '[data-replay-layer="terrain-back"] [data-segment-type="platform"]',
+      );
+      expect(
+        [...platform!.querySelectorAll('[data-terrain-state]')].map((tile) =>
+          tile.getAttribute('data-terrain-state'),
+        ),
+      ).toEqual(level.version === 4 ? ['ground', 'pit'] : ['pit']);
 
-    await nextFrame(1000 + prepared.duration * 1000 + 3000);
-    const completed = screen.getByRole('img');
-    expect(completed.getAttribute('data-complete')).toBe('true');
-    expect(completed.getAttribute('data-action-index')).toBe('');
-    expect(Number(completed.getAttribute('data-camera-x'))).toBeGreaterThan(0);
-    expect(completed.querySelector('text')?.textContent).toBe(
-      `Turno ${record.actions.length} / ${record.actions.length}`,
-    );
-    expect(completed.querySelectorAll('use[href$="#effect-victory"]')).toHaveLength(1);
-    expect(complete).toHaveBeenCalledOnce();
-    expect(error).not.toHaveBeenCalled();
-    expect(pendingFrames.size).toBe(0);
-  });
+      await nextFrame(1000 + prepared.duration * 1000 + 3000);
+      const completed = screen.getByRole('img');
+      expect(completed.getAttribute('data-complete')).toBe('true');
+      expect(completed.getAttribute('data-action-index')).toBe('');
+      expect(Number(completed.getAttribute('data-camera-x'))).toBeGreaterThan(0);
+      expect(completed.querySelector('text')?.textContent).toBe(
+        `Turno ${record.actions.length} / ${record.actions.length}`,
+      );
+      expect(completed.querySelectorAll('use[href$="#effect-victory"]')).toHaveLength(1);
+      expect(complete).toHaveBeenCalledOnce();
+      expect(error).not.toHaveBeenCalled();
+      expect(pendingFrames.size).toBe(0);
+    },
+  );
 
   it('keeps a closed-door gesture at support 8 and opens the door at the key pickup marker', async () => {
     const record = doorVictoryRecord();

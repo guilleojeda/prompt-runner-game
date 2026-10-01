@@ -6,6 +6,7 @@ import {
   resolveAction,
   scoreAttempt,
   type GameSnapshot,
+  type LevelDefinition,
   type NormalizedAction,
   type ResolvedAction,
 } from './game.js';
@@ -59,22 +60,24 @@ const robotSnapshot = (): AttemptRobotSnapshot => ({
   })),
 });
 
-const configSnapshot = (): AttemptConfigSnapshot => ({
-  level: LEVEL,
+const configSnapshot = (level: LevelDefinition): AttemptConfigSnapshot => ({
+  level,
   scoreRules: DEFAULT_SCORE_RULES,
   robot: robotSnapshot(),
   animationEnabled: false,
 });
 
-const resolveReferenceChain = (): {
+const resolveReferenceChain = (
+  level: LevelDefinition,
+): {
   readonly initial: GameSnapshot;
   readonly results: readonly ResolvedAction[];
 } => {
-  const initial = createInitialState(LEVEL);
+  const initial = createInitialState(level);
   const results: ResolvedAction[] = [];
   let state = initial;
   for (const action of referenceActions) {
-    const resolved = resolveAction(state, action, LEVEL);
+    const resolved = resolveAction(state, action, level);
     results.push(resolved);
     state = resolved.after;
   }
@@ -85,8 +88,8 @@ const resolveReferenceChain = (): {
  * Closed logical record that traverses the closed door, collects its key, and wins.
  * This fixture is deliberately test-only; it is not the DynamoDB projection.
  */
-export const createClosedAttemptRecordFixture = (): AttemptRecord => {
-  const { initial, results } = resolveReferenceChain();
+export const createClosedAttemptRecordFixture = (level: LevelDefinition = LEVEL): AttemptRecord => {
+  const { initial, results } = resolveReferenceChain(level);
   const actions: AttemptActionRecord[] = results.map((result, index) => ({
     seq: index + 1,
     decisionId: `fixture-decision-${index + 1}`,
@@ -110,7 +113,7 @@ export const createClosedAttemptRecordFixture = (): AttemptRecord => {
     id: 'fixture-closed-attempt',
     createdAt: '2026-09-21T12:00:00.000Z',
     updatedAt: '2026-09-21T12:00:05.000Z',
-    config: configSnapshot(),
+    config: configSnapshot(level),
     snapshots,
     actions,
     closure: {

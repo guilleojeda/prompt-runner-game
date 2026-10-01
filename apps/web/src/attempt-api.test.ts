@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createDefaultDraft } from '../../../shared/robot.js';
 import { createClosedAttemptRecordFixture } from '../../../shared/attempt.fixture.js';
-import { LEVEL } from '../../../shared/game.js';
+import { LEVEL, PREVIOUS_LEVEL } from '../../../shared/game.js';
 import { AttemptApiClient } from './attempt-api.js';
 
 const config = { apiBaseUrl: 'https://api.example.test/', apiScope: 'prompt-runner/robot' };
@@ -289,84 +289,87 @@ describe('AttemptApiClient', () => {
     });
   });
 
-  it('loads a narrow replay view and marks presentation complete without another admission', async () => {
-    const source = createClosedAttemptRecordFixture();
-    const states = new Map(source.snapshots.map((snapshot) => [snapshot.id, snapshot]));
-    const record = {
-      recordVersion: source.recordVersion,
-      id: source.id,
-      createdAt: source.createdAt,
-      updatedAt: source.updatedAt,
-      config: { level: source.config.level },
-      snapshots: source.snapshots,
-      actions: source.actions.map((action) => ({
-        ...action,
-        before: states.get(action.beforeStateId),
-        after: states.get(action.afterStateId),
-      })),
-      closure: source.closure,
-      metrics: source.metrics,
-      score: source.score,
-    };
-    const completedAttempt = { ...summary, animationEnabled: true, presentationComplete: true };
-    const fetchImpl = vi
-      .fn<typeof fetch>()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ record }), { status: 200 }))
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ attempt: completedAttempt }), { status: 200 }),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            record: {
-              ...record,
-              snapshots: record.snapshots.map((snapshot, index) =>
-                index === 0 ? { ...snapshot, facing: undefined } : snapshot,
-              ),
-            },
-          }),
-          { status: 200 },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            record: {
-              ...record,
-              snapshots: record.snapshots.map((snapshot, index) =>
-                index === 0 ? { ...snapshot, exitEnabled: true } : snapshot,
-              ),
-            },
-          }),
-          { status: 200 },
-        ),
-      );
-    const client = new AttemptApiClient(config, {
-      tokenProvider: () => 'token',
-      fetch: fetchImpl,
-    });
+  it.each([PREVIOUS_LEVEL, LEVEL])(
+    'loads a narrow replay view of timing version $version and marks presentation complete',
+    async (level) => {
+      const source = createClosedAttemptRecordFixture(level);
+      const states = new Map(source.snapshots.map((snapshot) => [snapshot.id, snapshot]));
+      const record = {
+        recordVersion: source.recordVersion,
+        id: source.id,
+        createdAt: source.createdAt,
+        updatedAt: source.updatedAt,
+        config: { level: source.config.level },
+        snapshots: source.snapshots,
+        actions: source.actions.map((action) => ({
+          ...action,
+          before: states.get(action.beforeStateId),
+          after: states.get(action.afterStateId),
+        })),
+        closure: source.closure,
+        metrics: source.metrics,
+        score: source.score,
+      };
+      const completedAttempt = { ...summary, animationEnabled: true, presentationComplete: true };
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(new Response(JSON.stringify({ record }), { status: 200 }))
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ attempt: completedAttempt }), { status: 200 }),
+        )
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              record: {
+                ...record,
+                snapshots: record.snapshots.map((snapshot, index) =>
+                  index === 0 ? { ...snapshot, facing: undefined } : snapshot,
+                ),
+              },
+            }),
+            { status: 200 },
+          ),
+        )
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              record: {
+                ...record,
+                snapshots: record.snapshots.map((snapshot, index) =>
+                  index === 0 ? { ...snapshot, exitEnabled: true } : snapshot,
+                ),
+              },
+            }),
+            { status: 200 },
+          ),
+        );
+      const client = new AttemptApiClient(config, {
+        tokenProvider: () => 'token',
+        fetch: fetchImpl,
+      });
 
-    const view = await client.getReplay(source.id);
-    expect(view.id).toBe(source.id);
-    expect(view.actions[0]).toMatchObject({
-      before: { id: 'state-0' },
-      after: { id: 'state-1' },
-    });
-    await expect(client.completePresentation('attempt / one')).resolves.toMatchObject({
-      id: 'attempt-1',
-      animationEnabled: true,
-      presentationComplete: true,
-    });
-    expect(fetchImpl.mock.calls[0]?.[0]).toBe(
-      `https://api.example.test/attempts/${source.id}/replay`,
-    );
-    expect(fetchImpl.mock.calls[1]?.[0]).toBe(
-      'https://api.example.test/attempts/attempt%20%2F%20one/presentation-complete',
-    );
-    expect(fetchImpl.mock.calls[1]?.[1]).toMatchObject({ method: 'POST' });
-    await expect(client.getReplay(source.id)).rejects.toMatchObject({ code: 'server' });
-    await expect(client.getReplay(source.id)).rejects.toMatchObject({ code: 'server' });
-  });
+      const view = await client.getReplay(source.id);
+      expect(view.id).toBe(source.id);
+      expect(view.actions[0]).toMatchObject({
+        before: { id: 'state-0' },
+        after: { id: 'state-1' },
+      });
+      await expect(client.completePresentation('attempt / one')).resolves.toMatchObject({
+        id: 'attempt-1',
+        animationEnabled: true,
+        presentationComplete: true,
+      });
+      expect(fetchImpl.mock.calls[0]?.[0]).toBe(
+        `https://api.example.test/attempts/${source.id}/replay`,
+      );
+      expect(fetchImpl.mock.calls[1]?.[0]).toBe(
+        'https://api.example.test/attempts/attempt%20%2F%20one/presentation-complete',
+      );
+      expect(fetchImpl.mock.calls[1]?.[1]).toMatchObject({ method: 'POST' });
+      await expect(client.getReplay(source.id)).rejects.toMatchObject({ code: 'server' });
+      await expect(client.getReplay(source.id)).rejects.toMatchObject({ code: 'server' });
+    },
+  );
 
   it('rejects replay data with a terrain cause that contradicts the recorded action', async () => {
     const source = createClosedAttemptRecordFixture();

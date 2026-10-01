@@ -8,6 +8,7 @@ import {
   isNormalizedAction,
   isSemanticallyValidActionResolution,
   LEVEL,
+  SUPPORTED_LEVELS,
   type Direction,
   type LevelSegment,
   type TerrainState,
@@ -240,7 +241,7 @@ const validateRecord = (record: ReplayRecordView): void => {
   }
   if (!isRecord(record.config) || !isRecord(record.config.level)) fail('falta el nivel fijado');
   if (!isRecord(record.closure)) fail('falta el cierre del intento');
-  if (!sameValue(record.config.level, LEVEL))
+  if (!SUPPORTED_LEVELS.some((level) => sameValue(record.config.level, level)))
     fail('nivel o mecánica no compatible con el recorrido vigente');
   if (!Array.isArray(record.snapshots) || !Array.isArray(record.actions)) {
     fail('faltan acciones o estados del registro');
@@ -254,7 +255,9 @@ const validateRecord = (record: ReplayRecordView): void => {
     fail('falta un estado de la secuencia');
   if (record.snapshots.length === 0) fail('falta el estado inicial');
 
-  record.snapshots.forEach((snapshot, index) => validateSnapshot(snapshot, LEVEL.segments, index));
+  record.snapshots.forEach((snapshot, index) =>
+    validateSnapshot(snapshot, record.config.level.segments, index),
+  );
   if (record.snapshots[0]?.status !== 'running' || record.snapshots[0]?.phaseTurn !== 0) {
     fail('el estado inicial no pertenece al recorrido vigente');
   }
@@ -308,6 +311,7 @@ const validateRecord = (record: ReplayRecordView): void => {
         action.before,
         action.after,
         action.resolution,
+        record.config.level,
       )
     ) {
       fail(`la acción ${index + 1} contradice el contrato del juego`);

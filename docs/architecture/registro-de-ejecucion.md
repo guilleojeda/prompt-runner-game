@@ -1,6 +1,6 @@
 # Registro de ejecución para reproducción
 
-**Registro y reproducción del nivel principal con puerta.** El registro conserva snapshots, acciones, llamadas, uso y cierre del intento bajo `principal-puerta-v4`, versión 4, `RULES_VERSION=4` y formato durable `ATTEMPT_RECORD_VERSION=4`. Concreta los requisitos de [intentos](../intent/intentos.md), sin cambiar las [reglas del juego](../intent/juego.md). El reproductor y su catálogo visual se describen en [animación](animacion.md); la persistencia física y sus claves se definen en [datos](datos.md).
+**Registro y reproducción del nivel principal con puerta.** El registro conserva snapshots, acciones, llamadas, uso y cierre del intento bajo `principal-puerta-v4`, contenido versión 5, `RULES_VERSION=4` y formato durable `ATTEMPT_RECORD_VERSION=4`. Concreta los requisitos de [intentos](../intent/intentos.md), sin cambiar las [reglas del juego](../intent/juego.md). El reproductor y su catálogo visual se describen en [animación](animacion.md); la persistencia física y sus claves se definen en [datos](datos.md).
 
 ## Separación de responsabilidades
 
@@ -13,7 +13,7 @@ El registro completo contiene observaciones, prompts, herramientas, respuestas, 
 | Dato                  | Contenido y propósito                                                                                                                                                         |
 | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Identidad y versiones | Intento, versión del formato, nivel y reglas. Permiten interpretar registros retenidos.                                                                                       |
-| Escenario fijo        | `principal-puerta-v4`, versión 4: diez tramos; recompensa en apoyo 2, llave en 6, puerta en acceso al 9 y salida libre en el 10. |
+| Escenario fijo        | `principal-puerta-v4`, contenido versión 5: diez tramos; recompensa en apoyo 2, llave en 6, puerta en acceso al 9 y salida libre en el 10. |
 | Estado inicial        | Posición y orientación físicas, fases efectivas, objetos, inventario, salida, contadores y estado de juego antes de cualquier acción.                                                        |
 | Acciones ordenadas    | Acción interna normalizada, dirección/parámetros, estados anterior y posterior, resultado y causa.                                                                            |
 | Interacción           | Tramo cruzado, apoyo objetivo o ID del objeto y resultado `moved`, `fall`, `collision`, `picked_up` o `no_op`. Esperar y recoger conservan apoyo y pueden cambiar la fase para el estado siguiente. |

@@ -198,6 +198,60 @@ afterEach(() => {
 });
 
 describe('AttemptWorkspace', () => {
+  it('scrolls to admission and automatic replay, without scrolling for background loading', async () => {
+    const previousScroll = HTMLElement.prototype.scrollIntoView;
+    const scroll = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scroll;
+    try {
+      const terminal = {
+        ...summary('victory'),
+        turnsUsed: 8,
+        animationEnabled: true,
+        presentationComplete: false,
+      };
+      const attemptApi = api({
+        getAttempt: vi.fn().mockResolvedValue(terminal),
+        getReplay: vi.fn().mockResolvedValue(replayRecord()),
+      });
+      let finishCapture!: (snapshot: DraftSnapshot) => void;
+      const editor = {
+        current: {
+          captureSnapshot: vi.fn(
+            () =>
+              new Promise<DraftSnapshot>((resolve) => {
+                finishCapture = resolve;
+              }),
+          ),
+        },
+      } as unknown as { current: RobotEditorHandle | null };
+      const ref = { current: null } as { current: AttemptWorkspaceHandle | null };
+      render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+
+      await screen.findByRole('heading', { name: 'Historial' });
+      await waitFor(() => expect(screen.queryByText('Cargando preferencia guardada…')).toBeNull());
+      expect(scroll).not.toHaveBeenCalled();
+      act(() => ref.current!.start());
+      expect(
+        screen.getByText('Guardando la configuración visible y admitiendo el intento…'),
+      ).toBeTruthy();
+      expect(scroll).toHaveBeenCalledOnce();
+      expect(scroll).toHaveBeenLastCalledWith({ block: 'start', behavior: 'smooth' });
+
+      await act(async () => finishCapture({ version: 1, draft: createDefaultDraft() }));
+      await screen.findByRole('heading', { name: 'Preparando intento' });
+      expect(scroll).toHaveBeenCalledOnce();
+      await screen.findByRole('heading', { name: 'Reproducción del intento' }, { timeout: 4_000 });
+      expect(scroll).toHaveBeenCalledTimes(2);
+      fireEvent.click(screen.getByRole('button', { name: 'Recursos listos' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Completar reproducción' }));
+      await screen.findByRole('heading', { name: 'Victoria' });
+      expect(scroll).toHaveBeenCalledTimes(2);
+    } finally {
+      if (previousScroll) HTMLElement.prototype.scrollIntoView = previousScroll;
+      else Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
+    }
+  });
+
   it('opens decision inspection from history and from the visible result', async () => {
     const terminal = {
       ...summary('victory'),
