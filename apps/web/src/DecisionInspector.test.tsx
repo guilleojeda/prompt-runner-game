@@ -99,12 +99,12 @@ describe('DecisionInspector', () => {
     expect(await screen.findByRole('heading', { name: 'Inspeccionar decisiones' })).toBeTruthy();
     expect(
       await screen.findByRole('button', {
-        name: /Casilla 2, Apoyo, Tramo 1[–-]2: pozo, recompensa, 2 decisiones/,
+        name: /Casilla 2, Casilla, Tramo 1[–-]2: pozo, recompensa, 2 decisiones/,
       }),
     ).toBeTruthy();
     expect(
       screen.getByRole('button', {
-        name: /Casilla 5, Apoyo, Tramo 4[–-]5: barrera periódica, 1 decisión/,
+        name: /Casilla 5, Casilla, Tramo 4[–-]5: barrera periódica, 1 decisión/,
       }),
     ).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Todas las decisiones, en orden' })).toBeTruthy();
@@ -138,7 +138,7 @@ describe('DecisionInspector', () => {
     expect(await screen.findByText('A la derecha: puerta cerrada; requiere llave.')).toBeTruthy();
     expect(
       screen.getByRole('button', {
-        name: /Casilla 9, Apoyo, Tramo 8[–-]9: suelo, Puerta en acceso 8[–-]9, sin decisiones/,
+        name: /Casilla 9, Casilla, Tramo 8[–-]9: suelo, Puerta en acceso 8[–-]9, sin decisiones/,
       }),
     ).toBeTruthy();
   });
@@ -149,7 +149,9 @@ describe('DecisionInspector', () => {
     render(<DecisionInspector api={api} attemptId="attempt-1" onClose={vi.fn()} />);
 
     expect(await screen.findByText('Cargando la ficha…')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: /Casilla 1, Apoyo, Tramo 0[–-]1: suelo/ }));
+    fireEvent.click(
+      screen.getByRole('button', { name: /Casilla 1, Casilla, Tramo 0[–-]1: suelo/ }),
+    );
 
     expect(await screen.findByText('No hay decisiones en esta casilla.')).toBeTruthy();
     expect(screen.queryByText('Cargando la ficha…')).toBeNull();
@@ -290,7 +292,7 @@ describe('DecisionInspector', () => {
     await screen.findByRole('heading', { name: 'Observación' });
     fireEvent.click(
       screen.getByRole('button', {
-        name: /Casilla 5, Apoyo, Tramo 4[–-]5: barrera periódica, 1 decisión/,
+        name: /Casilla 5, Casilla, Tramo 4[–-]5: barrera periódica, 1 decisión/,
       }),
     );
 
@@ -314,7 +316,7 @@ describe('DecisionInspector', () => {
 
     await screen.findByRole('heading', { name: 'Observación' });
     const support = screen.getByRole('button', {
-      name: /Casilla 5, Apoyo, Tramo 4[–-]5: barrera periódica, 1 decisión/,
+      name: /Casilla 5, Casilla, Tramo 4[–-]5: barrera periódica, 1 decisión/,
     });
     support.focus();
     fireEvent.click(support);
@@ -343,7 +345,7 @@ describe('DecisionInspector', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Reintentar inspección' }));
     expect(
       await screen.findByRole('button', {
-        name: /Casilla 2, Apoyo, Tramo 1[–-]2: pozo, recompensa, 2 decisiones/,
+        name: /Casilla 2, Casilla, Tramo 1[–-]2: pozo, recompensa, 2 decisiones/,
       }),
     ).toBeTruthy();
     expect(getDecisionIndex).toHaveBeenCalledTimes(2);
