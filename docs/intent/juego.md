@@ -10,7 +10,7 @@ Las etiquetas siguientes distinguen el grado de decisión:
 
 ## Recorrido principal vigente
 
-El único nivel disponible es `principal-puerta-v4`, contenido versión 5, con `RULES_VERSION=4`. Sus diez tramos, en orden, son `ground`, `pit`, `ground`, `branch`, `barrier`, `platform`, `ground`, `ground`, `ground`, `ground`; tiene casillas 0–10 y un límite de 24 acciones. `recompensa-1` está en la casilla 2 y vale 25 puntos si se recoge. `llave-1` está en la casilla 6 y no aporta puntos. La puerta ocupa el acceso a la casilla 9 desde el 8; la salida libre está en la casilla 10.
+El único nivel disponible es `principal-puerta-v4`, contenido versión 5, con `RULES_VERSION=4`. Sus diez tramos, en orden, son `ground`, `pit`, `ground`, `branch`, `barrier`, `platform`, `ground`, `ground`, `ground`, `ground`; tiene casillas 0–10 y un límite de 24 acciones. `recompensa-1` está en la casilla 2 y vale 25 puntos si se recoge. `llave-1` está en la casilla 6 y no aporta puntos. La puerta ocupa el acceso a la casilla 9 desde la 8; la salida libre está en la casilla 10.
 
 La barrera está baja en turnos pares y alta en turnos impares. La plataforma conserva su ciclo de tres turnos y usa desfase uno: es suelo en los turnos con resto dos al dividir por tres y pozo en los demás. La barrera usa desfase cero. Así, la ruta que recoge la recompensa llega a la plataforma en el turno 6, con pozo; esperar en los turnos 6 y 7 permite cruzarla caminando en el 8. Saltar sigue siendo una alternativa válida. El nivel y las reglas se fijan en cada intento. Los intentos ya admitidos con el contenido versión 4 conservan sus fases originales para continuar, consultar decisiones y reproducirse fielmente. Los nuevos usan la versión 5. No se agregan otros recorridos ni lectores de contratos de reglas anteriores.
 
@@ -20,7 +20,7 @@ El robot se desplaza por un recorrido lateral lógico formado por tramos y casil
 
 ## Mundo lógico
 
-Un nivel tiene `N` tramos ordenados y `N+1` casillas seguros. Los índices son internos al motor y no se envían al agente como coordenadas o identificadores.
+Un nivel tiene `N` tramos ordenados y `N+1` casillas seguras. Los índices son internos al motor y no se envían al agente como coordenadas o identificadores.
 
 - El robot comienza en la casilla 0 mirando a la derecha.
 - Su posición lógica siempre es una casilla, nunca un tramo ocupado por un obstáculo.
@@ -28,7 +28,7 @@ Un nivel tiene `N` tramos ordenados y `N+1` casillas seguros. Los índices son i
 - Desde `p`, retroceder cruza el tramo `p-1` y llega a `p-1`.
 - El casilla `N` contiene la salida.
 - Los objetos se colocan en casillas.
-- El terreno peligroso afecta el tramo que se cruza y no destruye las casillas. La puerta ocupa la entrada a la casilla 9: cerrada, impide el cruce desde la casilla 8 y deja al robot en ese casilla segura.
+- El terreno peligroso afecta el tramo que se cruza y no destruye las casillas. La puerta ocupa la entrada a la casilla 9: cerrada, impide el cruce desde la casilla 8 y deja al robot en esa casilla segura.
 
 Una acción de movimiento cruza exactamente un tramo. Saltar o pasar agachado termina en la casilla del otro lado; el robot no queda detenido en un pozo. Saltar y pasar agachado tienen dirección izquierda o derecha. No existe una postura agachada persistente ni una acción separada para levantarse: cada movimiento se evalúa con su propia modalidad.
 
@@ -111,7 +111,7 @@ Los objetos se recogen únicamente desde la casilla actual mediante `Agarrar obj
 
 El nivel vigente tiene como máximo un objeto por casilla, por lo que la acción no necesita seleccionar entre varios. No se agregan consumo, equipamiento, combinación, lanzamiento ni uso manual de objetos.
 
-La llave abre automáticamente la puerta cuando entra al inventario; no se equipa ni se usa mediante otra herramienta. Al llegar a la casilla 8 sin ella, la observación del lado derecho identifica una puerta cerrada y el ID de la llave requerida, pero no indica dónde está. Intentar avanzar, saltar o pasar agachado hacia la casilla 9 queda registrado como `no_op/door_locked`, conserva la posición y consume un turno. Desde allí se puede retroceder dos casillas hasta encontrar la llave en el 6. Después de recogerla, el mismo acceso queda abierto y cualquiera de esos movimientos compatibles puede cruzarlo. La puerta no cambia la fase del terreno y no bloquea el retroceso desde una casilla seguro.
+La llave abre automáticamente la puerta cuando entra al inventario; no se equipa ni se usa mediante otra herramienta. Al llegar a la casilla 8 sin ella, la observación del lado derecho identifica una puerta cerrada y el ID de la llave requerida, pero no indica dónde está. Intentar avanzar, saltar o pasar agachado hacia la casilla 9 queda registrado como `no_op/door_locked`, conserva la posición y consume un turno. Desde allí se puede retroceder dos casillas hasta encontrar la llave en la 6. Después de recogerla, el mismo acceso queda abierto y cualquiera de esos movimientos compatibles puede cruzarlo. La puerta no cambia la fase del terreno y no bloquea el retroceso desde una casilla segura.
 
 La salida de la casilla 10 no exige llave ni tiene estados de apertura. Llegar a ella después de cruzar el recorrido termina en victoria. La llave vale cero; sólo la recompensa recogida añade 25 puntos al puntaje de una victoria.
 
@@ -129,7 +129,7 @@ El nivel principal vigente presenta esta progresión:
 - la barrera periódica baja/alta;
 - la plataforma periódica suelo/pozo.
 
-La recompensa está en la casilla 2; la llave, en el 6; la puerta, en el acceso al 9; y la salida, en el 10.
+La recompensa está en la casilla 2; la llave, en la 6; la puerta, en el acceso a la 9; y la salida, en la 10.
 
 Para cada nivel se debe verificar, además de que exista una ruta física, que una política basada en la observación actual y las herramientas disponibles pueda escogerla:
 
@@ -139,7 +139,7 @@ Para cada nivel se debe verificar, además de que exista una ruta física, que u
 - las casillas siguen siendo seguros entre fases;
 - el límite de turnos permite una solución razonable y corta los bucles.
 
-Un corredor vacío que exige volver sin una señal local es un nivel inválido para este agente. En el recorrido vigente, la puerta informa localmente que requiere `llave-1`; retroceder desde la casilla 8 lleva al 7 y luego al 6, donde la llave vuelve a ser observable. En la casilla 7, la orientación actual distingue el avance hacia la puerta del regreso desde ella, aunque los tramos vecinos sean iguales. El agente no recibe la ubicación remota ni un recuerdo de haberla visto. La calidad de sus decisiones depende también de las habilidades y descripciones que prepara el jugador.
+Un corredor vacío que exige volver sin una señal local es un nivel inválido para este agente. En el recorrido vigente, la puerta informa localmente que requiere `llave-1`; retroceder desde la casilla 8 lleva a la 7 y luego a la 6, donde la llave vuelve a ser observable. En la casilla 7, la orientación actual distingue el avance hacia la puerta del regreso desde ella, aunque los tramos vecinos sean iguales. El agente no recibe la ubicación remota ni un recuerdo de haberla visto. La calidad de sus decisiones depende también de las habilidades y descripciones que prepara el jugador.
 
 ## Defaults permitidos y pendientes
 
@@ -151,7 +151,7 @@ La verificación debe cubrir el comportamiento, no depender solo de que se dibuj
 
 - probar la matriz de colisiones en ambas direcciones y las fases de barrera y plataforma, incluido el turno 0;
 - comprobar que toda acción, no-op y acción fatal cuenta un turno en el orden correcto;
-- comprobar que una fase nueva no hace caer a un robot que ya está en una casilla seguro;
+- comprobar que una fase nueva no hace caer a un robot que ya está en una casilla segura;
 - verificar victoria, derrota, límite, cancelación y error sin ejecutar una acción posterior;
 - comprobar que el nivel principal tiene una solución dentro del límite con la observación local y las herramientas disponibles;
 - reproducir los casos de no-op y de colisión como las causas registradas.
