@@ -789,6 +789,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     );
     const [configurationState, setConfigurationState] = useState<ConfigurationState | null>(null);
     const [completionBusy, setCompletionBusy] = useState(false);
+    const presentationRef = useRef<HTMLDivElement>(null);
     const generationRef = useRef(0);
     const frozenRef = useRef<FrozenAdmission | null>(null);
     const attemptRef = useRef<AttemptSummary | null>(null);
@@ -821,6 +822,16 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     >(async () => undefined);
     const sessionSub = session.identity.sub;
     const sessionSubRef = useRef(sessionSub);
+    useEffect(() => {
+      if (mode === 'admitting' || mode === 'preparing-replay') {
+        presentationRef.current?.scrollIntoView?.({
+          block: 'start',
+          behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+            ? 'instant'
+            : 'smooth',
+        });
+      }
+    }, [mode]);
     const clearDecisionInspector = useCallback((): void => {
       setDecisionInspectorTarget(null);
     }, []);
@@ -2199,10 +2210,11 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             <p className="card-kicker">Terreno con recompensa y puerta</p>
             <h2 id="attempt-workspace-title">Probar al agente</h2>
             <p>
-              El terreno cambia entre suelo, pozo, rama, barrera y plataforma. En el apoyo 2 hay una
-              recompensa opcional: pasar no la recoge y vale 25 puntos. La llave está en el apoyo 6;
-              permite abrir la puerta del apoyo 9, que no se puede cruzar cerrada. Recoger la llave
-              no da puntos. Llegá a la salida libre del apoyo 10 en hasta 24 acciones.
+              El terreno cambia entre suelo, pozo, rama, barrera y plataforma. En la casilla 2 hay
+              una recompensa opcional: pasar no la recoge y vale 25 puntos. La llave está en la
+              casilla 6; permite abrir la puerta de la casilla 9, que no se puede cruzar cerrada.
+              Recoger la llave no da puntos. Llegá a la salida libre de la casilla 10 en hasta 24
+              acciones.
             </p>
           </div>
           {quota && (
@@ -2269,160 +2281,165 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           </div>
         )}
 
-        {error && (
-          <div className="attempt-error" role="alert">
-            <p>{error}</p>
-            {mode === 'unknown' && (
-              <button
-                className="secondary-button"
-                type="button"
-                onClick={() => void resolveUnknown()}
-              >
-                Comprobar estado
-              </button>
-            )}
-            {mode === 'replay-error' && (
-              <>
+        <div ref={presentationRef}>
+          {error && (
+            <div className="attempt-error" role="alert">
+              <p>{error}</p>
+              {mode === 'unknown' && (
                 <button
                   className="secondary-button"
                   type="button"
-                  onClick={retryReplay}
-                  disabled={completionBusy}
+                  onClick={() => void resolveUnknown()}
                 >
-                  {playbackReachedEnd ? 'Reintentar cierre' : 'Reintentar reproducción'}
+                  Comprobar estado
                 </button>
+              )}
+              {mode === 'replay-error' && (
+                <>
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={retryReplay}
+                    disabled={completionBusy}
+                  >
+                    {playbackReachedEnd ? 'Reintentar cierre' : 'Reintentar reproducción'}
+                  </button>
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() => void showResultAfterReplayError()}
+                  >
+                    Ver resultado
+                  </button>
+                </>
+              )}
+              {(mode === 'idle' || mode === 'result') && (
                 <button
                   className="secondary-button"
                   type="button"
-                  onClick={() => void showResultAfterReplayError()}
+                  onClick={() => {
+                    void refreshQuota();
+                    void refreshHistory();
+                  }}
                 >
-                  Ver resultado
+                  Reintentar consultas
                 </button>
-              </>
-            )}
-            {(mode === 'idle' || mode === 'result') && (
-              <button
-                className="secondary-button"
-                type="button"
-                onClick={() => {
-                  void refreshQuota();
-                  void refreshHistory();
-                }}
-              >
-                Reintentar consultas
-              </button>
-            )}
-          </div>
-        )}
-
-        {mode === 'loading' && (
-          <p className="attempt-message" role="status">
-            Recuperando tus intentos…
-          </p>
-        )}
-
-        {mode === 'selecting' && (
-          <section className="active-attempts" aria-labelledby="active-attempts-title">
-            <h3 id="active-attempts-title">Tenés varios intentos en curso</h3>
-            <p>Elegí cuál querés retomar en esta pestaña. Los demás siguen en el servidor.</p>
-            <div className="active-attempt-list">
-              {activeCandidates.map((candidate) => (
-                <button
-                  className="secondary-button"
-                  type="button"
-                  key={candidate.id}
-                  onClick={() => chooseActive(candidate)}
-                >
-                  {candidate.id} · {statusLabel(candidate.status)}
-                </button>
-              ))}
+              )}
             </div>
-          </section>
-        )}
+          )}
 
-        {mode === 'admitting' && (
-          <p className="attempt-message" role="status">
-            Guardando la configuración visible y admitiendo el intento…
-          </p>
-        )}
-        {mode === 'opening' && (
-          <p className="attempt-message" role="status">
-            Consultando el resultado guardado…
-          </p>
-        )}
-        {(mode === 'pending' || mode === 'running' || mode === 'canceling') && attempt && (
-          <section className="attempt-running" aria-live="polite">
-            <div className="attempt-running-copy">
-              <span className="spinner" aria-hidden="true" />
-              <div>
-                <h3>{statusLabel(attempt.status)}</h3>
+          {mode === 'loading' && (
+            <p className="attempt-message" role="status">
+              Recuperando tus intentos…
+            </p>
+          )}
+
+          {mode === 'selecting' && (
+            <section className="active-attempts" aria-labelledby="active-attempts-title">
+              <h3 id="active-attempts-title">Tenés varios intentos en curso</h3>
+              <p>Elegí cuál querés retomar en esta pestaña. Los demás siguen en el servidor.</p>
+              <div className="active-attempt-list">
+                {activeCandidates.map((candidate) => (
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    key={candidate.id}
+                    onClick={() => chooseActive(candidate)}
+                  >
+                    {candidate.id} · {statusLabel(candidate.status)}
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {mode === 'admitting' && (
+            <p className="attempt-message" role="status">
+              Guardando la configuración visible y admitiendo el intento…
+            </p>
+          )}
+          {mode === 'opening' && (
+            <p className="attempt-message" role="status">
+              Consultando el resultado guardado…
+            </p>
+          )}
+          {(mode === 'pending' || mode === 'running' || mode === 'canceling') && attempt && (
+            <section className="attempt-running" aria-live="polite">
+              <div className="attempt-running-copy">
+                <span className="spinner" aria-hidden="true" />
+                <div>
+                  <h3>{statusLabel(attempt.status)}</h3>
+                  <p>
+                    {attempt.cancelRequested
+                      ? 'Confirmando la cancelación…'
+                      : statusDescription(attempt.status)}
+                  </p>
+                </div>
+              </div>
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() => void cancel()}
+                disabled={cancelBusy || mode === 'canceling' || authPaused}
+              >
+                {mode === 'canceling' || attempt.cancelRequested
+                  ? 'Cancelando…'
+                  : authPaused
+                    ? 'Esperando sesión…'
+                    : 'Cancelar'}
+              </button>
+            </section>
+          )}
+
+          {mode === 'unknown' && (
+            <p className="attempt-message" role="status">
+              El estado del servidor todavía no está confirmado. La recuperación no inicia otro
+              intento.
+            </p>
+          )}
+
+          {mode === 'preparing-replay' && (
+            <p className="attempt-message" role="status">
+              Preparando una reproducción completa desde el registro guardado…
+            </p>
+          )}
+
+          {replayRecord && (mode === 'preparing-replay' || mode === 'replaying') && (
+            <section className="attempt-replay" aria-label="Reproducción del intento">
+              <div className="attempt-replay-heading">
+                <h3>
+                  {playbackKind === 'automatic' ? 'Reproducción del intento' : 'Ver de nuevo'}
+                </h3>
                 <p>
-                  {attempt.cancelRequested
-                    ? 'Confirmando la cancelación…'
-                    : statusDescription(attempt.status)}
+                  {mode === 'preparing-replay'
+                    ? 'Comprobando los gráficos…'
+                    : 'La secuencia avanza sola a velocidad fija.'}
                 </p>
               </div>
-            </div>
-            <button
-              className="secondary-button"
-              type="button"
-              onClick={() => void cancel()}
-              disabled={cancelBusy || mode === 'canceling' || authPaused}
-            >
-              {mode === 'canceling' || attempt.cancelRequested
-                ? 'Cancelando…'
-                : authPaused
-                  ? 'Esperando sesión…'
-                  : 'Cancelar'}
-            </button>
-          </section>
-        )}
+              <ReplayScene
+                record={replayRecord}
+                onReady={onReplayReady}
+                onComplete={() => void onReplayComplete()}
+                onError={onReplayError}
+              />
+            </section>
+          )}
 
-        {mode === 'unknown' && (
-          <p className="attempt-message" role="status">
-            El estado del servidor todavía no está confirmado. La recuperación no inicia otro
-            intento.
-          </p>
-        )}
-
-        {mode === 'preparing-replay' && (
-          <p className="attempt-message" role="status">
-            Preparando una reproducción completa desde el registro guardado…
-          </p>
-        )}
-
-        {replayRecord && (mode === 'preparing-replay' || mode === 'replaying') && (
-          <section className="attempt-replay" aria-label="Reproducción del intento">
-            <div className="attempt-replay-heading">
-              <h3>{playbackKind === 'automatic' ? 'Reproducción del intento' : 'Ver de nuevo'}</h3>
-              <p>
-                {mode === 'preparing-replay'
-                  ? 'Comprobando los gráficos…'
-                  : 'La secuencia avanza sola a velocidad fija.'}
-              </p>
-            </div>
-            <ReplayScene
-              record={replayRecord}
-              onReady={onReplayReady}
-              onComplete={() => void onReplayComplete()}
-              onError={onReplayError}
+          {mode === 'result' && attempt && (
+            <ResultCard
+              attempt={attempt}
+              onReplay={replayCurrentAttempt}
+              onInspect={openDecisionInspector}
+              onConfiguration={() => void openConfiguration(attempt.id)}
+              configurationBusy={
+                configurationState?.targetId === attempt.id &&
+                (configurationState.status === 'loading' ||
+                  configurationState.status === 'applying')
+              }
+              busy={busy || configurationState?.status === 'applying'}
             />
-          </section>
-        )}
-
-        {mode === 'result' && attempt && (
-          <ResultCard
-            attempt={attempt}
-            onReplay={replayCurrentAttempt}
-            onInspect={openDecisionInspector}
-            onConfiguration={() => void openConfiguration(attempt.id)}
-            configurationBusy={
-              configurationState?.targetId === attempt.id &&
-              (configurationState.status === 'loading' || configurationState.status === 'applying')
-            }
-            busy={busy || configurationState?.status === 'applying'}
-          />
-        )}
+          )}
+        </div>
 
         {configurationState && (
           <ConfigurationPreview

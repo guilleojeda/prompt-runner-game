@@ -8,6 +8,7 @@ import { ATTEMPT_RECORD_VERSION } from './attempt.js';
 import type { ReplayRecordView } from './attempt.js';
 import {
   LEVEL,
+  PREVIOUS_LEVEL,
   createInitialState,
   resolveAction,
   type GameSnapshot,
@@ -98,13 +99,30 @@ const persistedReplayAttempt = (
 };
 
 describe('durable closed attempt contract fixture', () => {
+  it('replays a victory admitted before the platform timing changed', () => {
+    const record = createClosedAttemptRecordFixture(PREVIOUS_LEVEL);
+    const attempt = {
+      ...persistedReplayAttempt('victory', 'exit_reached', record.snapshots, record.actions.length),
+      config: { ...DEFAULT_ATTEMPT_CONFIG, levelVersion: '4', levelDefinition: PREVIOUS_LEVEL },
+    };
+    const replay = replayRecordViewOf(
+      attempt,
+      record.actions,
+      record.snapshots.map((snapshot) => ({ stateId: snapshot.id, snapshot })),
+    );
+    expect(replay.config.level).toEqual(PREVIOUS_LEVEL);
+    expect(replay.closure.status).toBe('victory');
+    expect(replay.actions).toHaveLength(17);
+    expect(replay.snapshots[0]!.terrain[5]).toBe('ground');
+  });
+
   it('keeps the immutable record version, level and effective score parameters', () => {
     const record = createClosedAttemptRecordFixture();
 
     expect(ATTEMPT_RECORD_VERSION).toBe(4);
     expect(record.recordVersion).toBe(ATTEMPT_RECORD_VERSION);
     expect(record.config.level.id).toBe('principal-puerta-v4');
-    expect(record.config.level.version).toBe(4);
+    expect(record.config.level.version).toBe(5);
     expect(record.config.level.rulesVersion).toBe(4);
     expect(record.config.level.maxTurns).toBe(24);
     expect(record.config.level.door).toEqual({ support: 9, requiredObjectId: 'llave-1' });

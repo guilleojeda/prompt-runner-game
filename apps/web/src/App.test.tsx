@@ -165,6 +165,33 @@ afterEach(() => {
 });
 
 describe('access screen', () => {
+  it('keeps the logout label while the signed-in account loads its attempts', async () => {
+    window.sessionStorage.clear();
+    const authClient = client({ initialize: vi.fn().mockResolvedValue(session()) });
+    const draftApi: DraftApi = {
+      getDraft: vi.fn().mockResolvedValue({ version: 0, draft: createDefaultDraft() }),
+      putDraft: vi.fn(),
+    };
+    const attemptApi = {
+      ...emptyAttemptApi(),
+      listAttempts: vi.fn(() => new Promise<never>(() => undefined)),
+    };
+    render(
+      <App
+        authClient={authClient}
+        draftApi={draftApi}
+        attemptApi={attemptApi}
+        configLoader={async () => config}
+      />,
+    );
+
+    await screen.findByText('Recuperando tus intentos…');
+    const logoutButton = screen.getByRole('button', { name: 'Cerrar sesión' });
+    expect(logoutButton.textContent).toBe('Cerrar sesión');
+    await waitFor(() => expect((logoutButton as HTMLButtonElement).disabled).toBe(true));
+    expect(authClient.logout).not.toHaveBeenCalled();
+  });
+
   it('does not remain loading when StrictMode runs the effect twice', async () => {
     const authClient = client({ initialize: vi.fn().mockResolvedValue(session()) });
 
@@ -669,6 +696,7 @@ describe('access screen', () => {
     expect(
       (screen.getByRole('button', { name: 'Cerrar sesión' }) as HTMLButtonElement).disabled,
     ).toBe(true);
+    expect(screen.getByRole('button', { name: 'Cerrar sesión' }).textContent).toBe('Cerrar sesión');
   });
 
   it('locks editor, history, and logout through automatic replay, then releases them at the result', async () => {

@@ -3,6 +3,7 @@ import { ROBOT_CATALOG } from './robot.js';
 import {
   DEFAULT_SCORE_RULES,
   LEVEL,
+  PREVIOUS_LEVEL,
   RULES_VERSION,
   calculateScore,
   createInitialState,
@@ -91,7 +92,7 @@ describe('periodic deterministic game engine', () => {
     expect(RULES_VERSION).toBe(4);
     expect(LEVEL).toMatchObject({
       id: 'principal-puerta-v4',
-      version: 4,
+      version: 5,
       maxTurns: 24,
       door: { support: 9, requiredObjectId: 'llave-1' },
       exit: { support: 10 },
@@ -106,7 +107,7 @@ describe('periodic deterministic game engine', () => {
       { type: 'ground' },
       { type: 'branch' },
       { type: 'barrier', phases: ['barrier_low', 'barrier_high'], offset: 0 },
-      { type: 'platform', phases: ['ground', 'pit', 'pit'], offset: 0 },
+      { type: 'platform', phases: ['ground', 'pit', 'pit'], offset: 1 },
       { type: 'ground' },
       { type: 'ground' },
       { type: 'ground' },
@@ -124,7 +125,7 @@ describe('periodic deterministic game engine', () => {
         'ground',
         'branch',
         'barrier_low',
-        'ground',
+        'pit',
         'ground',
         'ground',
         'ground',
@@ -150,12 +151,12 @@ describe('periodic deterministic game engine', () => {
       'barrier_low',
     ]);
     expect([0, 1, 2, 3, 4, 5].map((turn) => terrainAt(turn)[5])).toEqual([
-      'ground',
       'pit',
       'pit',
       'ground',
       'pit',
       'pit',
+      'ground',
     ]);
 
     const shifted: LevelDefinition = {
@@ -328,8 +329,8 @@ describe('periodic deterministic game engine', () => {
     ]);
     expect(results[4]?.before.terrain[4]).toBe('barrier_low');
     expect(results[4]?.after.terrain[4]).toBe('barrier_high');
-    expect(results[5]?.before.terrain[5]).toBe('pit');
-    expect(results[5]?.after.terrain[5]).toBe('ground');
+    expect(results[5]?.before.terrain[5]).toBe('ground');
+    expect(results[5]?.after.terrain[5]).toBe('pit');
     expect(results.slice(1).every((result, index) => result.before === results[index]?.after)).toBe(
       true,
     );
@@ -369,32 +370,60 @@ describe('periodic deterministic game engine', () => {
     ).toBe(false);
   });
 
-  it('lets waiting advance the platform while the robot stays on a safe support', () => {
-    const actions: readonly NormalizedAction[] = [
+  it('collecting both objects still requires two waits to walk across the platform', () => {
+    const approach: readonly NormalizedAction[] = [
       { kind: 'advance' },
       { kind: 'jump', direction: 'right' },
+      { kind: 'collect' },
       { kind: 'advance' },
       { kind: 'crouch', direction: 'right' },
-      { kind: 'jump', direction: 'right' },
-      { kind: 'wait' },
-      { kind: 'advance' },
-      { kind: 'advance' },
+      { kind: 'crouch', direction: 'right' },
     ];
     let state = createInitialState();
-    const results = actions.map((action) => {
-      const result = resolveAction(state, action);
-      state = result.after;
-      return result;
-    });
-    const waiting = results[5];
+    for (const action of approach) state = resolveAction(state, action).after;
+    expect(state).toMatchObject({ support: 5, turnsUsed: 6, inventory: ['recompensa-1'] });
+    expect(observe(state).right).toEqual({ kind: 'segment', terrain: 'pit' });
+    expect(resolveAction(state, { kind: 'advance' }).after.status).toBe('defeat');
 
-    expect(waiting?.resolution).toEqual({ outcome: 'no_op', reason: 'wait' });
-    expect(waiting?.before.support).toBe(5);
-    expect(waiting?.after.support).toBe(5);
-    expect(waiting?.before.terrain[5]).toBe('pit');
-    expect(waiting?.after.terrain[5]).toBe('ground');
-    expect(waiting?.after.phaseTurn).toBe(6);
-    expect(state).toMatchObject({ status: 'running', support: 7, turnsUsed: 8 });
+    const firstWait = resolveAction(state, { kind: 'wait' });
+    expect(firstWait.after).toMatchObject({ support: 5, turnsUsed: 7, status: 'running' });
+    expect(firstWait.after.terrain[5]).toBe('pit');
+    const secondWait = resolveAction(firstWait.after, { kind: 'wait' });
+    expect(secondWait.after).toMatchObject({ support: 5, turnsUsed: 8, status: 'running' });
+    expect(secondWait.after.terrain[5]).toBe('ground');
+    state = secondWait.after;
+    for (const action of [
+      { kind: 'advance' },
+      { kind: 'collect' },
+      { kind: 'advance' },
+      { kind: 'advance' },
+      { kind: 'advance' },
+      { kind: 'advance' },
+    ] as const)
+      state = resolveAction(state, action).after;
+    expect(state).toMatchObject({
+      status: 'victory',
+      support: 10,
+      turnsUsed: 14,
+      inventory: ['recompensa-1', 'llave-1'],
+    });
+  });
+
+  it('validates already admitted actions using their original level timing', () => {
+    const before = createInitialState(PREVIOUS_LEVEL);
+    const action = resolveAction(before, { kind: 'advance' }, PREVIOUS_LEVEL);
+    expect(
+      isSemanticallyValidActionResolution(
+        action.action,
+        before,
+        action.after,
+        action.resolution,
+        PREVIOUS_LEVEL,
+      ),
+    ).toBe(true);
+    expect(
+      isSemanticallyValidActionResolution(action.action, before, action.after, action.resolution),
+    ).toBe(false);
   });
 
   it('counts wait as a no-op turn and freezes the phase at the turn limit', () => {
@@ -651,7 +680,7 @@ describe('periodic deterministic game engine', () => {
         collectReward
           ? { kind: 'crouch', direction: 'right' }
           : { kind: 'jump', direction: 'right' },
-        collectReward ? { kind: 'advance' } : { kind: 'jump', direction: 'right' },
+        { kind: 'jump', direction: 'right' },
         { kind: 'advance' },
         { kind: 'advance' },
       );
@@ -689,7 +718,7 @@ describe('periodic deterministic game engine', () => {
       expect(atKey.facing).toBe('left');
       expect(observe(atKey).here.objects).toEqual(['llave-1']);
       expect(atKey.terrain[4]).toBe(collectReward ? 'barrier_low' : 'barrier_high');
-      expect(atKey.terrain[5]).toBe(collectReward ? 'ground' : 'pit');
+      expect(atKey.terrain[5]).toBe(collectReward ? 'pit' : 'ground');
 
       expect(act({ kind: 'collect' }).resolution).toEqual({
         outcome: 'picked_up',

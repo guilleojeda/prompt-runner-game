@@ -32,6 +32,7 @@ import {
   isNormalizedAction,
   isSemanticallyValidActionResolution,
   LEVEL,
+  SUPPORTED_LEVELS,
   RULES_VERSION,
 } from '../game.js';
 
@@ -534,7 +535,7 @@ const readCurrentLevel = (value: unknown): LevelDefinition => {
       support: exit.support,
     },
   };
-  if (!isDeepStrictEqual(level, LEVEL)) {
+  if (!SUPPORTED_LEVELS.some((supported) => isDeepStrictEqual(level, supported))) {
     throw new ReplayRecordError('El nivel guardado no es el único nivel vigente.');
   }
   return level;
@@ -639,7 +640,13 @@ export const validateActionPublication = (
     publication.terminalStatus !== expectedTerminalStatus ||
     !isNormalizedAction(publication.action) ||
     !isActionResolution(publication.resolution) ||
-    !isSemanticallyValidActionResolution(publication.action, before, after, publication.resolution)
+    !isSemanticallyValidActionResolution(
+      publication.action,
+      before,
+      after,
+      publication.resolution,
+      level,
+    )
   ) {
     throw new ReplayRecordError('La publicación no coincide con una transición válida del juego.');
   }
@@ -737,7 +744,9 @@ export const replayRecordViewOf = (
     ) {
       throw new ReplayRecordError('La secuencia de acciones o estados está incompleta.');
     }
-    if (!isSemanticallyValidActionResolution(action.action, before, after, action.resolution)) {
+    if (
+      !isSemanticallyValidActionResolution(action.action, before, after, action.resolution, level)
+    ) {
       throw new ReplayRecordError(`La acción ${index + 1} contradice el contrato del juego.`);
     }
     return { ...action, before, after };

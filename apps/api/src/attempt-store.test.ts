@@ -3,6 +3,7 @@ import { DynamoDBClient, TransactionCanceledException } from '@aws-sdk/client-dy
 import { marshall } from '@aws-sdk/util-dynamodb';
 import {
   LEVEL,
+  PREVIOUS_LEVEL,
   observe,
   resolveAction,
   type GameSnapshot,
@@ -257,6 +258,8 @@ describe('attempt lifecycle store', () => {
     };
 
     expect(readCurrentLevel(reverseKeys(LEVEL))).toEqual(LEVEL);
+    expect(readCurrentLevel(reverseKeys(PREVIOUS_LEVEL))).toEqual(PREVIOUS_LEVEL);
+    expect(() => readCurrentLevel({ ...LEVEL, version: 6 })).toThrow();
     expect(() => readCurrentLevel({ ...LEVEL, id: 'principal-estatico-v1' })).toThrow();
     expect(() =>
       readCurrentLevel({

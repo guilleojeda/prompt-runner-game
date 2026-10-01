@@ -211,7 +211,7 @@ const actionResultText = (result: DecisionResult, choice: DecisionChoice | null)
     ...(resolutionLabel(result.resolution)
       ? [`Resolución: ${resolutionLabel(result.resolution)}.`]
       : []),
-    ...(result.afterSupport === undefined ? [] : [`Terminó en el apoyo ${result.afterSupport}.`]),
+    ...(result.afterSupport === undefined ? [] : [`Terminó en la casilla ${result.afterSupport}.`]),
     ...(result.turnsUsed === undefined ? [] : [`Consumió el turno ${result.turnsUsed}.`]),
   ];
   return details;

@@ -6,6 +6,8 @@ import type {
 } from '../../../../shared/attempt.js';
 import {
   createInitialState,
+  LEVEL,
+  type LevelDefinition,
   resolveAction,
   type NormalizedAction,
 } from '../../../../shared/game.js';
@@ -55,8 +57,9 @@ export const publicReplayView = (record: AttemptRecord): ReplayRecordView => {
 export const replayRecordForActions = (
   actions: readonly NormalizedAction[],
   closureStatus: AttemptRecord['closure']['status'] = 'cancelled',
+  level: LevelDefinition = LEVEL,
 ): ReplayRecordView => {
-  const source = createClosedAttemptRecordFixture();
+  const source = createClosedAttemptRecordFixture(level);
   const initial = createInitialState(source.config.level);
   const results = [];
   let current = initial;
@@ -91,5 +94,5 @@ export const replayRecordForActions = (
   return publicReplayView(record);
 };
 
-export const doorVictoryRecord = (): ReplayRecordView =>
-  replayRecordForActions(doorVictoryActions, 'victory');
+export const doorVictoryRecord = (level: LevelDefinition = LEVEL): ReplayRecordView =>
+  replayRecordForActions(doorVictoryActions, 'victory', level);
