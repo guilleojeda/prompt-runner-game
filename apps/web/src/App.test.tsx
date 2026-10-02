@@ -25,6 +25,11 @@ import { LEVEL } from '../../../shared/game.js';
 import type { ReplayRecordView } from '../../../shared/attempt.js';
 
 vi.mock('./replay/ReplayScene.js', () => ({
+  CoursePreview: () => (
+    <section aria-label="Vista previa del recorrido">
+      <h2>Vista completa del terreno</h2>
+    </section>
+  ),
   ReplayScene: ({ onReady, onComplete }: { onReady: () => void; onComplete: () => void }) => (
     <div>
       <button type="button" onClick={onReady}>
@@ -165,6 +170,37 @@ afterEach(() => {
 });
 
 describe('access screen', () => {
+  it('places the static course preview before the editor without starting an inference', async () => {
+    const createAttempt = vi.fn();
+    const authClient = client({ initialize: vi.fn().mockResolvedValue(session()) });
+    const draftApi: DraftApi = {
+      getDraft: vi.fn().mockResolvedValue({ version: 0, draft: createDefaultDraft() }),
+      putDraft: vi.fn(),
+    };
+    const savedRobotApi: SavedRobotApi = {
+      listRobots: vi.fn().mockResolvedValue({ robots: [] }),
+      getRobot: vi.fn(),
+      saveRobot: vi.fn(),
+      deleteRobot: vi.fn(),
+    };
+    const attemptApi = { ...emptyAttemptApi(), createAttempt };
+    render(
+      <App
+        authClient={authClient}
+        draftApi={draftApi}
+        savedRobotApi={savedRobotApi}
+        attemptApi={attemptApi}
+        configLoader={async () => config}
+      />,
+    );
+
+    const preview = await screen.findByRole('heading', { name: 'Vista completa del terreno' });
+    const editor = await screen.findByRole('heading', { name: 'Prepará tu robot' });
+    expect(preview.compareDocumentPosition(editor) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(createAttempt).not.toHaveBeenCalled();
+    expect(attemptApi.getReplay).not.toHaveBeenCalled();
+  });
+
   it('keeps the logout label while the signed-in account loads its attempts', async () => {
     window.sessionStorage.clear();
     const authClient = client({ initialize: vi.fn().mockResolvedValue(session()) });

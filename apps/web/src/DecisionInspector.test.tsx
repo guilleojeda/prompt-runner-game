@@ -110,7 +110,7 @@ describe('DecisionInspector', () => {
     expect(screen.getByRole('heading', { name: 'Todas las decisiones, en orden' })).toBeTruthy();
     expect(screen.getAllByRole('button', { name: /Decisión [123]/ })).toHaveLength(5);
     expect(await screen.findByRole('heading', { name: 'Observación' })).toBeTruthy();
-    expect(screen.getByRole('heading', { name: 'Decisión 1 · Casilla 2' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Decisión 1, casilla 2' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Acciones disponibles' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Acción elegida' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Resultado' })).toBeTruthy();
@@ -269,7 +269,7 @@ describe('DecisionInspector', () => {
     const api = inspectorApi({ getDecision: vi.fn().mockResolvedValue(unknownChoiceDetail) });
     render(<DecisionInspector api={api} attemptId="attempt-1" onClose={vi.fn()} />);
 
-    expect(await screen.findByText('Acción registrada: Saltar · dirección: derecha.')).toBeTruthy();
+    expect(await screen.findByText('Acción registrada: Saltar, dirección: derecha.')).toBeTruthy();
     expect(screen.queryByText(/dirección: right/)).toBeNull();
   });
 
@@ -283,6 +283,65 @@ describe('DecisionInspector', () => {
 
     expect(await screen.findByText('Acción registrada: Avanzar.')).toBeTruthy();
     expect(screen.queryByText(/Acción ejecutada/)).toBeNull();
+  });
+
+  it('starts at the last action, skipping a trailing no-action decision, and follows a new selection request', async () => {
+    const withTrailingNoAction: DecisionIndex = {
+      ...index,
+      decisions: [
+        ...index.decisions,
+        { number: 4, decisionId: 'decision-4', originSupport: 6, hasAction: false },
+      ],
+    };
+    const getDecision = vi
+      .fn()
+      .mockImplementation((_id: string, number: number) => Promise.resolve(detail(number)));
+    const api = inspectorApi({
+      getDecisionIndex: vi.fn().mockResolvedValue(withTrailingNoAction),
+      getDecision,
+    });
+    const props = { api, attemptId: 'attempt-1', onClose: vi.fn() };
+    const view = render(<DecisionInspector {...props} />);
+
+    expect(await screen.findByRole('heading', { name: 'Decisión 1, casilla 2' })).toBeTruthy();
+    view.rerender(<DecisionInspector {...props} initialSelection="last-action-or-decision" />);
+    expect(await screen.findByRole('heading', { name: 'Decisión 3, casilla 5' })).toBeTruthy();
+    await waitFor(() =>
+      expect(getDecision).toHaveBeenLastCalledWith('attempt-1', 3, expect.any(AbortSignal)),
+    );
+  });
+
+  it('falls back to the last recorded decision when the index has no actions', async () => {
+    const noActions: DecisionIndex = {
+      attemptId: 'attempt-1',
+      levelId: LEVEL.id,
+      decisions: [
+        { number: 1, decisionId: 'decision-1', originSupport: 0, hasAction: false },
+        { number: 2, decisionId: 'decision-2', originSupport: 1, hasAction: false },
+      ],
+    };
+    const getDecision = vi.fn().mockResolvedValue({
+      ...detail(2),
+      item: noActions.decisions[1]!,
+      result: { kind: 'no-action' as const, reason: 'timeout', turnsUsed: 0, status: 'error' },
+    });
+    const api = inspectorApi({
+      getDecisionIndex: vi.fn().mockResolvedValue(noActions),
+      getDecision,
+    });
+    render(
+      <DecisionInspector
+        api={api}
+        attemptId="attempt-1"
+        initialSelection="last-action-or-decision"
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByRole('heading', { name: 'Decisión 2, casilla 1' })).toBeTruthy();
+    await waitFor(() =>
+      expect(getDecision).toHaveBeenCalledWith('attempt-1', 2, expect.any(AbortSignal)),
+    );
   });
 
   it('filters a selected support, keeps all decisions visible, and loads the selected detail', async () => {

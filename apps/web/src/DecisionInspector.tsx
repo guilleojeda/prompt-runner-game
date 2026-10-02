@@ -18,6 +18,7 @@ interface DecisionInspectorProps {
   readonly api: AttemptApi;
   readonly attemptId: string;
   readonly targetLabel?: string;
+  readonly initialSelection?: 'first' | 'last-action-or-decision' | 'last-decision';
   readonly onAuthRequired?: () => void;
   readonly onClose: () => void;
 }
@@ -96,7 +97,7 @@ const actionText = (
     parameters.push(`dirección: ${directionLabel(action.direction)}`);
   }
   return `${identifier ? `${identifier} (${label})` : label}${
-    parameters.length > 0 ? ` · ${parameters.join(' · ')}` : ''
+    parameters.length > 0 ? `, ${parameters.join(', ')}` : ''
   }`;
 };
 
@@ -132,7 +133,20 @@ const resolutionLabel = (resolution: unknown): string | null => {
     };
     parts.push(reason[resolution.reason] ?? resolution.reason);
   }
-  return parts.length > 0 ? parts.join(' · ') : null;
+  return parts.length > 0 ? parts.join(', ') : null;
+};
+
+const initialDecision = (
+  index: DecisionIndex,
+  selection: 'first' | 'last-action-or-decision' | 'last-decision',
+): DecisionIndexItem | undefined => {
+  if (selection === 'first') return index.decisions[0];
+  if (selection === 'last-decision') return index.decisions[index.decisions.length - 1];
+  for (let position = index.decisions.length - 1; position >= 0; position -= 1) {
+    const item = index.decisions[position];
+    if (item?.hasAction) return item;
+  }
+  return index.decisions[index.decisions.length - 1];
 };
 
 const segmentLabel = (segment: LevelSegment | undefined): string => {
@@ -322,7 +336,7 @@ function DecisionCard({
       >
         <span>Decisión {item.number}</span>
         <span>
-          Casilla {item.originSupport} · {item.hasAction ? 'con acción' : 'sin acción'}
+          Casilla {item.originSupport}, {item.hasAction ? 'con acción' : 'sin acción'}
         </span>
       </button>
     </li>
@@ -350,7 +364,7 @@ function DecisionDetailCard({ detail }: { readonly detail: DecisionDetail | null
   return (
     <section className="decision-detail" aria-label={`Ficha de decisión ${detail.item.number}`}>
       <h4 className="decision-detail-heading">
-        Decisión {detail.item.number} · Casilla {detail.item.originSupport}
+        Decisión {detail.item.number}, casilla {detail.item.originSupport}
       </h4>
       <div className="decision-fact">
         <h4>Observación</h4>
@@ -412,6 +426,7 @@ export function DecisionInspector({
   api,
   attemptId,
   targetLabel,
+  initialSelection = 'first',
   onAuthRequired,
   onClose,
 }: DecisionInspectorProps) {
@@ -445,10 +460,12 @@ export function DecisionInspector({
           throw new AttemptApiFailure('server', 'El índice no coincide con el intento abierto.');
         }
         setIndex(loaded);
-        const first = loaded.decisions[0];
-        setSelectedSupport(first?.originSupport ?? null);
-        setSelectedNumber(first?.number ?? null);
+        const selected = initialDecision(loaded, initialSelection);
+        setSelectedSupport(selected?.originSupport ?? null);
+        setSelectedNumber(selected?.number ?? null);
         setDetail(null);
+        setDetailError(null);
+        if (!selected) setLoadingDetail(false);
         setDetailRetry((value) => value + 1);
       } catch (loadError) {
         if (requestSignal?.aborted || indexRequestRef.current !== requestId) return;
@@ -465,7 +482,7 @@ export function DecisionInspector({
         }
       }
     },
-    [api, attemptId, onAuthRequired],
+    [api, attemptId, initialSelection, onAuthRequired],
   );
 
   const loadDecision = useCallback(

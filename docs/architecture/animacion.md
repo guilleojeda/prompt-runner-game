@@ -88,6 +88,10 @@ Los marcadores son condiciones sobre el tiempo, no callbacks que mutan el mundo.
 
 Una duración ilustrativa de caminar puede ser distinta de saltar o caer. El tiempo que Bedrock tardó en decidir no se reproduce como una espera: permanece en la auditoría. Una acción explícita `Esperar` sí tiene su clip y consume el turno que el servidor registró. La celebración final agrega presentación, no un turno.
 
+El perfil de presentación usa el doble de duración que el perfil inicial para facilitar la lectura de los gestos y los cambios del terreno. La misma duración se aplica a la reproducción automática y a la iniciada desde el historial; no modifica turnos, física ni tiempos de inferencia. Todas las duraciones permanecen en un único perfil y comparten el reloj.
+
+La vista estática anterior al editor reutiliza el dibujo del recorrido completo en su estado inicial, con etiquetas para el jugador. No inicia el reloj, no requiere un intento ni recalcula su desenlace. Los elementos periódicos se identifican como tales y el dibujo del terreno mantiene un tamaño legible con desplazamiento horizontal cuando no cabe en la pantalla.
+
 ## Reproducción continua a velocidad fija
 
 `prepareReplay(record)` valida el registro contra el único nivel vigente y construye los intervalos, marcadores y recursos requeridos. `sample(t)` devuelve terreno, objetos, estado derivado de la puerta, salida libre, posición/pose/frame del robot, efectos y cámara para el tiempo transcurrido `t`. Es una función interna de dibujo: la misma entrada y tiempo producen la misma escena, sin depender de haber reproducido todos los frames anteriores. No constituye una función de búsqueda o navegación disponible al usuario.

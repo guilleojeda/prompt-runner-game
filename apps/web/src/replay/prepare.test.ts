@@ -7,6 +7,7 @@ import {
 } from '../../../../shared/game.js';
 import {
   prepareReplay,
+  REPLAY_TIMING,
   REPLAY_SEGMENT_WIDTH,
   REPLAY_SUPPORT_START_X,
   REPLAY_VIEW_WIDTH,
@@ -25,45 +26,65 @@ const replayActionDuration = (
   action: ReturnType<typeof replayRecordForActions>['actions'][number],
 ): number => {
   const duration =
-    action.resolution.outcome === 'fall'
-      ? 1.08
-      : action.resolution.outcome === 'collision'
-        ? 0.68
-        : action.resolution.outcome === 'no_op'
-          ? 0.42
-          : action.action.kind === 'collect'
-            ? 0.9
+    action.action.kind === 'collect'
+      ? REPLAY_TIMING.collect
+      : action.resolution.outcome === 'fall'
+        ? REPLAY_TIMING.fall
+        : action.resolution.outcome === 'collision'
+          ? REPLAY_TIMING.impact
+          : action.resolution.outcome === 'no_op'
+            ? REPLAY_TIMING.noOp
             : action.action.kind === 'jump'
-              ? 0.86
+              ? REPLAY_TIMING.jump
               : action.action.kind === 'crouch'
-                ? 0.72
-                : 0.72;
+                ? REPLAY_TIMING.crouch
+                : REPLAY_TIMING.walk;
   const phaseChanges =
     action.after.status === 'running' &&
     JSON.stringify(action.before.terrain) !== JSON.stringify(action.after.terrain);
-  return duration + (phaseChanges ? 0.22 : 0);
+  return duration + (phaseChanges ? REPLAY_TIMING.phase : 0);
 };
 
 describe('prepareReplay', () => {
+  it('uses the shared timing profile at about twice the former duration', () => {
+    expect(REPLAY_TIMING).toEqual({
+      walk: 1.44,
+      jump: 1.72,
+      crouch: 1.44,
+      noOp: 0.84,
+      collect: 1.8,
+      phase: 0.44,
+      fall: 2.16,
+      impact: 1.36,
+      victory: 2.04,
+    });
+    expect(prepareReplay(replayRecordForActions([{ kind: 'advance' }])).duration).toBeCloseTo(
+      REPLAY_TIMING.walk + REPLAY_TIMING.phase,
+    );
+  });
+
   it('keeps the recorded terrain during an action and samples a transition after it', () => {
     const record = replayRecordForActions([{ kind: 'advance' }]);
     const prepared = prepareReplay(record);
     const before = record.actions[0]!.before.terrain;
     const after = record.actions[0]!.after.terrain;
 
-    expect(prepared.sample(0.36)).toMatchObject({
+    expect(prepared.sample(REPLAY_TIMING.walk / 2)).toMatchObject({
       actionIndex: 0,
       support: 0.5,
       pose: 'step-b',
       terrain: before,
       terrainTransition: null,
     });
-    expect(prepared.sample(0.72)).toMatchObject({
+    expect(prepared.sample(REPLAY_TIMING.walk)).toMatchObject({
       actionIndex: 0,
       terrain: before,
       terrainTransition: { to: after, progress: 0 },
     });
-    expect(prepared.sample(0.83).terrainTransition?.progress).toBeCloseTo(0.5);
+    expect(
+      prepared.sample(REPLAY_TIMING.walk + REPLAY_TIMING.phase / 2).terrainTransition?.progress,
+    ).toBeCloseTo(0.5);
+    expect(prepared.duration).toBeCloseTo(REPLAY_TIMING.walk + REPLAY_TIMING.phase);
     expect(prepared.sample(prepared.duration)).toMatchObject({
       actionIndex: 0,
       actionNumber: 1,
@@ -79,8 +100,8 @@ describe('prepareReplay', () => {
     const record = replayRecordForActions([{ kind: 'advance' }, { kind: 'wait' }]);
     const prepared = prepareReplay(record);
     const wait = record.actions[1]!;
-    const waitStart = 0.94;
-    const duringWait = prepared.sample(waitStart + 0.21);
+    const waitStart = REPLAY_TIMING.walk + REPLAY_TIMING.phase;
+    const duringWait = prepared.sample(waitStart + REPLAY_TIMING.noOp / 2);
 
     expect(duringWait).toMatchObject({
       actionIndex: 1,
@@ -91,7 +112,7 @@ describe('prepareReplay', () => {
       terrain: wait.before.terrain,
       terrainTransition: null,
     });
-    expect(prepared.sample(waitStart + 0.42)).toMatchObject({
+    expect(prepared.sample(waitStart + REPLAY_TIMING.noOp)).toMatchObject({
       actionIndex: 1,
       terrain: wait.before.terrain,
       terrainTransition: { to: wait.after.terrain, progress: 0 },
@@ -135,7 +156,7 @@ describe('prepareReplay', () => {
         [0.95, to, 'idle'],
       ] as const;
       for (const [progress, support, pose] of checkpoints) {
-        const sample = prepared.sample(start + progress * 0.72);
+        const sample = prepared.sample(start + progress * REPLAY_TIMING.crouch);
         expect(sample).toMatchObject({
           actionIndex: index,
           pose,
@@ -154,24 +175,25 @@ describe('prepareReplay', () => {
       { kind: 'collect' },
     ]);
     const prepared = prepareReplay(record);
-    const collectStart = 0.72 + 0.22 + 0.86 + 0.22;
+    const collectStart =
+      REPLAY_TIMING.walk + REPLAY_TIMING.phase + REPLAY_TIMING.jump + REPLAY_TIMING.phase;
 
     expect(prepared.sample(0).remainingObjects).toEqual(['recompensa-1', 'llave-1']);
-    expect(prepared.sample(collectStart + 0.62)).toMatchObject({
+    expect(prepared.sample(collectStart + REPLAY_TIMING.collect * 0.62)).toMatchObject({
       actionIndex: 2,
       support: 2,
       pose: 'collect',
       remainingObjects: ['recompensa-1', 'llave-1'],
       effect: 'none',
     });
-    expect(prepared.sample(collectStart + 0.64)).toMatchObject({
+    expect(prepared.sample(collectStart + REPLAY_TIMING.collect * 0.72)).toMatchObject({
       actionIndex: 2,
       support: 2,
       pose: 'collect',
       remainingObjects: ['llave-1'],
       effect: 'pickup',
     });
-    expect(prepared.sample(collectStart + 0.9)).toMatchObject({
+    expect(prepared.sample(collectStart + REPLAY_TIMING.collect)).toMatchObject({
       remainingObjects: ['llave-1'],
       terrainTransition: { progress: 0 },
     });
@@ -304,8 +326,8 @@ describe('prepareReplay', () => {
     expect(winningRecord.snapshots[0]?.inventory).toEqual([]);
     expect(pickupKey.before.support).toBe(6);
     expect(pickupKey.after.inventory).toEqual(['recompensa-1', 'llave-1']);
-    expect(prepared.sample(pickupStart + 0.62).doorState).toBe('locked');
-    expect(prepared.sample(pickupStart + 0.64).doorState).toBe('open');
+    expect(prepared.sample(pickupStart + REPLAY_TIMING.collect * 0.69).doorState).toBe('locked');
+    expect(prepared.sample(pickupStart + REPLAY_TIMING.collect * 0.71).doorState).toBe('open');
     expect(blockedCrossing.before.support).toBe(8);
     expect(blockedCrossing.resolution).toEqual({ outcome: 'no_op', reason: 'door_locked' });
     expect(

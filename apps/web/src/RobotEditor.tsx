@@ -74,8 +74,14 @@ function cloneDraft(draft: RobotDraft): RobotDraft {
   };
 }
 
-function formatByteCount(bytes: number): string {
-  return `${bytes.toLocaleString('es-AR')} / ${MAX_DRAFT_BYTES.toLocaleString('es-AR')} bytes UTF-8`;
+const characterSegmenter = new Intl.Segmenter('es', { granularity: 'grapheme' });
+const DRAFT_SIZE_WARNING_THRESHOLD = Math.ceil(MAX_DRAFT_BYTES * 0.9);
+const DRAFT_SIZE_ERROR_MESSAGE =
+  'La configuración supera el límite de tamaño y no se puede guardar. Acortá alguno de los textos para intentarlo de nuevo.';
+
+function formatCharacterCount(value: string): string {
+  const count = Array.from(characterSegmenter.segment(value)).length;
+  return `${count.toLocaleString('es-AR')} ${count === 1 ? 'carácter' : 'caracteres'}`;
 }
 
 function statusLabel(status: EditorStatus): string {
@@ -284,9 +290,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     }
     if (draftByteLength(current) > MAX_DRAFT_BYTES) {
       setStatus('error');
-      setMessage(
-        `La configuración supera el límite de ${MAX_DRAFT_BYTES.toLocaleString('es-AR')} bytes UTF-8.`,
-      );
+      setMessage(DRAFT_SIZE_ERROR_MESSAGE);
       setRetryMode(null);
       return Promise.resolve(false);
     }
@@ -639,6 +643,8 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
 
   const disabled = paused || locked || attemptClickLocked || status === 'loading';
   const byteCount = draft ? draftByteLength(draft) : 0;
+  const isDraftOverLimit = byteCount > MAX_DRAFT_BYTES;
+  const shouldWarnAboutDraftSize = byteCount >= DRAFT_SIZE_WARNING_THRESHOLD;
   return (
     <section
       className="robot-editor"
@@ -670,11 +676,13 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
           la preferencia de animación.
         </p>
       )}
-      {message && status !== 'clean' && (
-        <p className="editor-message" role={status === 'error' ? 'alert' : 'status'}>
-          {message}
-        </p>
-      )}
+      {message &&
+        status !== 'clean' &&
+        !(isDraftOverLimit && message === DRAFT_SIZE_ERROR_MESSAGE) && (
+          <p className="editor-message" role={status === 'error' ? 'alert' : 'status'}>
+            {message}
+          </p>
+        )}
 
       {status === 'loading' && (
         <p className="editor-loading">Recuperando tu configuración guardada…</p>
@@ -710,6 +718,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
               onChange={onInstructionsChange}
               rows={5}
             />
+            <p className="character-count">{formatCharacterCount(draft.instructions)}</p>
           </fieldset>
 
           <fieldset disabled={disabled}>
@@ -744,6 +753,9 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
                       onChange={(event) => onSkillDescriptionChange(entry.id, event.target.value)}
                       rows={3}
                     />
+                    <p className="character-count">
+                      {formatCharacterCount(skill.description ?? '')}
+                    </p>
                   </article>
                 );
               })}
@@ -757,9 +769,13 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
             </p>
           )}
 
-          <div className={`byte-count${byteCount > MAX_DRAFT_BYTES ? ' byte-count-over' : ''}`}>
-            {formatByteCount(byteCount)}
-          </div>
+          {shouldWarnAboutDraftSize && (
+            <p className="configuration-size-warning" role={isDraftOverLimit ? 'alert' : undefined}>
+              {isDraftOverLimit
+                ? DRAFT_SIZE_ERROR_MESSAGE
+                : 'La configuración está cerca del límite de tamaño. Si lo supera, no se va a poder guardar.'}
+            </p>
+          )}
 
           {(status === 'error' || status === 'conflict') && (
             <div className="editor-actions">
@@ -815,7 +831,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
               {conflict.draft.skills.map((skill) => (
                 <li key={skill.id}>
                   {ROBOT_CATALOG.find((entry) => entry.id === skill.id)?.name ?? 'Habilidad'}:{' '}
-                  {skill.enabled ? 'habilitada' : 'deshabilitada'} —{' '}
+                  {skill.enabled ? 'habilitada' : 'deshabilitada'},{' '}
                   <span className="conflict-literal">
                     {Object.prototype.hasOwnProperty.call(skill, 'description')
                       ? skill.description

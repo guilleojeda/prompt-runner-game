@@ -26,7 +26,7 @@ import {
 import type { RobotEditorHandle } from './RobotEditor.js';
 import { ROBOT_CATALOG, type RobotDraft } from '../../../shared/robot.js';
 import type { AnimationPreference, ReplayRecordView } from '../../../shared/attempt.js';
-import { LEVEL } from '../../../shared/game.js';
+import { DEFAULT_SCORE_RULES, LEVEL } from '../../../shared/game.js';
 import { MODEL_CATALOG } from '../../../shared/models.js';
 import { DecisionInspector } from './DecisionInspector.js';
 import { ReplayScene } from './replay/ReplayScene.js';
@@ -147,31 +147,20 @@ function mergeHistoryPage(
   return merged;
 }
 
-function reasonLabel(reason: string): string {
-  if (reason.startsWith('cancelled_'))
-    return 'El intento se cerró por tu solicitud de cancelación.';
+function technicalReasonLabel(reason: string): string | null {
   const labels: Record<string, string> = {
-    exit_reached: 'El robot llegó a la salida.',
-    turn_limit_reached: 'Se agotaron los turnos disponibles.',
-    walk_into_pit: 'El robot intentó caminar sobre un pozo y cayó.',
-    crouch_into_pit: 'El robot intentó cruzar un pozo agachado y cayó.',
-    walk_into_branch: 'El robot intentó caminar bajo una rama y chocó.',
-    jump_into_branch: 'El robot saltó contra una rama y chocó.',
-    walk_into_barrier: 'El robot intentó atravesar una barrera y chocó.',
-    crouch_into_low_barrier: 'El robot intentó pasar agachado por una barrera baja y chocó.',
-    jump_into_high_barrier: 'El robot saltó contra una barrera alta y chocó.',
-    start_deadline_expired: 'El cálculo no pudo comenzar dentro del tiempo disponible.',
-    runtime_deadline_expired: 'La ejecución no terminó dentro del tiempo disponible.',
-    runtime_deadline_exceeded: 'No quedaba tiempo suficiente para otra decisión.',
-    throttled: 'El proveedor del agente rechazó las llamadas por falta de capacidad disponible.',
-    timeout: 'No llegó una respuesta completa del agente dentro del tiempo disponible.',
-    invalid_response: 'El agente respondió sin elegir exactamente una habilidad válida.',
-    truncated: 'La respuesta del agente quedó incompleta.',
-    audit_failed: 'No se pudo conservar el registro completo de la llamada.',
-    request_not_persisted: 'No se pudo guardar la solicitud antes de llamar al agente.',
-    provider_error: 'El proveedor del agente no pudo completar la llamada.',
+    start_deadline_expired: 'Tiempo de inicio agotado',
+    runtime_deadline_expired: 'Tiempo de ejecución agotado',
+    runtime_deadline_exceeded: 'Tiempo de ejecución insuficiente',
+    throttled: 'Proveedor temporalmente saturado',
+    timeout: 'Tiempo de espera agotado',
+    invalid_response: 'Respuesta inválida del agente',
+    truncated: 'Respuesta incompleta del agente',
+    audit_failed: 'No se pudo completar el registro de auditoría',
+    request_not_persisted: 'No se pudo guardar la solicitud',
+    provider_error: 'Error del proveedor del agente',
   };
-  return labels[reason] ?? 'Un error técnico impidió completar el intento.';
+  return labels[reason] ?? null;
 }
 
 function statusLabel(status: AttemptStatus): string {
@@ -213,6 +202,7 @@ function statusDescription(status: AttemptStatus): string {
 }
 
 type PlaybackKind = 'automatic' | 'manual';
+type DecisionInitialSelection = 'first' | 'last-action-or-decision' | 'last-decision';
 
 function needsAutomaticPresentation(attempt: AttemptSummary): boolean {
   return (
@@ -230,6 +220,13 @@ function formatMetric(value: number | null): string {
 function formatProgress(value: number): string {
   const percent = value >= 0 && value <= 1 ? value * 100 : value;
   return `${Math.round(percent)}%`;
+}
+
+function formatScore(value: number): string {
+  return value.toLocaleString('es-AR', {
+    minimumFractionDigits: DEFAULT_SCORE_RULES.decimalPlaces,
+    maximumFractionDigits: DEFAULT_SCORE_RULES.decimalPlaces,
+  });
 }
 
 function makeRequestKey(): string {
@@ -262,7 +259,7 @@ function objectCollectionStatus(attempt: AttemptSummary): string {
       : `no recogida (${value}${object.scoreValue > 0 ? ' posibles' : ''})`;
     return `${label}: ${state}`;
   });
-  return `${details.join(' · ')} · valor total: ${attempt.objectPoints.toLocaleString('es-AR')} puntos`;
+  return `${details.join(', ')}, valor total: ${attempt.objectPoints.toLocaleString('es-AR')} puntos`;
 }
 
 function stableHistoryOrder(left: AttemptSummary, right: AttemptSummary): number {
@@ -283,8 +280,8 @@ function comparableVictories(attempts: readonly AttemptSummary[]): readonly Atte
 
 function formatHistoryScope(count: number, hasMore: boolean): string {
   return hasMore
-    ? `${count} cargados · hay más intentos para consultar`
-    : `${count} cargados · todo el historial disponible está visible`;
+    ? `${count} cargados, hay más intentos para consultar`
+    : `${count} cargados, todo el historial disponible está visible`;
 }
 
 function rankFor(attempts: readonly AttemptSummary[], index: number): number {
@@ -293,11 +290,11 @@ function rankFor(attempts: readonly AttemptSummary[], index: number): number {
 }
 
 function historyComparisonMetrics(attempt: AttemptSummary): string {
-  return `${attempt.turnsUsed} / ${attempt.maxTurns} turnos · ${formatMetric(attempt.gameTokens)} tokens para puntaje · ${attempt.collectedObjectIds.length} objetos · ${attempt.modelLabel} · ${attempt.createdAt}`;
+  return `${attempt.turnsUsed} / ${attempt.maxTurns} turnos, ${formatMetric(attempt.gameTokens)} tokens para puntaje, ${attempt.collectedObjectIds.length} objetos, ${attempt.modelLabel}, ${attempt.createdAt}`;
 }
 
 function historyDetailMetrics(attempt: AttemptSummary): string {
-  return `Avance: ${formatProgress(attempt.progress)} · ${historyComparisonMetrics(attempt)}`;
+  return `Avance: ${formatProgress(attempt.progress)}, ${historyComparisonMetrics(attempt)}`;
 }
 
 function modelLabel(modelKey: RobotDraft['modelKey']): string {
@@ -314,11 +311,16 @@ function ResultCard({
 }: {
   attempt: AttemptSummary;
   onReplay: () => void;
-  onInspect?: () => void;
+  onInspect?: (initialSelection: DecisionInitialSelection) => void;
   onConfiguration: () => void;
   configurationBusy: boolean;
   busy: boolean;
 }) {
+  const technicalError = attempt.reason ? technicalReasonLabel(attempt.reason) : null;
+  const tokenPenalty =
+    attempt.gameTokens === null
+      ? null
+      : DEFAULT_SCORE_RULES.tokenWeight * (attempt.gameTokens / DEFAULT_SCORE_RULES.tokenUnit);
   return (
     <section className="attempt-result" aria-labelledby="attempt-result-title">
       <div className="attempt-result-heading">
@@ -326,15 +328,89 @@ function ResultCard({
           <p className="card-kicker">Resultado del recorrido</p>
           <h3 id="attempt-result-title">{statusLabel(attempt.status)}</h3>
         </div>
-        <span className="attempt-status" data-status={attempt.status}>
-          {attempt.recordComplete ? 'Registro completo' : 'Registro incompleto'}
-        </span>
       </div>
-      <p>{statusDescription(attempt.status)}</p>
-      <p className="attempt-level">Nivel: {attempt.levelId}</p>
-      <p className="attempt-model">Modelo: {attempt.modelLabel}</p>
-      {attempt.reason && (
-        <p className="attempt-reason">Causa registrada: {reasonLabel(attempt.reason)}</p>
+      {attempt.status === 'victory' && (
+        <div className="attempt-result-score" aria-label="Puntaje de la victoria">
+          <span>Puntaje</span>
+          <strong>{attempt.score === null ? 'Desconocido' : formatScore(attempt.score)}</strong>
+        </div>
+      )}
+      <dl className="attempt-result-summary">
+        {attempt.status !== 'victory' && (
+          <div>
+            <dt>Avance máximo</dt>
+            <dd>{formatProgress(attempt.progress)}</dd>
+          </div>
+        )}
+        <div>
+          <dt>Turnos</dt>
+          <dd>
+            {attempt.turnsUsed} / {attempt.maxTurns}
+          </dd>
+        </div>
+        {LEVEL.objects.map((object) => {
+          const collected = attempt.collectedObjectIds.includes(object.id);
+          const isKey = object.id === 'llave-1';
+          return (
+            <div key={object.id}>
+              <dt>{isKey ? 'Llave' : 'Recompensa'}</dt>
+              <dd>
+                {collected ? 'Recogida' : 'No recogida'}
+                {!isKey && `, ${object.scoreValue} puntos${!collected ? ' posibles' : ''}`}
+              </dd>
+            </div>
+          );
+        })}
+      </dl>
+      {attempt.status === 'victory' && (
+        <section
+          className="attempt-score-breakdown"
+          aria-labelledby="attempt-score-breakdown-title"
+        >
+          <h4 id="attempt-score-breakdown-title">Desglose del puntaje</h4>
+          <dl>
+            <div>
+              <dt>Base</dt>
+              <dd>+{DEFAULT_SCORE_RULES.base.toLocaleString('es-AR')} puntos</dd>
+            </div>
+            <div>
+              <dt>Objetos recogidos</dt>
+              <dd>+{attempt.objectPoints.toLocaleString('es-AR')} puntos</dd>
+            </div>
+            <div>
+              <dt>
+                Descuento por turnos ({attempt.turnsUsed} x {DEFAULT_SCORE_RULES.turnWeight})
+              </dt>
+              <dd>
+                -{(DEFAULT_SCORE_RULES.turnWeight * attempt.turnsUsed).toLocaleString('es-AR')}{' '}
+                puntos
+              </dd>
+            </div>
+            <div>
+              <dt>
+                Descuento por tokens (
+                {attempt.gameTokens === null
+                  ? 'desconocido'
+                  : `${attempt.gameTokens.toLocaleString('es-AR')} / ${DEFAULT_SCORE_RULES.tokenUnit.toLocaleString('es-AR')}`}
+                )
+              </dt>
+              <dd>
+                {tokenPenalty === null
+                  ? 'desconocido'
+                  : `-${tokenPenalty.toLocaleString('es-AR', { maximumFractionDigits: 3 })} puntos`}
+              </dd>
+            </div>
+            <div>
+              <dt>Total</dt>
+              <dd>
+                {attempt.score === null ? 'desconocido' : `${formatScore(attempt.score)} puntos`}
+              </dd>
+            </div>
+          </dl>
+          <p className="attempt-score-rounding-note">
+            El total guardado se expresa con {DEFAULT_SCORE_RULES.decimalPlaces} decimales.
+          </p>
+        </section>
       )}
       {attempt.recordComplete && attempt.turnsUsed > 0 && (
         <button
@@ -350,10 +426,22 @@ function ResultCard({
         <button
           className="secondary-button replay-again"
           type="button"
-          onClick={onInspect}
+          onClick={() => onInspect('first')}
           disabled={busy}
         >
           Inspeccionar decisiones
+        </button>
+      )}
+      {onInspect && attempt.status !== 'victory' && (
+        <button
+          className="secondary-button replay-again"
+          type="button"
+          onClick={() =>
+            onInspect(attempt.status === 'defeat' ? 'last-action-or-decision' : 'last-decision')
+          }
+          disabled={busy}
+        >
+          {attempt.status === 'defeat' ? 'Ir a la última acción' : 'Ver último paso'}
         </button>
       )}
       {isTerminal(attempt.status) && (
@@ -366,75 +454,56 @@ function ResultCard({
           {configurationBusy ? 'Cargando configuración…' : 'Ver configuración'}
         </button>
       )}
-      <dl className="attempt-metrics">
-        <div>
-          <dt>Avance máximo</dt>
-          <dd>{formatProgress(attempt.progress)}</dd>
-        </div>
-        <div>
-          <dt>Turnos</dt>
-          <dd>
-            {attempt.turnsUsed} / {attempt.maxTurns}
-          </dd>
-        </div>
-        <div>
-          <dt>Llamadas</dt>
-          <dd>{attempt.calls}</dd>
-        </div>
-        <div>
-          <dt>Tokens usados para puntaje</dt>
-          <dd>{formatMetric(attempt.gameTokens)}</dd>
-        </div>
-        <div>
-          <dt>Entrada</dt>
-          <dd>{formatMetric(attempt.inputTokens)}</dd>
-        </div>
-        <div>
-          <dt>Salida</dt>
-          <dd>{formatMetric(attempt.outputTokens)}</dd>
-        </div>
-        <div>
-          <dt>Razonamiento (incluido en salida)</dt>
-          <dd>{formatMetric(attempt.reasoningTokens)}</dd>
-        </div>
-        <div>
-          <dt>Caché leída</dt>
-          <dd>{formatMetric(attempt.cacheReadTokens)}</dd>
-        </div>
-        <div>
-          <dt>Caché escrita</dt>
-          <dd>{formatMetric(attempt.cacheWriteTokens)}</dd>
-        </div>
-        <div>
-          <dt>Objetos</dt>
-          <dd>{attempt.collectedObjectIds.length}</dd>
-        </div>
-        {LEVEL.objects.map((object) => {
-          const collected = attempt.collectedObjectIds.includes(object.id);
-          return (
-            <div key={object.id}>
-              <dt>{object.id === 'llave-1' ? 'Llave de la puerta' : 'Recompensa opcional'}</dt>
-              <dd>
-                {collected
-                  ? `Recogida · ${object.scoreValue} puntos`
-                  : `No recogida · ${object.scoreValue} puntos${object.scoreValue > 0 ? ' posibles' : ''}`}
-              </dd>
-            </div>
-          );
-        })}
-        <div>
-          <dt>Valor de objetos recogidos</dt>
-          <dd>{attempt.objectPoints.toLocaleString('es-AR')} puntos</dd>
-        </div>
-        {attempt.status === 'victory' && (
+      <details className="attempt-agent-details">
+        <summary>Detalles del agente</summary>
+        <p className="attempt-status" data-status={attempt.status}>
+          {attempt.recordComplete ? 'Registro completo' : 'Registro incompleto'}
+        </p>
+        <dl className="attempt-metrics">
           <div>
-            <dt>Puntaje</dt>
-            <dd>
-              {attempt.score === null ? 'desconocido' : attempt.score.toLocaleString('es-AR')}
-            </dd>
+            <dt>Modelo</dt>
+            <dd>{attempt.modelLabel}</dd>
           </div>
-        )}
-      </dl>
+          <div>
+            <dt>Nivel</dt>
+            <dd>{attempt.levelId}</dd>
+          </div>
+          {technicalError && (
+            <div>
+              <dt>Error técnico</dt>
+              <dd>{technicalError}</dd>
+            </div>
+          )}
+          <div>
+            <dt>Llamadas</dt>
+            <dd>{attempt.calls}</dd>
+          </div>
+          <div>
+            <dt>Tokens usados para puntaje</dt>
+            <dd>{formatMetric(attempt.gameTokens)}</dd>
+          </div>
+          <div>
+            <dt>Entrada</dt>
+            <dd>{formatMetric(attempt.inputTokens)}</dd>
+          </div>
+          <div>
+            <dt>Salida</dt>
+            <dd>{formatMetric(attempt.outputTokens)}</dd>
+          </div>
+          <div>
+            <dt>Razonamiento (incluido en salida)</dt>
+            <dd>{formatMetric(attempt.reasoningTokens)}</dd>
+          </div>
+          <div>
+            <dt>Caché leída</dt>
+            <dd>{formatMetric(attempt.cacheReadTokens)}</dd>
+          </div>
+          <div>
+            <dt>Caché escrita</dt>
+            <dd>{formatMetric(attempt.cacheWriteTokens)}</dd>
+          </div>
+        </dl>
+      </details>
     </section>
   );
 }
@@ -455,7 +524,7 @@ function HistoryList({
   busy: boolean;
   onOpen: (id: string) => void;
   onReplay: (id: string) => void;
-  onInspect?: (id: string) => void;
+  onInspect?: (id: string, initialSelection: DecisionInitialSelection) => void;
   onConfiguration: (id: string) => void;
   configurationBusyId: string | null;
   onMore: () => void;
@@ -500,7 +569,7 @@ function HistoryList({
               <article className="history-ranking-card" key={item.id}>
                 <div>
                   <strong>
-                    #{rankFor(ranked, index)} · {item.score!.toLocaleString('es-AR')} puntos
+                    #{rankFor(ranked, index)}, {item.score!.toLocaleString('es-AR')} puntos
                   </strong>
                   <span>{historyComparisonMetrics(item)}</span>
                 </div>
@@ -599,14 +668,31 @@ function HistoryList({
                   </button>
                 )}
                 {isTerminal(item.status) && item.presentationComplete && onInspect && (
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    onClick={() => onInspect(item.id)}
-                    disabled={busy}
-                  >
-                    Inspeccionar decisiones
-                  </button>
+                  <>
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      onClick={() => onInspect(item.id, 'first')}
+                      disabled={busy}
+                    >
+                      Inspeccionar decisiones
+                    </button>
+                    {item.status !== 'victory' && (
+                      <button
+                        className="secondary-button"
+                        type="button"
+                        onClick={() =>
+                          onInspect(
+                            item.id,
+                            item.status === 'defeat' ? 'last-action-or-decision' : 'last-decision',
+                          )
+                        }
+                        disabled={busy}
+                      >
+                        {item.status === 'defeat' ? 'Ir a la última acción' : 'Ver último paso'}
+                      </button>
+                    )}
+                  </>
                 )}
                 {isTerminal(item.status) && (
                   <button
@@ -723,8 +809,8 @@ function ConfigurationPreview({
                         : skill.description;
                   return (
                     <li key={skill.id}>
-                      <strong>{entry?.name ?? 'Habilidad no disponible'}</strong> ·{' '}
-                      {skill.enabled ? 'Enviada al agente' : 'No enviada al agente'} · Descripción:{' '}
+                      <strong>{entry?.name ?? 'Habilidad no disponible'}</strong>,{' '}
+                      {skill.enabled ? 'Enviada al agente' : 'No enviada al agente'}, Descripción:{' '}
                       {description}
                     </li>
                   );
@@ -787,6 +873,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     const [decisionInspectorTarget, setDecisionInspectorTarget] = useState<AttemptSummary | null>(
       null,
     );
+    const [decisionInspectorSelection, setDecisionInspectorSelection] =
+      useState<DecisionInitialSelection>('first');
+    const [decisionInspectorOpenVersion, setDecisionInspectorOpenVersion] = useState(0);
     const [configurationState, setConfigurationState] = useState<ConfigurationState | null>(null);
     const [completionBusy, setCompletionBusy] = useState(false);
     const presentationRef = useRef<HTMLDivElement>(null);
@@ -1851,17 +1940,22 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       }
     }, [authPaused, busy, configurationState, editor, onConfigurationBusyChange]);
 
-    const openDecisionInspector = useCallback((): void => {
-      const current = attemptRef.current;
-      if (busy || configurationApplyingRef.current || !current || !isTerminal(current.status)) {
-        return;
-      }
-      setDecisionInspectorTarget(current);
-      setError(null);
-    }, [busy]);
+    const openDecisionInspector = useCallback(
+      (initialSelection: DecisionInitialSelection = 'first'): void => {
+        const current = attemptRef.current;
+        if (busy || configurationApplyingRef.current || !current || !isTerminal(current.status)) {
+          return;
+        }
+        setDecisionInspectorTarget(current);
+        setDecisionInspectorSelection(initialSelection);
+        setDecisionInspectorOpenVersion((version) => version + 1);
+        setError(null);
+      },
+      [busy],
+    );
 
     const openDecisionInspectorFromHistory = useCallback(
-      (id: string): void => {
+      (id: string, initialSelection: DecisionInitialSelection = 'first'): void => {
         if (busy || configurationApplyingRef.current) return;
         const target = history.find((item) => item.id === id);
         if (!target) {
@@ -1877,6 +1971,8 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           return;
         }
         setDecisionInspectorTarget(target);
+        setDecisionInspectorSelection(initialSelection);
+        setDecisionInspectorOpenVersion((version) => version + 1);
         setError(null);
       },
       [busy, history],
@@ -2209,13 +2305,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           <div>
             <p className="card-kicker">Terreno con recompensa y puerta</p>
             <h2 id="attempt-workspace-title">Probar al agente</h2>
-            <p>
-              El terreno cambia entre suelo, pozo, rama, barrera y plataforma. En la casilla 2 hay
-              una recompensa opcional: pasar no la recoge y vale 25 puntos. La llave está en la
-              casilla 6; permite abrir la puerta de la casilla 9, que no se puede cruzar cerrada.
-              Recoger la llave no da puntos. Llegá a la salida libre de la casilla 10 en hasta 24
-              acciones.
-            </p>
+            <p>Probá tu robot para ver cómo recorre el terreno.</p>
           </div>
           {quota && (
             <div
@@ -2346,7 +2436,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
                     key={candidate.id}
                     onClick={() => chooseActive(candidate)}
                   >
-                    {candidate.id} · {statusLabel(candidate.status)}
+                    {candidate.id}, {statusLabel(candidate.status)}
                   </button>
                 ))}
               </div>
@@ -2429,7 +2519,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             <ResultCard
               attempt={attempt}
               onReplay={replayCurrentAttempt}
-              onInspect={openDecisionInspector}
+              onInspect={(selection) => openDecisionInspector(selection)}
               onConfiguration={() => void openConfiguration(attempt.id)}
               configurationBusy={
                 configurationState?.targetId === attempt.id &&
@@ -2453,10 +2543,11 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
 
         {decisionInspectorTarget && !authPaused && (
           <DecisionInspector
-            key={`${sessionSub}:${decisionInspectorTarget.id}`}
+            key={`${sessionSub}:${decisionInspectorTarget.id}:${decisionInspectorOpenVersion}`}
             api={api}
             attemptId={decisionInspectorTarget.id}
-            targetLabel={`${statusLabel(decisionInspectorTarget.status)} · ${decisionInspectorTarget.createdAt}`}
+            targetLabel={`${statusLabel(decisionInspectorTarget.status)}, ${decisionInspectorTarget.createdAt}`}
+            initialSelection={decisionInspectorSelection}
             onAuthRequired={handleDecisionInspectorAuthRequired}
             onClose={clearDecisionInspector}
           />
@@ -2487,7 +2578,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             busy={busy || loadingHistory || configurationState?.status === 'applying'}
             onOpen={(id) => void openAttempt(id)}
             onReplay={(id) => void openReplayFromHistory(id)}
-            onInspect={(id) => void openDecisionInspectorFromHistory(id)}
+            onInspect={(id, selection) => void openDecisionInspectorFromHistory(id, selection)}
             onConfiguration={(id) => void openConfiguration(id)}
             configurationBusyId={
               configurationState &&

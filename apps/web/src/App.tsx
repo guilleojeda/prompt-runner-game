@@ -14,6 +14,7 @@ import { SavedRobots } from './SavedRobots.js';
 import { RobotEditor, type RobotEditorHandle } from './RobotEditor.js';
 import { createAttemptApiClient, type AttemptApi } from './attempt-api.js';
 import { AttemptWorkspace, type AttemptWorkspaceHandle } from './AttemptWorkspace.js';
+import { CoursePreview } from './replay/ReplayScene.js';
 import { clearAttemptRecovery } from './attempt-recovery.js';
 import {
   CognitoPendingConfirmationClient,
@@ -680,6 +681,9 @@ export function App({
           phase === 'error' ||
           phase === 'signing-in') && (
           <>
+            {editorApi && editorConfig && session.user.scopes.includes(editorConfig.apiScope) && (
+              <CoursePreview />
+            )}
             {editorApi && editorConfig && session.user.scopes.includes(editorConfig.apiScope) && (
               <RobotEditor
                 ref={editorRef}

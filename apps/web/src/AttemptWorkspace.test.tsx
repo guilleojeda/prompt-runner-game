@@ -318,6 +318,147 @@ describe('AttemptWorkspace', () => {
     expect(getDecision).toHaveBeenCalledWith(terminal.id, 1, expect.any(AbortSignal));
   });
 
+  it('opens the last action from defeat, skips trailing no-action records, and can return to the first decision', async () => {
+    const terminal = {
+      ...summary('defeat'),
+      turnsUsed: 3,
+      animationEnabled: false,
+      reason: 'walk_into_pit',
+    };
+    const decisionIndex: DecisionIndex = {
+      attemptId: terminal.id,
+      levelId: LEVEL.id,
+      decisions: [
+        { number: 1, decisionId: 'decision-1', originSupport: 0, hasAction: true },
+        { number: 2, decisionId: 'decision-2', originSupport: 1, hasAction: false },
+      ],
+    };
+    const getDecision = vi.fn().mockImplementation((_id: string, number: number) => {
+      const item = decisionIndex.decisions[number - 1]!;
+      const result: DecisionDetail['result'] = item.hasAction
+        ? {
+            kind: 'action',
+            action: { kind: 'advance' },
+            resolution: { outcome: 'moved', reason: 'moved' },
+            beforeSupport: item.originSupport,
+            afterSupport: item.originSupport + 1,
+            turnsUsed: number,
+          }
+        : { kind: 'no-action', reason: 'turn_limit_reached', turnsUsed: 3, status: 'incomplete' };
+      return Promise.resolve({
+        attemptId: terminal.id,
+        levelId: LEVEL.id,
+        item,
+        observation: null,
+        availableActions: null,
+        choice: { state: 'unknown' },
+        result,
+      } satisfies DecisionDetail);
+    });
+    const attemptApi = api({
+      listAttempts: vi.fn().mockResolvedValue({ attempts: [terminal] }),
+      getAttempt: vi.fn().mockResolvedValue(terminal),
+      getAnimationPreference: vi.fn().mockResolvedValue({ animationEnabled: false, version: 0 }),
+      getDecisionIndex: vi.fn().mockResolvedValue(decisionIndex),
+      getDecision,
+    });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+
+    const history = await screen.findByRole('heading', { name: 'Historial' });
+    fireEvent.click(
+      within(history.closest('section') as HTMLElement).getByRole('button', {
+        name: 'Ver resultado',
+      }),
+    );
+    const result = await screen.findByRole('heading', { name: 'Derrota' });
+    const resultSection = result.closest('section') as HTMLElement;
+    fireEvent.click(within(resultSection).getByRole('button', { name: 'Ir a la última acción' }));
+    expect(await screen.findByRole('heading', { name: 'Decisión 1, casilla 0' })).toBeTruthy();
+    await waitFor(() =>
+      expect(getDecision).toHaveBeenLastCalledWith(terminal.id, 1, expect.any(AbortSignal)),
+    );
+
+    fireEvent.click(within(resultSection).getByRole('button', { name: 'Inspeccionar decisiones' }));
+    expect(await screen.findByRole('heading', { name: 'Decisión 1, casilla 0' })).toBeTruthy();
+    fireEvent.click(within(resultSection).getByRole('button', { name: 'Ir a la última acción' }));
+    expect(await screen.findByRole('heading', { name: 'Decisión 1, casilla 0' })).toBeTruthy();
+  });
+
+  it('opens the final no-action decision from incomplete results and history', async () => {
+    const terminal = { ...summary('incomplete'), animationEnabled: false };
+    const decisionIndex: DecisionIndex = {
+      attemptId: terminal.id,
+      levelId: LEVEL.id,
+      decisions: [
+        { number: 1, decisionId: 'decision-1', originSupport: 3, hasAction: true },
+        { number: 2, decisionId: 'decision-2', originSupport: 4, hasAction: false },
+      ],
+    };
+    const decisionDetail: DecisionDetail = {
+      attemptId: terminal.id,
+      levelId: LEVEL.id,
+      item: decisionIndex.decisions[0]!,
+      observation: null,
+      availableActions: null,
+      choice: { state: 'unknown' },
+      result: {
+        kind: 'action',
+        action: { kind: 'advance' },
+        resolution: {},
+        beforeSupport: 3,
+        afterSupport: 4,
+        turnsUsed: 2,
+      },
+    };
+    const finalNoActionDetail: DecisionDetail = {
+      ...decisionDetail,
+      item: decisionIndex.decisions[1]!,
+      result: {
+        kind: 'no-action',
+        reason: 'turn_limit_reached',
+        turnsUsed: 2,
+        status: 'incomplete',
+      },
+    };
+    const attemptApi = api({
+      listAttempts: vi.fn().mockResolvedValue({ attempts: [terminal] }),
+      getAttempt: vi.fn().mockResolvedValue(terminal),
+      getAnimationPreference: vi.fn().mockResolvedValue({ animationEnabled: false, version: 0 }),
+      getDecisionIndex: vi.fn().mockResolvedValue(decisionIndex),
+      getDecision: vi
+        .fn()
+        .mockImplementation((_id: string, number: number) =>
+          Promise.resolve(number === 2 ? finalNoActionDetail : decisionDetail),
+        ),
+    });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+
+    const history = await screen.findByRole('heading', { name: 'Historial' });
+    const historySection = history.closest('section') as HTMLElement;
+    fireEvent.click(within(historySection).getByRole('button', { name: 'Ver último paso' }));
+    expect(await screen.findByRole('heading', { name: 'Decisión 2, casilla 4' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Cerrar inspección' }));
+    fireEvent.click(
+      within(historySection).getByRole('button', { name: 'Inspeccionar decisiones' }),
+    );
+    expect(await screen.findByRole('heading', { name: 'Decisión 1, casilla 3' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Cerrar inspección' }));
+    fireEvent.click(
+      within(historySection).getByRole('button', {
+        name: 'Ver resultado',
+      }),
+    );
+    const result = await screen.findByRole('heading', { name: 'Recorrido incompleto' });
+    fireEvent.click(
+      within(result.closest('section') as HTMLElement).getByRole('button', {
+        name: 'Ver último paso',
+      }),
+    );
+    expect(await screen.findByRole('heading', { name: 'Decisión 2, casilla 4' })).toBeTruthy();
+  });
+
   it('inspects history B without replacing result A while A presentation acknowledgement is pending', async () => {
     const attemptA = {
       ...summary('victory'),
@@ -378,9 +519,9 @@ describe('AttemptWorkspace', () => {
     );
     expect(await screen.findByRole('heading', { name: 'Inspeccionar decisiones' })).toBeTruthy();
     expect(
-      screen.getByText('Intento inspeccionado: Recorrido incompleto · 2026-09-21T12:00:30.000Z'),
+      screen.getByText('Intento inspeccionado: Recorrido incompleto, 2026-09-21T12:00:30.000Z'),
     ).toBeTruthy();
-    expect(screen.queryByText(/Intento inspeccionado: Victoria ·/)).toBeNull();
+    expect(screen.queryByText(/Intento inspeccionado: Victoria,/)).toBeNull();
     await waitFor(() =>
       expect(getDecisionIndex).toHaveBeenCalledWith(attemptB.id, expect.any(AbortSignal)),
     );
@@ -625,7 +766,7 @@ describe('AttemptWorkspace', () => {
 
     await screen.findByText('Historial');
     expect(screen.getByText('Terreno con recompensa y puerta')).toBeTruthy();
-    expect(screen.getByText(/cambia entre suelo, pozo, rama, barrera y plataforma/)).toBeTruthy();
+    expect(screen.getByText('Probá tu robot para ver cómo recorre el terreno.')).toBeTruthy();
     const animation = screen.getByRole('checkbox', { name: 'Animación' }) as HTMLInputElement;
     expect(animation.checked).toBe(true);
     fireEvent.click(animation);
@@ -641,7 +782,7 @@ describe('AttemptWorkspace', () => {
     expect(createAttempt).toHaveBeenCalledWith(expect.any(String), 2, createDefaultDraft(), false);
     expect(attemptApi.getReplay).not.toHaveBeenCalled();
     expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
-    expect(screen.getByText('El robot llegó a la salida del recorrido.')).toBeTruthy();
+    expect(screen.queryByText(/El robot llegó a la salida del recorrido/)).toBeNull();
     expect(screen.queryByText(/estático/)).toBeNull();
     expect(putAnimationPreference).toHaveBeenCalledWith(false, 0, expect.any(AbortSignal));
     await act(async () => {
@@ -879,6 +1020,7 @@ describe('AttemptWorkspace', () => {
   it('shows collected object value without presenting it as an awarded score after defeat', async () => {
     const collected = {
       ...summary('defeat'),
+      reason: 'walk_into_pit',
       collectedObjectIds: ['recompensa-1'],
       objectPoints: 25,
       animationEnabled: false,
@@ -897,24 +1039,20 @@ describe('AttemptWorkspace', () => {
     expect(history).not.toBeNull();
     expect(
       within(history as HTMLElement).getByText(
-        'Recompensa: recogida (25 puntos) · Llave: no recogida (0 puntos) · valor total: 25 puntos',
+        'Recompensa: recogida (25 puntos), Llave: no recogida (0 puntos), valor total: 25 puntos',
       ),
     ).toBeTruthy();
     expect(within(history as HTMLElement).queryByText(/Puntaje:/)).toBeNull();
 
     fireEvent.click(within(history as HTMLElement).getByRole('button', { name: 'Ver resultado' }));
     await screen.findByRole('heading', { name: 'Derrota' });
-    expect(screen.getByText('Objetos').nextElementSibling?.textContent).toBe('1');
-    expect(screen.getByText('Valor de objetos recogidos').nextElementSibling?.textContent).toBe(
-      '25 puntos',
+    expect(screen.getByText('Avance máximo').nextElementSibling?.textContent).toBe('40%');
+    expect(screen.getByText('Recompensa').nextElementSibling?.textContent).toBe(
+      'Recogida, 25 puntos',
     );
-    expect(screen.getByText('Recompensa opcional').nextElementSibling?.textContent).toBe(
-      'Recogida · 25 puntos',
-    );
-    expect(screen.getByText('Llave de la puerta').nextElementSibling?.textContent).toBe(
-      'No recogida · 0 puntos',
-    );
+    expect(screen.getByText('Llave').nextElementSibling?.textContent).toBe('No recogida');
     expect(screen.queryByText('Puntaje')).toBeNull();
+    expect(screen.queryByText(/Causa registrada|obstáculo incompatible|cayó/i)).toBeNull();
   });
 
   it('shows a collected victory result and history values directly with animation disabled', async () => {
@@ -947,7 +1085,7 @@ describe('AttemptWorkspace', () => {
     expect(history).not.toBeNull();
     expect(
       within(history as HTMLElement).getByText(
-        'Recompensa: recogida (25 puntos) · Llave: recogida (0 puntos) · valor total: 25 puntos',
+        'Recompensa: recogida (25 puntos), Llave: recogida (0 puntos), valor total: 25 puntos',
       ),
     ).toBeTruthy();
     expect(within(history as HTMLElement).getByText(/Puntaje: 935,13/)).toBeTruthy();
@@ -955,22 +1093,68 @@ describe('AttemptWorkspace', () => {
 
     fireEvent.click(within(history as HTMLElement).getByRole('button', { name: 'Ver resultado' }));
     expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
+    expect(screen.queryByText('Avance máximo')).toBeNull();
     expect(screen.getByText('Turnos').nextElementSibling?.textContent).toBe('8 / 24');
-    expect(screen.getByText('Tokens usados para puntaje').nextElementSibling?.textContent).toBe(
-      '9.868',
+    expect(screen.getByText('Recompensa').nextElementSibling?.textContent).toBe(
+      'Recogida, 25 puntos',
     );
-    expect(screen.getByText('Objetos').nextElementSibling?.textContent).toBe('2');
-    expect(screen.getByText('Valor de objetos recogidos').nextElementSibling?.textContent).toBe(
-      '25 puntos',
+    expect(screen.getByText('Llave').nextElementSibling?.textContent).toBe('Recogida');
+    const score = screen.getByLabelText('Puntaje de la victoria');
+    expect(within(score).getByText('Puntaje')).toBeTruthy();
+    expect(within(score).getByText('935,13')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Desglose del puntaje' })).toBeTruthy();
+    expect(screen.getByText('Objetos recogidos').nextElementSibling?.textContent).toBe(
+      '+25 puntos',
     );
-    expect(screen.getByText('Recompensa opcional').nextElementSibling?.textContent).toBe(
-      'Recogida · 25 puntos',
+    expect(screen.getByText('Descuento por turnos (8 x 10)').nextElementSibling?.textContent).toBe(
+      '-80 puntos',
     );
-    expect(screen.getByText('Llave de la puerta').nextElementSibling?.textContent).toBe(
-      'Recogida · 0 puntos',
-    );
-    expect(screen.getByText('Puntaje').nextElementSibling?.textContent).toBe('935,13');
+    expect(
+      screen.getByText('Descuento por tokens (9.868 / 1.000)').nextElementSibling?.textContent,
+    ).toBe('-9,868 puntos');
+    expect(screen.getByText('Total').nextElementSibling?.textContent).toBe('935,13 puntos');
+    const agentDetails = screen.getByText('Detalles del agente').closest('details');
+    expect(agentDetails).not.toBeNull();
+    expect((agentDetails as HTMLDetailsElement).open).toBe(false);
+    fireEvent.click(within(agentDetails as HTMLElement).getByText('Detalles del agente'));
+    expect(within(agentDetails as HTMLElement).getByText('Claude Sonnet 4.6')).toBeTruthy();
+    expect(within(agentDetails as HTMLElement).getByText('9.868')).toBeTruthy();
     expect(getReplay).not.toHaveBeenCalled();
+  });
+
+  it('keeps missing token usage unknown while showing the persisted negative score', async () => {
+    const collected = {
+      ...summary('victory'),
+      turnsUsed: 20,
+      gameTokens: null,
+      score: -37.2,
+      objectPoints: 0,
+      collectedObjectIds: [],
+      animationEnabled: false,
+    };
+    const attemptApi = api({
+      listAttempts: vi.fn().mockResolvedValue({ attempts: [collected] }),
+      getAttempt: vi.fn().mockResolvedValue(collected),
+    });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+
+    const history = await screen.findByRole('heading', { name: 'Historial' });
+    fireEvent.click(
+      within(history.closest('section') as HTMLElement).getByRole('button', {
+        name: 'Ver resultado',
+      }),
+    );
+    await screen.findByRole('heading', { name: 'Victoria' });
+    expect(
+      within(screen.getByLabelText('Puntaje de la victoria')).getByText('-37,20'),
+    ).toBeTruthy();
+    expect(
+      screen.getByText('Descuento por tokens (desconocido)').nextElementSibling?.textContent,
+    ).toBe('desconocido');
+    expect(screen.getByText('Total').nextElementSibling?.textContent).toBe('-37,20 puntos');
+    const agentDetails = screen.getByText('Detalles del agente').closest('details');
+    expect((agentDetails as HTMLDetailsElement).open).toBe(false);
   });
 
   it('replays a current history record manually without admitting or marking it again', async () => {
@@ -1449,7 +1633,11 @@ describe('AttemptWorkspace', () => {
       expect.objectContaining({ modelKey: 'claude-sonnet-4.6' }),
       true,
     );
-    expect(await screen.findByText('Modelo: Claude Sonnet 4.6')).toBeTruthy();
+    const resultDetails = screen.getByText('Detalles del agente').closest('details');
+    expect(resultDetails).not.toBeNull();
+    expect((resultDetails as HTMLDetailsElement).open).toBe(false);
+    fireEvent.click(within(resultDetails as HTMLElement).getByText('Detalles del agente'));
+    expect(within(resultDetails as HTMLElement).getByText('Claude Sonnet 4.6')).toBeTruthy();
     expect(
       screen.getByText('Razonamiento (incluido en salida)').parentElement?.textContent,
     ).toContain('17');
@@ -1968,11 +2156,20 @@ describe('AttemptWorkspace', () => {
     fireEvent.click(
       within(historySection as HTMLElement).getByRole('button', { name: 'Ver resultado' }),
     );
+    const result = (await screen.findByRole('heading', { name: 'Error de ejecución' })).closest(
+      'section',
+    );
+    expect(result).not.toBeNull();
+    const agentDetails = within(result as HTMLElement)
+      .getByText('Detalles del agente')
+      .closest('details');
+    expect(agentDetails).not.toBeNull();
+    expect((agentDetails as HTMLDetailsElement).open).toBe(false);
+    fireEvent.click(within(agentDetails as HTMLElement).getByText('Detalles del agente'));
     expect(
-      await screen.findByText(
-        'Causa registrada: El proveedor del agente no pudo completar la llamada.',
-      ),
+      within(agentDetails as HTMLElement).getByText('Error del proveedor del agente'),
     ).toBeTruthy();
+    expect(within(result as HTMLElement).queryByText(/Causa registrada/)).toBeNull();
     expect(
       within(historySection as HTMLElement).queryByText('Admitido, esperando inicio'),
     ).toBeNull();
@@ -2080,14 +2277,14 @@ describe('AttemptWorkspace', () => {
     const history = await screen.findByRole('heading', { name: 'Historial' });
     expect(
       within(history.closest('section') as HTMLElement).getByText(
-        '10 cargados · hay más intentos para consultar',
+        '10 cargados, hay más intentos para consultar',
       ),
     ).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Tus mejores soluciones' })).toBeTruthy();
-    expect(screen.getByText('#1 · 200 puntos')).toBeTruthy();
-    expect(screen.getAllByText('#2 · 100 puntos')).toHaveLength(2);
-    expect(screen.getByText('#4 · 0 puntos')).toBeTruthy();
-    expect(screen.queryByText('#1 · 400 puntos')).toBeNull();
+    expect(screen.getByText('#1, 200 puntos')).toBeTruthy();
+    expect(screen.getAllByText('#2, 100 puntos')).toHaveLength(2);
+    expect(screen.getByText('#4, 0 puntos')).toBeTruthy();
+    expect(screen.queryByText('#1, 400 puntos')).toBeNull();
     const ranking = screen
       .getByRole('heading', { name: 'Tus mejores soluciones' })
       .closest('section') as HTMLElement;
@@ -2103,10 +2300,8 @@ describe('AttemptWorkspace', () => {
     expect(screen.getAllByText(/tokens para puntaje/).length).toBeGreaterThan(0);
     expect(screen.getByRole('button', { name: 'Cargar 20 más' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Cargar 20 más' }));
-    expect(await screen.findByText('#1 · 300 puntos')).toBeTruthy();
-    expect(
-      screen.getByText('11 cargados · todo el historial disponible está visible'),
-    ).toBeTruthy();
+    expect(await screen.findByText('#1, 300 puntos')).toBeTruthy();
+    expect(screen.getByText('11 cargados, todo el historial disponible está visible')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Cargar 20 más' })).toBeNull();
   });
 
@@ -2116,7 +2311,7 @@ describe('AttemptWorkspace', () => {
     render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
 
     expect(await screen.findByText('Todavía no hay intentos guardados.')).toBeTruthy();
-    expect(screen.getByText('0 cargados · todo el historial disponible está visible')).toBeTruthy();
+    expect(screen.getByText('0 cargados, todo el historial disponible está visible')).toBeTruthy();
     expect(
       screen.getByText('Todavía no hay victorias comparables entre los intentos cargados.'),
     ).toBeTruthy();

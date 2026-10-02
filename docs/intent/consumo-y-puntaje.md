@@ -84,6 +84,8 @@ Si el uso informado no permite determinar `tokens_juego` con exactitud, no se in
 
 Los valores vigentes se detallan abajo y se fijan en cada intento. No crear una penalización adicional por cantidad de habilidades.
 
+La interfaz muestra el desglose en la tarjeta de victoria: base, valor de objetos recogidos, descuento por turnos, descuento por tokens y total guardado. Los tokens usados para puntaje aparecen en ese descuento; sus categorías y las llamadas se consultan en **Detalles del agente**, inicialmente cerrado. Si falta el total de tokens o el puntaje, se identifica como no disponible y no se fabrica un total exacto. Una derrota no recibe un puntaje ficticio.
+
 El valor de un objeto debe calibrarse para que una recompensa pueda compensar los turnos y tokens adicionales que cuesta recogerla. La escala no debe favorecer sistemáticamente ignorar todos los objetos.
 
 ## Parámetros disponibles

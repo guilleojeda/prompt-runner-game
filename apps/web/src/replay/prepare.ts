@@ -81,16 +81,16 @@ export const REPLAY_BARRIER_HIGH_Y = 168;
 export const REPLAY_WORLD_WIDTH =
   REPLAY_SUPPORT_START_X + LEVEL.segments.length * REPLAY_SEGMENT_WIDTH + 240;
 
-const TIMING = Object.freeze({
-  walk: 0.72,
-  jump: 0.86,
-  crouch: 0.72,
-  noOp: 0.42,
-  collect: 0.9,
-  phase: 0.22,
-  fall: 1.08,
-  impact: 0.68,
-  victory: 1.02,
+export const REPLAY_TIMING = Object.freeze({
+  walk: 1.44,
+  jump: 1.72,
+  crouch: 1.44,
+  noOp: 0.84,
+  collect: 1.8,
+  phase: 0.44,
+  fall: 2.16,
+  impact: 1.36,
+  victory: 2.04,
 });
 const PICKUP_MARKER_PROGRESS = 0.7;
 // Keeps the terminal sprite inside the viewBox while placing its anchor below the ledge.
@@ -240,13 +240,13 @@ const directionOf = (action: AttemptActionView['action']): Direction | null => {
 const ease = (value: number): number => value * value * (3 - 2 * value);
 
 const cueDuration = (action: AttemptActionView): number => {
-  if (action.action.kind === 'collect') return TIMING.collect;
-  if (action.resolution.outcome === 'fall') return TIMING.fall;
-  if (action.resolution.outcome === 'collision') return TIMING.impact;
-  if (action.resolution.outcome === 'no_op') return TIMING.noOp;
-  if (action.action.kind === 'jump') return TIMING.jump;
-  if (action.action.kind === 'crouch') return TIMING.crouch;
-  return TIMING.walk;
+  if (action.action.kind === 'collect') return REPLAY_TIMING.collect;
+  if (action.resolution.outcome === 'fall') return REPLAY_TIMING.fall;
+  if (action.resolution.outcome === 'collision') return REPLAY_TIMING.impact;
+  if (action.resolution.outcome === 'no_op') return REPLAY_TIMING.noOp;
+  if (action.action.kind === 'jump') return REPLAY_TIMING.jump;
+  if (action.action.kind === 'crouch') return REPLAY_TIMING.crouch;
+  return REPLAY_TIMING.walk;
 };
 
 const validateRecord = (record: ReplayRecordView): void => {
@@ -388,14 +388,18 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
       action.after.status === 'running' &&
       !sameValue(action.before.terrain, action.after.terrain)
     ) {
-      transition = { start: cursor, end: cursor + TIMING.phase, to: action.after.terrain };
+      transition = {
+        start: cursor,
+        end: cursor + REPLAY_TIMING.phase,
+        to: action.after.terrain,
+      };
       cursor = transition.end;
     }
     cues.push({ start, end, action, index, direction, facing: cueFacing, transition });
   }
   const victory = record.closure.status === 'victory';
   const actionDuration = cursor;
-  if (victory) cursor += TIMING.victory;
+  if (victory) cursor += REPLAY_TIMING.victory;
   const duration = cursor;
   const lastState = record.snapshots.at(-1)!;
   const endingFacing = lastState.facing;
