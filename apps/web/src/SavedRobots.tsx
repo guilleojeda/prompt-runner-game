@@ -667,7 +667,7 @@ export function SavedRobots({
                   <span className="saved-robot-item-main">
                     <strong>{robot.name}</strong>
                     <span>
-                      {modelLabel(robot.modelKey)} · actualizado {formatDate(robot.updatedAt)}
+                      {modelLabel(robot.modelKey)} , actualizado {formatDate(robot.updatedAt)}
                     </span>
                   </span>
                   <span className="saved-robot-item-date">

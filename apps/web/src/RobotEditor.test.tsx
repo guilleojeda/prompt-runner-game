@@ -4,7 +4,14 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { User } from 'oidc-client-ts';
 import { createRef } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createDefaultDraft, type DraftSnapshot, type RobotDraft } from '../../../shared/robot.js';
+import {
+  MAX_DRAFT_BYTES,
+  ROBOT_CATALOG,
+  createDefaultDraft,
+  draftByteLength,
+  type DraftSnapshot,
+  type RobotDraft,
+} from '../../../shared/robot.js';
 import type { AuthSession } from './auth.js';
 import { DraftApiFailure, type DraftApi } from './draft-api.js';
 import { RobotEditor, type RobotEditorHandle } from './RobotEditor.js';
@@ -36,6 +43,16 @@ function session(
 
 function snapshot(version = 0, draft: RobotDraft = createDefaultDraft()): DraftSnapshot {
   return { version, draft };
+}
+
+function draftWithInstructionBytes(bytes: number): RobotDraft {
+  const base = createDefaultDraft();
+  const withoutInstructions = { ...base, instructions: '' };
+  const padding = bytes - draftByteLength(withoutInstructions);
+  if (padding < 0) {
+    throw new Error('The requested fixture is smaller than the fixed catalog.');
+  }
+  return { ...withoutInstructions, instructions: 'x'.repeat(padding) };
 }
 
 function api(overrides: Partial<DraftApi> = {}): DraftApi {
@@ -74,7 +91,80 @@ describe('RobotEditor', () => {
     ).toBe('claude-sonnet-4.6');
     expect(screen.getAllByRole('option')).toHaveLength(1);
     expect(screen.getByText('Guardado')).toBeTruthy();
+    expect(screen.queryByText(/cerca del límite de tamaño/)).toBeNull();
     expect(screen.queryByRole('button', { name: /Probar/i })).toBeNull();
+  });
+
+  it('counts visible Unicode characters, spaces, and line breaks for each editable text', async () => {
+    const { container } = render(<RobotEditor api={api()} session={session()} />);
+    await screen.findByLabelText('Qué debe tener en cuenta el robot');
+
+    const instructions = 'A 🦾\ne\u0301👩‍💻';
+    const description = 'hola\n🦾';
+    fireEvent.change(screen.getByLabelText('Qué debe tener en cuenta el robot'), {
+      target: { value: instructions },
+    });
+    fireEvent.change(container.querySelector('#skill-description-advance') as HTMLTextAreaElement, {
+      target: { value: description },
+    });
+
+    expect(container.querySelector('#robot-instructions')?.nextElementSibling?.textContent).toBe(
+      '6 caracteres',
+    );
+    expect(
+      container.querySelector('#skill-description-advance')?.nextElementSibling?.textContent,
+    ).toBe('6 caracteres');
+    expect(container.querySelectorAll('.character-count')).toHaveLength(ROBOT_CATALOG.length + 1);
+    expect(container.querySelector('.byte-count')).toBeNull();
+    expect(screen.queryByText(/bytes UTF-8/)).toBeNull();
+  });
+
+  it('shows a shared size warning near the serialized draft limit', async () => {
+    const draft = draftWithInstructionBytes(Math.ceil(MAX_DRAFT_BYTES * 0.9));
+    const { container } = render(
+      <RobotEditor
+        api={api({ getDraft: vi.fn().mockResolvedValue(snapshot(0, draft)) })}
+        session={session()}
+      />,
+    );
+    await screen.findByLabelText('Qué debe tener en cuenta el robot');
+
+    expect(screen.getByText(/está cerca del límite de tamaño/)).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(container.querySelector('.configuration-size-warning')).toBeTruthy();
+    expect(screen.queryByText(/bytes UTF-8/)).toBeNull();
+    expect(container.querySelector('#robot-instructions')?.nextElementSibling?.textContent).toBe(
+      `${draft.instructions.length.toLocaleString('es-AR')} caracteres`,
+    );
+  });
+
+  it('keeps an oversized edit intact and blocks its autosave with an error', async () => {
+    const draft = draftWithInstructionBytes(MAX_DRAFT_BYTES);
+    const putDraft = vi.fn().mockResolvedValue(snapshot(1));
+    render(
+      <RobotEditor
+        api={api({ getDraft: vi.fn().mockResolvedValue(snapshot(0, draft)), putDraft })}
+        session={session()}
+      />,
+    );
+    await screen.findByLabelText('Qué debe tener en cuenta el robot');
+    vi.useFakeTimers();
+
+    const instructions = screen.getByLabelText(
+      'Qué debe tener en cuenta el robot',
+    ) as HTMLTextAreaElement;
+    const oversizedInstructions = `${instructions.value}x`;
+    fireEvent.change(instructions, { target: { value: oversizedInstructions } });
+
+    expect(screen.getByRole('alert').textContent).toContain('supera el límite de tamaño');
+    expect(instructions.value).toBe(oversizedInstructions);
+    await act(async () => {
+      vi.advanceTimersByTime(600);
+    });
+
+    expect(putDraft).not.toHaveBeenCalled();
+    expect(instructions.value).toBe(oversizedInstructions);
+    expect(screen.getByRole('alert').textContent).toContain('Acortá alguno de los textos');
   });
 
   it('lets the player enable and describe Esperar', async () => {

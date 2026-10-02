@@ -742,12 +742,6 @@ h1 {
   color: #bde0bf;
 }
 
-.attempt-reason {
-  padding: 0.65rem 0.75rem;
-  border-left: 3px solid #d8b36a;
-  background: rgba(216, 179, 106, 0.1);
-}
-
 .attempt-metrics {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -771,6 +765,110 @@ h1 {
   margin: 0.2rem 0 0;
   color: #f7f1e1;
   font-weight: 700;
+}
+
+.attempt-result .attempt-result-score {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem 1rem;
+  margin: 0.25rem 0 0.75rem;
+  color: #f2c879;
+  font-size: clamp(1.5rem, 4vw, 2.25rem);
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.attempt-result-score > span {
+  color: #b9b4a8;
+  font-size: 0.9rem;
+  font-weight: 400;
+}
+
+.attempt-result-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0.7rem;
+  margin: 1rem 0;
+}
+
+.attempt-result-summary > div {
+  padding: 0.75rem;
+  border: 1px solid rgba(242, 239, 232, 0.14);
+  border-radius: 0.45rem;
+  background: rgba(242, 239, 232, 0.04);
+}
+
+.attempt-result-summary dt {
+  color: #b9b4a8;
+  font-size: 0.85rem;
+}
+
+.attempt-result-summary dd {
+  margin: 0.35rem 0 0;
+  color: #f7f1e1;
+  font-weight: 700;
+}
+
+.attempt-score-breakdown {
+  margin: 1.25rem 0;
+}
+
+.attempt-score-breakdown h4 {
+  margin: 0 0 0.65rem;
+  color: #f7f1e1;
+}
+
+.attempt-score-breakdown dl {
+  margin: 0;
+}
+
+.attempt-score-breakdown dl > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1rem;
+  padding: 0.55rem 0;
+  border-bottom: 1px solid rgba(242, 239, 232, 0.12);
+  font-size: 0.95rem;
+}
+
+.attempt-score-breakdown dd {
+  margin: 0;
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.attempt-score-breakdown dl > div:last-child {
+  color: #f2c879;
+  font-weight: 700;
+}
+
+.attempt-agent-details {
+  margin-top: 1rem;
+  padding: 0.85rem;
+  border: 1px solid rgba(242, 239, 232, 0.14);
+  border-radius: 0.55rem;
+  background: rgba(20, 19, 15, 0.2);
+}
+
+.attempt-agent-details summary {
+  color: #f7f1e1;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.attempt-agent-details summary:focus-visible {
+  outline: 3px solid #f2c879;
+  outline-offset: 4px;
+}
+
+.attempt-agent-details[open] summary {
+  margin-bottom: 0.75rem;
+}
+
+.attempt-agent-details .attempt-metrics {
+  margin-top: 0.75rem;
 }
 
 .active-attempts p {
@@ -1171,13 +1269,26 @@ h1 {
   text-align: right;
 }
 
-.byte-count {
-  color: #8f8b81;
+.character-count {
+  justify-self: end;
+  margin: 0;
+  color: #b9b4a8;
   font-size: 0.82rem;
   text-align: right;
 }
 
-.byte-count-over {
+.configuration-size-warning {
+  margin: 0;
+  padding: 0.75rem;
+  border: 1px solid rgba(216, 179, 106, 0.5);
+  border-radius: 0.45rem;
+  color: #ead6a7;
+  background: rgba(216, 179, 106, 0.1);
+  line-height: 1.5;
+}
+
+.configuration-size-warning[role='alert'] {
+  border-color: rgba(237, 146, 128, 0.5);
   color: #f0b0a2;
 }
 

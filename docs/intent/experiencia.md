@@ -21,6 +21,10 @@ La primera versión no requiere soporte para celulares o tablets. El booth y el 
 
 La vista privada muestra las habilidades, sus descripciones e instrucciones y guarda automáticamente al dejar de escribir durante 600 ms. La persona puede seguir editando mientras se guarda una versión anterior; el aviso Guardado sólo corresponde al texto visible confirmado por el servidor. Hay estados de carga, cambios pendientes, guardado, error con reintento, límite de bytes y conflicto entre pestañas.
 
+Antes del editor se muestra una vista estática del recorrido completo para el jugador, con casillas, obstáculos, recompensa, llave, puerta y salida. Los obstáculos periódicos se presentan en su fase inicial y se identifica que cambian con los turnos. Esta vista usa el mismo dibujo del reproductor, no simula una partida ni se envía al agente.
+
+Las instrucciones generales y cada descripción editable tienen su propio contador de caracteres visibles, incluyendo espacios y saltos de línea. No hay límites de caracteres por campo. Se conserva el límite conjunto de 65.536 bytes del borrador serializado, incluidos los contratos fijos: la pantalla avisa al alcanzar el 90% y rechaza el guardado si se supera, sin truncar textos. El contador permanente de bytes no aparece en la edición normal.
+
 Un conflicto conserva el texto local y permite revisar la versión guardada antes de elegir cuál conservar. La resolución vuelve a comprobar la versión para no pisar una tercera edición. La renovación de la misma sesión pausa las escrituras y bloquea los controles del editor sin descartar cambios pendientes; otra identidad nunca hereda esos cambios. Al cerrar sesión con cambios sin confirmar se ofrece esperar/reintentar o descartar explícitamente los cambios locales pendientes. Una escritura ya enviada puede haber quedado guardada; salir no promete revertirla y no espera indefinidamente a la red. La cola local se detiene. La advertencia nativa al salir no garantiza guardar después de un cierre abrupto.
 
 La pantalla está en español y se opera con teclado. Probar congela lo visible, confirma su guardado y admite un intento con control de versión. Se bloquean los controles, incluido cerrar sesión, hasta presentar el resultado; durante cálculo sólo Cancelar es operativo. Los errores de acceso o red permiten recuperar la sesión o consulta sin crear otro intento. El historial propio es paginado y abre resultados conservados. Si hay varios intentos activos desde otras sesiones, se elige cuál retomar antes de entrar en su cálculo; no se impone una exclusión global por usuario.
@@ -62,7 +66,7 @@ Los estados de la interfaz describen qué puede hacer la persona. No son una cop
 
 Durante el cálculo **Cancelar** es el único control operativo. No se habilita edición parcial ni se permite cambiar el toggle o las instrucciones hasta que el intento llegue a un estado terminal. La animación se muestra completa, en orden y a una única velocidad fija. Durante ella no hay controles para pausar, retroceder, avanzar, saltar turnos, reiniciar ni modificar la velocidad. El bloqueo continúa hasta presentar el resultado.
 
-Una cancelación o un error sin acciones ejecutadas no inicia una reproducción vacía: muestra el resultado con su causa y desbloquea la interfaz. Si existe un registro parcial cerrado con acciones, se aplican las reglas de reproducción de [intentos](intentos.md) según el valor de **Animación** guardado. Un error o cancelación nunca se presenta como derrota del robot.
+Una cancelación o un error sin acciones ejecutadas no inicia una reproducción vacía: muestra el resultado y desbloquea la interfaz. El diagnóstico técnico queda disponible en los detalles del agente. Si existe un registro parcial cerrado con acciones, se aplican las reglas de reproducción de [intentos](intentos.md) según el valor de **Animación** guardado. Un error o cancelación nunca se presenta como derrota del robot.
 
 ## Recarga y recuperación
 
@@ -84,7 +88,13 @@ Desde un resultado propio o su historial, **Inspeccionar decisiones** abre el ma
 
 ## Resultados
 
-La vista de resultado muestra si el recorrido terminó en victoria, derrota, límite, cancelación o error, junto con los turnos, tokens reales, recompensa recogida y su aporte, y puntaje cuando corresponde. El historial conserva la cantidad recogida y su aporte en puntos; sólo muestra el puntaje en victorias, como desconocido si faltan datos para calcularlo. Una derrota muestra la acción registrada y el obstáculo que la provocó, por ejemplo «Intentó caminar por un pozo»; no presenta una explicación inventada como pensamiento real del modelo. El costo monetario es opcional cuando hay datos suficientes y se identifica como estimado según [consumo y puntaje](consumo-y-puntaje.md).
+La vista principal del resultado muestra victoria, derrota, límite, cancelación o error, los turnos utilizados, la recompensa y la llave recogidas, y el puntaje cuando corresponde. El avance máximo se muestra en resultados sin victoria. No se presenta una explicación narrativa de la causa de una derrota: el jugador la interpreta al revisar la observación, la acción y la resolución registradas.
+
+Desde una derrota, **Ir a la última acción** abre el inspector en la última decisión que ejecutó una acción. Si no hay acciones, se selecciona la última decisión registrada; un registro vacío conserva un estado vacío legible. En otros resultados sin victoria, **Ver último paso** facilita revisar el cierre. **Inspeccionar decisiones** sigue abriendo la secuencia desde el principio. Ambos accesos funcionan también desde el historial y no consumen cuota ni llaman al agente.
+
+**Detalles del agente** es un desplegable inicialmente cerrado con modelo, nivel, integridad del registro, llamadas y categorías de tokens, incluido el diagnóstico técnico pertinente. Los datos desconocidos no se sustituyen por cero. El desglose visible del puntaje de una victoria muestra base, aporte de objetos, descuento por turnos, descuento por tokens y total guardado, con las reglas descritas en [consumo y puntaje](consumo-y-puntaje.md). Si faltan tokens, el puntaje no se presenta como exacto y el desglose identifica el dato no disponible.
+
+El historial conserva la cantidad recogida y su aporte en puntos; sólo muestra puntaje en victorias. Los textos de interfaz usan puntuación ordinaria como comas y dos puntos. No usan separadores U+00B7 o U+2014. El costo monetario es opcional cuando hay datos suficientes y se identifica como estimado según [consumo y puntaje](consumo-y-puntaje.md).
 
 ## Contenido educativo y alcance
 

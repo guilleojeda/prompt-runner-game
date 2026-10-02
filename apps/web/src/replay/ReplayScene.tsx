@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReplayRecordView } from '../../../../shared/attempt.js';
-import { LEVEL, type TerrainState } from '../../../../shared/game.js';
+import { effectiveTerrain, LEVEL, type TerrainState } from '../../../../shared/game.js';
 import artworkUrl from './art/replay-symbols.svg?url';
 import './ReplayScene.css';
 import {
@@ -26,6 +26,7 @@ export interface ReplaySceneProps {
 }
 
 const WIDTH = REPLAY_VIEW_WIDTH;
+const PREVIEW_HEIGHT = 360;
 const GROUND_Y = 250;
 const ROBOT_SCALE = 0.62;
 const SUPPORT_START_X = REPLAY_SUPPORT_START_X;
@@ -108,12 +109,24 @@ const terrainStateProgress = (sample: ReplaySample, index: number, state: Terrai
     : current;
 };
 
-const Backdrop = () => (
+const Backdrop = ({ width = WIDTH }: { readonly width?: number }) => (
   <>
-    <rect width={WIDTH} height="330" fill="#eaf8fc" />
+    <rect width={width} height="330" fill="#eaf8fc" />
     <circle cx="665" cy="65" r="29" fill="#ffcf71" opacity="0.9" />
     <path d="M0 228Q92 202 185 226t183-2q100-23 198 1t194-2v107H0z" fill="#d6edf0" />
     <path d="M0 245Q102 223 206 243t205-1q99-19 193 0t156 1v87H0z" fill="#edf8f4" />
+    {width > WIDTH && (
+      <>
+        <path
+          d={`M${WIDTH} 228Q${WIDTH + (width - WIDTH) * 0.25} 202 ${WIDTH + (width - WIDTH) * 0.5} 226T${width} 224v107H${WIDTH}z`}
+          fill="#d6edf0"
+        />
+        <path
+          d={`M${WIDTH} 245Q${WIDTH + (width - WIDTH) * 0.25} 223 ${WIDTH + (width - WIDTH) * 0.5} 243T${width} 244v87H${WIDTH}z`}
+          fill="#edf8f4"
+        />
+      </>
+    )}
     <g fill="#fff" opacity="0.8">
       <path d="M88 80a18 18 0 0 1 35-5 16 16 0 0 1 27 13H79a14 14 0 0 1 9-8z" />
       <path d="M402 55a14 14 0 0 1 27-4 13 13 0 0 1 23 10h-64a11 11 0 0 1 14-6z" />
@@ -422,6 +435,88 @@ const ReplayCanvas = ({
       </text>
     </g>
   </svg>
+);
+
+const initialCourseSample: ReplaySample = Object.freeze({
+  time: 0,
+  support: 0,
+  drop: 0,
+  facing: 'right',
+  pose: 'idle',
+  terrain: effectiveTerrain(LEVEL, 0),
+  remainingObjects: LEVEL.objects.map(({ id }) => id),
+  inventory: Object.freeze([]),
+  doorState: 'locked',
+  terrainTransition: null,
+  cameraX: 0,
+  actionIndex: null,
+  actionNumber: 0,
+  closureStatus: 'incomplete',
+  effect: 'none',
+  complete: true,
+});
+
+const CourseTileNumbers = () => (
+  <g
+    data-replay-layer="course-tile-numbers"
+    aria-hidden="true"
+    fontFamily="system-ui, sans-serif"
+    fontSize="15"
+    fontWeight="700"
+    textAnchor="middle"
+  >
+    {Array.from({ length: LEVEL.exit.support + 1 }, (_, tile) => {
+      const x = SUPPORT_START_X + tile * SEGMENT_WIDTH;
+      return (
+        <g key={tile} data-tile-number={tile}>
+          <path d={`M${x} 306v9`} stroke="#54716e" strokeWidth="2" />
+          <circle cx={x} cy="333" r="16" fill="#fff" stroke="#54716e" strokeWidth="2" />
+          <text x={x} y="338" fill="#23445b">
+            {tile}
+          </text>
+        </g>
+      );
+    })}
+  </g>
+);
+
+/** A static first-phase overview, rendered with the same authored terrain as replay. */
+export const CoursePreview = () => (
+  <section className="course-preview" aria-labelledby="course-preview-title">
+    <div className="course-preview__heading">
+      <div>
+        <p className="course-preview__kicker">Mapa del recorrido</p>
+        <h2 id="course-preview-title">Vista completa del terreno</h2>
+      </div>
+      <span className="course-preview__phase">Fase inicial</span>
+    </div>
+    <div className="course-preview__scroller" tabIndex={0} aria-label="Recorrido desplazable">
+      <svg
+        className="course-preview__canvas"
+        width={REPLAY_WORLD_WIDTH}
+        height={PREVIEW_HEIGHT}
+        viewBox={`0 0 ${REPLAY_WORLD_WIDTH} ${PREVIEW_HEIGHT}`}
+        role="img"
+        aria-label="Recorrido completo desde la casilla 0 hasta la 10, con recompensa, llave, puerta y salida."
+        data-course-preview="static"
+        data-preview-phase="0"
+        data-world-width={REPLAY_WORLD_WIDTH}
+      >
+        <title>Vista completa del terreno en la fase inicial</title>
+        <desc>Las barreras y la plataforma cambian de fase después de cada acción.</desc>
+        <Backdrop width={REPLAY_WORLD_WIDTH} />
+        <TerrainBack sample={initialCourseSample} />
+        <Objects sample={initialCourseSample} />
+        <TerrainFront sample={initialCourseSample} />
+        <CourseTileNumbers />
+      </svg>
+    </div>
+    <p className="course-preview__description">
+      Las barreras y la plataforma cambian de fase después de cada acción. En la casilla 2 hay una
+      recompensa opcional de 25 puntos. La llave de la casilla 6 abre la puerta de la casilla 9. La
+      salida está en la casilla 10. Hay hasta 24 acciones para llegar.
+    </p>
+  </section>
 );
 
 const ReplayPlayer = ({ record, onReady, onComplete, onError }: ReplaySceneProps) => {

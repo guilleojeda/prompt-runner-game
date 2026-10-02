@@ -4,8 +4,8 @@ import { readFile } from 'node:fs/promises';
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LEVEL, PREVIOUS_LEVEL } from '../../../../shared/game.js';
-import { prepareReplay } from './prepare.js';
-import { ReplayScene } from './ReplayScene.js';
+import { prepareReplay, REPLAY_TIMING } from './prepare.js';
+import { CoursePreview, ReplayScene } from './ReplayScene.js';
 import {
   doorVictoryActions,
   doorVictoryRecord,
@@ -60,6 +60,32 @@ afterEach(() => {
 });
 
 describe('ReplayScene', () => {
+  it('shows a static full-course preview with the initial phase and every tile label', () => {
+    render(<CoursePreview />);
+
+    const preview = screen.getByRole('img', { name: /Recorrido completo desde la casilla 0/ });
+    expect(preview.getAttribute('data-course-preview')).toBe('static');
+    expect(preview.getAttribute('data-preview-phase')).toBe('0');
+    expect(
+      [...preview.querySelectorAll('[data-tile-number]')].map((tile) =>
+        tile.getAttribute('data-tile-number'),
+      ),
+    ).toEqual(Array.from({ length: 11 }, (_, tile) => String(tile)));
+    expect(preview.querySelector('[data-object-id="recompensa-1"]')).not.toBeNull();
+    expect(preview.querySelector('[data-object-id="llave-1"]')).not.toBeNull();
+    expect(preview.querySelector('[data-door-state="locked"]')).not.toBeNull();
+    expect(
+      preview.querySelector('[data-exit-state="free"][data-exit-support="10"]'),
+    ).not.toBeNull();
+    expect(preview.querySelector('[data-terrain-symbol="barrier_low"]')).not.toBeNull();
+    expect(
+      preview.querySelector('[data-segment-type="platform"]')?.getAttribute('data-terrain-state'),
+    ).toBe('pit');
+    expect(screen.getByText(/recompensa opcional de 25 puntos/)).toBeTruthy();
+    expect(pendingFrames.size).toBe(0);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it.each([PREVIOUS_LEVEL, LEVEL])(
     'preflights symbols, draws timing version $version faithfully, and completes',
     async (level) => {
@@ -113,9 +139,9 @@ describe('ReplayScene', () => {
         scene.querySelector('[data-platform-angle]')?.getAttribute('data-platform-angle'),
       ).toBe(level.version === 4 ? '0' : '90');
 
-      await nextFrame(1720);
+      await nextFrame(1000 + REPLAY_TIMING.walk * 1000);
       expect(scene.getAttribute('data-terrain-transition-progress')).toBe('0');
-      await nextFrame(1830);
+      await nextFrame(1000 + (REPLAY_TIMING.walk + REPLAY_TIMING.phase / 2) * 1000);
       expect(Number(scene.getAttribute('data-terrain-transition-progress'))).toBeCloseTo(0.5);
       expect(scene.querySelectorAll('use[href$="#terrain-barrier-panel"]')).toHaveLength(1);
       expect(scene.querySelector('[data-barrier-y]')?.getAttribute('data-barrier-y')).toBe('196');
@@ -159,17 +185,19 @@ describe('ReplayScene', () => {
       await nextFrame(1000);
       const scene = screen.getByRole('img');
       const old = level.version === 4;
+      const cycle = REPLAY_TIMING.noOp + REPLAY_TIMING.phase;
+      const middle = REPLAY_TIMING.noOp + REPLAY_TIMING.phase / 2;
       const checkpoints = [
-        [1000, 224, old ? 0 : 90],
-        [1530, 196, old ? 45 : 90],
-        [1640, 168, 90],
-        [2170, 196, old ? 90 : 45],
-        [2281, 224, old ? 90 : 0],
-        [2810, 196, 45],
-        [2921, 168, old ? 0 : 90],
+        [0, 224, old ? 0 : 90],
+        [middle, 196, old ? 45 : 90],
+        [cycle, 168, 90],
+        [cycle + middle, 196, old ? 90 : 45],
+        [cycle * 2, 224, old ? 90 : 0],
+        [cycle * 2 + middle, 196, 45],
+        [cycle * 3, 168, old ? 0 : 90],
       ];
-      for (const [timestamp, y, angle] of checkpoints) {
-        if (timestamp !== 1000) await nextFrame(timestamp!);
+      for (const [elapsed, y, angle] of checkpoints) {
+        if (elapsed !== 0) await nextFrame(1000 + elapsed! * 1000);
         const panel = scene.querySelector('[data-barrier-y]');
         expect(Number(panel?.getAttribute('data-barrier-y'))).toBeCloseTo(y!);
         expect(
@@ -193,22 +221,24 @@ describe('ReplayScene', () => {
     const prepared = prepareReplay(record);
     const durationOf = (action: (typeof record.actions)[number]): number => {
       const actionDuration =
-        action.resolution.outcome === 'fall'
-          ? 1.08
-          : action.resolution.outcome === 'collision'
-            ? 0.68
-            : action.resolution.outcome === 'no_op'
-              ? 0.42
-              : action.action.kind === 'collect'
-                ? 0.9
+        action.action.kind === 'collect'
+          ? REPLAY_TIMING.collect
+          : action.resolution.outcome === 'fall'
+            ? REPLAY_TIMING.fall
+            : action.resolution.outcome === 'collision'
+              ? REPLAY_TIMING.impact
+              : action.resolution.outcome === 'no_op'
+                ? REPLAY_TIMING.noOp
                 : action.action.kind === 'jump'
-                  ? 0.86
-                  : 0.72;
+                  ? REPLAY_TIMING.jump
+                  : action.action.kind === 'crouch'
+                    ? REPLAY_TIMING.crouch
+                    : REPLAY_TIMING.walk;
       return (
         actionDuration +
         (action.after.status === 'running' &&
         JSON.stringify(action.before.terrain) !== JSON.stringify(action.after.terrain)
-          ? 0.22
+          ? REPLAY_TIMING.phase
           : 0)
       );
     };
@@ -250,10 +280,10 @@ describe('ReplayScene', () => {
     expect(scene.querySelector('[data-effect="impact"], [data-effect="victory"]')).toBeNull();
     expect(scene.querySelector('[data-door-state="locked"]')).not.toBeNull();
 
-    await nextFrame(1000 + (keyPickupStart + 0.62) * 1000);
+    await nextFrame(1000 + (keyPickupStart + REPLAY_TIMING.collect * 0.69) * 1000);
     expect(scene.querySelector('[data-door-state="locked"]')).not.toBeNull();
     expect(scene.querySelector('[data-object-id="llave-1"]')).not.toBeNull();
-    await nextFrame(1000 + (keyPickupStart + 0.64) * 1000);
+    await nextFrame(1000 + (keyPickupStart + REPLAY_TIMING.collect * 0.71) * 1000);
     expect(scene.querySelector('[data-door-state="open"]')).not.toBeNull();
     expect(scene.querySelector('[data-object-id="llave-1"]')).toBeNull();
     expect(error).not.toHaveBeenCalled();
@@ -266,7 +296,9 @@ describe('ReplayScene', () => {
     );
     await waitFor(() => expect(pendingFrames.size).toBe(1));
     await nextFrame(1000);
-    await nextFrame(2150);
+    await nextFrame(
+      1000 + (REPLAY_TIMING.walk + REPLAY_TIMING.phase + REPLAY_TIMING.noOp / 2) * 1000,
+    );
 
     const duringWait = screen.getByRole('img');
     const robotDuringWait = duringWait.querySelector('[data-replay-layer="robot"] > g');
@@ -276,7 +308,7 @@ describe('ReplayScene', () => {
     expect(robotDuringWait?.getAttribute('data-center-x')).toBe(String(80 + 120));
     expect(duringWait.getAttribute('data-terrain-transition-progress')).toBe('');
 
-    await nextFrame(2360);
+    await nextFrame(1000 + (REPLAY_TIMING.walk + REPLAY_TIMING.phase + REPLAY_TIMING.noOp) * 1000);
     expect(
       Number(screen.getByRole('img').getAttribute('data-terrain-transition-progress')),
     ).toBeCloseTo(0);
@@ -305,22 +337,23 @@ describe('ReplayScene', () => {
 
     const scene = screen.getByRole('img');
     expect(scene.querySelector('[data-object-id="recompensa-1"]')).not.toBeNull();
-    const pickupStart = 0.72 + 0.22 + 0.86 + 0.22;
-    await nextFrame(1000 + (pickupStart + 0.62) * 1000);
+    const pickupStart =
+      REPLAY_TIMING.walk + REPLAY_TIMING.phase + REPLAY_TIMING.jump + REPLAY_TIMING.phase;
+    await nextFrame(1000 + (pickupStart + REPLAY_TIMING.collect * 0.69) * 1000);
     expect(scene.querySelector('[data-replay-layer="robot"] > g')?.getAttribute('data-pose')).toBe(
       'collect',
     );
     expect(scene.querySelector('[data-object-id="recompensa-1"]')).not.toBeNull();
     expect(scene.querySelector('[data-effect="pickup"]')).toBeNull();
 
-    await nextFrame(1000 + (pickupStart + 0.72) * 1000);
+    await nextFrame(1000 + (pickupStart + REPLAY_TIMING.collect * 0.72) * 1000);
     expect(scene.querySelector('[data-replay-layer="robot"] > g')?.getAttribute('data-pose')).toBe(
       'collect',
     );
     expect(scene.querySelector('[data-object-id="recompensa-1"]')).toBeNull();
     expect(scene.querySelector('[data-effect="pickup"]')).not.toBeNull();
 
-    await nextFrame(1000 + (pickupStart + 0.901) * 1000);
+    await nextFrame(1000 + (pickupStart + REPLAY_TIMING.collect + 0.001) * 1000);
     expect(scene.querySelector('[data-object-id="recompensa-1"]')).toBeNull();
     expect(scene.querySelector('[data-effect="pickup"]')).toBeNull();
     expect(Number(scene.getAttribute('data-terrain-transition-progress'))).toBeGreaterThan(0);
