@@ -441,6 +441,8 @@ export function DecisionInspector({
   const [detailError, setDetailError] = useState<string | null>(null);
   const indexRequestRef = useRef(0);
   const indexControllerRef = useRef<AbortController | null>(null);
+  const initialScrollNumberRef = useRef<number | null>(null);
+  const detailContainerRef = useRef<HTMLDivElement | null>(null);
 
   const loadIndex = useCallback(
     async (signal?: AbortSignal): Promise<void> => {
@@ -461,6 +463,8 @@ export function DecisionInspector({
         }
         setIndex(loaded);
         const selected = initialDecision(loaded, initialSelection);
+        initialScrollNumberRef.current =
+          initialSelection === 'first' ? null : (selected?.number ?? null);
         setSelectedSupport(selected?.originSupport ?? null);
         setSelectedNumber(selected?.number ?? null);
         setDetail(null);
@@ -545,6 +549,7 @@ export function DecisionInspector({
     [index, selectedSupport],
   );
   const selectSupport = (support: number): void => {
+    initialScrollNumberRef.current = null;
     setSelectedSupport(support);
     const first = index?.decisions.find((item) => item.originSupport === support);
     setSelectedNumber(first?.number ?? null);
@@ -553,11 +558,30 @@ export function DecisionInspector({
     if (!first) setLoadingDetail(false);
   };
   const selectDecision = (item: DecisionIndexItem): void => {
+    initialScrollNumberRef.current = null;
     setSelectedSupport(item.originSupport);
     setSelectedNumber(item.number);
     setDetail(null);
     setDetailError(null);
   };
+
+  useEffect(() => {
+    if (
+      !detail ||
+      loadingDetail ||
+      detailError ||
+      initialScrollNumberRef.current !== detail.item.number
+    ) {
+      return;
+    }
+    initialScrollNumberRef.current = null;
+    detailContainerRef.current?.scrollIntoView?.({
+      block: 'start',
+      behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+        ? 'instant'
+        : 'smooth',
+    });
+  }, [detail, detailError, loadingDetail]);
 
   return (
     <section className="decision-inspector" aria-labelledby="decision-inspector-title">
@@ -633,7 +657,7 @@ export function DecisionInspector({
                   </ol>
                 </section>
               </div>
-              <div className="decision-detail-wrap">
+              <div className="decision-detail-wrap" ref={detailContainerRef}>
                 {loadingDetail && (
                   <p className="attempt-message" role="status">
                     Cargando la ficha…
