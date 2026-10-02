@@ -98,6 +98,16 @@ describe('ReplayScene', () => {
         scene.querySelector('[data-exit-state="free"]')?.getAttribute('data-exit-support'),
       ).toBe('10');
       expect(scene.querySelector('[data-terrain-symbol="barrier_low"]')).not.toBeNull();
+      const tree = scene.querySelector('[data-terrain-symbol="branch-tree"]');
+      const branch = scene.querySelector('[data-terrain-symbol="branch-front"]');
+      expect(tree?.closest('[data-replay-layer]')?.getAttribute('data-replay-layer')).toBe(
+        'terrain-back',
+      );
+      expect(branch?.closest('[data-replay-layer]')?.getAttribute('data-replay-layer')).toBe(
+        'terrain-front',
+      );
+      expect(tree?.getAttribute('x')).toBe(branch?.getAttribute('x'));
+      expect(tree?.getAttribute('y')).toBe(branch?.getAttribute('y'));
       expect(scene.querySelector('[data-terrain-symbol="barrier_high"]')).toBeNull();
       expect(
         scene.querySelector('[data-platform-angle]')?.getAttribute('data-platform-angle'),
@@ -108,7 +118,7 @@ describe('ReplayScene', () => {
       await nextFrame(1830);
       expect(Number(scene.getAttribute('data-terrain-transition-progress'))).toBeCloseTo(0.5);
       expect(scene.querySelectorAll('use[href$="#terrain-barrier-panel"]')).toHaveLength(1);
-      expect(scene.querySelector('[data-barrier-y]')?.getAttribute('data-barrier-y')).toBe('199');
+      expect(scene.querySelector('[data-barrier-y]')?.getAttribute('data-barrier-y')).toBe('196');
       expect(
         scene.querySelector('[data-platform-angle]')?.getAttribute('data-platform-angle'),
       ).toBe(level.version === 4 ? '45' : '90');
@@ -151,12 +161,12 @@ describe('ReplayScene', () => {
       const old = level.version === 4;
       const checkpoints = [
         [1000, 224, old ? 0 : 90],
-        [1530, 199, old ? 45 : 90],
-        [1640, 174, 90],
-        [2170, 199, old ? 90 : 45],
+        [1530, 196, old ? 45 : 90],
+        [1640, 168, 90],
+        [2170, 196, old ? 90 : 45],
         [2281, 224, old ? 90 : 0],
-        [2810, 199, 45],
-        [2921, 174, old ? 0 : 90],
+        [2810, 196, 45],
+        [2921, 168, old ? 0 : 90],
       ];
       for (const [timestamp, y, angle] of checkpoints) {
         if (timestamp !== 1000) await nextFrame(timestamp!);
@@ -169,8 +179,8 @@ describe('ReplayScene', () => {
         expect(scene.querySelectorAll('use[href$="#terrain-bridge-leaf"]')).toHaveLength(2);
         expect(panel?.getAttribute('opacity')).toBeNull();
         const leaves = scene.querySelectorAll('[data-platform-leaf]');
-        expect(leaves[0]?.getAttribute('transform')).toContain('translate(704 250)');
-        expect(leaves[1]?.getAttribute('transform')).toContain('translate(776 250) scale(-1 1)');
+        expect(leaves[0]?.getAttribute('transform')).toContain('translate(710 250)');
+        expect(leaves[1]?.getAttribute('transform')).toContain('translate(770 250) scale(-1 1)');
         expect(
           scene.querySelector('[data-replay-layer="robot"] > g')?.getAttribute('data-center-x'),
         ).toBe('80');
@@ -337,6 +347,34 @@ describe('ReplayScene', () => {
     expect(pendingFrames.size).toBe(0);
   });
 
+  it.each(['right', 'left'] as const)(
+    'shows a branch collision at the overhanging limb when approaching %s',
+    async (direction) => {
+      const actions =
+        direction === 'right'
+          ? ([...toLowBarrier.slice(0, 3), { kind: 'advance' }] as const)
+          : ([...toLowBarrier.slice(0, 4), { kind: 'retreat' }] as const);
+      const record = replayRecordForActions(actions, 'defeat');
+      const prepared = prepareReplay(record);
+      render(
+        <ReplayScene record={record} onReady={vi.fn()} onComplete={vi.fn()} onError={vi.fn()} />,
+      );
+      await waitFor(() => expect(pendingFrames.size).toBe(1));
+      await nextFrame(1000);
+      await nextFrame(1000 + prepared.duration * 1000);
+
+      const scene = screen.getByRole('img');
+      expect(scene.getAttribute('data-closure-status')).toBe('defeat');
+      expect(scene.querySelector('[data-terrain-symbol="branch-front"]')).not.toBeNull();
+      const impact = scene.querySelector('[data-effect="impact"]');
+      expect(impact?.getAttribute('x')).toBe(direction === 'right' ? '459' : '507');
+      expect(impact?.getAttribute('y')).toBe('168');
+      expect(
+        scene.querySelector('[data-replay-layer="robot"] > g')?.getAttribute('data-center-x'),
+      ).toBe(direction === 'right' ? '476' : '524');
+    },
+  );
+
   it.each([
     { state: 'barrier_low', left: false, actions: toLowBarrier },
     {
@@ -373,11 +411,11 @@ describe('ReplayScene', () => {
       expect(scene.querySelector(`[data-terrain-symbol="${state}"]`)).not.toBeNull();
       expect(scene.querySelectorAll('use[href$="#terrain-barrier-panel"]')).toHaveLength(1);
       const impact = scene.querySelector('[data-effect="impact"]');
-      expect(impact?.getAttribute('x')).toBe(left ? '642' : '564');
-      expect(impact?.getAttribute('y')).toBe(state === 'barrier_low' ? '218' : '168');
+      expect(impact?.getAttribute('x')).toBe(left ? '633' : '573');
+      expect(impact?.getAttribute('y')).toBe(state === 'barrier_low' ? '218' : '162');
       expect(
         scene.querySelector('[data-replay-layer="robot"] > g')?.getAttribute('data-center-x'),
-      ).toBe(left ? '678' : '562');
+      ).toBe(left ? '669' : '571');
       expect(
         scene.querySelector('[data-replay-layer="robot"] > g')?.getAttribute('data-pose'),
       ).toBe('impact');

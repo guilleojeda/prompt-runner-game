@@ -121,19 +121,19 @@
     <path d="M0 28h120" stroke="#8bc18e" stroke-width="3" />
     <path d="M14 40h23m15 13h17m15-14h23" stroke="#588b70" stroke-linecap="round" stroke-width="3" opacity=".8" />
   </symbol>
-  <symbol id="terrain-bridge-leaf" viewBox="0 0 36 12" overflow="visible">
-    <rect width="36" height="12" rx="1" fill="#5a9ca1" stroke="#245c67" stroke-width="3" />
-    <path d="M0 0h36" stroke="#245c67" stroke-width="4" />
-    <path d="M10 7h20" stroke="#a6e0d2" stroke-width="3" />
-    <path d="M6 5v4" stroke="#f6d079" stroke-width="3" />
+  <symbol id="terrain-bridge-leaf" viewBox="0 0 30 12" overflow="visible">
+    <rect width="30" height="12" rx="1" fill="#5a9ca1" stroke="#245c67" stroke-width="3" />
+    <path d="M0 0h30" stroke="#245c67" stroke-width="4" />
+    <path d="M8 7h16" stroke="#a6e0d2" stroke-width="3" />
+    <path d="M5 5v4" stroke="#f6d079" stroke-width="3" />
   </symbol>
   <symbol id="terrain-bridge-hinge" viewBox="0 0 10 10">
     <circle cx="5" cy="5" r="4" fill="#f6d079" stroke="#245c67" stroke-width="2" />
   </symbol>
   <symbol id="terrain-barrier-panel" viewBox="0 0 120 40">
-    <path d="M35 13V4h50v9" fill="none" stroke="#773f38" stroke-linejoin="round" stroke-width="4" />
-    <rect x="21" y="13" width="78" height="22" rx="3" fill="#dc8060" stroke="#773f38" stroke-width="4" />
-    <path d="m31 16 12 16m4-16 12 16m4-16 12 16m4-16 12 16" stroke="#f7b16a" stroke-width="5" />
+    <path d="M40 13V4h40v9" fill="none" stroke="#773f38" stroke-linejoin="round" stroke-width="4" />
+    <rect x="30" y="13" width="60" height="22" rx="3" fill="#dc8060" stroke="#773f38" stroke-width="4" />
+    <path d="m40 16 12 16m4-16 12 16m4-16 12 16" stroke="#f7b16a" stroke-width="5" />
   </symbol>
   <symbol id="terrain-pit-edge" viewBox="0 0 24 70" preserveAspectRatio="none">
     <path d="M0 14h24v8H0z" fill="#6eaa80" />
@@ -141,14 +141,41 @@
     <path d="M0 22 9 70h15V22z" fill="#d2edf5" opacity=".58" />
     <path d="M0 24 12 70" stroke="#9ccbd8" stroke-width="2" opacity=".65" />
   </symbol>
-  <symbol id="terrain-branch-back" viewBox="0 0 120 90" preserveAspectRatio="none">
-    <path d="M7 44Q60 14 113 44L108 59H12z" fill="#b47b4a" stroke="#694730" stroke-linejoin="round" stroke-width="4" />
-    <path d="M17 45q40-19 86 0" fill="none" stroke="#dca66b" stroke-linecap="round" stroke-width="5" />
-    <path d="M39 35q-17-21-27-10 3 17 27 17m36-7q15-22 27-9-3 18-27 17" fill="#69a77d" stroke="#396e59" stroke-linejoin="round" stroke-width="3" />
+  <symbol id="terrain-branch-back" viewBox="120 0 180 250">
+    <ellipse cx="227" cy="226" rx="35" ry="6" fill="#b7d4bd" />
+    <g opacity=".78">
+      <path d="M214 225c7-23 3-46 6-70 2-15 2-29-1-43l16-1c-5 32-2 58-1 84 0 14 4 24 9 30-7 0-11-3-14-6-5 4-9 6-15 6z" fill="#a78565" stroke="#7b6954" stroke-linejoin="round" stroke-width="3" />
+      <path d="M227 216c-2-17-3-32 1-48m0-21c9-6 16-14 20-19m-21 2-17-17" fill="none" stroke="#866e53" stroke-linecap="round" stroke-width="2.5" />
+      <path d="M184 102q-22-19-5-41 7-11 23-10 7-24 31-23 23 0 32 24 24 1 27 24 15 20-5 36-12 12-29 5-14 16-35 9-22 11-39-6z" fill="#83b392" stroke="#5b896c" stroke-linejoin="round" stroke-width="3" />
+      <path d="M227 126c2-17 1-33-7-46m7 31c-9-7-17-11-28-23m29 15c10-8 21-14 34-16" fill="none" stroke="#7b6954" stroke-linecap="round" stroke-linejoin="round" stroke-width="8" />
+      <path d="M227 126c2-17 1-33-7-46m7 31c-9-7-17-11-28-23m29 15c10-8 21-14 34-16" fill="none" stroke="#a78565" stroke-linecap="round" stroke-linejoin="round" stroke-width="5" />
+      <path d="M223 88c5-8 13-14 19-28m-31 40c-2-5-2-12-3-18m40 10 3-15" fill="none" stroke="#7b6954" stroke-linecap="round" stroke-linejoin="round" stroke-width="4" />
+      <path d="M223 88c5-8 13-14 19-28m-31 40c-2-5-2-12-3-18m40 10 3-15" fill="none" stroke="#a78565" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" />
+      <path d="M232 133c9 8 20 10 34 4l1 3c-13 8-25 8-35 0z" fill="#a78565" stroke="#7b6954" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" />
+      <path d="M260 140c10 0 18-5 21-15-12-4-20 3-21 15z" fill="#83b392" stroke="#5b896c" stroke-linejoin="round" stroke-width="2" />
+      <path d="M253 143c2-10-2-16-9-21-7 10-3 17 9 21z" fill="#98bf93" stroke="#5b896c" stroke-linejoin="round" stroke-width="2" />
+      <path d="M194 91c-7-7-4-16 4-18 9-2 15 5 12 12-5 0-9 2-10 6zM256 87c-3-10 4-17 12-13 10-4 17 6 13 14-8 0-14 3-18 5zM233 60c-4-8 0-16 8-15 9-5 18 5 12 13-8-1-13 4-20 2z" fill="#8cba98" />
+      <path d="M222 137c-10 0-17-5-25-13l-9-4c8-1 15 4 21 9 4 3 8 4 13 3z" fill="#a78565" stroke="#7b6954" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" />
+      <path d="M199 126c-8 1-13-3-14-10 8-3 13 1 14 10z" fill="#98bf93" stroke="#5b896c" stroke-linejoin="round" stroke-width="1.7" />
+      <path d="M204 131c-3-7-1-13 5-17 6 8 3 14-5 17z" fill="#83b392" stroke="#5b896c" stroke-linejoin="round" stroke-width="1.7" />
+      <path d="M232 167c10 4 20 4 29-2l10-9c-2 10-10 17-19 19-8 1-14-1-20-4z" fill="#a78565" stroke="#7b6954" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" />
+      <path d="M262 165c-1-10 4-17 13-18 3 11-2 16-13 18z" fill="#83b392" stroke="#5b896c" stroke-linejoin="round" stroke-width="1.7" />
+      <path d="M254 170c5 0 11 2 14 8-9 5-14 1-14-8z" fill="#98bf93" stroke="#5b896c" stroke-linejoin="round" stroke-width="1.7" />
+      <path d="m196 124-7-5m16 9 3-9m55 43 8-9m-14 19 7 3" fill="none" stroke="#b9d4ad" stroke-linecap="round" stroke-width="1.2" />
+      <path d="M198 61q14-9 23-3m25 11q15-7 24 4M191 94q13 8 24 2m20 13q12-8 24-4" fill="none" stroke="#a4c9a8" stroke-linecap="round" stroke-width="4" />
+    </g>
   </symbol>
-  <symbol id="terrain-branch-front" viewBox="0 0 120 44" preserveAspectRatio="none">
-    <path d="M16 15Q60-1 104 15l-4 17H20z" fill="#d29a60" stroke="#694730" stroke-linejoin="round" stroke-width="3" />
-    <path d="M30 15q30-10 60 0" fill="none" stroke="#f0c17f" stroke-linecap="round" stroke-width="3" />
+  <symbol id="terrain-branch-front" viewBox="120 0 120 250">
+    <path d="M188 181c-1-7-4-11-7-18l-4-6c5 1 9 6 11 11l6 9z" fill="#aa744b" stroke="#694730" stroke-linejoin="round" stroke-width="2" />
+    <path d="M169 183c-6-2-10-6-14-13" fill="none" stroke="#694730" stroke-linecap="round" stroke-width="2.5" />
+    <path d="M228 151c-7 2-11 11-17 17-11 9-22 5-33 10-10 4-16 6-27 5 7 7 19 6 29 3 10-3 21-1 34-9 10-7 14-14 19-18z" fill="#b47b4a" stroke="#694730" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" />
+    <path d="M231 158c-5 7-11 14-18 18-12 7-23 6-33 9-9 2-17 3-23 0 8 1 16-2 23-4 11-3 21-2 31-8 7-4 12-10 16-17z" fill="#845c3c" opacity=".28" />
+    <path d="M225 157c-5 3-7 8-13 13m-10 8c-7 2-11 0-17 2" fill="none" stroke="#e0ad77" stroke-linecap="round" stroke-width="2" />
+    <path d="m213 172-3 5m-28 4-3 3" fill="none" stroke="#805539" stroke-linecap="round" stroke-width="1.5" opacity=".65" />
+    <path d="M178 158c-10 1-17-4-18-13 10-1 16 3 18 13z" fill="#76af78" stroke="#3d7052" stroke-linejoin="round" stroke-width="1.7" />
+    <path d="M178 158c-3-8-1-15 6-19 6 7 3 15-6 19z" fill="#5d986b" stroke="#3d7052" stroke-linejoin="round" stroke-width="1.7" />
+    <path d="M155 173c-10 3-15-3-15-11 9-1 15 4 15 11z" fill="#8bbb78" stroke="#3d7052" stroke-linejoin="round" stroke-width="1.7" />
+    <path d="m175 156-10-8m14 7 4-10m-31 26-8-6" fill="none" stroke="#b9d79a" stroke-linecap="round" stroke-width="1.2" />
   </symbol>
   <symbol id="terrain-exit" viewBox="0 0 70 94">
     <path d="M11 90V39a24 24 0 0 1 48 0v51" fill="#fff7df" stroke="#15334a" stroke-linejoin="round" stroke-width="6" />

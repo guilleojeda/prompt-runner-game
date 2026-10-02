@@ -28,7 +28,9 @@ El escenario se compone, de atrás hacia adelante, de fondo, terreno trasero, su
 
 El catálogo distingue tipo de tramo y estado efectivo. Una plataforma periódica en estado `pit` conserva su identidad visual de plataforma; el valor guardado determina su fase presente. Durante las acciones no oscila por su cuenta. Una transición entre fases es presentación entre turnos, nunca un nuevo estado que el agente pueda aprovechar.
 
-La barrera usa un mismo panel: bajo cerca del piso para saltar y elevado dejando un hueco inferior para agacharse. El panel se desplaza verticalmente al cambiar de fase. La plataforma es un pozo con dos hojas de puente, articuladas en sus paredes interiores: horizontales y unidas en estado `ground`, verticales hacia abajo en estado `pit`. Ambas giran sobre ejes fijos y conservan los bordes seguros de las casillas. No hay postes ni barras atravesando el espacio de paso. Los choques contra la barrera se presentan en el borde y la altura del panel mostrado.
+La barrera usa un mismo panel: bajo cerca del piso para saltar y elevado dejando un hueco inferior para agacharse. El panel se desplaza verticalmente al cambiar de fase. La plataforma es un pozo con dos hojas de puente, articuladas en sus paredes interiores: horizontales y unidas en estado `ground`, verticales hacia abajo en estado `pit`. Ambas giran sobre ejes fijos y conservan los bordes seguros de las casillas. No hay postes ni barras atravesando el espacio de paso. El panel queda centrado con margen a ambos lados y suficiente altura para el robot agachado. Los bordes del puente mantienen sus ejes lejos de los pies del robot en reposo. Estas medidas conservan la distancia entre casillas y el tamaño del personaje. Los choques contra la barrera se presentan en el borde y la altura del panel mostrado.
+
+La rama sale de un árbol con varias ramificaciones y copa, dibujado detrás del camino con menor intensidad. El obstáculo superior queda delante del robot y mantiene márgenes respecto de las casillas seguras. Árbol y rama comparten el mismo anclaje en el mundo y se desplazan juntos con la cámara.
 
 Si todo el nivel entra de forma legible, se dibuja completo. Si no, la cámara desplaza el mundo horizontalmente y respeta sus extremos. Su posición depende del mismo instante de reproducción, sin suavizados que acumulen historia entre frames. La cámara mantiene su altura durante una caída.
 
@@ -59,7 +61,7 @@ La acción indica el gesto intentado. La resolución indica qué pasó. El perfi
 |---|---|
 | Caminar con `moved` | Clip caminar + desplazamiento entre apoyos. |
 | Saltar con `moved` | Preparación + arco visual + aterrizaje en el apoyo posterior. |
-| Agacharse con `moved` | Bajar postura + cruzar agachado + recuperar postura al terminar. No queda agachado entre acciones. |
+| Agacharse con `moved` | Bajar postura quieto en la casilla de origen + cruzar agachado + recuperar postura quieto en la casilla de destino. No queda agachado entre acciones. |
 | Caminar/agacharse con `fall` | Aproximarse al borde cercano del pozo + perder apoyo + caer. No atravesar el vacío caminando. |
 | Movimiento con `collision` | Iniciar el gesto + detenerlo en el contacto visual correspondiente + reacción de choque. |
 | Recoger con `picked_up` | Gesto local + retirar el objeto identificado en el marcador de interacción + representar el inventario posterior. |

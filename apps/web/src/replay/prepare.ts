@@ -74,10 +74,10 @@ interface ActionCue {
 export const REPLAY_VIEW_WIDTH = 760;
 export const REPLAY_SUPPORT_START_X = 80;
 export const REPLAY_SEGMENT_WIDTH = 120;
-export const REPLAY_PIT_LEDGE_WIDTH = 24;
-export const REPLAY_BARRIER_INSET = 21;
+export const REPLAY_PIT_LEDGE_WIDTH = 30;
+export const REPLAY_BARRIER_INSET = 30;
 export const REPLAY_BARRIER_LOW_Y = 224;
-export const REPLAY_BARRIER_HIGH_Y = 174;
+export const REPLAY_BARRIER_HIGH_Y = 168;
 export const REPLAY_WORLD_WIDTH =
   REPLAY_SUPPORT_START_X + LEVEL.segments.length * REPLAY_SEGMENT_WIDTH + 240;
 
@@ -101,7 +101,7 @@ const collisionDistance = (action: AttemptActionView): number => {
     action.resolution.outcome === 'collision'
       ? action.before.terrain[action.resolution.segment]
       : null;
-  // The robot extends about 19 px from its anchor; the panel begins at 21 px.
+  // Leave the robot's leading edge at the panel, including its 19 px half-width.
   return terrain === 'barrier_low' || terrain === 'barrier_high'
     ? (REPLAY_BARRIER_INSET - 19) / REPLAY_SEGMENT_WIDTH
     : 0.3;
@@ -491,6 +491,20 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
         };
       }
 
+      if (action.action.kind === 'crouch') {
+        // Change posture while still on safe ground, before and after the crossing.
+        const movement = Math.max(0, Math.min(1, (p - 0.18) / 0.64));
+        const support = from + (to - from) * ease(movement);
+        return {
+          ...common,
+          support,
+          cameraX: cameraForSupport(support),
+          drop: 0,
+          facing: direction,
+          pose: p < 0.12 || p > 0.88 ? 'idle' : 'crouch',
+          effect: 'none',
+        };
+      }
       const amount = ease(p);
       const support = from + (to - from) * amount;
       if (action.action.kind === 'jump') {
@@ -501,17 +515,6 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
           drop: -Math.sin(Math.PI * p) * 66,
           facing: direction,
           pose: 'jump',
-          effect: 'none',
-        };
-      }
-      if (action.action.kind === 'crouch') {
-        return {
-          ...common,
-          support,
-          cameraX: cameraForSupport(support),
-          drop: 0,
-          facing: direction,
-          pose: p < 0.18 || p > 0.82 ? 'idle' : 'crouch',
           effect: 'none',
         };
       }

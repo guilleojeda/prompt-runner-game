@@ -104,6 +104,49 @@ describe('prepareReplay', () => {
     });
   });
 
+  it.each(['right', 'left'] as const)(
+    'crouches before moving and stands after arrival when crossing %s',
+    (direction) => {
+      const rightCrossing = [
+        { kind: 'advance' },
+        { kind: 'jump', direction: 'right' },
+        { kind: 'advance' },
+        { kind: 'crouch', direction: 'right' },
+      ] as const;
+      const record = replayRecordForActions(
+        direction === 'right'
+          ? rightCrossing
+          : [...rightCrossing, { kind: 'crouch', direction: 'left' }],
+      );
+      const index = record.actions.length - 1;
+      const action = record.actions[index]!;
+      expect(action.resolution.outcome).toBe('moved');
+      const start = record.actions
+        .slice(0, index)
+        .reduce((sum, item) => sum + replayActionDuration(item), 0);
+      const prepared = prepareReplay(record);
+      const from = action.before.support;
+      const to = action.after.support;
+      const checkpoints = [
+        [0.05, from, 'idle'],
+        [0.15, from, 'crouch'],
+        [0.5, (from + to) / 2, 'crouch'],
+        [0.85, to, 'crouch'],
+        [0.95, to, 'idle'],
+      ] as const;
+      for (const [progress, support, pose] of checkpoints) {
+        const sample = prepared.sample(start + progress * 0.72);
+        expect(sample).toMatchObject({
+          actionIndex: index,
+          pose,
+          facing: direction,
+          terrain: action.before.terrain,
+        });
+        expect(sample.support).toBeCloseTo(support);
+      }
+    },
+  );
+
   it('removes the reward at the recorded pickup marker and keeps it visible before that point', () => {
     const record = replayRecordForActions([
       { kind: 'advance' },

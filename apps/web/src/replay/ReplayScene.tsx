@@ -149,7 +149,14 @@ const TerrainBack = ({ sample }: { readonly sample: ReplaySample }) => {
             ) : (
               <g>
                 {state === 'branch' && (
-                  <use href={branchBackHref} x={x} y="133" width={SEGMENT_WIDTH} height="92" />
+                  <use
+                    data-terrain-symbol="branch-tree"
+                    href={branchBackHref}
+                    x={x}
+                    y="0"
+                    width="180"
+                    height="250"
+                  />
                 )}
                 <use
                   href={groundHref}
@@ -261,9 +268,9 @@ const TerrainFront = ({ sample }: { readonly sample: ReplaySample }) => (
               data-terrain-symbol="branch-front"
               href={branchFrontHref}
               x={x}
-              y="167"
+              y="0"
               width={SEGMENT_WIDTH}
-              height="44"
+              height="250"
             />
           )}
           {(state === 'barrier_low' || state === 'barrier_high') && (
@@ -352,6 +359,9 @@ const Effects = ({
         size / 2;
       y =
         (terrain === 'barrier_low' ? REPLAY_BARRIER_LOW_Y : REPLAY_BARRIER_HIGH_Y) + 11 - size / 2;
+    } else if (terrain === 'branch') {
+      x = centerX - size / 2;
+      y = 185 - size / 2;
     }
   }
   return (
