@@ -6,7 +6,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LEVEL, PREVIOUS_LEVEL } from '../../../../shared/game.js';
 import { prepareReplay } from './prepare.js';
 import { ReplayScene } from './ReplayScene.js';
-import { doorVictoryRecord, replayRecordForActions } from './replay.test-support.js';
+import {
+  doorVictoryActions,
+  doorVictoryRecord,
+  replayRecordForActions,
+} from './replay.test-support.js';
 
 const toLowBarrier = [
   { kind: 'advance' },
@@ -95,28 +99,25 @@ describe('ReplayScene', () => {
       ).toBe('10');
       expect(scene.querySelector('[data-terrain-symbol="barrier_low"]')).not.toBeNull();
       expect(scene.querySelector('[data-terrain-symbol="barrier_high"]')).toBeNull();
-      expect(scene.querySelector('[data-terrain-art="platform-ground"]') !== null).toBe(
-        level.version === 4,
-      );
+      expect(
+        scene.querySelector('[data-platform-angle]')?.getAttribute('data-platform-angle'),
+      ).toBe(level.version === 4 ? '0' : '90');
 
       await nextFrame(1720);
       expect(scene.getAttribute('data-terrain-transition-progress')).toBe('0');
       await nextFrame(1830);
       expect(Number(scene.getAttribute('data-terrain-transition-progress'))).toBeCloseTo(0.5);
+      expect(scene.querySelectorAll('use[href$="#terrain-barrier-panel"]')).toHaveLength(1);
+      expect(scene.querySelector('[data-barrier-y]')?.getAttribute('data-barrier-y')).toBe('199');
       expect(
-        scene.querySelector('[data-terrain-symbol="barrier_low"]')?.getAttribute('opacity'),
-      ).toBe('0.5');
-      expect(
-        scene.querySelector('[data-terrain-symbol="barrier_high"]')?.getAttribute('opacity'),
-      ).toBe('0.5');
+        scene.querySelector('[data-platform-angle]')?.getAttribute('data-platform-angle'),
+      ).toBe(level.version === 4 ? '45' : '90');
       const platform = scene.querySelector(
         '[data-replay-layer="terrain-back"] [data-segment-type="platform"]',
       );
-      expect(
-        [...platform!.querySelectorAll('[data-terrain-state]')].map((tile) =>
-          tile.getAttribute('data-terrain-state'),
-        ),
-      ).toEqual(level.version === 4 ? ['ground', 'pit'] : ['pit']);
+      expect(platform?.getAttribute('data-terrain-state')).toBe(
+        level.version === 4 ? 'ground' : 'pit',
+      );
 
       await nextFrame(1000 + prepared.duration * 1000 + 3000);
       const completed = screen.getByRole('img');
@@ -130,6 +131,50 @@ describe('ReplayScene', () => {
       expect(complete).toHaveBeenCalledOnce();
       expect(error).not.toHaveBeenCalled();
       expect(pendingFrames.size).toBe(0);
+    },
+  );
+
+  it.each([PREVIOUS_LEVEL, LEVEL])(
+    'moves the same panel and hinged leaves in both directions for timing version $version',
+    async (level) => {
+      const record = replayRecordForActions(
+        [{ kind: 'wait' }, { kind: 'wait' }, { kind: 'wait' }, { kind: 'wait' }],
+        'cancelled',
+        level,
+      );
+      render(
+        <ReplayScene record={record} onReady={vi.fn()} onComplete={vi.fn()} onError={vi.fn()} />,
+      );
+      await waitFor(() => expect(pendingFrames.size).toBe(1));
+      await nextFrame(1000);
+      const scene = screen.getByRole('img');
+      const old = level.version === 4;
+      const checkpoints = [
+        [1000, 224, old ? 0 : 90],
+        [1530, 199, old ? 45 : 90],
+        [1640, 174, 90],
+        [2170, 199, old ? 90 : 45],
+        [2281, 224, old ? 90 : 0],
+        [2810, 199, 45],
+        [2921, 174, old ? 0 : 90],
+      ];
+      for (const [timestamp, y, angle] of checkpoints) {
+        if (timestamp !== 1000) await nextFrame(timestamp!);
+        const panel = scene.querySelector('[data-barrier-y]');
+        expect(Number(panel?.getAttribute('data-barrier-y'))).toBeCloseTo(y!);
+        expect(
+          Number(scene.querySelector('[data-platform-angle]')?.getAttribute('data-platform-angle')),
+        ).toBeCloseTo(angle!);
+        expect(scene.querySelectorAll('use[href$="#terrain-barrier-panel"]')).toHaveLength(1);
+        expect(scene.querySelectorAll('use[href$="#terrain-bridge-leaf"]')).toHaveLength(2);
+        expect(panel?.getAttribute('opacity')).toBeNull();
+        const leaves = scene.querySelectorAll('[data-platform-leaf]');
+        expect(leaves[0]?.getAttribute('transform')).toContain('translate(704 250)');
+        expect(leaves[1]?.getAttribute('transform')).toContain('translate(776 250) scale(-1 1)');
+        expect(
+          scene.querySelector('[data-replay-layer="robot"] > g')?.getAttribute('data-center-x'),
+        ).toBe('80');
+      }
     },
   );
 
@@ -292,24 +337,50 @@ describe('ReplayScene', () => {
     expect(pendingFrames.size).toBe(0);
   });
 
-  it('keeps a terminal barrier collision on the before terrain without a transition', async () => {
-    const record = replayRecordForActions(toLowBarrier, 'defeat');
-    const duration = prepareReplay(record).duration;
-    render(
-      <ReplayScene record={record} onReady={vi.fn()} onComplete={vi.fn()} onError={vi.fn()} />,
-    );
-    await waitFor(() => expect(pendingFrames.size).toBe(1));
-    await nextFrame(1000);
-    await nextFrame(1000 + duration * 1000);
+  it.each([
+    { state: 'barrier_low', left: false, actions: toLowBarrier },
+    {
+      state: 'barrier_high',
+      left: false,
+      actions: [...toLowBarrier.slice(0, 4), { kind: 'wait' }, { kind: 'advance' }] as const,
+    },
+    {
+      state: 'barrier_low',
+      left: true,
+      actions: [...doorVictoryActions.slice(0, 6), { kind: 'retreat' }] as const,
+    },
+    {
+      state: 'barrier_high',
+      left: true,
+      actions: [...doorVictoryActions.slice(0, 6), { kind: 'wait' }, { kind: 'retreat' }] as const,
+    },
+  ])(
+    'aligns a terminal $state collision with the panel, approaching from left=$left',
+    async ({ state, left, actions }) => {
+      const record = replayRecordForActions(actions, 'defeat');
+      const duration = prepareReplay(record).duration;
+      render(
+        <ReplayScene record={record} onReady={vi.fn()} onComplete={vi.fn()} onError={vi.fn()} />,
+      );
+      await waitFor(() => expect(pendingFrames.size).toBe(1));
+      await nextFrame(1000);
+      await nextFrame(1000 + duration * 1000);
 
-    const scene = screen.getByRole('img');
-    expect(scene.getAttribute('data-complete')).toBe('true');
-    expect(scene.getAttribute('data-closure-status')).toBe('defeat');
-    expect(scene.getAttribute('data-terrain-transition-progress')).toBe('');
-    expect(scene.querySelector('[data-terrain-symbol="barrier_low"]')).not.toBeNull();
-    expect(scene.querySelector('[data-terrain-symbol="barrier_high"]')).toBeNull();
-    expect(scene.querySelector('[data-replay-layer="robot"] > g')?.getAttribute('data-pose')).toBe(
-      'impact',
-    );
-  });
+      const scene = screen.getByRole('img');
+      expect(scene.getAttribute('data-complete')).toBe('true');
+      expect(scene.getAttribute('data-closure-status')).toBe('defeat');
+      expect(scene.getAttribute('data-terrain-transition-progress')).toBe('');
+      expect(scene.querySelector(`[data-terrain-symbol="${state}"]`)).not.toBeNull();
+      expect(scene.querySelectorAll('use[href$="#terrain-barrier-panel"]')).toHaveLength(1);
+      const impact = scene.querySelector('[data-effect="impact"]');
+      expect(impact?.getAttribute('x')).toBe(left ? '642' : '564');
+      expect(impact?.getAttribute('y')).toBe(state === 'barrier_low' ? '218' : '168');
+      expect(
+        scene.querySelector('[data-replay-layer="robot"] > g')?.getAttribute('data-center-x'),
+      ).toBe(left ? '678' : '562');
+      expect(
+        scene.querySelector('[data-replay-layer="robot"] > g')?.getAttribute('data-pose'),
+      ).toBe('impact');
+    },
+  );
 });

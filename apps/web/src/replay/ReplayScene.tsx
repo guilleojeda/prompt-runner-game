@@ -8,6 +8,10 @@ import {
   type PreparedReplay,
   type ReplayPose,
   type ReplaySample,
+  REPLAY_BARRIER_HIGH_Y,
+  REPLAY_BARRIER_INSET,
+  REPLAY_BARRIER_LOW_Y,
+  REPLAY_PIT_LEDGE_WIDTH,
   REPLAY_SEGMENT_WIDTH,
   REPLAY_SUPPORT_START_X,
   REPLAY_VIEW_WIDTH,
@@ -81,13 +85,12 @@ const poseLabel = (pose: ReplayPose): string => {
 };
 
 const groundHref = symbolHref('terrain-ground');
-const platformGroundHref = symbolHref('terrain-platform-ground');
-const platformFrameHref = symbolHref('terrain-platform-frame');
+const bridgeLeafHref = symbolHref('terrain-bridge-leaf');
+const bridgeHingeHref = symbolHref('terrain-bridge-hinge');
 const pitHref = symbolHref('terrain-pit-edge');
 const branchBackHref = symbolHref('terrain-branch-back');
 const branchFrontHref = symbolHref('terrain-branch-front');
-const barrierLowHref = symbolHref('terrain-barrier-low');
-const barrierHighHref = symbolHref('terrain-barrier-high');
+const barrierPanelHref = symbolHref('terrain-barrier-panel');
 const exitHref = symbolHref('terrain-exit');
 const impactHref = symbolHref('effect-impact');
 const pickupHref = symbolHref('effect-pickup');
@@ -97,21 +100,12 @@ const keyHref = symbolHref('key-object');
 const closedDoorHref = symbolHref('door-closed');
 const openDoorHref = symbolHref('door-open');
 
-interface TerrainLayer {
-  readonly state: TerrainState;
-  readonly opacity: number;
-}
-
-const terrainLayers = (sample: ReplaySample, index: number): readonly TerrainLayer[] => {
-  const current = sample.terrain[index];
-  if (!current) return [];
-  const next = sample.terrainTransition?.to[index];
-  if (!next || next === current) return [{ state: current, opacity: 1 }];
-  const progress = sample.terrainTransition!.progress;
-  return [
-    { state: current, opacity: 1 - progress },
-    { state: next, opacity: progress },
-  ];
+const terrainStateProgress = (sample: ReplaySample, index: number, state: TerrainState): number => {
+  const current = Number(sample.terrain[index] === state);
+  const transition = sample.terrainTransition;
+  return transition
+    ? current + (Number(transition.to[index] === state) - current) * transition.progress
+    : current;
 };
 
 const Backdrop = () => (
@@ -132,45 +126,41 @@ const TerrainBack = ({ sample }: { readonly sample: ReplaySample }) => {
   return (
     <g data-replay-layer="terrain-back" aria-hidden="true">
       <use href={groundHref} x="0" y="236" width={SUPPORT_START_X} height="70" />
-      {sample.terrain.map((_terrain, index) => {
+      {sample.terrain.map((state, index) => {
         const x = SUPPORT_START_X + index * SEGMENT_WIDTH;
         const segment = LEVEL.segments[index];
         return (
-          <g key={`segment-back-${index}`} data-segment-type={segment?.type}>
-            {segment?.type === 'platform' && (
-              <use href={platformFrameHref} x={x} y="216" width={SEGMENT_WIDTH} height="100" />
+          <g
+            key={`segment-back-${index}`}
+            data-segment-type={segment?.type}
+            data-terrain-state={state}
+          >
+            {state === 'pit' || segment?.type === 'platform' ? (
+              <g>
+                <path d={`M${x + 22} 254h76v69H${x + 22}z`} fill="#dff6fa" opacity="0.62" />
+                <path
+                  d={`M${x + 35} 280q25-11 49 0`}
+                  fill="none"
+                  stroke="#a4dce4"
+                  strokeWidth="3"
+                  strokeLinecap="round"
+                />
+              </g>
+            ) : (
+              <g>
+                {state === 'branch' && (
+                  <use href={branchBackHref} x={x} y="133" width={SEGMENT_WIDTH} height="92" />
+                )}
+                <use
+                  href={groundHref}
+                  data-terrain-art="ground"
+                  x={x}
+                  y="236"
+                  width={SEGMENT_WIDTH}
+                  height="70"
+                />
+              </g>
             )}
-            {terrainLayers(sample, index).map(({ state, opacity }) => {
-              if (state === 'pit') {
-                return (
-                  <g key={`${state}-${opacity}`} opacity={opacity} data-terrain-state={state}>
-                    <path d={`M${x + 22} 254h76v69H${x + 22}z`} fill="#dff6fa" opacity="0.62" />
-                    <path
-                      d={`M${x + 35} 280q25-11 49 0`}
-                      fill="none"
-                      stroke="#a4dce4"
-                      strokeWidth="3"
-                      strokeLinecap="round"
-                    />
-                  </g>
-                );
-              }
-              return (
-                <g key={`${state}-${opacity}`} opacity={opacity} data-terrain-state={state}>
-                  {state === 'branch' && (
-                    <use href={branchBackHref} x={x} y="133" width={SEGMENT_WIDTH} height="92" />
-                  )}
-                  <use
-                    href={segment?.type === 'platform' ? platformGroundHref : groundHref}
-                    data-terrain-art={segment?.type === 'platform' ? 'platform-ground' : 'ground'}
-                    x={x}
-                    y="236"
-                    width={SEGMENT_WIDTH}
-                    height="70"
-                  />
-                </g>
-              );
-            })}
           </g>
         );
       })}
@@ -203,66 +193,90 @@ const TerrainBack = ({ sample }: { readonly sample: ReplaySample }) => {
   );
 };
 
+const PlatformBridge = ({
+  sample,
+  index,
+  x,
+}: {
+  readonly sample: ReplaySample;
+  readonly index: number;
+  readonly x: number;
+}) => {
+  const angle = 90 * terrainStateProgress(sample, index, 'pit');
+  const length = (SEGMENT_WIDTH - 2 * REPLAY_PIT_LEDGE_WIDTH) / 2;
+  const left = x + REPLAY_PIT_LEDGE_WIDTH;
+  const right = x + SEGMENT_WIDTH - REPLAY_PIT_LEDGE_WIDTH;
+  return (
+    <g data-platform-angle={angle}>
+      <g data-platform-leaf="left" transform={`translate(${left} ${GROUND_Y}) rotate(${angle})`}>
+        <use href={bridgeLeafHref} width={length} height="12" />
+      </g>
+      <g
+        data-platform-leaf="right"
+        transform={`translate(${right} ${GROUND_Y}) scale(-1 1) rotate(${angle})`}
+      >
+        <use href={bridgeLeafHref} width={length} height="12" />
+      </g>
+      <use href={bridgeHingeHref} x={left - 5} y={GROUND_Y - 5} width="10" height="10" />
+      <use href={bridgeHingeHref} x={right - 5} y={GROUND_Y - 5} width="10" height="10" />
+    </g>
+  );
+};
+
 const TerrainFront = ({ sample }: { readonly sample: ReplaySample }) => (
   <g data-replay-layer="terrain-front" aria-hidden="true">
-    {sample.terrain.map((_terrain, index) => {
+    {sample.terrain.map((state, index) => {
       const x = SUPPORT_START_X + index * SEGMENT_WIDTH;
+      const platform = LEVEL.segments[index]?.type === 'platform';
+      const barrierY =
+        REPLAY_BARRIER_LOW_Y +
+        (REPLAY_BARRIER_HIGH_Y - REPLAY_BARRIER_LOW_Y) *
+          terrainStateProgress(sample, index, 'barrier_high');
       return (
         <g key={`segment-front-${index}`} data-segment-type={LEVEL.segments[index]?.type}>
-          {terrainLayers(sample, index).map(({ state, opacity }) => {
-            if (state === 'pit') {
-              return (
-                <g key={`${state}-${opacity}`} opacity={opacity} data-terrain-state={state}>
-                  <use
-                    data-terrain-symbol="pit-edge"
-                    href={pitHref}
-                    x={x}
-                    y="236"
-                    width="24"
-                    height="70"
-                  />
-                  <use
-                    data-terrain-symbol="pit-edge"
-                    href={pitHref}
-                    x="0"
-                    y="236"
-                    width="24"
-                    height="70"
-                    transform={`translate(${x + SEGMENT_WIDTH} 0) scale(-1 1)`}
-                  />
-                </g>
-              );
-            }
-            if (state === 'branch') {
-              return (
-                <use
-                  key={`${state}-${opacity}`}
-                  data-terrain-symbol="branch-front"
-                  opacity={opacity}
-                  href={branchFrontHref}
-                  x={x}
-                  y="167"
-                  width={SEGMENT_WIDTH}
-                  height="44"
-                />
-              );
-            }
-            if (state === 'barrier_low' || state === 'barrier_high') {
-              return (
-                <use
-                  key={`${state}-${opacity}`}
-                  data-terrain-symbol={state}
-                  opacity={opacity}
-                  href={state === 'barrier_low' ? barrierLowHref : barrierHighHref}
-                  x={x}
-                  y="150"
-                  width={SEGMENT_WIDTH}
-                  height="100"
-                />
-              );
-            }
-            return null;
-          })}
+          {(state === 'pit' || platform) && (
+            <g>
+              <use
+                data-terrain-symbol="pit-edge"
+                href={pitHref}
+                x={x}
+                y="236"
+                width={REPLAY_PIT_LEDGE_WIDTH}
+                height="70"
+              />
+              <use
+                data-terrain-symbol="pit-edge"
+                href={pitHref}
+                x="0"
+                y="236"
+                width={REPLAY_PIT_LEDGE_WIDTH}
+                height="70"
+                transform={`translate(${x + SEGMENT_WIDTH} 0) scale(-1 1)`}
+              />
+            </g>
+          )}
+          {platform && <PlatformBridge sample={sample} index={index} x={x} />}
+          {state === 'branch' && (
+            <use
+              data-terrain-symbol="branch-front"
+              href={branchFrontHref}
+              x={x}
+              y="167"
+              width={SEGMENT_WIDTH}
+              height="44"
+            />
+          )}
+          {(state === 'barrier_low' || state === 'barrier_high') && (
+            <use
+              data-terrain-symbol={state}
+              data-barrier-y={barrierY}
+              href={barrierPanelHref}
+              x={x}
+              y={barrierY - 13}
+              width={SEGMENT_WIDTH}
+              height="40"
+            />
+          )}
         </g>
       );
     })}
@@ -312,16 +326,34 @@ const Objects = ({ sample }: { readonly sample: ReplaySample }) => (
   </g>
 );
 
-const Effects = ({ sample }: { readonly sample: ReplaySample }) => {
+const Effects = ({
+  sample,
+  record,
+}: {
+  readonly sample: ReplaySample;
+  readonly record: ReplayRecordView;
+}) => {
   if (sample.effect === 'none') return null;
   const centerX = SUPPORT_START_X + sample.support * SEGMENT_WIDTH;
   const victory = sample.effect === 'victory';
   const pickup = sample.effect === 'pickup';
   const size = victory ? 74 : pickup ? 46 : 34;
-  const x = victory
-    ? centerX - size / 2
-    : centerX + (sample.facing === 'left' ? -24 : 34) - size / 2;
-  const y = victory ? 132 : pickup ? 184 : 146;
+  let x = victory ? centerX - size / 2 : centerX + (sample.facing === 'left' ? -24 : 34) - size / 2;
+  let y = victory ? 132 : pickup ? 184 : 146;
+  const resolution =
+    sample.actionIndex === null ? undefined : record.actions[sample.actionIndex]?.resolution;
+  if (sample.effect === 'impact' && resolution?.outcome === 'collision') {
+    const terrain = sample.terrain[resolution.segment];
+    if (terrain === 'barrier_low' || terrain === 'barrier_high') {
+      x =
+        SUPPORT_START_X +
+        resolution.segment * SEGMENT_WIDTH +
+        (sample.facing === 'left' ? SEGMENT_WIDTH - REPLAY_BARRIER_INSET : REPLAY_BARRIER_INSET) -
+        size / 2;
+      y =
+        (terrain === 'barrier_low' ? REPLAY_BARRIER_LOW_Y : REPLAY_BARRIER_HIGH_Y) + 11 - size / 2;
+    }
+  }
   return (
     <use
       aria-hidden="true"
@@ -369,7 +401,7 @@ const ReplayCanvas = ({
         <Robot sample={sample} />
       </g>
       <TerrainFront sample={sample} />
-      {sample.effect !== 'none' && <Effects sample={sample} />}
+      {sample.effect !== 'none' && <Effects sample={sample} record={record} />}
     </g>
     <g aria-hidden="true" fontFamily="system-ui, sans-serif">
       <rect x="22" y="20" width="110" height="34" rx="17" fill="#fff" fillOpacity="0.78" />

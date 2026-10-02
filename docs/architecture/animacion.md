@@ -28,6 +28,8 @@ El escenario se compone, de atrás hacia adelante, de fondo, terreno trasero, su
 
 El catálogo distingue tipo de tramo y estado efectivo. Una plataforma periódica en estado `pit` conserva su identidad visual de plataforma; el valor guardado determina su fase presente. Durante las acciones no oscila por su cuenta. Una transición entre fases es presentación entre turnos, nunca un nuevo estado que el agente pueda aprovechar.
 
+La barrera usa un mismo panel: bajo cerca del piso para saltar y elevado dejando un hueco inferior para agacharse. El panel se desplaza verticalmente al cambiar de fase. La plataforma es un pozo con dos hojas de puente, articuladas en sus paredes interiores: horizontales y unidas en estado `ground`, verticales hacia abajo en estado `pit`. Ambas giran sobre ejes fijos y conservan los bordes seguros de las casillas. No hay postes ni barras atravesando el espacio de paso. Los choques contra la barrera se presentan en el borde y la altura del panel mostrado.
+
 Si todo el nivel entra de forma legible, se dibuja completo. Si no, la cámara desplaza el mundo horizontalmente y respeta sus extremos. Su posición depende del mismo instante de reproducción, sin suavizados que acumulen historia entre frames. La cámara mantiene su altura durante una caída.
 
 ## Catálogo de sprites y clips
@@ -80,7 +82,7 @@ Cada evento se convierte en intervalos y marcadores de presentación, calculados
 4. Completar el gesto en su pose de llegada o terminal.
 5. Si el juego continúa, presentar el cambio del terreno anterior al posterior. Los tramos que cambian lo hacen en la misma transición; luego empieza la siguiente acción. Si termina, no crear otra fase jugable.
 
-Los marcadores son condiciones sobre el tiempo, no callbacks que mutan el mundo. Antes del marcador de recogida se muestra el objeto y después se oculta, incluso si el navegador omitió algún frame. Durante una transición se pueden mezclar dos imágenes, pero no existe una nueva decisión ni un estado físico intermedio.
+Los marcadores son condiciones sobre el tiempo, no callbacks que mutan el mundo. Antes del marcador de recogida se muestra el objeto y después se oculta, incluso si el navegador omitió algún frame. La altura del panel y los ángulos de las hojas se interpolan desde el mismo instante de la transición; no existe una nueva decisión ni un estado físico intermedio.
 
 Una duración ilustrativa de caminar puede ser distinta de saltar o caer. El tiempo que Bedrock tardó en decidir no se reproduce como una espera: permanece en la auditoría. Una acción explícita `Esperar` sí tiene su clip y consume el turno que el servidor registró. La celebración final agrega presentación, no un turno.
 

@@ -74,6 +74,10 @@ interface ActionCue {
 export const REPLAY_VIEW_WIDTH = 760;
 export const REPLAY_SUPPORT_START_X = 80;
 export const REPLAY_SEGMENT_WIDTH = 120;
+export const REPLAY_PIT_LEDGE_WIDTH = 24;
+export const REPLAY_BARRIER_INSET = 21;
+export const REPLAY_BARRIER_LOW_Y = 224;
+export const REPLAY_BARRIER_HIGH_Y = 174;
 export const REPLAY_WORLD_WIDTH =
   REPLAY_SUPPORT_START_X + LEVEL.segments.length * REPLAY_SEGMENT_WIDTH + 240;
 
@@ -92,6 +96,17 @@ const PICKUP_MARKER_PROGRESS = 0.7;
 // Keeps the terminal sprite inside the viewBox while placing its anchor below the ledge.
 const FALL_DEPTH = 70;
 
+const collisionDistance = (action: AttemptActionView): number => {
+  const terrain =
+    action.resolution.outcome === 'collision'
+      ? action.before.terrain[action.resolution.segment]
+      : null;
+  // The robot extends about 19 px from its anchor; the panel begins at 21 px.
+  return terrain === 'barrier_low' || terrain === 'barrier_high'
+    ? (REPLAY_BARRIER_INSET - 19) / REPLAY_SEGMENT_WIDTH
+    : 0.3;
+};
+
 const SYMBOLS = Object.freeze([
   'body',
   'robot-head',
@@ -109,13 +124,12 @@ const SYMBOLS = Object.freeze([
   'robot-impact',
   'robot-celebrate',
   'terrain-ground',
-  'terrain-platform-ground',
-  'terrain-platform-frame',
+  'terrain-bridge-leaf',
+  'terrain-bridge-hinge',
   'terrain-pit-edge',
   'terrain-branch-back',
   'terrain-branch-front',
-  'terrain-barrier-low',
-  'terrain-barrier-high',
+  'terrain-barrier-panel',
   'terrain-exit',
   'effect-impact',
   'effect-pickup',
@@ -427,7 +441,8 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
         };
       }
       if (action.resolution.outcome === 'collision') {
-        const contact = from + (cue.direction === 'left' ? -0.3 : 0.3);
+        const distance = collisionDistance(action);
+        const contact = from + (cue.direction === 'left' ? -distance : distance);
         const support = from + (contact - from) * ease(Math.min(1, p / 0.58));
         return {
           ...common,
@@ -573,7 +588,8 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
       terminalPose === 'fall'
         ? lastState.support + (terminalCue?.direction === 'left' ? -0.42 : 0.42)
         : terminalPose === 'impact'
-          ? lastState.support + (terminalCue?.direction === 'left' ? -0.3 : 0.3)
+          ? lastState.support +
+            (terminalCue?.direction === 'left' ? -1 : 1) * collisionDistance(terminalAction!)
           : lastState.support;
     return {
       time,
