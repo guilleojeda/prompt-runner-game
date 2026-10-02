@@ -69,6 +69,27 @@ function inspectorApi(overrides: Partial<AttemptApi> = {}): AttemptApi {
   } as AttemptApi;
 }
 
+function stubScrollIntoView() {
+  const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+  const scrolledElements: HTMLElement[] = [];
+  const scrollIntoView = vi.fn(function (this: HTMLElement) {
+    scrolledElements.push(this);
+  });
+  Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+    configurable: true,
+    value: scrollIntoView,
+    writable: true,
+  });
+  return {
+    scrollIntoView,
+    scrolledElements,
+    restore() {
+      if (original) Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', original);
+      else Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
+    },
+  };
+}
+
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
@@ -309,6 +330,130 @@ describe('DecisionInspector', () => {
     await waitFor(() =>
       expect(getDecision).toHaveBeenLastCalledWith('attempt-1', 3, expect.any(AbortSignal)),
     );
+  });
+
+  it.each([
+    ['last-action-or-decision', 2, 4],
+    ['last-decision', 3, 6],
+  ] as const)(
+    'scrolls the loaded %s detail into view and repeats it when the same attempt is reopened',
+    async (initialSelection, number, support) => {
+      const scroll = stubScrollIntoView();
+      const reducedMotionDescriptor = Object.getOwnPropertyDescriptor(window, 'matchMedia');
+      Object.defineProperty(window, 'matchMedia', {
+        configurable: true,
+        value: vi.fn().mockReturnValue({ matches: false }),
+        writable: true,
+      });
+      const selectionIndex: DecisionIndex = {
+        ...index,
+        decisions: [
+          { number: 1, decisionId: 'decision-1', originSupport: 0, hasAction: true },
+          { number: 2, decisionId: 'decision-2', originSupport: 4, hasAction: true },
+          { number: 3, decisionId: 'decision-3', originSupport: 6, hasAction: false },
+        ],
+      };
+      const pendingDetails: Array<(loaded: DecisionDetail) => void> = [];
+      const getDecision = vi
+        .fn()
+        .mockImplementation(
+          () => new Promise<DecisionDetail>((resolve) => pendingDetails.push(resolve)),
+        );
+      const getDecisionIndex = vi.fn().mockResolvedValue(selectionIndex);
+      const api = inspectorApi({
+        getDecisionIndex,
+        getDecision,
+      });
+      const props = { api, attemptId: 'attempt-1', initialSelection, onClose: vi.fn() };
+      const headingName = `Decisión ${number}, casilla ${support}`;
+      const loadedDetail = (): DecisionDetail => {
+        const item = selectionIndex.decisions[number - 1]!;
+        const selectedDetail = detail(number);
+        return {
+          ...selectedDetail,
+          item,
+          result: item.hasAction
+            ? selectedDetail.result
+            : { kind: 'no-action', reason: 'timeout', turnsUsed: 2, status: 'error' },
+        };
+      };
+
+      try {
+        const firstOpen = render(<DecisionInspector {...props} />);
+        await waitFor(() => expect(getDecisionIndex).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(getDecision).toHaveBeenCalledTimes(1));
+        expect(await screen.findByText('Cargando la ficha…')).toBeTruthy();
+        expect(scroll.scrollIntoView).not.toHaveBeenCalled();
+        await act(async () => {
+          pendingDetails.shift()!(loadedDetail());
+        });
+        const firstHeading = await screen.findByRole('heading', { name: headingName });
+        await waitFor(() => expect(scroll.scrollIntoView).toHaveBeenCalledOnce());
+        expect(scroll.scrollIntoView).toHaveBeenCalledWith({ block: 'start', behavior: 'smooth' });
+        expect(scroll.scrolledElements[0]?.contains(firstHeading)).toBe(true);
+
+        firstOpen.unmount();
+        render(<DecisionInspector {...props} />);
+        await waitFor(() => expect(getDecisionIndex).toHaveBeenCalledTimes(2));
+        await waitFor(() => expect(getDecision).toHaveBeenCalledTimes(2));
+        expect(await screen.findByText('Cargando la ficha…')).toBeTruthy();
+        expect(scroll.scrollIntoView).toHaveBeenCalledOnce();
+        await act(async () => {
+          pendingDetails.shift()!(loadedDetail());
+        });
+        const reopenedHeading = await screen.findByRole('heading', { name: headingName });
+        await waitFor(() => expect(scroll.scrollIntoView).toHaveBeenCalledTimes(2));
+        expect(scroll.scrolledElements[1]?.contains(reopenedHeading)).toBe(true);
+      } finally {
+        scroll.restore();
+        if (reducedMotionDescriptor) {
+          Object.defineProperty(window, 'matchMedia', reducedMotionDescriptor);
+        } else {
+          Reflect.deleteProperty(window, 'matchMedia');
+        }
+      }
+    },
+  );
+
+  it('uses instant scrolling for reduced motion and skips ordinary and manual selections', async () => {
+    const scroll = stubScrollIntoView();
+    const reducedMotionDescriptor = Object.getOwnPropertyDescriptor(window, 'matchMedia');
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: vi.fn().mockReturnValue({ matches: true }),
+      writable: true,
+    });
+
+    try {
+      const api = inspectorApi();
+      render(<DecisionInspector api={api} attemptId="attempt-1" onClose={vi.fn()} />);
+      expect(await screen.findByRole('heading', { name: 'Observación' })).toBeTruthy();
+      expect(scroll.scrollIntoView).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole('button', { name: /Decisión 3/ }));
+      expect(await screen.findByText('Consumió el turno 3.')).toBeTruthy();
+      expect(scroll.scrollIntoView).not.toHaveBeenCalled();
+
+      cleanup();
+      render(
+        <DecisionInspector
+          api={api}
+          attemptId="attempt-1"
+          initialSelection="last-action-or-decision"
+          onClose={vi.fn()}
+        />,
+      );
+      expect(await screen.findByRole('heading', { name: 'Decisión 3, casilla 5' })).toBeTruthy();
+      await waitFor(() => expect(scroll.scrollIntoView).toHaveBeenCalledOnce());
+      expect(scroll.scrollIntoView).toHaveBeenCalledWith({ block: 'start', behavior: 'instant' });
+    } finally {
+      scroll.restore();
+      if (reducedMotionDescriptor) {
+        Object.defineProperty(window, 'matchMedia', reducedMotionDescriptor);
+      } else {
+        Reflect.deleteProperty(window, 'matchMedia');
+      }
+    }
   });
 
   it('falls back to the last recorded decision when the index has no actions', async () => {
