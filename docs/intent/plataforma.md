@@ -10,7 +10,7 @@ Especificación acordada del producto. El código disponible implementa acceso C
 | Backend web | TypeScript en AWS Lambda. |
 | Ejecución del agente | AgentCore Runtime con Strands en TypeScript. El ejecutor reúne coordinación del intento, motor y registro. |
 | Infraestructura como código | AWS CDK en TypeScript. |
-| Inferencia | Amazon Bedrock mediante el proveedor nativo `BedrockModel` de Strands y Converse sin streaming. Sonnet 4.6 es el único perfil operativo para intentos nuevos. Sonnet 5, GPT-5.6 Sol y Opus 5/5.5 se implementarán en fase 12, después de SES; GPT-6 Luna/Sol siguen diferidos. No se usa Mantle ni APIs directas. |
+| Inferencia | Amazon Bedrock mediante el proveedor nativo `BedrockModel` de Strands y Converse sin streaming. El catálogo finito ofrece Claude Sonnet 4.6, Claude Sonnet 5.5, Claude Opus 5.5, GPT-6.1 Sol y GPT-6 Luna; Sonnet 4.6 es el default. La operación de cada perfil requiere comprobar acceso, cuota, request y una inferencia real en el ambiente. No se usa Mantle ni APIs directas. |
 | Almacenamiento | DynamoDB en modo on-demand para datos estructurados y S3 privado para conservar completos los requests y responses de inferencia. |
 | Identidad y correo | Amazon Cognito User Pool con Managed Login Essentials en español, email y contraseña, confirmación por código y recuperación administrada. Cognito envía por SES desde `hello@dondeaprendoaws.com`, con `EmailSendingAccount=DEVELOPER` y una plantilla HTML en español. |
 | Hosting | React estático en un bucket S3 privado, servido por CloudFront con Origin Access Control (OAC). El build y la publicación se integran con CDK en TypeScript y GitHub Actions. Puede comenzar con URLs AWS para web, identidad y API; no se exige dominio propio en esta fase. |
@@ -67,7 +67,7 @@ Las capacidades publicadas y sus límites se conservan en referencias técnicas.
 | Tema | Base factual | Comportamiento y límites |
 |---|---|---|
 | Runtime + Strands | [AgentCore](../reference/agentcore.md) | Decisiones con contexto independiente, herramienta validada y registro durable implementados según [ejecución](../architecture/ejecucion.md). |
-| Bedrock | [APIs, métricas y tarifas](../reference/bedrock.md) | Verificar acceso, cuotas e inferencia nativa de Sonnet 4.6. Los modelos de fase 12 requieren su propia verificación. Parámetros y ruta están definidos en [ejecución](../architecture/ejecucion.md#inferencia). |
+| Bedrock | [APIs, métricas y tarifas](../reference/bedrock.md) | Verificar por modelo acceso, cuotas e inferencia nativa; catálogo y parámetros están en [ejecución](../architecture/ejecucion.md#inferencia). |
 | Acceso por email | [Identidad y correo](../reference/identidad.md) | Cognito Managed Login Essentials con confirmación y recuperación por código entregado mediante SES nativo sobre el mismo pool. |
 | Cálculo independiente del navegador | [Tareas y sesiones](../reference/agentcore.md#continuidad-sesión-y-almacenamiento) | El cálculo continúa en el servidor al cerrar la pestaña; una nueva sesión recupera el estado y el resultado. Un proceso perdido no se reanuda automáticamente. |
 | DynamoDB y registros | [Contrato de registro](../architecture/registro-de-ejecucion.md) y [datos](../architecture/datos.md) | Borradores e intentos del contrato vigente en DynamoDB on-demand; cuerpos de inferencia en S3 privado. Los formatos anteriores no se leen ni convierten. |

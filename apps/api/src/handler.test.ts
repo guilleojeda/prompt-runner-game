@@ -19,6 +19,29 @@ const identity = {
   scope: 'openid email prompt-runner/robot',
 };
 
+const addedModelProfiles = [
+  {
+    key: 'claude-sonnet-5.5',
+    label: 'Claude Sonnet 5.5',
+    modelId: 'global.anthropic.claude-sonnet-5-5',
+  },
+  {
+    key: 'claude-opus-5.5',
+    label: 'Claude Opus 5.5',
+    modelId: 'global.anthropic.claude-opus-5-5',
+  },
+  {
+    key: 'openai-gpt-6.1-sol',
+    label: 'GPT-6.1 Sol',
+    modelId: 'us.openai.gpt-6.1-sol',
+  },
+  {
+    key: 'openai-gpt-6-luna',
+    label: 'GPT-6 Luna',
+    modelId: 'global.openai.gpt-6-luna',
+  },
+] as const;
+
 const eventFor = (
   method: 'GET' | 'PUT' | 'POST',
   options: {
@@ -91,30 +114,67 @@ describe('draft API handler', () => {
     expect(dispatch).not.toHaveBeenCalled();
   });
 
-  it('rejects a retired model key before admission', async () => {
-    const draft = { ...createDefaultDraft(), modelKey: 'claude-sonnet-5' };
-    const attemptStore = new MemoryAttemptStore({
-      draft: { version: 1, draft: createDefaultDraft() },
-      quotaLimit: 1,
-    });
-    const draftStore: DraftStore = { get: vi.fn(), put: vi.fn() };
-    const dispatch = vi.fn();
-    const response = await handleRequest(
-      eventFor('POST', {
-        path: '/attempts',
-        body: JSON.stringify({
-          requestKey: 'retired-model',
-          expectedVersion: 1,
-          draft,
-          animationEnabled: false,
+  it.each(['claude-sonnet-5', 'global.openai.gpt-6-luna'] as const)(
+    'rejects model values outside the finite key catalog before admission: %s',
+    async (modelKey) => {
+      const draft = { ...createDefaultDraft(), modelKey };
+      const attemptStore = new MemoryAttemptStore({
+        draft: { version: 1, draft: createDefaultDraft() },
+        quotaLimit: 1,
+      });
+      const draftStore: DraftStore = { get: vi.fn(), put: vi.fn() };
+      const dispatch = vi.fn();
+      const response = await handleRequest(
+        eventFor('POST', {
+          path: '/attempts',
+          body: JSON.stringify({
+            requestKey: 'outside-model-catalog',
+            expectedVersion: 1,
+            draft,
+            animationEnabled: false,
+          }),
         }),
-      }),
-      { ...dependencies(draftStore), attemptStore, dispatch },
-    );
-    expect(response.statusCode).toBe(400);
-    expect((await attemptStore.quota('user-a')).used).toBe(0);
-    expect(dispatch).not.toHaveBeenCalled();
-  });
+        { ...dependencies(draftStore), attemptStore, dispatch },
+      );
+      expect(response.statusCode).toBe(400);
+      expect((await attemptStore.quota('user-a')).used).toBe(0);
+      expect(dispatch).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(addedModelProfiles)(
+    'admits $key using the server-resolved profile',
+    async ({ key, label, modelId }) => {
+      const draft = { ...createDefaultDraft(), modelKey: key };
+      const attemptStore = new MemoryAttemptStore({
+        draft: { version: 1, draft },
+        quotaLimit: 1,
+      });
+      const draftStore: DraftStore = { get: vi.fn(), put: vi.fn() };
+      const dispatch = vi.fn().mockResolvedValue(undefined);
+      const response = await handleRequest(
+        eventFor('POST', {
+          path: '/attempts',
+          body: JSON.stringify({
+            requestKey: `selected-${key}`,
+            expectedVersion: 1,
+            draft,
+            animationEnabled: false,
+          }),
+        }),
+        { ...dependencies(draftStore), attemptStore, dispatch },
+      );
+
+      expect(response.statusCode).toBe(200);
+      expect(responseBody(response).attempt).toMatchObject({
+        modelKey: key,
+        modelLabel: label,
+        modelId,
+      });
+      expect((await attemptStore.quota('user-a')).used).toBe(1);
+      expect(dispatch).toHaveBeenCalledOnce();
+    },
+  );
 
   it('gets the authenticated owner default and never asks the store for a request owner', async () => {
     const snapshot: DraftSnapshot = { version: 0, draft: createDefaultDraft() };

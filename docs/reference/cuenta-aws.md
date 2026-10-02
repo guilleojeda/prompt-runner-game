@@ -21,6 +21,21 @@ Los perfiles US consultados devolvieron destinos `us-east-1`, `us-east-2` y `us-
 
 La disponibilidad se consultó mediante `GET /foundation-model-availability/{modelId}` con SigV4. [API](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_GetFoundationModelAvailability.html).
 
+### Modelos nuevos: lectura e inferencia del 1 de octubre de 2026
+
+STS confirmó la misma cuenta y el operador `FullAdmin/gojeda`. A las **13:48:49–13:48:50 UTC**, los cuatro modelos nuevos devolvieron `AUTHORIZED`, entitlement y región `AVAILABLE`, y acuerdo `AVAILABLE`. Se crearon los acuerdos públicos faltantes de Sonnet 5.5, GPT-6.1 Sol y GPT-6 Luna; el de Opus 5.5 ya existía. Esto no resolvió la elegibilidad de inferencia.
+
+| Modelo | Perfil ACTIVE leído | Destinos foundation model leídos | TPM aplicado de esa modalidad | Probe Converse real |
+|---|---|---|---:|---|
+| Claude Sonnet 5.5 | `global.anthropic.claude-sonnet-5-5` | Global y origen `us-east-1`, ID exacto `anthropic.claude-sonnet-5-5` | 0 (`L-31AB82D0`) | HTTP 403: no disponible para esta cuenta |
+| Claude Opus 5.5 | `global.anthropic.claude-opus-5-5` | Global y origen `us-east-1`, ID exacto `anthropic.claude-opus-5-5` | 0 (`L-A103A344`) | HTTP 403: no disponible para esta cuenta |
+| GPT-6.1 Sol | `us.openai.gpt-6.1-sol` | `us-east-1`, `us-east-2`, `us-west-2`, ID exacto `openai.gpt-6.1-sol` | 40.000.000 (`L-8C5F762B`) | HTTP 403: no disponible para esta cuenta |
+| GPT-6 Luna | `global.openai.gpt-6-luna` | Global y origen `us-east-1`, ID exacto `openai.gpt-6-luna` | 80.000.000 (`L-CCC92354`) | HTTP 403: no disponible para esta cuenta |
+
+El mensaje de los cuatro probes remite a AWS Sales por acceso de cuenta. Las cuotas positivas de GPT tampoco acreditan elegibilidad. El mismo adaptador y credenciales sí obtuvieron una tool válida de Sonnet 4.6, HTTP 200, conservando request/response completos y uso nativo. Los cuerpos sintéticos, request IDs y fechas se conservan en la evidencia privada de entrega; no se publican prompts ni respuestas en logs operativos.
+
+**Acceso nuevo pendiente:** [AWS Support 179086313600345](https://support.console.aws.amazon.com/support/home#/case/?displayId=179086313600345&language=en), creado a las **13:58:56 UTC**, solicita habilitar los cuatro modelos y las cuotas utilizables necesarias, o identificar el requisito concreto de elegibilidad. La cuenta tiene Basic Support. La API Support devuelve `SubscriptionRequiredException`; el caso se creó por consola como `Account / Other Account Issues`, sin contratar un plan pago. No se habilitan los perfiles en producción ni se considera completa su integración hasta repetir inferencia exitosa y verificar el uso publicado. Las tablas anteriores conservan su alcance histórico y no describen este catálogo.
+
 La guía AWS identifica `agreementAvailability=NOT_AVAILABLE` como ausencia del acceso/acuerdo correspondiente. Catálogo activo, autorización y disponibilidad regional no bastan para demostrar uso operativo. La habilitación y las cuotas se resuelven para la integración Bedrock elegida por el producto. [Acceso a modelos](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html).
 
 ## Cuotas aplicadas de Bedrock

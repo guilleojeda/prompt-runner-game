@@ -112,8 +112,40 @@ const storeFor = (harness: DynamoHarness, now = '2026-09-29T12:00:00.000Z') =>
 
 const firstId = '11111111-1111-4111-8111-111111111111';
 const secondId = '22222222-2222-4222-8222-222222222222';
+const modelChoices = [
+  'claude-sonnet-5.5',
+  'claude-opus-5.5',
+  'openai-gpt-6.1-sol',
+  'openai-gpt-6-luna',
+] as const;
 
 describe('DynamoSavedRobotStore', () => {
+  it('persists each added model in the saved copy and its list summary', async () => {
+    const harness = new DynamoHarness();
+    const store = storeFor(harness);
+    const ids = [
+      firstId,
+      secondId,
+      '33333333-3333-4333-8333-333333333333',
+      '44444444-4444-4444-8444-444444444444',
+    ];
+
+    for (const [index, modelKey] of modelChoices.entries()) {
+      const draft = { ...createDefaultDraft(), modelKey };
+      const saved = await store.put('user-a', ids[index]!, 0, `Robot ${index + 1}`, draft);
+      expect(saved.draft.modelKey).toBe(modelKey);
+      await expect(store.get('user-a', ids[index]!)).resolves.toMatchObject({
+        modelKey,
+        draft: { modelKey },
+      });
+    }
+
+    const summaries = await store.list('user-a');
+    expect(summaries.robots.map((robot) => robot.modelKey)).toEqual(
+      expect.arrayContaining([...modelChoices]),
+    );
+  });
+
   it('keeps independent private copies, paginates summaries, and preserves exact draft text', async () => {
     const harness = new DynamoHarness();
     const store = storeFor(harness);

@@ -1,20 +1,32 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createDefaultDraft } from '../../../shared/robot.js';
+import { createDefaultDraft, type RobotDraft } from '../../../shared/robot.js';
 import { SavedRobotApiClient, SavedRobotApiFailure } from './saved-robot-api.js';
 
 const config = { apiBaseUrl: 'https://api.example.test/' };
 
-function robot(id = 'robot-a', version = 1) {
+function robot(
+  id = 'robot-a',
+  version = 1,
+  modelKey: RobotDraft['modelKey'] = 'claude-sonnet-4.6',
+) {
+  const draft = { ...createDefaultDraft(), modelKey };
   return {
     id,
     name: 'Explorador',
     version,
     createdAt: '2026-09-29T12:00:00.000Z',
     updatedAt: '2026-09-29T12:00:00.000Z',
-    modelKey: 'claude-sonnet-4.6' as const,
-    draft: createDefaultDraft(),
+    modelKey,
+    draft,
   };
 }
+
+const addedModelKeys = [
+  'claude-sonnet-5.5',
+  'claude-opus-5.5',
+  'openai-gpt-6.1-sol',
+  'openai-gpt-6-luna',
+] as const;
 
 describe('SavedRobotApiClient', () => {
   it('uses the current token and exact paginated routes and payloads', async () => {
@@ -153,6 +165,45 @@ describe('SavedRobotApiClient', () => {
       status: 200,
     });
   });
+
+  it.each(addedModelKeys)(
+    'round trips %s in saved robot summaries and drafts',
+    async (modelKey) => {
+      const saved = robot('robot-a', 1, modelKey);
+      const summary = {
+        id: saved.id,
+        name: saved.name,
+        version: saved.version,
+        createdAt: saved.createdAt,
+        updatedAt: saved.updatedAt,
+        modelKey: saved.modelKey,
+      };
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(new Response(JSON.stringify({ robots: [summary] }), { status: 200 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify(saved), { status: 200 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify(saved), { status: 200 }));
+      const client = new SavedRobotApiClient(config, {
+        tokenProvider: () => 'access-token',
+        fetch: fetchImpl,
+      });
+
+      await expect(client.listRobots()).resolves.toMatchObject({
+        robots: [{ modelKey }],
+      });
+      await expect(client.getRobot(saved.id)).resolves.toMatchObject({
+        modelKey,
+        draft: { modelKey },
+      });
+      await expect(client.saveRobot(saved.id, 1, saved.name, saved.draft)).resolves.toMatchObject({
+        modelKey,
+        draft: { modelKey },
+      });
+      expect(JSON.parse(String(fetchImpl.mock.calls[2]?.[1]?.body))).toMatchObject({
+        draft: { modelKey },
+      });
+    },
+  );
 
   it('does not convert an aborted write into an ambiguous failure', async () => {
     const controller = new AbortController();

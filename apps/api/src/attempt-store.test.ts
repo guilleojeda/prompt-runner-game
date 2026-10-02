@@ -36,6 +36,37 @@ const modelIdentity = {
   profileVersion: 'claude-sonnet-4.6-global-v1',
 };
 
+const addedModelProfiles = [
+  {
+    key: 'claude-sonnet-5.5',
+    label: 'Claude Sonnet 5.5',
+    modelId: 'global.anthropic.claude-sonnet-5-5',
+    region: 'us-east-1',
+    profileVersion: 'claude-sonnet-5.5-global-v1',
+  },
+  {
+    key: 'claude-opus-5.5',
+    label: 'Claude Opus 5.5',
+    modelId: 'global.anthropic.claude-opus-5-5',
+    region: 'us-east-1',
+    profileVersion: 'claude-opus-5.5-global-v1',
+  },
+  {
+    key: 'openai-gpt-6.1-sol',
+    label: 'GPT-6.1 Sol',
+    modelId: 'us.openai.gpt-6.1-sol',
+    region: 'us-east-1',
+    profileVersion: 'openai-gpt-6.1-sol-us-v1',
+  },
+  {
+    key: 'openai-gpt-6-luna',
+    label: 'GPT-6 Luna',
+    modelId: 'global.openai.gpt-6-luna',
+    region: 'us-east-1',
+    profileVersion: 'openai-gpt-6-luna-global-v1',
+  },
+] as const;
+
 const doorRecoveryRoute: readonly NormalizedAction[] = [
   { kind: 'advance' },
   { kind: 'advance' },
@@ -585,7 +616,92 @@ describe('attempt lifecycle store', () => {
         animationEnabled: false,
       }),
     ).rejects.toBeInstanceOf(IdempotencyConflictError);
+    await expect(
+      store.admit({
+        owner: 'a',
+        requestKey: 'same',
+        expectedVersion: 999,
+        draft: { ...draft, modelKey: 'claude-sonnet-5.5' },
+        animationEnabled: false,
+      }),
+    ).rejects.toBeInstanceOf(IdempotencyConflictError);
   });
+
+  it.each(addedModelProfiles)(
+    'freezes $key in admission, call metadata, and exact duplicate recovery',
+    async ({ key: modelKey, label, modelId, region, profileVersion }) => {
+      const draft = { ...createDefaultDraft(), modelKey };
+      const store = new MemoryAttemptStore({
+        draft: { version: 3, draft },
+        quotaLimit: 1,
+        now: () => new Date('2026-09-21T15:00:00.000Z'),
+      });
+      const first = await store.admit({
+        owner: 'a',
+        requestKey: 'selected-model',
+        expectedVersion: 3,
+        draft,
+        animationEnabled: false,
+      });
+      expect(first).toMatchObject({
+        admitted: true,
+        attempt: { modelKey, modelLabel: label, modelId },
+      });
+      const persisted = await store.get('a', first.attempt.id);
+      expect(persisted).toMatchObject({
+        draft: { modelKey },
+        config: { model: { key: modelKey, label, modelId, region, profileVersion } },
+      });
+
+      const duplicate = await store.admit({
+        owner: 'a',
+        requestKey: 'selected-model',
+        expectedVersion: 999,
+        draft,
+        animationEnabled: false,
+      });
+      expect(duplicate).toMatchObject({
+        admitted: false,
+        attempt: { id: first.attempt.id, modelKey },
+      });
+      expect((await store.quota('a')).used).toBe(1);
+
+      const claimed = await store.claim('a', first.attempt.id, 'runner');
+      expect(claimed?.status).toBe('running');
+      const started: CallRecord = {
+        attemptId: first.attempt.id,
+        seq: 1,
+        decisionId: 'decision-1',
+        ...modelIdentity,
+        requestKey: `attempt/${first.attempt.id}/decision/decision-1/call/1/request.json`,
+        responseKey: `attempt/${first.attempt.id}/decision/decision-1/call/1/response.json`,
+        requestSha256: 'request-hash',
+        requestBytes: 10,
+        status: 'started',
+        usage: {
+          inputTokens: null,
+          outputTokens: null,
+          reasoningTokens: null,
+          gameTokens: null,
+          cacheReadTokens: null,
+          cacheWriteTokens: null,
+        },
+        createdAt: '2026-09-21T15:00:01.000Z',
+        updatedAt: '2026-09-21T15:00:01.000Z',
+      };
+      await expect(
+        store.beginCall('a', first.attempt.id, 'runner', started),
+      ).resolves.toMatchObject({
+        modelKey,
+        modelId,
+        region,
+        profileVersion,
+      });
+      await expect(store.getCalls('a', first.attempt.id)).resolves.toMatchObject([
+        { modelKey, modelId },
+      ]);
+    },
+  );
 
   it('stores preference versions and binds the animation choice into idempotency', async () => {
     const draft = savedDraft().draft;

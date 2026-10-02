@@ -1,17 +1,20 @@
-# Referencia técnica: Bedrock y Claude Sonnet
+# Referencia técnica: Bedrock y modelos del catálogo
 
-Fuentes oficiales consultadas el **16–17 de septiembre de 2026**. Esta referencia documenta los contratos de Sonnet 4.6 y Sonnet 5 con `BedrockModel` de Strands, perfil global y Converse sin streaming; las fuentes del servicio no sustituyen la verificación de la cuenta. Los contratos están en [plataforma](../intent/plataforma.md), [agente](../intent/agente.md) y [consumo y puntuación](../intent/consumo-y-puntaje.md).
+Fuentes oficiales consultadas el **16–17 de septiembre** para Sonnet 4.6 y el **1 de octubre de 2026** para los cuatro modelos añadidos al catálogo. Los hechos publicados describen APIs y perfiles posibles; no sustituyen las lecturas de cuenta ni una inferencia real. Los contratos están en [plataforma](../intent/plataforma.md), [agente](../intent/agente.md) y [consumo y puntuación](../intent/consumo-y-puntaje.md). Las menciones de Sonnet 5 sin decimal y sus tarifas/cuotas son contexto histórico de un modelo que no forma parte del catálogo vigente.
 
 ## APIs y regiones
 
-| Modelo y servicio | Acceso documentado desde `us-east-1` |
-|---|---|
-| Sonnet 5, `bedrock-runtime` | InvokeModel, Converse y streaming; perfiles `us.anthropic.claude-sonnet-5` o `global.anthropic.claude-sonnet-5`. También figura el endpoint nativo Messages. |
-| Sonnet 4.6, `bedrock-runtime` | InvokeModel, Converse y streaming; perfiles `us.anthropic.claude-sonnet-4-6` o `global.anthropic.claude-sonnet-4-6`. Sin inferencia regional directa en Virginia según la ficha. |
+| Modelo | Perfil usado por el catálogo | Acceso documentado desde `us-east-1` |
+|---|---|---|
+| Claude Sonnet 4.6 | `global.anthropic.claude-sonnet-4-6` | Converse, InvokeModel y streaming. La ficha consultada no documenta inferencia regional directa en Virginia. |
+| Claude Sonnet 5.5 | `global.anthropic.claude-sonnet-5-5` | Converse en Runtime; perfil global. Adaptive thinking y effort configurable. |
+| Claude Opus 5.5 | `global.anthropic.claude-opus-5-5` | Converse en Runtime; perfil global. |
+| GPT-6.1 Sol | `us.openai.gpt-6.1-sol` | Converse en Runtime; el lanzamiento consultado ofrece perfil US, sin perfil global ni invocación regional directa. |
+| GPT-6 Luna | `global.openai.gpt-6-luna` | Converse en Runtime; hay perfiles US/global documentados. El catálogo usa el perfil global. |
 
-Fuentes: [Sonnet 5](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-sonnet-5.html), [Sonnet 4.6](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-sonnet-4-6.html).
+Fuentes: [Sonnet 4.6](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-sonnet-4-6.html), [Sonnet 5.5](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-sonnet-5-5.html), [Opus 5.5](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-opus-5-5.html), [GPT-6.1 Sol](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-6-1-sol.html) y [GPT-6 Luna](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-6-luna.html).
 
-La región origen no garantiza dónde se procesa la inferencia. El perfil global puede enrutar a otras regiones; esa modalidad está permitida y se conserva en el snapshot. El modelo operativo es Sonnet 4.6. Sonnet 5 se conserva como perfil conocido para registros históricos; habilitar su uso nuevo requiere completar la verificación de acceso e inferencia.
+La región origen no garantiza dónde se procesa la inferencia. Los perfiles globales pueden enrutar a otras regiones y su identidad se conserva en el snapshot; el perfil US de GPT-6.1 Sol tiene sus propios destinos. Que un perfil exista o aparezca en el catálogo no demuestra que la cuenta tenga acuerdo, autorización y cuota para usarlo. La referencia de [cuenta AWS](cuenta-aws.md) distingue las lecturas fechadas de esos requisitos.
 
 ### Clientes TypeScript y credenciales del rol
 
@@ -37,7 +40,7 @@ Fuentes: [parallel tool use](https://platform.claude.com/docs/en/agents-and-tool
 
 Converse permite campos adicionales del modelo, pero esa capacidad genérica no demuestra el mapeo exacto de `disable_parallel_tool_use`. La aplicación sigue necesitando validar la respuesta antes de ejecutar una acción. [Converse](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_Converse.html).
 
-Sonnet 5 activa adaptive thinking por defecto y admite desactivarlo; no admite `enabled` con `budget_tokens`. Sonnet 4.6 omite thinking por defecto y admite adaptive y manual, este último deprecado. La documentación actual de Anthropic permite uso forzado con adaptive y lo rechaza con manual extended thinking. Algunas advertencias AWS dicen “thinking” de manera general; no demuestran que todos los modos tengan la misma restricción. [Adaptive AWS](https://docs.aws.amazon.com/bedrock/latest/userguide/claude-messages-adaptive-thinking.html), [troubleshooting Anthropic](https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting), [extended AWS](https://docs.aws.amazon.com/bedrock/latest/userguide/claude-messages-extended-thinking.html).
+Sonnet 4.6 conserva el perfil anterior sin override de thinking. El catálogo fija adaptive thinking y effort `low` para Sonnet 5.5 y Opus 5.5; GPT-6.1 Sol y GPT-6 Luna omiten overrides de reasoning no acreditados para Converse. La forma efectiva de esos campos y los bytes aceptados se comprueban con el SDK durante la entrega; una ficha de otro endpoint no demuestra su mapeo a Converse. Sonnet 5 (sin decimal) conserva aquí sólo sus hechos históricos, fuera del catálogo actual. [Adaptive AWS](https://docs.aws.amazon.com/bedrock/latest/userguide/claude-messages-adaptive-thinking.html), [troubleshooting Anthropic](https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting), [extended AWS](https://docs.aws.amazon.com/bedrock/latest/userguide/claude-messages-extended-thinking.html).
 
 ## Descripciones, esquemas e historial
 
@@ -62,7 +65,7 @@ La descripción de `totalTokens` no resuelve por sí sola cómo incluye los comp
 
 ## Tarifas publicadas
 
-AWS Standard on-demand, **USD por millón de tokens**, origen Virginia. No es una estimación del gasto de la aplicación.
+La tabla siguiente conserva una consulta de tarifas Standard on-demand, **USD por millón de tokens**, origen Virginia, publicada el 11 de septiembre de 2026. Sonnet 5 es histórico y no pertenece al catálogo actual; estas tarifas no cubren Sonnet 5.5, Opus 5.5 ni GPT-6.1 Sol/GPT-6 Luna y no se usan como costo de la aplicación.
 
 | Modelo/modalidad | Input | Output, incluido thinking | Write 5m | Write 1h | Read |
 |---|---:|---:|---:|---:|---:|
@@ -75,7 +78,7 @@ La tarifa regional de la tabla no demuestra que toda combinación modelo/endpoin
 
 ## Cuotas y habilitación
 
-Los defaults públicos runtime para Sonnet 4.6 geo/global incluyen 10.000 RPM y 6 millones TPM; para 5 se publicó 6 millones TPM geo/global, sin encontrar una fila RPM específica en la consulta. Las cuotas aplicadas a la cuenta pueden ser diferentes. [General Reference](https://docs.aws.amazon.com/general/latest/gr/bedrock.html).
+Los defaults públicos de cuotas y multiplicadores citados abajo corresponden a Sonnet 4.6 y al Sonnet 5 histórico, no a las cuatro incorporaciones actuales. Las cuotas aplicadas pueden diferir de los defaults publicados y deben leerse por perfil y modalidad antes de afirmar acceso operativo. [General Reference](https://docs.aws.amazon.com/general/latest/gr/bedrock.html).
 
 La contabilidad de cuota tampoco equivale a los tokens del puntaje: runtime publica multiplicadores de output de 10 para Sonnet 5 y 5 para 4.6, excluye cache read del burndown y reserva capacidad considerando el límite de salida. [Burndown](https://docs.aws.amazon.com/bedrock/latest/userguide/quotas-token-burndown.html), [cuotas runtime](https://docs.aws.amazon.com/bedrock/latest/userguide/quotas-runtime.html).
 

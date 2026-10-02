@@ -34,7 +34,7 @@ Los campos normalizados son:
 
 `Entrada total` es un agregado y, por definición, puede solaparse con sus componentes de caché. Si la API ya incluye la lectura o escritura de caché dentro de ese agregado, se conserva cada categoría como detalle, pero nunca se suma el agregado con sus componentes. Para derivar el total a partir de componentes separados, sólo se suman componentes que la documentación del proveedor confirma como partes disjuntas del contenido. El adaptador debe documentar la interpretación elegida para el proveedor activo.
 
-`reasoningTokens` se conserva por llamada y en el intento. Si falta en alguna llamada, su agregado es desconocido; eso no impide calcular el puntaje cuando el total de entrada/salida sí es inequívoco. La UI lo identifica como incluido en salida. Cada intento conserva su modelo: agregar modelos no cambia la fórmula ni presupone equivalencia entre tokenizadores.
+`reasoningTokens` se conserva por llamada y en el intento. Si falta en alguna llamada, su agregado es desconocido; eso no impide calcular el puntaje cuando el total de entrada/salida sí es inequívoco. La UI lo identifica como incluido en salida. Cada intento conserva la clave elegida, el perfil Bedrock efectivo y su versión: los cinco modelos del catálogo usan la misma fórmula de tokens y puntaje, sin presuponer equivalencia entre tokenizadores ni entre sus costos.
 
 Si la API no permite determinar de forma inequívoca un total, se conserva el uso original y se indica que la métrica normalizada o el costo exacto no están disponibles. Un costo parcial no se presenta como consumo exacto.
 

@@ -1,6 +1,6 @@
 # Intentos: ejecución, registro y reproducción
 
-Estado: ejecución del nivel principal periódico con Sonnet 4.6, registro, consultas, Esperar, animación opcional y reproducción del contrato vigente.
+Estado: ejecución del nivel principal periódico, registro, consultas, Esperar, animación opcional y reproducción del contrato vigente. El catálogo ofrece Claude Sonnet 4.6, Sonnet 5.5, Opus 5.5, GPT-6.1 Sol y GPT-6 Luna mediante Bedrock; Sonnet 4.6 sigue como default. La operación real se verifica por perfil.
 
 Esta página define el ciclo de un intento desde que se fija la configuración hasta que se muestra su reproducción. Se relaciona con [la experiencia](experiencia.md), [las reglas del juego](juego.md), [el agente](agente.md) y [la plataforma](plataforma.md).
 
@@ -8,7 +8,7 @@ El diseño técnico está en [registro de ejecución](../architecture/registro-d
 
 ## Alcance y reglas que no cambian
 
-Un intento es una ejecución independiente. Sonnet 4.6 y el perfil vigente quedan fijados al admitir. El agente no recibe memoria, resultados ni conversaciones de otros intentos. El aprendizaje entre intentos consiste en editar las habilidades, sus descripciones o las instrucciones y crear otro snapshot con **Probar**; no consiste en entrenar ni adaptar el modelo. Los registros del contrato vigente se consultan y reproducen; no se promete conservar lectores para contratos reemplazados.
+Un intento es una ejecución independiente. La clave de modelo elegida y el perfil Bedrock que resuelve el servidor quedan fijados en su snapshot al admitir; Sonnet 4.6 es el default. El agente no recibe memoria, resultados ni conversaciones de otros intentos. El aprendizaje entre intentos consiste en editar las habilidades, sus descripciones o las instrucciones y crear otro snapshot con **Probar**; no consiste en entrenar ni adaptar el modelo. Los registros del contrato vigente se consultan y reproducen; no se promete conservar lectores para contratos reemplazados.
 
 El intento separa el cálculo de la presentación:
 

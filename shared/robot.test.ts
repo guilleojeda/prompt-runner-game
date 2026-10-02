@@ -13,6 +13,13 @@ import {
 } from './robot';
 import { DEFAULT_MODEL_KEY, MODEL_CATALOG } from './models';
 
+const addedModelKeys = [
+  'claude-sonnet-5.5',
+  'claude-opus-5.5',
+  'openai-gpt-6.1-sol',
+  'openai-gpt-6-luna',
+] as const;
+
 const draftWithInstructionBytes = (bytes: number) => {
   const base = createDefaultDraft();
   const withoutInstructions = { ...base, instructions: '' };
@@ -175,12 +182,23 @@ describe('current robot draft contract', () => {
     expect(Object.isFrozen(ROBOT_CATALOG[6]?.inputSchema)).toBe(true);
   });
 
-  it('keeps current draft equality stable and rejects unrecognized models', () => {
+  it('keeps current draft equality stable and accepts only the five catalog keys', () => {
     const draft = createDefaultDraft();
 
     expect(draftsEqual(draft, validateDraft(draft))).toBe(true);
-    expect(MODEL_CATALOG.map((profile) => profile.key)).toEqual([DEFAULT_MODEL_KEY]);
+    expect(MODEL_CATALOG.map((profile) => profile.key)).toEqual([
+      DEFAULT_MODEL_KEY,
+      ...addedModelKeys,
+    ]);
+    for (const modelKey of addedModelKeys) {
+      const selected = validateDraft({ ...draft, modelKey });
+      expect(selected.modelKey).toBe(modelKey);
+      expect(draftsEqual(selected, validateDraft(selected))).toBe(true);
+    }
     expect(() => validateDraft({ ...draft, modelKey: 'global.openai.arbitrary' })).toThrow(
+      DraftValidationError,
+    );
+    expect(() => validateDraft({ ...draft, modelKey: 'global.openai.gpt-6-luna' })).toThrow(
       DraftValidationError,
     );
   });

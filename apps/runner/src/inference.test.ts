@@ -4,7 +4,12 @@ import { HttpRequest, HttpResponse } from '@smithy/core/transport';
 import type { HttpHandlerOptions, RequestHandler, RequestHandlerOutput } from '@smithy/types';
 import { ModelThrottledError } from '@strands-agents/sdk';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { MODEL_CATALOG, type ModelProfile } from '../../../shared/models.js';
+import {
+  MODEL_CATALOG,
+  resolveModelProfile,
+  type ModelKey,
+  type ModelProfile,
+} from '../../../shared/models.js';
 import {
   AuditedRequestHandler,
   DECISION_INFERENCE_IMPLEMENTATION,
@@ -55,7 +60,7 @@ const inputForModel = (modelConfig: Readonly<ModelProfile>): DecisionInput => ({
 });
 
 const responseBytes = (
-  content: readonly Record<string, unknown>[],
+  content: readonly unknown[],
   stopReason = 'tool_use',
   extra: Record<string, unknown> = {},
 ): Uint8Array =>
@@ -70,12 +75,23 @@ const responseBytes = (
   );
 
 const toolUse = (name: string, toolInput: Record<string, unknown>, id = 'call-1') => ({
-  toolUse: { toolUseId: id, name, input: toolInput },
+  toolUse: { toolUseId: id, name, input: toolInput, type: 'tool_use' },
 });
 
 const reasoning = (text = 'evaluación interna') => ({
   reasoningContent: { reasoningText: { text } },
 });
+
+const redactedReasoning = (redactedContent = 'AQI=') => ({
+  reasoningContent: { redactedContent },
+});
+
+const addedReasoningModelKeys: readonly ModelKey[] = [
+  'claude-sonnet-5.5',
+  'claude-opus-5.5',
+  'openai-gpt-6.1-sol',
+  'openai-gpt-6-luna',
+];
 
 type HandlerAction =
   | {
@@ -163,13 +179,16 @@ describe('auditable Strands Bedrock decision', () => {
     vi.restoreAllMocks();
   });
 
-  it('projects only the current Sonnet 4.6 profile into one native Converse request', async () => {
-    const [profile] = MODEL_CATALOG;
+  it('projects the unchanged Sonnet 4.6 profile into one native Converse request', async () => {
+    const profile = resolveModelProfile('claude-sonnet-4.6');
     const response = responseBytes([toolUse('tool_1', {})]);
     const handler = new QueueHandler([{ bytes: response }]);
     const recorded = recordingAudit();
 
-    expect(MODEL_CATALOG.map((entry) => entry.key)).toEqual(['claude-sonnet-4.6']);
+    expect(MODEL_CATALOG.map((entry) => entry.key)).toEqual([
+      'claude-sonnet-4.6',
+      ...addedReasoningModelKeys,
+    ]);
     await expect(
       executeDecision(inputForModel(profile!), recorded.audit, { requestHandler: handler }),
     ).resolves.toMatchObject({ action: { name: 'tool_1', input: {} } });
@@ -190,6 +209,67 @@ describe('auditable Strands Bedrock decision', () => {
     expect(body).not.toHaveProperty('topP');
     expect(body).not.toHaveProperty('stopSequences');
   });
+
+  it.each([
+    {
+      key: 'claude-sonnet-5.5' as const,
+      modelId: 'global.anthropic.claude-sonnet-5-5',
+      additionalModelRequestFields: {
+        thinking: { type: 'adaptive' },
+        output_config: { effort: 'low' },
+      },
+    },
+    {
+      key: 'claude-opus-5.5' as const,
+      modelId: 'global.anthropic.claude-opus-5-5',
+      additionalModelRequestFields: {
+        thinking: { type: 'adaptive' },
+        output_config: { effort: 'low' },
+      },
+    },
+    {
+      key: 'openai-gpt-6.1-sol' as const,
+      modelId: 'us.openai.gpt-6.1-sol',
+      additionalModelRequestFields: undefined,
+    },
+    {
+      key: 'openai-gpt-6-luna' as const,
+      modelId: 'global.openai.gpt-6-luna',
+      additionalModelRequestFields: undefined,
+    },
+  ])(
+    'serializes $key as one profile-specific Converse request and accepts its reasoning',
+    async ({ key, modelId, additionalModelRequestFields }) => {
+      const profile = resolveModelProfile(key);
+      const response = responseBytes([reasoning(), toolUse('tool_1', {})]);
+      const handler = new QueueHandler([{ bytes: response }]);
+      const recorded = recordingAudit();
+
+      await expect(
+        executeDecision(inputForModel(profile), recorded.audit, { requestHandler: handler }),
+      ).resolves.toMatchObject({
+        action: { name: 'tool_1', input: {} },
+        usage: { normalized: { gameTokens: 23, reasoningTokens: null } },
+      });
+
+      expect(handler.requests).toHaveLength(1);
+      expect(handler.requests[0]?.path).toContain(`/model/${modelId}/converse`);
+      const body = JSON.parse(decoder.decode(recorded.requests[0] ?? new Uint8Array())) as Record<
+        string,
+        unknown
+      >;
+      expect(body).toMatchObject({
+        inferenceConfig: { maxTokens: 4_096 },
+        toolConfig: { toolChoice: { auto: {} } },
+      });
+      if (additionalModelRequestFields === undefined) {
+        expect(body).not.toHaveProperty('additionalModelRequestFields');
+      } else {
+        expect(body).toMatchObject({ additionalModelRequestFields });
+      }
+      expect(recorded.receipts[0]?.bytes).toEqual(response);
+    },
+  );
 
   it('rejects a changed or arbitrary model profile before any network request', async () => {
     const handler = new QueueHandler([]);
@@ -221,6 +301,15 @@ describe('auditable Strands Bedrock decision', () => {
       name: 'unknown block',
       content: [reasoning(), { unsupported: { value: true } }, toolUse('tool_1', {})],
     },
+    { name: 'non-object content block', content: [null, toolUse('tool_1', {})] },
+    {
+      name: 'tool block with an unknown discriminator',
+      content: [{ toolUse: { toolUseId: 'call-1', name: 'tool_1', input: {}, type: 'future' } }],
+    },
+    {
+      name: 'tool block with an unknown field',
+      content: [{ toolUse: { toolUseId: 'call-1', name: 'tool_1', input: {}, future: true } }],
+    },
   ])('rejects $name without publishing an action', async ({ content }) => {
     const handler = new QueueHandler([{ bytes: responseBytes(content) }]);
     const recorded = recordingAudit();
@@ -231,6 +320,111 @@ describe('auditable Strands Bedrock decision', () => {
     expect(handler.requests).toHaveLength(1);
     expect(recorded.receipts).toHaveLength(1);
   });
+
+  it.each([
+    {
+      name: 'non-assistant message role',
+      bytes: responseBytes([toolUse('tool_1', {})], 'tool_use', {
+        output: { message: { role: 'user', content: [toolUse('tool_1', {})] } },
+      }),
+    },
+    {
+      name: 'non-tool stop reason',
+      bytes: responseBytes([toolUse('tool_1', {})], 'end_turn'),
+    },
+  ])('rejects a Converse envelope with $name before accepting its tool', async ({ bytes }) => {
+    const handler = new QueueHandler([{ bytes }]);
+    const recorded = recordingAudit();
+
+    await expect(
+      executeDecision(input(), recorded.audit, { requestHandler: handler }),
+    ).rejects.toMatchObject({ code: 'invalid_response' });
+    expect(handler.requests).toHaveLength(1);
+    expect(recorded.receipts).toEqual([expect.objectContaining({ bytes, complete: true })]);
+  });
+
+  it.each(addedReasoningModelKeys)(
+    'accepts protected reasoning for %s without treating it as an action',
+    async (key) => {
+      const bytes = responseBytes([redactedReasoning(), toolUse('tool_1', {})]);
+      const handler = new QueueHandler([{ bytes }]);
+      const recorded = recordingAudit();
+
+      await expect(
+        executeDecision(inputForModel(resolveModelProfile(key)), recorded.audit, {
+          requestHandler: handler,
+        }),
+      ).resolves.toMatchObject({ action: { name: 'tool_1', input: {} } });
+      expect(handler.requests).toHaveLength(1);
+      expect(recorded.receipts[0]?.bytes).toEqual(bytes);
+    },
+  );
+
+  it.each([
+    { name: 'reasoning with a missing text value', block: { reasoningText: {} } },
+    {
+      name: 'reasoning with a signature but no text value',
+      block: { reasoningText: { signature: 'signed' } },
+    },
+    { name: 'reasoning with an invalid text value', block: { reasoningText: { text: 5 } } },
+    {
+      name: 'reasoning with an unknown nested field',
+      block: { reasoningText: { text: 'evaluación interna', extra: true } },
+    },
+    { name: 'empty protected reasoning', block: { redactedContent: '' } },
+    { name: 'malformed protected reasoning', block: { redactedContent: '%%%=' } },
+    { name: 'unknown reasoning representation', block: { $unknown: ['future', {}] } },
+  ])('rejects $name without publishing an action', async ({ block }) => {
+    const bytes = responseBytes([{ reasoningContent: block }, toolUse('tool_1', {})]);
+    const handler = new QueueHandler([{ bytes }]);
+    const recorded = recordingAudit();
+
+    await expect(
+      executeDecision(inputForModel(resolveModelProfile('openai-gpt-6.1-sol')), recorded.audit, {
+        requestHandler: handler,
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_response' });
+    expect(handler.requests).toHaveLength(1);
+    expect(recorded.receipts).toEqual([expect.objectContaining({ bytes, complete: true })]);
+  });
+
+  it.each(addedReasoningModelKeys)(
+    'still requires one enabled, schema-valid tool for %s',
+    async (key) => {
+      const invalidResponses = [
+        { name: 'zero tools', content: [reasoning()] },
+        {
+          name: 'multiple tools',
+          content: [reasoning(), toolUse('tool_1', {}, 'one'), toolUse('tool_2', {}, 'two')],
+        },
+        {
+          name: 'text alongside a tool',
+          content: [reasoning(), { text: 'un plan' }, toolUse('tool_1', {})],
+        },
+        {
+          name: 'disabled tool',
+          content: [reasoning(), toolUse('tool_9', {})],
+        },
+        {
+          name: 'schema-invalid tool',
+          content: [reasoning(), toolUse('tool_3', { direction: 'arriba' })],
+        },
+      ] as const;
+
+      for (const testCase of invalidResponses) {
+        const bytes = responseBytes(testCase.content);
+        const handler = new QueueHandler([{ bytes }]);
+        const recorded = recordingAudit();
+        await expect(
+          executeDecision(inputForModel(resolveModelProfile(key)), recorded.audit, {
+            requestHandler: handler,
+          }),
+        ).rejects.toMatchObject({ code: 'invalid_response' });
+        expect(handler.requests).toHaveLength(1);
+        expect(recorded.receipts).toEqual([expect.objectContaining({ bytes, complete: true })]);
+      }
+    },
+  );
 
   it('uses one native Converse call per fresh decision and stops before tool execution', async () => {
     expect(DECISION_INFERENCE_IMPLEMENTATION).toMatchObject({
@@ -306,6 +500,37 @@ describe('auditable Strands Bedrock decision', () => {
     expect(secondMessage).toContain('"derecha":"suelo"');
     expect(secondMessage).not.toContain('"derecha":"pozo"');
     expect(firstSystem).toContain('  texto literal\n🦾  ');
+  });
+
+  it('does not carry reasoning or prior observations into the next decision', async () => {
+    const model = resolveModelProfile('claude-sonnet-5.5');
+    const handler = new QueueHandler([
+      { bytes: responseBytes([reasoning('razonamiento privado'), toolUse('tool_1', {})]) },
+      { bytes: responseBytes([reasoning('otro razonamiento'), toolUse('tool_2', {})]) },
+    ]);
+    const recorded = recordingAudit();
+
+    await executeDecision(inputForModel(model), recorded.audit, { requestHandler: handler });
+    await executeDecision(
+      { ...inputForModel(model), observation: { actual: 'suelo', derecha: 'suelo' } },
+      recorded.audit,
+      { requestHandler: handler },
+    );
+
+    expect(handler.requests).toHaveLength(2);
+    expect(recorded.requests).toHaveLength(2);
+    const bodies = recorded.requests.map(
+      (bytes) => JSON.parse(decoder.decode(bytes)) as Record<string, unknown>,
+    );
+    const secondMessage = (
+      bodies[1]?.messages as Array<{ content: Array<{ text: string }> }> | undefined
+    )?.[0]?.content[0]?.text;
+    expect(bodies[0]).toMatchObject({ toolConfig: { toolChoice: { auto: {} } } });
+    expect(bodies[1]).toMatchObject({ toolConfig: { toolChoice: { auto: {} } } });
+    expect(secondMessage).toContain('"derecha":"suelo"');
+    expect(secondMessage).not.toContain('razonamiento privado');
+    expect(secondMessage).not.toContain('otro razonamiento');
+    expect(secondMessage).not.toContain('toolResult');
   });
 
   it.each([

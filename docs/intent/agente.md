@@ -87,7 +87,7 @@ Si no hay herramientas habilitadas, la interfaz debe pedir que se agregue al men
 
 ## Capturar configuraciones y snapshots
 
-Sonnet 4.6 es el único modelo operativo. Los intentos nuevos usan ese perfil y sus parámetros de Bedrock; el editor no ofrece otros modelos ni endpoints o parámetros arbitrarios. Los fallos de acceso o cuota se informan sin sustituir el modelo. Un borrador con una clave o formato retirado no se convierte ni se resuelve mediante un fallback.
+El catálogo cerrado ofrece Claude Sonnet 4.6, Claude Sonnet 5.5, Claude Opus 5.5, GPT-6.1 Sol y GPT-6 Luna mediante Amazon Bedrock; Sonnet 4.6 sigue como default. La UI y los contratos guardan una clave del catálogo. El servidor resuelve el ID, la región y los parámetros admitidos y los fija en el snapshot versionado del intento; el cliente no puede enviar IDs de proveedor ni parámetros libres. El soporte de una fila en el código no acredita por sí solo su acceso, cuota o inferencia en el ambiente publicado: la verificación operativa se registra por modelo. Los fallos se informan sin sustituir el modelo, y las claves fuera del catálogo se rechazan sin conversión ni fallback.
 
 El clic en **Probar** valida y guarda directamente el borrador. Cada intento admitido toma una copia fija de esa configuración y del nivel seleccionado antes de su primer turno. La copia incluye, como mínimo, instrucciones, herramientas habilitadas, identificadores opacos, descripciones, esquemas aplicables y la configuración de inferencia elegida. El valor de `animation_enabled` se guarda en el intento como preferencia de presentación y no se incluye en el payload del modelo.
 

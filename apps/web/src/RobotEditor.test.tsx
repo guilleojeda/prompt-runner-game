@@ -46,6 +46,13 @@ function api(overrides: Partial<DraftApi> = {}): DraftApi {
   };
 }
 
+const addedModelChoices = [
+  { key: 'claude-sonnet-5.5', label: 'Claude Sonnet 5.5' },
+  { key: 'claude-opus-5.5', label: 'Claude Opus 5.5' },
+  { key: 'openai-gpt-6.1-sol', label: 'GPT-6.1 Sol' },
+  { key: 'openai-gpt-6-luna', label: 'GPT-6 Luna' },
+] as const;
+
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
@@ -72,10 +79,37 @@ describe('RobotEditor', () => {
     expect(
       (screen.getByLabelText('Modelo para el próximo intento') as HTMLSelectElement).value,
     ).toBe('claude-sonnet-4.6');
-    expect(screen.getAllByRole('option')).toHaveLength(1);
+    expect(screen.getAllByRole('option').map((option) => option.getAttribute('value'))).toEqual([
+      'claude-sonnet-4.6',
+      ...addedModelChoices.map(({ key }) => key),
+    ]);
+    expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual([
+      'Claude Sonnet 4.6',
+      ...addedModelChoices.map(({ label }) => label),
+    ]);
     expect(screen.getByText('Guardado')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /Probar/i })).toBeNull();
   });
+
+  it.each(addedModelChoices)(
+    'saves the selected model %s in the current draft',
+    async ({ key }) => {
+      const putDraft = vi.fn().mockImplementation(async (version: number, draft: RobotDraft) => ({
+        version: version + 1,
+        draft,
+      }));
+      render(<RobotEditor api={api({ putDraft })} session={session()} />);
+
+      const selector = (await screen.findByLabelText(
+        'Modelo para el próximo intento',
+      )) as HTMLSelectElement;
+      fireEvent.change(selector, { target: { value: key } });
+
+      await waitFor(() => expect(putDraft).toHaveBeenCalledOnce(), { timeout: 2_000 });
+      expect(selector.value).toBe(key);
+      expect((putDraft.mock.calls[0]?.[1] as RobotDraft).modelKey).toBe(key);
+    },
+  );
 
   it('lets the player enable and describe Esperar', async () => {
     const putDraft = vi.fn().mockImplementation(async (version: number, draft: RobotDraft) => ({
@@ -114,6 +148,35 @@ describe('RobotEditor', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Probar' }));
     expect(onTry).toHaveBeenCalledOnce();
     expect((selector as HTMLSelectElement).disabled).toBe(true);
+  });
+
+  it('captures a newly selected model when Probar is clicked before autosave runs', async () => {
+    const editorRef = createRef<RobotEditorHandle>();
+    const putDraft = vi.fn().mockImplementation(async (version: number, draft: RobotDraft) => ({
+      version: version + 1,
+      draft,
+    }));
+    let captured: DraftSnapshot | null = null;
+    const onTry = vi.fn(() => {
+      void editorRef.current?.captureSnapshot().then((snapshot) => {
+        captured = snapshot;
+      });
+    });
+    render(
+      <RobotEditor ref={editorRef} api={api({ putDraft })} session={session()} onTry={onTry} />,
+    );
+
+    const selector = (await screen.findByLabelText(
+      'Modelo para el próximo intento',
+    )) as HTMLSelectElement;
+    fireEvent.change(selector, { target: { value: 'openai-gpt-6.1-sol' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Probar' }));
+
+    expect(onTry).toHaveBeenCalledOnce();
+    expect(selector.disabled).toBe(true);
+    await waitFor(() => expect(captured?.draft.modelKey).toBe('openai-gpt-6.1-sol'));
+    expect(putDraft).toHaveBeenCalledOnce();
+    expect((putDraft.mock.calls[0]?.[1] as RobotDraft).modelKey).toBe('openai-gpt-6.1-sol');
   });
 
   it('blocks Probar while a recovered configuration is applying but keeps editing available', async () => {

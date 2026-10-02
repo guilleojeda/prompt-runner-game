@@ -60,14 +60,9 @@ const runtimeArnFor = (scope: Construct, runtimeName: string): string =>
 const runtimeEndpointArnFor = (scope: Construct, runtimeName: string): string =>
   `${runtimeArnFor(scope, runtimeName)}/runtime-endpoint/*`;
 
-/**
- * Global inference profiles authorize both the profile ARN and their exact
- * foundation-model destinations. The current catalog uses the profile's
- * model identifier as the foundation-model identifier; keep this derivation
- * finite and explicit so adding a catalog row cannot widen IAM to a family.
- */
+/** The finite catalog uses the profile suffix as its foundation-model ID. */
 export const foundationModelIdFor = (profile: ModelProfile): string =>
-  profile.modelId.replace(/^global\./u, '');
+  profile.modelId.replace(/^(?:global|us)\./u, '');
 
 export const approvedBedrockResourceArnsFor = (
   scope: Construct,
@@ -80,10 +75,16 @@ export const approvedBedrockResourceArnsFor = (
     resourceName: profile.modelId,
   });
   const foundationModelId = foundationModelIdFor(profile);
+  // GPT-6.1 Sol is a US profile, not global. These exact destinations were
+  // returned by GetInferenceProfile; see docs/architecture/ejecucion.md.
+  const foundationRegions =
+    profile.key === 'openai-gpt-6.1-sol' ? ['us-east-1', 'us-east-2', 'us-west-2'] : ['', region];
   return [
     profileArn,
-    `arn:${cdk.Aws.PARTITION}:bedrock:::foundation-model/${foundationModelId}`,
-    `arn:${cdk.Aws.PARTITION}:bedrock:${region}::foundation-model/${foundationModelId}`,
+    ...foundationRegions.map(
+      (destination) =>
+        `arn:${cdk.Aws.PARTITION}:bedrock:${destination}::foundation-model/${foundationModelId}`,
+    ),
   ];
 };
 

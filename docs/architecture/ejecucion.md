@@ -1,6 +1,6 @@
 # Ejecución del juego y del agente
 
-**Ejecución periódica del nivel principal con puerta y Sonnet 4.6.** AgentCore Runtime con Strands en TypeScript y Amazon Bedrock mediante su integración nativa reúne la coordinación del intento, el motor determinista y el registro. El nivel `principal-puerta-v4` conserva el resultado y permite consultar y reproducir intentos del contrato vigente. Sonnet 4.6 es el único modelo operativo. Los requisitos están en [la especificación](../../README.md#documentación-del-producto); el User Pool de Cognito está configurado para enviar sus códigos mediante SES, según [acceso y entrega](acceso-y-entrega.md); el frontend se publica en S3 privado mediante CloudFront con Origin Access Control.
+**Ejecución periódica del nivel principal con puerta y cinco perfiles Bedrock.** AgentCore Runtime con Strands en TypeScript y Amazon Bedrock mediante su integración nativa reúne la coordinación del intento, el motor determinista y el registro. El nivel `principal-puerta-v4` conserva el resultado y permite consultar y reproducir intentos del contrato vigente. Sonnet 4.6 es el default. El acceso, la cuota y la inferencia efectiva se comprueban por perfil antes de afirmar su operación en el ambiente. Los requisitos están en [la especificación](../../README.md#documentación-del-producto); el User Pool de Cognito está configurado para enviar sus códigos mediante SES, según [acceso y entrega](acceso-y-entrega.md); el frontend se publica en S3 privado mediante CloudFront con Origin Access Control.
 
 ## Componentes y responsabilidades
 
@@ -13,7 +13,7 @@ flowchart LR
   L -->|inicio y reconocimiento breve| R[AgentCore Runtime: TypeScript + Strands]
   R --> D
   R --> S[(S3 privado: llamadas)]
-  R --> B[Bedrock: Sonnet 4.6]
+  R --> B[Bedrock: catálogo finito de cinco modelos]
   W -->|lectura autorizada del request| S
 ```
 
@@ -39,7 +39,7 @@ El único nivel vigente es `principal-puerta-v4`, contenido versión 5, con `RUL
 
 El catálogo conserva `tool_1` Avanzar, `tool_2` Retroceder, `tool_3` Saltar, `tool_4` Agacharse y avanzar, `tool_5` Nadar, `tool_6` Esperar y `tool_7` Agarrar objeto. Esperar y Agarrar objeto no tienen argumentos y empiezan deshabilitadas; ambas consumen un turno sin mover al robot. Agarrar sólo recoge el objeto del apoyo actual y se registra como no-op cuando allí no queda ninguno. La observación contiene la orientación física actual (`facing`), los objetos del apoyo actual, el tramo inmediato a cada lado, una puerta local con estado y llave requerida o un límite, y el marcador de salida cuando corresponde; no expone coordenadas, inventario, ubicación remota de la llave ni fases futuras.
 
-La configuración efectiva fija `RULES_VERSION=4`, `scoreVersion=score-v1`, el perfil único de Sonnet 4.6 y los parámetros de puntaje base 1000, peso de turno 10, peso de tokens 1, unidad 1000, dos decimales y negativos permitidos. El valor de cada objeto procede de la definición del nivel fijada en el intento: la recompensa aporta 25 puntos si está en el inventario final; la llave no aporta puntos. Los plazos operativos guardados son: inicio pendiente 5 minutos, evento de starter 5 minutos, vida de Runtime 30 minutos, llamada 60 segundos, reserva de guardado 30 segundos y margen de terminación 2 minutos. No son objetivos de latencia.
+La configuración efectiva fija `RULES_VERSION=4`, `scoreVersion=score-v1`, la clave y el perfil Bedrock versionado elegido del catálogo de cinco modelos y los parámetros de puntaje base 1000, peso de turno 10, peso de tokens 1, unidad 1000, dos decimales y negativos permitidos. Sonnet 4.6 es el default. El valor de cada objeto procede de la definición del nivel fijada en el intento: la recompensa aporta 25 puntos si está en el inventario final; la llave no aporta puntos. Los plazos operativos guardados son: inicio pendiente 5 minutos, evento de starter 5 minutos, vida de Runtime 30 minutos, llamada 60 segundos, reserva de guardado 30 segundos y margen de terminación 2 minutos. No son objetivos de latencia.
 
 El Runtime registra una tarea asíncrona y el coordinador conserva snapshots de estado, llamadas y acciones en DynamoDB; los bodies completos de inferencia van a S3 privado. La continuidad al cerrar el navegador depende del proceso y de los registros persistidos. Una caída del proceso conserva lo ya escrito y cierra el intento como error; no hay reanudación automática del juego.
 
@@ -49,7 +49,7 @@ Para iniciar, una **Lambda breve invocada asíncronamente** llama a Runtime y es
 
 El circuito actualmente implementado es:
 
-1. El usuario recupera su borrador, edita habilidades e instrucciones, ajusta la preferencia de Animación y pulsa «Probar». No hay selector de modelo ni nivel; se usa Sonnet 4.6 y el único nivel vigente. La admisión fija el valor vigente de `animationEnabled` para ese intento.
+1. El usuario recupera su borrador, edita habilidades e instrucciones, elige un perfil del catálogo, ajusta la preferencia de Animación y pulsa «Probar». Sonnet 4.6 es el default y `principal-puerta-v4` es el único nivel vigente. La admisión fija el modelo del borrador y el valor vigente de `animationEnabled` para ese intento.
 2. La interfaz captura el borrador visible y la versión confirmada. La API valida identidad, versión, catálogo, tamaño y al menos una habilidad habilitada. Un rechazo previo conserva el borrador y no consume cuota.
 3. Una transacción de DynamoDB crea el intento pendiente, guarda el snapshot inicial, la configuración completa del nivel/modelo/puntaje y el contador diario. La admisión y el despacho del starter no son una transacción atómica.
 4. La API invoca asíncronamente la Lambda de starter. El starter valida el intento pendiente, invoca el Runtime y devuelve sólo el reconocimiento del despacho. Runtime reclama el intento con un ejecutor y crea su tarea asíncrona.
@@ -65,23 +65,27 @@ La inspección de decisiones conserva el prompt y response completos en el servi
 
 ## Inferencia
 
-La integración usa **`BedrockModel` de Strands 1.18.0 y Converse sin streaming** para Sonnet 4.6, desde `us-east-1` y con credenciales IAM. Sonnet 4.6 es el único perfil operativo. No hay APIs directas de fabricantes, Mantle, claves API nuevas o descubrimiento de modelos durante cada intento. Sonnet 5, GPT-5.6 Sol y Opus 5/5.5 se implementarán en fase 12, después de SES; GPT-6 Luna/Sol siguen diferidos. El cliente AWS fija `maxAttempts=1`.
+La integración usa **`BedrockModel` de Strands 1.18.0 y Converse sin streaming**, desde `us-east-1` y con credenciales IAM. El catálogo cerrado conserva Sonnet 4.6 como default y añade Sonnet 5.5, Opus 5.5, GPT-6.1 Sol y GPT-6 Luna. No hay APIs directas de fabricantes, Mantle, claves API nuevas o descubrimiento de modelos durante cada intento. El catálogo y los parámetros están implementados; el acceso, la cuota y una inferencia real por cada modelo son requisitos separados para afirmar su operación publicada. El cliente AWS fija `maxAttempts=1`.
 
-| Modelo | Perfil global | Salida máxima | Razonamiento y herramientas |
+| Modelo | Perfil seleccionado | Salida máxima | Razonamiento y selección de herramienta |
 |---|---|---:|---|
-| Claude Sonnet 4.6 | `global.anthropic.claude-sonnet-4-6` | 512 | Thinking omitido, desactivado por el contrato del modelo; `any`. |
+| Claude Sonnet 4.6 | `global.anthropic.claude-sonnet-4-6` | 512 | Thinking omitido; `any`; la respuesta debe contener exactamente una herramienta. |
+| Claude Sonnet 5.5 | `global.anthropic.claude-sonnet-5-5` | 4.096 | Thinking adaptive, effort `low`, `auto`; admite reasoning nativo junto con una herramienta. |
+| Claude Opus 5.5 | `global.anthropic.claude-opus-5-5` | 4.096 | Thinking adaptive, effort `low`, `auto`; admite reasoning nativo junto con una herramienta. |
+| GPT-6.1 Sol | `us.openai.gpt-6.1-sol` | 4.096 | `auto`; sin override de reasoning; admite reasoning nativo junto con una herramienta. |
+| GPT-6 Luna | `global.openai.gpt-6-luna` | 4.096 | `auto`; sin override de reasoning; admite reasoning nativo junto con una herramienta. |
 
-Los intentos nuevos usan Sonnet 4.6 y fijan el perfil efectivo en su snapshot. El formato vigente de borrador admite únicamente este perfil. Otros valores se rechazan sin conversión ni asignación automática de otro modelo. Los límites son parámetros técnicos guardados por intento. No se envían temperature ni controles de caché sin necesidad; la omisión de un override queda registrada como omisión, sin inventar el valor efectivo del servicio.
+El selector ofrece exactamente estos cinco perfiles y usa Sonnet 4.6 como default. Borradores, robots guardados y recuperaciones conservan `modelKey`; el servidor resuelve el resto del perfil y congela identidad, parámetros y versión en el snapshot de admisión. IDs de proveedor, claves ajenas y parámetros libres se rechazan. Los límites son parámetros técnicos guardados por intento. No se envían temperature ni controles de caché sin necesidad; la omisión de un override queda registrada como omisión, sin inventar el valor efectivo del servicio.
 
 Cada intento guarda el perfil completo y versionado; el ejecutor usa ese snapshot aunque cambien los defaults. La identidad efectiva también queda en cada llamada, porque Converse incluye el modelo en la ruta HTTP y no en el body. La disponibilidad documental no acredita permisos, cuota o inferencia exitosa en la cuenta. Véanse [Bedrock](../reference/bedrock.md) y [Strands](../reference/agentcore.md#strands-dentro-de-runtime).
 
-Cada decisión usa protocolo mínimo, instrucciones literales, todas las herramientas capturadas y observación local. Se solicita `toolChoice=any`; eso no sustituye la validación de exactamente una acción. Bloques de texto como respuesta o plan, bloques desconocidos, cero o varias herramientas y truncamiento son errores. La respuesta se valida para exigir una única llamada habilitada y argumentos del schema antes de ejecutar cualquier efecto. Una respuesta inválida queda registrada y termina con error; no se corrige ni se ejecuta parcialmente. No se envían resultados de herramientas ni historial en otra llamada. Una descripción vacía se omite sin completarla.
+Cada decisión usa instrucciones literales, todas las herramientas capturadas y observación local. Sonnet 4.6 solicita `toolChoice=any`; los perfiles nuevos solicitan `auto` y permiten los bloques nativos de reasoning que correspondan. En todos los casos la aplicación valida la respuesta completa y exige exactamente una llamada habilitada con argumentos del schema antes de ejecutar cualquier efecto. Texto/plan, bloques desconocidos o malformados, cero o varias herramientas y truncamiento terminan sin acción. Reasoning no es acción ni se reenvía como historia. Una respuesta inválida queda registrada; no se corrige ni se ejecuta parcialmente. No se envían resultados de herramientas ni historial en otra llamada. Una descripción vacía se omite sin completarla.
 
 La captura de request/response usa un `requestHandler` auditado: guarda el body efectivo antes del envío y el body completo antes de reducirlo a uso/acción. Si un rechazo de throttling inequívoco llega sin body, guarda un marcador vacío explícito con el error normalizado y el uso desconocido; ese marcador no se atribuye al proveedor como respuesta original. Un corte de transporte ambiguo conserva el registro incompleto y no se reintenta. Una respuesta truncada, incompleta o semánticamente inválida no ejecuta una acción. Los tokens normalizados conservan entrada, salida, caché, `reasoningTokens` y `gameTokens` sin sumar dos veces categorías. Reasoning es un detalle incluido en salida; su ausencia queda desconocida y no invalida un total de entrada/salida inequívoco. No se asume que tokens equivalgan a bytes. La implementación actual no agrega una continuación conversacional ni un reintento oculto del SDK; se permiten como máximo dos reintentos adicionales ante throttling inequívoco, con un registro por envío. No se reintentan cortes ambiguos, timeout ni respuestas semánticamente inválidas.
 
 El request y response efectivos se conservan antes de cualquier reducción a eventos o métricas normalizadas de Strands. Los hooks del agente por sí solos no se consideran prueba de captura íntegra del body del proveedor; la instrumentación del cliente de inferencia es la autoridad del registro local.
 
-El acceso, la cuota y el acuerdo del modelo siguen requiriendo comprobación del ambiente antes de afirmar una ejecución real. La [observación de cuenta](../reference/cuenta-aws.md) conserva lecturas previas y no sustituye esa comprobación. No hay fallback automático ni cambio oculto de modelo dentro de un intento.
+El acceso, la cuota, el acuerdo y una inferencia real de cada perfil requieren comprobación del ambiente antes de afirmar operación publicada. La [observación de cuenta](../reference/cuenta-aws.md) conserva consultas fechadas y aclara qué modelos cubre cada una. No hay fallback automático ni cambio oculto de modelo dentro de un intento.
 
 ## Duplicados, fallos y continuidad
 
