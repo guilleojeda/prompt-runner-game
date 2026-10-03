@@ -1,6 +1,6 @@
 # Plataforma y operación
 
-Especificación acordada del producto. El código disponible implementa acceso Cognito, editor y API Lambda, ejecución periódica del nivel principal con llave y puerta mediante Runtime/Strands/Bedrock, intentos en DynamoDB y cuerpos privados en S3, configuraciones de robot guardadas, comparación de victorias propias cargadas y publicación mediante CDK y GitHub Actions. La URL pública está en [README](../../README.md). La referencia de unas cien cuentas totales se evalúa en [capacidad](#capacidad-y-costo). [Índice de documentación](../../README.md).
+Especificación acordada del producto. El código disponible implementa acceso Cognito, editor y API Lambda, ejecución periódica del nivel principal con llave y puerta mediante Runtime/Strands/Bedrock, intentos en DynamoDB y cuerpos privados en S3, configuraciones de robot guardadas, comparación de victorias propias cargadas y publicación mediante CDK y GitHub Actions. La URL pública está en [README](../../README.md). [Índice de documentación](../../README.md).
 
 ## Tecnologías y restricciones confirmadas
 
@@ -46,11 +46,9 @@ Los datos del contrato vigente no caducan automáticamente mientras ese contrato
 
 El cálculo continúa al cerrar o recargar la página mediante la tarea de background de Runtime. Al volver, la interfaz recupera el intento y el valor de Animación fijado al pulsar Probar. Una caída del ejecutor conserva lo ya registrado y se informa como error; no hay reanudación automática del juego tras una falla de infraestructura. Los límites y la coordinación están en [ejecución](../architecture/ejecucion.md).
 
-## Capacidad y costo
+## Operación
 
-La referencia de escala es de **unas 100 cuentas en total**, con menos de 10 personas activas a la vez como uso habitual esperado. No es un límite de cuentas ni una exigencia de sostener 100 intentos simultáneos. El User Pool identifica a cada persona; la API valida su token y usa su `sub` para separar borradores, copias y resultados en DynamoDB, que opera en modo on-demand. CloudFront sirve el mismo frontend estático a todas las cuentas. Esta arquitectura no tiene un límite estructural cercano a cien cuentas. Las cuotas de correo, Lambda, AgentCore y Bedrock limitan el ritmo de altas y operaciones; sin una tasa de uso definida no se promete que todas las cuentas puedan iniciar intentos al mismo tiempo ni agotar su cuota diaria a cualquier velocidad.
-
-No hay un presupuesto máximo fijado ni un corte global de gasto solicitado. La cuota por usuario sí es obligatoria y el bajo costo es una prioridad de las elecciones técnicas. Los costos de inferencia deben basarse en consumos reales y tarifas verificadas cuando se muestren; no se promete un costo mensual sin conocer el uso. Véase [consumo y puntuación](consumo-y-puntaje.md).
+La cuota por usuario sí es obligatoria y el bajo costo es una prioridad de las elecciones técnicas. Los costos de inferencia deben basarse en consumos reales y tarifas verificadas cuando se muestren; no se promete un costo mensual sin conocer el uso. Véase [consumo y puntuación](consumo-y-puntaje.md).
 
 El tiempo de cálculo no es una restricción de experiencia fijada por el usuario. Los límites técnicos de los servicios siguen siendo hechos que la solución debe respetar para terminar o informar una ejecución correctamente; no se convierten en un nuevo objetivo de latencia.
 
@@ -85,4 +83,4 @@ Los mapas, los pesos y la calibración educativa se ajustan en el momento acorda
 
 Al implementar, comprobar registro con email verificado, acceso a datos propios, recuperación entre sesiones y aplicación del límite diario ante solicitudes concurrentes. Verificar que ni el contexto del agente ni los recursos públicos contienen secretos o datos de otras cuentas. Probar continuidad al cerrar la página y recuperación con el valor de Animación fijado para el intento.
 
-La entrega debe demostrar que el resultado desplegado corresponde a cambios verificados por el circuito configurado y que el flujo real puede usar Bedrock, persistir un intento y recuperarlo. Para la referencia de unas cien cuentas totales alcanza revisar la arquitectura, el aislamiento por cuenta y los límites de los servicios; no se exige crear cien usuarios ni hacer una prueba de carga. No se inventa un objetivo de latencia o disponibilidad.
+La entrega debe demostrar que el resultado desplegado corresponde a cambios verificados por el circuito configurado y que el flujo real puede usar Bedrock, persistir un intento y recuperarlo. No se inventa un objetivo de latencia o disponibilidad.
