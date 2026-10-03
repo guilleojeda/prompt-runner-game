@@ -34,6 +34,31 @@ button:focus-visible {
   outline-offset: 3px;
 }
 
+.game-home-link,
+.game-footer a {
+  color: #f2c879;
+  text-underline-offset: 0.2em;
+}
+
+.game-home-link {
+  display: inline-block;
+  margin-bottom: 1.5rem;
+}
+
+.game-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem 1.5rem;
+  color: #b9b4a8;
+  font-size: 0.9rem;
+}
+
+.game-home-link:focus-visible,
+.game-footer a:focus-visible {
+  outline: 3px solid #f2c879;
+  outline-offset: 4px;
+}
+
 .shell {
   width: min(100% - 3rem, 62rem);
   min-height: 100vh;

@@ -622,8 +622,13 @@ export function App({
   return (
     <main className="shell">
       <header>
-        <p className="eyebrow">Taller de agentes</p>
-        <h1>Enseñale a jugar al robot</h1>
+        {!attemptBusy && (
+          <a className="game-home-link" href="/bienvenida.html">
+            Acerca de Robot Runner
+          </a>
+        )}
+        <p className="eyebrow">A puro prompt</p>
+        <h1>Robot Runner</h1>
         <p className="intro">
           Configurá sus instrucciones y observá cómo decide recorrer el mundo, una decisión a la
           vez.
@@ -825,6 +830,13 @@ export function App({
             ? 'Tu cuenta está confirmada y la sesión es válida.'
             : 'El acceso, la confirmación y la recuperación se realizan en una página segura.'}
       </p>
+      {!attemptBusy && (
+        <footer className="game-footer">
+          <span>Guille Ojeda</span>
+          <a href="/privacidad/index.html">Privacidad</a>
+          <a href="mailto:contacto@guilleojeda.com">Contacto</a>
+        </footer>
+      )}
     </main>
   );
 }

@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="es-AR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="build-revision" content="%VITE_BUILD_REVISION%" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#14130f" />
+    <meta
+      name="description"
+      content="Conocé qué información conserva Robot Runner, cómo se usa para producir acciones y cómo pedir el borrado de tu cuenta."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:locale" content="es_AR" />
+    <meta property="og:title" content="Privacidad | Robot Runner: A puro prompt" />
+    <meta
+      property="og:description"
+      content="Conocé qué información conserva Robot Runner, cómo se usa para producir acciones y cómo pedir el borrado de tu cuenta."
+    />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/src/landing.css" />
+    <title>Privacidad | Robot Runner: A puro prompt</title>
+  </head>
+  <body class="privacy-page">
+    <a class="skip-link" href="#contenido">Saltar al contenido</a>
+    <div class="site-shell">
+      <header class="site-header">
+        <a class="brand" href="/bienvenida.html" aria-label="Robot Runner: A puro prompt, inicio">
+          <img src="/favicon.svg" alt="" width="44" height="44" />
+          <span class="brand-copy">
+            <span class="brand-name">Robot Runner</span>
+            <span class="brand-tagline">A puro prompt</span>
+          </span>
+        </a>
+        <nav class="site-nav" aria-label="Navegación principal">
+          <a href="/bienvenida.html">Inicio</a>
+          <a class="button button-small" href="/">Jugar</a>
+        </nav>
+      </header>
+
+      <main class="privacy-main" id="contenido">
+        <p class="eyebrow">Robot Runner: A puro prompt</p>
+        <h1>Privacidad</h1>
+        <p class="privacy-intro">
+          Esta página explica qué información guarda el servicio y cómo se usa.
+        </p>
+
+        <div class="privacy-content">
+          <section aria-labelledby="informacion-title">
+            <h2 id="informacion-title">Qué información guardamos</h2>
+            <p>
+              Usamos tu email para crear y mantener tu cuenta. Amazon Cognito gestiona el registro,
+              la verificación y el ingreso; la contraseña se ingresa en su página de acceso.
+            </p>
+            <p>
+              El navegador conserva la sesión de acceso de la pestaña para que puedas seguir jugando
+              y volver después de una recarga.
+            </p>
+            <p>
+              También guardamos tus configuraciones e instrucciones para el robot, incluidas las
+              descripciones de sus herramientas, y tu historial privado de intentos. Ese historial
+              incluye las decisiones y las inferencias registradas durante cada partida.
+            </p>
+          </section>
+
+          <section aria-labelledby="uso-title">
+            <h2 id="uso-title">Cómo se usa para jugar</h2>
+            <p>
+              Para producir acciones, enviamos a Amazon Bedrock las instrucciones, las descripciones
+              de las herramientas y la información local del nivel que recibe el agente durante sus
+              decisiones.
+            </p>
+            <p class="privacy-callout">
+              <strong>No ingreses datos sensibles</strong> en las instrucciones ni en las
+              descripciones de herramientas.
+            </p>
+          </section>
+
+          <section aria-labelledby="conservacion-title">
+            <h2 id="conservacion-title">Conservación y borrado</h2>
+            <p>
+              Conservamos tu cuenta, tus configuraciones y tu historial para que puedas volver a
+              jugar y consultar tus intentos. Esos datos no tienen un vencimiento automático. Podés
+              solicitar que eliminemos tu cuenta y esos datos escribiendo a contacto@guilleojeda.com
+              desde el email con el que te registraste. Verificamos la solicitud y gestionamos la
+              eliminación.
+            </p>
+            <p>
+              Los registros técnicos de operación pueden conservarse aparte del historial para
+              diagnosticar problemas y cuidar la seguridad. El acceso a esos registros está
+              restringido.
+            </p>
+            <a
+              class="text-link"
+              href="mailto:contacto@guilleojeda.com?subject=Solicitud%20de%20borrado"
+            >
+              Pedir el borrado de mi cuenta <span aria-hidden="true">↗</span>
+            </a>
+          </section>
+
+          <section aria-labelledby="medicion-title">
+            <h2 id="medicion-title">Medición y contacto</h2>
+            <p>No usamos herramientas de analítica ni cookies de marketing.</p>
+            <p>
+              Si tenés una consulta sobre privacidad, escribinos a
+              <a class="text-link-inline" href="mailto:contacto@guilleojeda.com"
+                >contacto@guilleojeda.com</a
+              >.
+            </p>
+          </section>
+        </div>
+      </main>
+
+      <footer class="site-footer">
+        <a class="footer-brand" href="/bienvenida.html">Robot Runner: A puro prompt</a>
+        <span>Guille Ojeda</span>
+        <div class="footer-links">
+          <a href="/bienvenida.html">Volver al inicio</a>
+          <a href="mailto:contacto@guilleojeda.com">Contacto</a>
+        </div>
+      </footer>
+    </div>
+  </body>
+</html>
