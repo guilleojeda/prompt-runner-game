@@ -153,6 +153,9 @@ export class PromptRunnerHostingStack extends cdk.Stack {
       distributionPaths: [
         '/',
         '/index.html',
+        '/bienvenida.html',
+        '/privacidad/index.html',
+        '/screenshots/*',
         '/favicon.svg',
         '/manifest.webmanifest',
         '/auth-config.json',

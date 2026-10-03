@@ -6,7 +6,7 @@ Especificación vigente de la experiencia. El acceso, la preparación persistida
 
 El juego muestra cómo las habilidades disponibles, sus descripciones y las instrucciones generales influyen en un agente basado en un LLM. La persona configura al agente; el motor resuelve el recorrido con reglas deterministas; el reproductor presenta el registro cerrado. El personaje es un robot virtual y toda la actividad ocurre en pantalla.
 
-El contexto de presentación es un espacio aproximado de 30 minutos de AWS User Group AI Argentina en el booth de AWS de Nerdearla. La primera versión prioriza completar el circuito funcional; no agrega como condición una duración máxima de cálculo, una cantidad fija de intentos, una tasa de éxito del modelo ni una secuencia educativa garantizada.
+Robot Runner: A puro prompt es un juego de Guille Ojeda con una beta pública gratuita. La primera versión prioriza completar el circuito funcional; no agrega como condición una duración máxima de cálculo, una tasa de éxito del modelo ni una secuencia educativa garantizada. Las condiciones de acceso y uso están en [plataforma](plataforma.md).
 
 La interfaz está en español y debe poder entenderse sin conocer AWS ni programación. La duración del cálculo no es un criterio de rechazo ni una condición adicional de aceptación.
 

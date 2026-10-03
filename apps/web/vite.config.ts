@@ -1,4 +1,5 @@
 import react from '@vitejs/plugin-react';
+import { fileURLToPath } from 'node:url';
 import { defineConfig, type Plugin } from 'vite';
 
 const buildRevision = process.env.VITE_BUILD_REVISION ?? process.env.GITHUB_SHA ?? 'local';
@@ -47,6 +48,11 @@ export default defineConfig({
     assetsDir: 'assets',
     manifest: true,
     rollupOptions: {
+      input: {
+        game: fileURLToPath(new URL('./index.html', import.meta.url)),
+        welcome: fileURLToPath(new URL('./bienvenida.html', import.meta.url)),
+        privacy: fileURLToPath(new URL('./privacidad/index.html', import.meta.url)),
+      },
       output: {
         entryFileNames: 'assets/[name]-[hash].js',
         chunkFileNames: 'assets/[name]-[hash].js',
