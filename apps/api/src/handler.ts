@@ -16,13 +16,16 @@ import {
   type RobotDraft,
   validateDraft,
   validateSavedRobotName,
+  validateWritableDraft,
 } from '../../../shared/robot.js';
 import {
   AdmissionConflictError,
+  AttemptCapacityError,
   AttemptDecisionsPendingError,
   AnimationPreferenceConflictError,
   AttemptNotTerminalError,
   AttemptStoreError,
+  BudgetUnavailableError,
   IdempotencyConflictError,
   ModelUnavailableError,
   QuotaExceededError,
@@ -35,6 +38,7 @@ import {
   SavedRobotConflictError,
   SavedRobotCursorError,
   SavedRobotIncompatibleError,
+  SavedRobotLimitError,
   SavedRobotStorageError,
   createDynamoSavedRobotStore,
   validateSavedRobotId,
@@ -45,6 +49,8 @@ import { summaryOf, type PersistedAttempt } from '../../../shared/server/attempt
 const APPLICATION_SCOPE = 'prompt-runner/robot';
 const STORED_DRAFT_INCOMPATIBLE_MESSAGE =
   'El borrador guardado no es compatible con la versión actual.';
+const ATTEMPT_UNAVAILABLE_MESSAGE =
+  'No se puede iniciar una partida por ahora. Podés consultar tus partidas o intentarlo más tarde.';
 
 interface Identity {
   readonly sub: string;
@@ -265,7 +271,7 @@ const attemptInput = (
     return {
       requestKey: object.requestKey,
       expectedVersion: object.expectedVersion,
-      draft: validateDraft(object.draft),
+      draft: validateWritableDraft(object.draft),
       animationEnabled: object.animationEnabled,
     };
   } catch (error) {
@@ -403,7 +409,7 @@ const putInput = (value: unknown): { expectedVersion: number; draft: RobotDraft 
     throw new ApiError(400, 'invalid', 'expectedVersion debe ser un entero no negativo.');
   }
   try {
-    return { expectedVersion: input.expectedVersion, draft: validateDraft(input.draft) };
+    return { expectedVersion: input.expectedVersion, draft: validateWritableDraft(input.draft) };
   } catch (error) {
     if (error instanceof DraftValidationError) {
       throw new ApiError(error.code === 'too_large' ? 413 : 400, error.code, error.message, {
@@ -451,7 +457,11 @@ const savedRobotPutInput = (
     throw error;
   }
   try {
-    return { expectedVersion: input.expectedVersion, name, draft: validateDraft(input.draft) };
+    return {
+      expectedVersion: input.expectedVersion,
+      name,
+      draft: validateWritableDraft(input.draft),
+    };
   } catch (error) {
     if (error instanceof DraftValidationError) {
       throw new ApiError(error.code === 'too_large' ? 413 : 400, error.code, error.message, {
@@ -760,6 +770,12 @@ export const handleRequest = async (
         current: error.current,
       });
     }
+    if (error instanceof SavedRobotLimitError) {
+      return respond(event, 409, 'saved_robot_limit', {
+        code: 'saved_robot_limit',
+        message: error.message,
+      });
+    }
     if (error instanceof SavedRobotIncompatibleError) {
       return respond(event, 500, 'stored_robot_incompatible', {
         code: 'stored_robot_incompatible',
@@ -831,6 +847,18 @@ export const handleRequest = async (
       return respond(event, 429, 'quota_exceeded', {
         code: 'quota_exceeded',
         message: error.message,
+      });
+    }
+    if (error instanceof AttemptCapacityError) {
+      return respond(event, 429, 'attempt_unavailable', {
+        code: 'attempt_unavailable',
+        message: ATTEMPT_UNAVAILABLE_MESSAGE,
+      });
+    }
+    if (error instanceof BudgetUnavailableError) {
+      return respond(event, 503, 'attempt_unavailable', {
+        code: 'attempt_unavailable',
+        message: ATTEMPT_UNAVAILABLE_MESSAGE,
       });
     }
     if (error instanceof AdmissionConflictError) {

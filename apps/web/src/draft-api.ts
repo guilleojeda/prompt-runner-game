@@ -2,7 +2,7 @@ import { validateDraft, type DraftSnapshot, type RobotDraft } from '../../../sha
 import type { AuthConfig } from './auth.js';
 
 export type DraftApiFailureCode =
-  'authentication' | 'conflict' | 'invalid' | 'too_large' | 'network' | 'server';
+  'authentication' | 'conflict' | 'invalid' | 'too_large' | 'rate_limited' | 'network' | 'server';
 
 export class DraftApiFailure extends Error {
   public constructor(
@@ -176,6 +176,16 @@ export class DraftApiClient implements DraftApi {
       return snapshot;
     }
 
+    if (response.status === 429) {
+      // API Gateway rejected this request before the handler, so a PUT is not ambiguous.
+      throw new DraftApiFailure(
+        'rate_limited',
+        'Están llegando muchas solicitudes. Esperá un momento y volvé a intentar.',
+        response.status,
+        undefined,
+        false,
+      );
+    }
     if (response.status === 401 || response.status === 403) {
       throw new DraftApiFailure(
         'authentication',

@@ -11,6 +11,7 @@ import {
 } from '../../../shared/game.js';
 import type { ModelProfile } from '../../../shared/models.js';
 import type { RobotSkillId } from '../../../shared/robot.js';
+import { CallCompletionError, callCompletionMatches } from '../../../shared/server/attempt.js';
 import type {
   ActionPublication,
   PersistedAttempt,
@@ -65,7 +66,7 @@ export type DecisionResult = {
 };
 
 export type DecisionAudit = {
-  readonly beforeSend: (requestBytes: Uint8Array) => Promise<void>;
+  readonly beforeSend: (requestBytes: Uint8Array, countedInputTokens?: number) => Promise<void>;
   readonly afterReceive: (receipt: {
     readonly bytes: Uint8Array | null;
     readonly statusCode: number | null;
@@ -232,6 +233,16 @@ export const executeAttempt = async (
     });
     return closed;
   };
+  const finishCall = async (candidate: CallRecord): Promise<CallRecord> => {
+    const persisted = await dependencies.store.finishCall(
+      input.owner,
+      input.attemptId,
+      executorId,
+      candidate,
+    );
+    if (!callCompletionMatches(persisted, candidate)) throw new CallCompletionError();
+    return persisted;
+  };
   try {
     while (record.status === 'running') {
       const current = await dependencies.store.get(input.owner, input.attemptId);
@@ -262,7 +273,7 @@ export const executeAttempt = async (
       let call: CallRecord | undefined;
       let responseError: { name: string; message: string } | undefined;
       const audit: DecisionAudit = {
-        beforeSend: async (requestBytes) => {
+        beforeSend: async (requestBytes, countedInputTokens) => {
           const request = await dependencies.bodies.put(requestKey, requestBytes);
           const candidate: CallRecord = {
             attemptId: activeRecord.id,
@@ -277,6 +288,7 @@ export const executeAttempt = async (
             requestSha256: request.sha256,
             requestBytes: request.bytes,
             status: 'started',
+            countedInputTokens,
             usage: {
               inputTokens: null,
               outputTokens: null,
@@ -327,7 +339,7 @@ export const executeAttempt = async (
               updatedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
             };
             if (receipt.bytes !== null) {
-              await dependencies.store.finishCall(input.owner, activeRecord.id, executorId, call);
+              call = await finishCall(call);
             }
             runtimeEvent('response_recorded', {
               attemptId: activeRecord.id,
@@ -370,7 +382,7 @@ export const executeAttempt = async (
             errorCode: failureCode ?? (error instanceof Error ? error.name : 'inference_error'),
             updatedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
           };
-          await dependencies.store.finishCall(input.owner, activeRecord.id, executorId, completed);
+          await finishCall(completed);
           if (failureCode === 'throttled' && throttledRetries < MAX_THROTTLE_RETRIES_PER_DECISION) {
             const latest = await dependencies.store.get(input.owner, activeRecord.id);
             if (!latest || latest.executorId !== executorId || latest.status !== 'running') {
@@ -435,7 +447,7 @@ export const executeAttempt = async (
           errorCode: 'incomplete_response',
           updatedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
         };
-        await dependencies.store.finishCall(input.owner, activeRecord.id, executorId, incomplete);
+        await finishCall(incomplete);
         await dependencies.store.recoverBodies?.(input.owner, activeRecord.id);
         await closeAttempt('error', 'incomplete_response');
         return;
@@ -448,7 +460,7 @@ export const executeAttempt = async (
         status: 'received',
         updatedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
       };
-      await dependencies.store.finishCall(input.owner, record.id, executorId, call);
+      call = await finishCall(call);
       const resolution = dependencies.engine.apply({
         snapshot: activeRecord.currentSnapshot,
         level: activeRecord.config.levelDefinition,

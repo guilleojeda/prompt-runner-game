@@ -1291,12 +1291,14 @@ describe('attempt lifecycle store', () => {
       client: client as unknown as DynamoDBClient,
       tableName: 'attempts',
     });
-    await store.finishCall('a', admitted.attempt.id, 'executor', {
-      ...persisted,
-      responseSha256: 'response-hash',
-      responseBytes: 20,
-      updatedAt: '2026-09-21T15:00:02.000Z',
-    });
+    await expect(
+      store.finishCall('a', admitted.attempt.id, 'executor', {
+        ...persisted,
+        responseSha256: 'response-hash',
+        responseBytes: 20,
+        updatedAt: '2026-09-21T15:00:02.000Z',
+      }),
+    ).rejects.toThrow('No se pudo guardar el resultado de la llamada.');
     const update = ((transactionInput?.TransactItems as Array<{
       Update?: { ExpressionAttributeNames?: Record<string, string> };
     }>) ?? [])[0]?.Update;
@@ -1692,7 +1694,8 @@ describe('attempt lifecycle store', () => {
     };
     await expect(
       store.finishCall('a', attempt.id, 'executor', differentAction),
-    ).resolves.toMatchObject({
+    ).resolves.toBeUndefined();
+    expect((await store.getCalls('a', attempt.id))[0]).toMatchObject({
       status: 'received',
       rawAction,
     });

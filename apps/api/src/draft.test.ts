@@ -1,7 +1,11 @@
 import { ConditionalCheckFailedException, type DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { marshall } from '@aws-sdk/util-dynamodb';
 import { describe, expect, it, vi } from 'vitest';
-import { createDefaultDraft } from '../../../shared/robot';
+import {
+  MAX_INSTRUCTIONS_CHARACTERS,
+  MAX_SKILL_DESCRIPTION_CHARACTERS,
+  createDefaultDraft,
+} from '../../../shared/robot';
 import { DraftIncompatibleError, createDynamoDraftStore } from './draft';
 
 const commandClient = (send: ReturnType<typeof vi.fn>) => ({ send }) as unknown as DynamoDBClient;
@@ -83,6 +87,56 @@ describe('Dynamo draft store', () => {
 
     expect(send.mock.calls[0][0].input.Item.PK).toEqual({ S: 'USER#user-a' });
     expect(send.mock.calls[1][0].input.Item.PK).toEqual({ S: 'USER#user-b' });
+  });
+
+  it('rejects invalid new writes before timestamp generation or DynamoDB calls', async () => {
+    const send = vi.fn().mockResolvedValue({});
+    const now = vi.fn(() => '2026-09-21T00:00:00.000Z');
+    const store = createDynamoDraftStore({ client: commandClient(send), tableName: 'Drafts', now });
+    const draft = createDefaultDraft();
+    const invalid = {
+      ...draft,
+      skills: draft.skills.map((skill) =>
+        skill.id === 'wait'
+          ? {
+              ...skill,
+              enabled: false,
+              description: 'x'.repeat(MAX_SKILL_DESCRIPTION_CHARACTERS + 1),
+            }
+          : skill,
+      ),
+      instructions: 'x'.repeat(MAX_INSTRUCTIONS_CHARACTERS + 1),
+    };
+
+    await expect(store.put('user-a', 0, invalid)).rejects.toMatchObject({
+      name: 'DraftValidationError',
+    });
+    expect(now).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('reads a stored draft above the new field limits without changing its literal text', async () => {
+    const legacy = {
+      ...createDefaultDraft(),
+      instructions: '  '.repeat(MAX_INSTRUCTIONS_CHARACTERS + 1),
+    };
+    const send = vi.fn().mockResolvedValue({
+      Item: marshall({
+        PK: 'USER#user-a',
+        SK: 'DRAFT',
+        version: 8,
+        updatedAt: '2026-09-21T00:00:00.000Z',
+        draft: legacy,
+      }),
+    });
+    const store = createDynamoDraftStore({ client: commandClient(send), tableName: 'Drafts' });
+
+    await expect(store.get('user-a')).resolves.toMatchObject({
+      version: 8,
+      draft: legacy,
+    });
+    expect(send).toHaveBeenCalledOnce();
+    expect(send.mock.calls[0][0].constructor.name).toBe('GetItemCommand');
   });
 
   it('rejects the previous draft contract without writing a migration', async () => {

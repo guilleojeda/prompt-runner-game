@@ -5,11 +5,16 @@ import {
   ROBOT_CATALOG,
   ROBOT_CATALOG_VERSION,
   ROBOT_SCHEMA_VERSION,
+  MAX_INSTRUCTIONS_CHARACTERS,
+  MAX_SKILL_DESCRIPTION_CHARACTERS,
+  countCharacters,
   createDefaultDraft,
   draftByteLength,
+  draftLimitMessage,
   draftsEqual,
   validateDraft,
   validateSavedRobotName,
+  validateWritableDraft,
 } from './robot';
 import { DEFAULT_MODEL_KEY, MODEL_CATALOG } from './models';
 
@@ -161,6 +166,85 @@ describe('current robot draft contract', () => {
     );
     expect(draftsEqual(omitted, empty)).toBe(false);
     expect(draftsEqual(omitted, omitted)).toBe(true);
+  });
+
+  it('counts user-visible graphemes instead of UTF-16 units or code points', () => {
+    expect(countCharacters('A 🦾\ne\u0301👩‍💻')).toBe(6);
+    expect(countCharacters('🦾'.repeat(MAX_INSTRUCTIONS_CHARACTERS))).toBe(
+      MAX_INSTRUCTIONS_CHARACTERS,
+    );
+    expect(countCharacters('e\u0301'.repeat(MAX_SKILL_DESCRIPTION_CHARACTERS))).toBe(
+      MAX_SKILL_DESCRIPTION_CHARACTERS,
+    );
+  });
+
+  it('validates new text writes at grapheme boundaries and preserves literal text', () => {
+    const draft = createDefaultDraft();
+    const writable = {
+      ...draft,
+      instructions: `  ${'🦾'.repeat(MAX_INSTRUCTIONS_CHARACTERS - 3)}\n`,
+      skills: draft.skills.map((skill) =>
+        skill.id === 'advance'
+          ? { ...skill, description: 'e\u0301'.repeat(MAX_SKILL_DESCRIPTION_CHARACTERS) }
+          : skill,
+      ),
+    };
+
+    expect(validateWritableDraft(writable)).toEqual(writable);
+    expect(draftLimitMessage(writable)).toBeNull();
+    expect(() =>
+      validateWritableDraft({ ...writable, instructions: `${writable.instructions}🦾` }),
+    ).toThrowError(DraftValidationError);
+  });
+
+  it('checks descriptions even when their skill is disabled', () => {
+    const draft = createDefaultDraft();
+    const overLimit = {
+      ...draft,
+      skills: draft.skills.map((skill) =>
+        skill.id === 'wait'
+          ? {
+              ...skill,
+              enabled: false,
+              description: 'x'.repeat(MAX_SKILL_DESCRIPTION_CHARACTERS + 1),
+            }
+          : skill,
+      ),
+    };
+
+    expect(draftLimitMessage(overLimit)).toContain('Esperar');
+    expect(() => validateWritableDraft(overLimit)).toThrowError(
+      expect.objectContaining({ code: 'invalid' }),
+    );
+  });
+
+  it('keeps the legacy read validator available for drafts above new text and write limits', () => {
+    const draft = createDefaultDraft();
+    const legacy = {
+      ...draft,
+      instructions: 'x'.repeat(MAX_INSTRUCTIONS_CHARACTERS + 1),
+    };
+
+    expect(draftByteLength(legacy)).toBeLessThan(MAX_DRAFT_BYTES);
+    expect(validateDraft(legacy).instructions).toBe(legacy.instructions);
+    expect(() => validateWritableDraft(legacy)).toThrowError(DraftValidationError);
+  });
+
+  it('keeps every field at its approved maximum within the existing aggregate byte limit', () => {
+    const draft = createDefaultDraft();
+    const maximumEmojiText = {
+      ...draft,
+      instructions: '🦾'.repeat(MAX_INSTRUCTIONS_CHARACTERS),
+      skills: draft.skills.map((skill) => ({
+        ...skill,
+        description: '🦾'.repeat(MAX_SKILL_DESCRIPTION_CHARACTERS),
+      })),
+    };
+
+    expect(draftByteLength(maximumEmojiText)).toBeLessThan(MAX_DRAFT_BYTES);
+    expect(validateDraft(maximumEmojiText)).toEqual(maximumEmojiText);
+    expect(validateWritableDraft(maximumEmojiText)).toEqual(maximumEmojiText);
+    expect(draftLimitMessage(maximumEmojiText)).toBeNull();
   });
 
   it('serializes the frozen catalog without mutating its schemas', () => {

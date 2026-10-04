@@ -1,6 +1,7 @@
 import {
   validateDraft,
   validateSavedRobotName,
+  validateWritableDraft,
   type RobotDraft,
   type SavedRobot,
   type SavedRobotSummary,
@@ -18,7 +19,14 @@ export interface SavedRobotDeleteResult {
 }
 
 export type SavedRobotApiFailureCode =
-  'authentication' | 'conflict' | 'not_found' | 'invalid' | 'network' | 'server';
+  | 'authentication'
+  | 'conflict'
+  | 'limit'
+  | 'not_found'
+  | 'invalid'
+  | 'rate_limited'
+  | 'network'
+  | 'server';
 
 export class SavedRobotApiFailure extends Error {
   public constructor(
@@ -130,6 +138,10 @@ function errorMessage(body: unknown, fallback: string): string {
     : fallback;
 }
 
+function responseCode(body: unknown): string | null {
+  return isRecord(body) && typeof body.code === 'string' ? body.code : null;
+}
+
 async function readBody(response: Response): Promise<unknown> {
   try {
     return await response.json();
@@ -144,7 +156,7 @@ function bindFetch(fetchImpl: typeof globalThis.fetch): typeof globalThis.fetch 
 
 function validateSaveInput(name: string, draft: RobotDraft): { name: string; draft: RobotDraft } {
   try {
-    return { name: validateSavedRobotName(name), draft: validateDraft(draft) };
+    return { name: validateSavedRobotName(name), draft: validateWritableDraft(draft) };
   } catch (error) {
     throw new SavedRobotApiFailure(
       'invalid',
@@ -274,6 +286,23 @@ export class SavedRobotApiClient implements SavedRobotApi {
     }
     const parsed = await readBody(response);
     if (!response.ok) {
+      if (response.status === 429) {
+        // API Gateway throttles before the write reaches the handler.
+        throw new SavedRobotApiFailure(
+          'rate_limited',
+          'Están llegando muchas solicitudes. Esperá un momento y volvé a intentar.',
+          response.status,
+          undefined,
+          false,
+        );
+      }
+      if (responseCode(parsed) === 'saved_robot_limit') {
+        throw new SavedRobotApiFailure(
+          'limit',
+          errorMessage(parsed, 'Eliminá una configuración guardada para crear otra.'),
+          response.status,
+        );
+      }
       if (response.status === 401 || response.status === 403) {
         throw new SavedRobotApiFailure(
           'authentication',

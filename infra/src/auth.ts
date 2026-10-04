@@ -1,5 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
-import { aws_cognito as cognito } from 'aws-cdk-lib';
+import { aws_cognito as cognito, aws_wafv2 as wafv2 } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 
 export const COGNITO_DOMAIN_PREFIX = 'prompt-runner-game';
@@ -27,6 +27,8 @@ export interface AuthenticationResourcesProps {
   readonly region: string;
   readonly productionWebOrigin: string;
   readonly localWebOrigin?: string;
+  /** Private WAF request threshold per source IP over a five-minute window. */
+  readonly identityRateLimit: number;
 }
 
 /**
@@ -70,6 +72,79 @@ export function createAuthenticationResources(
   });
   userPool.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN, {
     applyToUpdateReplacePolicy: true,
+  });
+
+  const identityOperations = [
+    'SignUp',
+    'ConfirmSignUp',
+    'ResendConfirmationCode',
+    'ForgotPassword',
+    'ConfirmForgotPassword',
+  ];
+  const managedLoginPaths = [
+    '/signup',
+    '/confirm',
+    '/confirmUser',
+    '/resendcode',
+    '/forgotPassword',
+    '/confirmforgotPassword',
+  ];
+  const byteMatch = (
+    fieldToMatch: wafv2.CfnWebACL.FieldToMatchProperty,
+    searchString: string,
+  ): wafv2.CfnWebACL.StatementProperty => ({
+    byteMatchStatement: {
+      fieldToMatch,
+      positionalConstraint: 'EXACTLY',
+      searchString,
+      textTransformations: [{ priority: 0, type: 'NONE' }],
+    },
+  });
+  const identityWebAcl = new wafv2.CfnWebACL(scope, 'IdentityOriginRateLimitWebAcl', {
+    name: 'prompt-runner-game-identity-origin-rate-limit',
+    scope: 'REGIONAL',
+    defaultAction: { allow: {} },
+    rules: [
+      {
+        name: 'LimitRegistrationAndRecoveryByIp',
+        priority: 0,
+        action: { block: {} },
+        statement: {
+          rateBasedStatement: {
+            aggregateKeyType: 'IP',
+            evaluationWindowSec: 300,
+            limit: props.identityRateLimit,
+            scopeDownStatement: {
+              orStatement: {
+                statements: [
+                  ...identityOperations.map((operation) =>
+                    byteMatch(
+                      { singleHeader: { Name: 'x-amzn-cognito-operation-name' } },
+                      operation,
+                    ),
+                  ),
+                  ...managedLoginPaths.map((path) => byteMatch({ uriPath: {} }, path)),
+                ],
+              },
+            },
+          },
+        },
+        visibilityConfig: {
+          cloudWatchMetricsEnabled: false,
+          metricName: 'identity-origin-rate-limit',
+          sampledRequestsEnabled: false,
+        },
+      },
+    ],
+    visibilityConfig: {
+      cloudWatchMetricsEnabled: false,
+      metricName: 'identity-origin-rate-limit',
+      sampledRequestsEnabled: false,
+    },
+  });
+  new wafv2.CfnWebACLAssociation(scope, 'IdentityOriginRateLimitAssociation', {
+    resourceArn: userPool.attrArn,
+    webAclArn: identityWebAcl.attrArn,
   });
 
   const userPoolClient = new cognito.CfnUserPoolClient(scope, 'UserPoolClient', {

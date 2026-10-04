@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
+import { measuredCallCost, type CallBudget } from './execution-limits.js';
 import type { RobotDraft } from '../robot.js';
 import { DEFAULT_MODEL_KEY, resolveModelProfile, type ModelProfile } from '../models.js';
 import type {
@@ -69,6 +70,8 @@ export type PersistedAttempt = Omit<AttemptSummary, 'objectPoints'> & {
   readonly executionDeadline?: string;
   readonly runtimeDeadline?: string;
   readonly sessionId: string;
+  readonly capacitySlot?: number;
+  readonly capacityExpiresAt?: string;
 };
 
 export type AttemptScoreParameters = Readonly<{
@@ -144,6 +147,8 @@ export type CallRecord = {
   readonly responseSha256?: string;
   readonly responseBytes?: number;
   readonly status: 'started' | 'received' | 'invalid' | 'error' | 'unknown';
+  readonly budget?: CallBudget;
+  readonly countedInputTokens?: number;
   readonly rawAction?: unknown;
   readonly usage: Usage;
   readonly requestId?: string;
@@ -156,6 +161,63 @@ export type CallRecord = {
   readonly profileVersion: string;
   readonly createdAt: string;
   readonly updatedAt: string;
+};
+
+export class CallCompletionError extends Error {
+  public readonly code = 'call_persistence_unconfirmed';
+  public constructor() {
+    super('No se pudo confirmar el registro de la decisión.');
+    this.name = 'CallCompletionError';
+  }
+}
+
+/** A returned record only confirms a completion when its intended data is durable. */
+export const callCompletionMatches = (
+  stored: CallRecord | undefined,
+  requested: CallRecord,
+): stored is CallRecord => {
+  if (!stored) return false;
+  for (const field of [
+    'attemptId',
+    'seq',
+    'decisionId',
+    'requestKey',
+    'responseKey',
+    'requestSha256',
+    'requestBytes',
+    'status',
+    'usage',
+    'modelKey',
+    'modelId',
+    'region',
+    'profileVersion',
+  ] as const) {
+    if (!isDeepStrictEqual(stored[field], requested[field])) return false;
+  }
+  for (const field of [
+    'responseSha256',
+    'responseBytes',
+    'requestId',
+    'responseStatus',
+    'errorCode',
+    'rawAction',
+  ] as const) {
+    if (requested[field] !== undefined && !isDeepStrictEqual(stored[field], requested[field]))
+      return false;
+  }
+  if (
+    requested.budget &&
+    (!stored.budget ||
+      requested.budget.day !== stored.budget.day ||
+      requested.budget.reservedMicros !== stored.budget.reservedMicros ||
+      !isDeepStrictEqual(requested.budget.rates, stored.budget.rates))
+  )
+    return false;
+  if (stored.budget) {
+    const cost = measuredCallCost(requested.usage, stored.budget.rates);
+    if (cost !== undefined && stored.budget.settledMicros !== cost) return false;
+  }
+  return true;
 };
 
 export type ActionPublication = {

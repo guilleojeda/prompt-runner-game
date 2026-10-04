@@ -1312,6 +1312,16 @@ h1 {
   line-height: 1.5;
 }
 
+.configuration-limit-warning {
+  margin: 0 0 1rem;
+  padding: 0.75rem;
+  border: 1px solid rgba(237, 146, 128, 0.5);
+  border-radius: 0.45rem;
+  color: #f0b0a2;
+  background: rgba(118, 47, 42, 0.22);
+  line-height: 1.5;
+}
+
 .configuration-size-warning[role='alert'] {
   border-color: rgba(237, 146, 128, 0.5);
   color: #f0b0a2;

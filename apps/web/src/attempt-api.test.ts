@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createDefaultDraft } from '../../../shared/robot.js';
+import {
+  MAX_INSTRUCTIONS_CHARACTERS,
+  MAX_SKILL_DESCRIPTION_CHARACTERS,
+  createDefaultDraft,
+} from '../../../shared/robot.js';
 import { createClosedAttemptRecordFixture } from '../../../shared/attempt.fixture.js';
 import { LEVEL, PREVIOUS_LEVEL } from '../../../shared/game.js';
 import { AttemptApiClient } from './attempt-api.js';
@@ -235,6 +239,95 @@ describe('AttemptApiClient', () => {
       },
     );
   });
+
+  it('does not mistake the API Gateway 429 response for exhausted attempt quota', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ message: 'Too Many Requests' }), { status: 429 }),
+      );
+    const client = new AttemptApiClient(config, { tokenProvider: () => 'token', fetch: fetchImpl });
+
+    await expect(client.createAttempt('key', 1, createDefaultDraft(), false)).rejects.toMatchObject(
+      {
+        code: 'attempt_unavailable',
+        status: 429,
+        message: 'Están llegando muchas solicitudes. Esperá un momento y volvé a intentar.',
+        ambiguous: false,
+      },
+    );
+  });
+
+  it.each([
+    [
+      'instructions',
+      (draft: ReturnType<typeof createDefaultDraft>) => ({
+        ...draft,
+        instructions: 'x'.repeat(MAX_INSTRUCTIONS_CHARACTERS + 1),
+      }),
+    ],
+    [
+      'disabled action description',
+      (draft: ReturnType<typeof createDefaultDraft>) => ({
+        ...draft,
+        skills: draft.skills.map((skill) =>
+          skill.id === 'wait'
+            ? {
+                ...skill,
+                enabled: false,
+                description: 'x'.repeat(MAX_SKILL_DESCRIPTION_CHARACTERS + 1),
+              }
+            : skill,
+        ),
+      }),
+    ],
+  ] as const)(
+    'rejects over-limit %s locally before attempt admission',
+    async (_label, makeDraft) => {
+      const fetchImpl = vi.fn<typeof fetch>();
+      const client = new AttemptApiClient(config, {
+        tokenProvider: () => 'token',
+        fetch: fetchImpl,
+      });
+
+      await expect(
+        client.createAttempt('key', 1, makeDraft(createDefaultDraft()), false),
+      ).rejects.toMatchObject({
+        code: 'invalid',
+      });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['capacity', 429],
+    ['budget', 503],
+  ] as const)(
+    'treats %s unavailability as a definite non-ambiguous rejection',
+    async (_label, status) => {
+      const message =
+        'No se puede iniciar una partida por ahora. Podés consultar tus partidas o intentarlo más tarde.';
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ code: 'attempt_unavailable', message }), { status }),
+        );
+      const client = new AttemptApiClient(config, {
+        tokenProvider: () => 'token',
+        fetch: fetchImpl,
+      });
+
+      await expect(
+        client.createAttempt('key', 1, createDefaultDraft(), false),
+      ).rejects.toMatchObject({
+        code: 'attempt_unavailable',
+        status,
+        message,
+        ambiguous: false,
+      });
+      expect(fetchImpl).toHaveBeenCalledOnce();
+    },
+  );
 
   it('uses the request lookup route for an ambiguous admission recovery', async () => {
     const fetchImpl = vi

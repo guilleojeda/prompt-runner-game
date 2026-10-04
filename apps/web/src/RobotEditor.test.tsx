@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   MAX_DRAFT_BYTES,
   ROBOT_CATALOG,
+  countCharacters,
   createDefaultDraft,
   draftByteLength,
   type DraftSnapshot,
@@ -109,17 +110,17 @@ describe('RobotEditor', () => {
     });
 
     expect(container.querySelector('#robot-instructions')?.nextElementSibling?.textContent).toBe(
-      '6 caracteres',
+      '6 / 1.000 caracteres',
     );
     expect(
       container.querySelector('#skill-description-advance')?.nextElementSibling?.textContent,
-    ).toBe('6 caracteres');
+    ).toBe('6 / 500 caracteres');
     expect(container.querySelectorAll('.character-count')).toHaveLength(ROBOT_CATALOG.length + 1);
     expect(container.querySelector('.byte-count')).toBeNull();
     expect(screen.queryByText(/bytes UTF-8/)).toBeNull();
   });
 
-  it('shows a shared size warning near the serialized draft limit', async () => {
+  it('keeps a historical oversized field readable and explains the current field limit', async () => {
     const draft = draftWithInstructionBytes(Math.ceil(MAX_DRAFT_BYTES * 0.9));
     const { container } = render(
       <RobotEditor
@@ -129,23 +130,22 @@ describe('RobotEditor', () => {
     );
     await screen.findByLabelText('Qué debe tener en cuenta el robot');
 
-    expect(screen.getByText(/está cerca del límite de tamaño/)).toBeTruthy();
-    expect(screen.queryByRole('alert')).toBeNull();
-    expect(container.querySelector('.configuration-size-warning')).toBeTruthy();
+    expect(screen.getByRole('alert').textContent).toContain('instrucciones superan');
+    expect(container.querySelector('.configuration-limit-warning')).toBeTruthy();
+    expect(container.querySelector('.configuration-size-warning')).toBeNull();
     expect(screen.queryByText(/bytes UTF-8/)).toBeNull();
     expect(container.querySelector('#robot-instructions')?.nextElementSibling?.textContent).toBe(
-      `${draft.instructions.length.toLocaleString('es-AR')} caracteres`,
+      `${draft.instructions.length.toLocaleString('es-AR')} / 1.000 caracteres · supera el máximo`,
     );
   });
 
-  it('keeps an oversized edit intact and blocks its autosave with an error', async () => {
-    const draft = draftWithInstructionBytes(MAX_DRAFT_BYTES);
+  it('preserves over-limit pasted text and blocks saving and trying until every field is corrected', async () => {
     const putDraft = vi.fn().mockResolvedValue(snapshot(1));
-    render(
-      <RobotEditor
-        api={api({ getDraft: vi.fn().mockResolvedValue(snapshot(0, draft)), putDraft })}
-        session={session()}
-      />,
+    const onTry = vi.fn();
+    const oversizedInstructions = '🦾'.repeat(1_001);
+    const oversizedDescription = '🦾'.repeat(501);
+    const { container } = render(
+      <RobotEditor api={api({ putDraft })} session={session()} onTry={onTry} />,
     );
     await screen.findByLabelText('Qué debe tener en cuenta el robot');
     vi.useFakeTimers();
@@ -153,18 +153,60 @@ describe('RobotEditor', () => {
     const instructions = screen.getByLabelText(
       'Qué debe tener en cuenta el robot',
     ) as HTMLTextAreaElement;
-    const oversizedInstructions = `${instructions.value}x`;
     fireEvent.change(instructions, { target: { value: oversizedInstructions } });
+    fireEvent.change(container.querySelector('#skill-description-wait') as HTMLTextAreaElement, {
+      target: { value: oversizedDescription },
+    });
 
-    expect(screen.getByRole('alert').textContent).toContain('supera el límite de tamaño');
+    expect(screen.getByRole('alert').textContent).toContain('instrucciones superan');
     expect(instructions.value).toBe(oversizedInstructions);
+    expect(
+      container.querySelector('#skill-description-wait')?.nextElementSibling?.textContent,
+    ).toBe('501 / 500 caracteres · supera el máximo');
+    expect((screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
     await act(async () => {
       vi.advanceTimersByTime(600);
     });
 
     expect(putDraft).not.toHaveBeenCalled();
     expect(instructions.value).toBe(oversizedInstructions);
-    expect(screen.getByRole('alert').textContent).toContain('Acortá alguno de los textos');
+    expect(screen.getByRole('alert').textContent).toContain('instrucciones superan');
+
+    fireEvent.change(instructions, { target: { value: 'Corregido' } });
+    expect(screen.getByRole('alert').textContent).toContain('Esperar supera');
+    expect((screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    expect(onTry).not.toHaveBeenCalled();
+  });
+
+  it('preserves a single oversized grapheme and blocks an aggregate-byte overflow', async () => {
+    const putDraft = vi.fn().mockResolvedValue(snapshot(1));
+    const oversizedGrapheme = `e${'\u0301'.repeat(MAX_DRAFT_BYTES)}`;
+    expect(countCharacters(oversizedGrapheme)).toBe(1);
+    render(<RobotEditor api={api({ putDraft })} session={session()} onTry={vi.fn()} />);
+    await screen.findByLabelText('Qué debe tener en cuenta el robot');
+    vi.useFakeTimers();
+
+    const instructions = screen.getByLabelText(
+      'Qué debe tener en cuenta el robot',
+    ) as HTMLTextAreaElement;
+    fireEvent.change(instructions, { target: { value: oversizedGrapheme } });
+
+    expect(screen.getByRole('alert').textContent).toContain('demasiado extensa');
+    expect(instructions.value).toBe(oversizedGrapheme);
+    expect(instructions.nextElementSibling?.textContent).toBe('1 / 1.000 caracteres');
+    expect((screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    await act(async () => {
+      vi.advanceTimersByTime(600);
+    });
+
+    expect(putDraft).not.toHaveBeenCalled();
+    expect(instructions.value).toBe(oversizedGrapheme);
   });
 
   it('lets the player enable and describe Esperar', async () => {

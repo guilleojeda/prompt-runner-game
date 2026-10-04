@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createDefaultDraft } from '../../../shared/robot.js';
+import {
+  MAX_INSTRUCTIONS_CHARACTERS,
+  MAX_SKILL_DESCRIPTION_CHARACTERS,
+  createDefaultDraft,
+} from '../../../shared/robot.js';
 import { SavedRobotApiClient, SavedRobotApiFailure } from './saved-robot-api.js';
 
 const config = { apiBaseUrl: 'https://api.example.test/' };
@@ -110,6 +114,85 @@ describe('SavedRobotApiClient', () => {
       },
     );
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      'instructions',
+      (draft: ReturnType<typeof createDefaultDraft>) => ({
+        ...draft,
+        instructions: 'x'.repeat(MAX_INSTRUCTIONS_CHARACTERS + 1),
+      }),
+    ],
+    [
+      'disabled action description',
+      (draft: ReturnType<typeof createDefaultDraft>) => ({
+        ...draft,
+        skills: draft.skills.map((skill) =>
+          skill.id === 'wait'
+            ? {
+                ...skill,
+                enabled: false,
+                description: 'x'.repeat(MAX_SKILL_DESCRIPTION_CHARACTERS + 1),
+              }
+            : skill,
+        ),
+      }),
+    ],
+  ] as const)('rejects over-limit %s locally before saving a copy', async (_label, makeDraft) => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const client = new SavedRobotApiClient(config, {
+      tokenProvider: () => 'access-token',
+      fetch: fetchImpl,
+    });
+
+    await expect(
+      client.saveRobot('robot-a', 0, 'Explorador', makeDraft(createDefaultDraft())),
+    ).rejects.toMatchObject({ code: 'invalid' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('keeps the saved-copy limit separate from conflicts and ambiguous writes', async () => {
+    const message = 'Eliminá una configuración guardada para crear otra.';
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ code: 'saved_robot_limit', message }), { status: 409 }),
+      );
+    const client = new SavedRobotApiClient(config, {
+      tokenProvider: () => 'access-token',
+      fetch: fetchImpl,
+    });
+
+    await expect(
+      client.saveRobot('robot-a', 0, 'Explorador', createDefaultDraft()),
+    ).rejects.toMatchObject({
+      code: 'limit',
+      status: 409,
+      message,
+      ambiguous: false,
+    });
+  });
+
+  it('treats a native API Gateway 429 as a definite write rejection with a Spanish message', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ message: 'Too Many Requests' }), { status: 429 }),
+      );
+    const client = new SavedRobotApiClient(config, {
+      tokenProvider: () => 'access-token',
+      fetch: fetchImpl,
+    });
+
+    await expect(
+      client.saveRobot('robot-a', 0, 'Explorador', createDefaultDraft()),
+    ).rejects.toMatchObject({
+      code: 'rate_limited',
+      status: 429,
+      message: 'Están llegando muchas solicitudes. Esperá un momento y volvé a intentar.',
+      ambiguous: false,
+    });
   });
 
   it.each([

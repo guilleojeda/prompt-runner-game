@@ -10,8 +10,12 @@ import {
 } from 'react';
 import {
   MAX_DRAFT_BYTES,
+  MAX_INSTRUCTIONS_CHARACTERS,
+  MAX_SKILL_DESCRIPTION_CHARACTERS,
   ROBOT_CATALOG,
+  countCharacters,
   draftByteLength,
+  draftLimitMessage,
   draftsEqual,
   type DraftSnapshot,
   type RobotDraft,
@@ -74,14 +78,12 @@ function cloneDraft(draft: RobotDraft): RobotDraft {
   };
 }
 
-const characterSegmenter = new Intl.Segmenter('es', { granularity: 'grapheme' });
 const DRAFT_SIZE_WARNING_THRESHOLD = Math.ceil(MAX_DRAFT_BYTES * 0.9);
-const DRAFT_SIZE_ERROR_MESSAGE =
-  'La configuración supera el límite de tamaño y no se puede guardar. Acortá alguno de los textos para intentarlo de nuevo.';
 
-function formatCharacterCount(value: string): string {
-  const count = Array.from(characterSegmenter.segment(value)).length;
-  return `${count.toLocaleString('es-AR')} ${count === 1 ? 'carácter' : 'caracteres'}`;
+function formatCharacterCount(value: string, maximum: number): string {
+  const count = countCharacters(value);
+  const formatted = `${count.toLocaleString('es-AR')} / ${maximum.toLocaleString('es-AR')} caracteres`;
+  return count > maximum ? `${formatted} · supera el máximo` : formatted;
 }
 
 function statusLabel(status: EditorStatus): string {
@@ -288,9 +290,10 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     ) {
       return Promise.resolve(true);
     }
-    if (draftByteLength(current) > MAX_DRAFT_BYTES) {
+    const limitMessage = draftLimitMessage(current);
+    if (limitMessage) {
       setStatus('error');
-      setMessage(DRAFT_SIZE_ERROR_MESSAGE);
+      setMessage(limitMessage);
       setRetryMode(null);
       return Promise.resolve(false);
     }
@@ -412,7 +415,13 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
   const captureSnapshot = async (): Promise<DraftSnapshot | null> => {
     const visible = draftRef.current;
     const confirmed = confirmedRef.current;
-    if (!visible || !confirmed || pausedRef.current || conflict !== null) {
+    if (
+      !visible ||
+      !confirmed ||
+      pausedRef.current ||
+      conflict !== null ||
+      draftLimitMessage(visible) !== null
+    ) {
       return null;
     }
     const frozen = cloneDraft(visible);
@@ -643,7 +652,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
 
   const disabled = paused || locked || attemptClickLocked || status === 'loading';
   const byteCount = draft ? draftByteLength(draft) : 0;
-  const isDraftOverLimit = byteCount > MAX_DRAFT_BYTES;
+  const limitMessage = draft ? draftLimitMessage(draft) : null;
   const shouldWarnAboutDraftSize = byteCount >= DRAFT_SIZE_WARNING_THRESHOLD;
   return (
     <section
@@ -676,13 +685,16 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
           la preferencia de animación.
         </p>
       )}
-      {message &&
-        status !== 'clean' &&
-        !(isDraftOverLimit && message === DRAFT_SIZE_ERROR_MESSAGE) && (
-          <p className="editor-message" role={status === 'error' ? 'alert' : 'status'}>
-            {message}
-          </p>
-        )}
+      {limitMessage && (
+        <p className="configuration-limit-warning" role="alert">
+          {limitMessage} Corregí el texto para guardar o probar sin perderlo.
+        </p>
+      )}
+      {message && status !== 'clean' && message !== limitMessage && (
+        <p className="editor-message" role={status === 'error' ? 'alert' : 'status'}>
+          {message}
+        </p>
+      )}
 
       {status === 'loading' && (
         <p className="editor-loading">Recuperando tu configuración guardada…</p>
@@ -716,9 +728,13 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
               id="robot-instructions"
               value={draft.instructions}
               onChange={onInstructionsChange}
+              aria-describedby="robot-instructions-count"
+              aria-invalid={countCharacters(draft.instructions) > MAX_INSTRUCTIONS_CHARACTERS}
               rows={5}
             />
-            <p className="character-count">{formatCharacterCount(draft.instructions)}</p>
+            <p className="character-count" id="robot-instructions-count" aria-live="polite">
+              {formatCharacterCount(draft.instructions, MAX_INSTRUCTIONS_CHARACTERS)}
+            </p>
           </fieldset>
 
           <fieldset disabled={disabled}>
@@ -751,10 +767,21 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
                       id={`skill-description-${entry.id}`}
                       value={skill.description ?? ''}
                       onChange={(event) => onSkillDescriptionChange(entry.id, event.target.value)}
+                      aria-describedby={`skill-description-count-${entry.id}`}
+                      aria-invalid={
+                        countCharacters(skill.description ?? '') > MAX_SKILL_DESCRIPTION_CHARACTERS
+                      }
                       rows={3}
                     />
-                    <p className="character-count">
-                      {formatCharacterCount(skill.description ?? '')}
+                    <p
+                      className="character-count"
+                      id={`skill-description-count-${entry.id}`}
+                      aria-live="polite"
+                    >
+                      {formatCharacterCount(
+                        skill.description ?? '',
+                        MAX_SKILL_DESCRIPTION_CHARACTERS,
+                      )}
                     </p>
                   </article>
                 );
@@ -769,11 +796,10 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
             </p>
           )}
 
-          {shouldWarnAboutDraftSize && (
-            <p className="configuration-size-warning" role={isDraftOverLimit ? 'alert' : undefined}>
-              {isDraftOverLimit
-                ? DRAFT_SIZE_ERROR_MESSAGE
-                : 'La configuración está cerca del límite de tamaño. Si lo supera, no se va a poder guardar.'}
+          {shouldWarnAboutDraftSize && !limitMessage && (
+            <p className="configuration-size-warning">
+              La configuración está cerca del límite de tamaño. Si lo supera, no se va a poder
+              guardar.
             </p>
           )}
 
@@ -795,7 +821,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
                   setAttemptClickLocked(true);
                   onTry();
                 }}
-                disabled={disabled || tryLocked || status === 'conflict'}
+                disabled={disabled || tryLocked || status === 'conflict' || limitMessage !== null}
               >
                 Probar
               </button>

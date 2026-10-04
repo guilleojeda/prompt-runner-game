@@ -2,6 +2,8 @@ import { DEFAULT_MODEL_KEY, isModelKey, type ModelKey } from './models.js';
 
 /** The single current draft contract shared by the editor and the API. */
 export const MAX_DRAFT_BYTES = 65_536;
+export const MAX_INSTRUCTIONS_CHARACTERS = 1_000;
+export const MAX_SKILL_DESCRIPTION_CHARACTERS = 500;
 export const ROBOT_SCHEMA_VERSION = 3 as const;
 export const ROBOT_CATALOG_VERSION = 3 as const;
 
@@ -144,6 +146,12 @@ export const ROBOT_CATALOG: readonly RobotCatalogEntry[] = Object.freeze(
 
 const DEFAULT_INSTRUCTIONS =
   'Siempre preferí ir a la derecha, a menos que tengas un buen motivo para no hacerlo';
+
+const characterSegmenter = new Intl.Segmenter('es', { granularity: 'grapheme' });
+
+/** Count user-visible Unicode grapheme clusters, matching the editor's character model. */
+export const countCharacters = (value: string): number =>
+  Array.from(characterSegmenter.segment(value)).length;
 
 export type DraftValidationCode = 'invalid' | 'too_large';
 
@@ -289,6 +297,33 @@ export const validateDraft = (value: unknown): RobotDraft => {
     );
   }
   return canonical;
+};
+
+/** Return the first reason a draft cannot be saved or used for a new attempt. */
+export const draftLimitMessage = (draft: RobotDraft): string | null => {
+  if (countCharacters(draft.instructions) > MAX_INSTRUCTIONS_CHARACTERS) {
+    return `Las instrucciones superan el máximo de ${MAX_INSTRUCTIONS_CHARACTERS.toLocaleString('es-AR')} caracteres.`;
+  }
+  for (const entry of ROBOT_CATALOG) {
+    const skill = draft.skills.find((candidate) => candidate.id === entry.id);
+    if (skill && countCharacters(skill.description ?? '') > MAX_SKILL_DESCRIPTION_CHARACTERS) {
+      return `La descripción de ${entry.name} supera el máximo de ${MAX_SKILL_DESCRIPTION_CHARACTERS} caracteres.`;
+    }
+  }
+  if (draftByteLength(draft) > MAX_DRAFT_BYTES) {
+    return 'La configuración es demasiado extensa para guardar. Acortá alguno de los textos para intentarlo de nuevo.';
+  }
+  return null;
+};
+
+/** Validate a new write while keeping validateDraft permissive for historical reads. */
+export const validateWritableDraft = (value: unknown): RobotDraft => {
+  const draft = validateDraft(value);
+  const limitMessage = draftLimitMessage(draft);
+  if (limitMessage) {
+    throw new DraftValidationError('invalid', limitMessage);
+  }
+  return draft;
 };
 
 export const draftsEqual = (left: RobotDraft, right: RobotDraft): boolean => {

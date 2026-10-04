@@ -11,6 +11,7 @@ import {
   type DraftSnapshot,
   type RobotDraft,
   validateDraft,
+  validateWritableDraft,
 } from '../../../shared/robot.js';
 
 export interface DraftStore {
@@ -117,6 +118,7 @@ export const createDynamoDraftStore = (options: DynamoDraftStoreOptions = {}): D
     expectedVersion: number,
     draft: RobotDraft,
   ): Promise<DraftSnapshot> => {
+    const writableDraft = validateWritableDraft(draft);
     const version = expectedVersion + 1;
     const updatedAt = now();
     const condition =
@@ -129,7 +131,7 @@ export const createDynamoDraftStore = (options: DynamoDraftStoreOptions = {}): D
         SK: 'DRAFT',
         version,
         updatedAt,
-        draft,
+        draft: writableDraft,
       },
       { removeUndefinedValues: true },
     );
@@ -154,7 +156,7 @@ export const createDynamoDraftStore = (options: DynamoDraftStoreOptions = {}): D
       }
       throw new DraftStorageError('No se pudo guardar la configuración.', { cause: error });
     }
-    return { version, updatedAt, draft };
+    return { version, updatedAt, draft: writableDraft };
   };
 
   return { get, put };

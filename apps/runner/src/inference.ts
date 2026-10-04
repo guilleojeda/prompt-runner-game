@@ -1,4 +1,9 @@
 import { Readable } from 'node:stream';
+import {
+  BedrockRuntimeClient,
+  CountTokensCommand,
+  type ConverseRequest,
+} from '@aws-sdk/client-bedrock-runtime';
 import type { HttpRequest, HttpResponse } from '@smithy/core/transport';
 import { NodeHttpHandler } from '@smithy/node-http-handler';
 import type { HttpHandlerOptions, RequestHandler, RequestHandlerOutput } from '@smithy/types';
@@ -23,6 +28,7 @@ import {
 } from '../../../shared/models.js';
 import { LOCAL_OBSERVATION_PREFIX } from '../../../shared/attempt.js';
 import { usageFromBedrockResponseBytes, type ProviderUsage } from './usage.js';
+import { BudgetUnavailableError } from '../../../shared/server/execution-limits.js';
 
 export const INFERENCE_PROTOCOL_VERSION = 1 as const;
 export const STRANDS_SDK_VERSION = '1.18.0' as const;
@@ -71,7 +77,7 @@ export interface TransportReceipt {
 
 export interface DecisionAudit {
   /** Must persist and conditionally authorize the call before resolving. */
-  beforeSend(requestBytes: Uint8Array): Promise<void>;
+  beforeSend(requestBytes: Uint8Array, countedInputTokens?: number): Promise<void>;
   /** Must persist the complete response/error bytes before resolving. */
   afterReceive(receipt: TransportReceipt): Promise<void>;
 }
@@ -83,6 +89,8 @@ export interface DecisionExecutionOptions {
   readonly responseAuditTimeoutMs?: number;
   /** Public for a real SDK transport test; production omits it and uses NodeHttpHandler. */
   readonly requestHandler?: RequestHandler<HttpRequest, HttpResponse, HttpHandlerOptions>;
+  /** Injectable token-count port for focused SDK tests. Production uses native CountTokens. */
+  readonly countInputTokens?: (requestBytes: Uint8Array, signal: AbortSignal) => Promise<number>;
 }
 
 export interface DecisionAction {
@@ -106,6 +114,8 @@ export type DecisionFailureCode =
   | 'timeout'
   | 'cancelled'
   | 'audit_failed'
+  | 'inference_budget_unavailable'
+  | 'token_count_unavailable'
   | 'provider_error';
 
 export class DecisionFailure extends Error {
@@ -648,6 +658,20 @@ const classifyProviderFailure = (
 ): DecisionFailure => {
   const usage = receiptUsage(receipt);
   if (error instanceof AuditFailure) {
+    const budgetUnavailable = errorChain(error).some(
+      (cause) => cause instanceof BudgetUnavailableError,
+    );
+    const countUnavailable = errorChain(error).some(
+      (cause) => isRecord(cause) && cause.code === 'token_count_unavailable',
+    );
+    if (budgetUnavailable || countUnavailable)
+      return new DecisionFailure(
+        budgetUnavailable ? 'inference_budget_unavailable' : 'token_count_unavailable',
+        'Inference authorization is unavailable. The request was not dispatched.',
+        usage,
+        receipt,
+        { cause: error },
+      );
     return new DecisionFailure(
       'audit_failed',
       `Inference stopped because ${error.phase} audit persistence failed.`,
@@ -807,6 +831,38 @@ const validateResponse = (
   };
 };
 
+/** Counts the exact provider prompt without authorizing or dispatching Converse. */
+export const countConverseInputTokens = async (
+  requestBytes: Uint8Array,
+  model: Readonly<ModelProfile>,
+  client: Pick<BedrockRuntimeClient, 'send'>,
+  countSignal: AbortSignal,
+): Promise<number> => {
+  const request = JSON.parse(new TextDecoder().decode(requestBytes)) as ConverseRequest;
+  const response = await client.send(
+    new CountTokensCommand({
+      // CountTokens targets the base model; Converse retains the admitted global profile.
+      modelId: model.modelId.replace(/^global\./u, ''),
+      input: {
+        converse: {
+          messages: request.messages,
+          ...(request.system ? { system: request.system } : {}),
+          ...(request.toolConfig ? { toolConfig: request.toolConfig } : {}),
+        },
+      },
+    }),
+    { abortSignal: countSignal },
+  );
+  if (
+    !Number.isSafeInteger(response.inputTokens) ||
+    response.inputTokens === undefined ||
+    response.inputTokens < 0
+  ) {
+    throw new Error('CountTokens returned no valid input count.');
+  }
+  return response.inputTokens;
+};
+
 export const executeDecision = async (
   input: DecisionInput,
   audit: DecisionAudit,
@@ -840,7 +896,28 @@ export const executeDecision = async (
     ? AbortSignal.any([options.signal, timeoutController.signal])
     : timeoutController.signal;
   const delegate = options.requestHandler ?? new NodeHttpHandler({ requestTimeout: timeoutMs });
-  const transport = new AuditedRequestHandler(delegate, audit, responseAuditTimeoutMs);
+  const countClient = new BedrockRuntimeClient({ region: model.region, maxAttempts: 1 });
+  const countInputTokens =
+    options.countInputTokens ??
+    ((requestBytes: Uint8Array, countSignal: AbortSignal) =>
+      countConverseInputTokens(requestBytes, model, countClient, countSignal));
+  const countedAudit: DecisionAudit = {
+    beforeSend: async (bytes) => {
+      let count: number;
+      try {
+        count = await countInputTokens(bytes, signal);
+        if (!Number.isSafeInteger(count) || count < 0)
+          throw new Error('Invalid input token count.');
+      } catch (cause) {
+        throw Object.assign(new Error('Native token count is unavailable.', { cause }), {
+          code: 'token_count_unavailable',
+        });
+      }
+      await audit.beforeSend(bytes, count);
+    },
+    afterReceive: (receipt) => audit.afterReceive(receipt),
+  };
+  const transport = new AuditedRequestHandler(delegate, countedAudit, responseAuditTimeoutMs);
 
   try {
     const bedrockModel = new BedrockModel({
@@ -934,5 +1011,6 @@ export const executeDecision = async (
   } finally {
     clearTimeout(timer);
     transport.destroy();
+    countClient.destroy();
   }
 };

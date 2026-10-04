@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
   ConditionalCheckFailedException,
+  DeleteItemCommand,
+  type TransactWriteItem,
   DynamoDBClient,
   GetItemCommand,
   QueryCommand,
@@ -16,6 +18,7 @@ import {
   ROBOT_CATALOG,
   ROBOT_SCHEMA_VERSION,
   validateDraft,
+  validateWritableDraft,
   type RobotSkillId,
   type DraftSnapshot,
   type RobotDraft,
@@ -34,6 +37,18 @@ import {
   type GameSnapshot,
 } from '../../../shared/game.js';
 import { usageFromBedrockResponseBytes } from '../../runner/src/usage.js';
+import {
+  AttemptCapacityError,
+  BudgetUnavailableError,
+  readExecutionLimits,
+  reserveCallCost,
+  measuredCallCost,
+  type ExecutionLimits,
+} from '../../../shared/server/execution-limits.js';
+export {
+  AttemptCapacityError,
+  BudgetUnavailableError,
+} from '../../../shared/server/execution-limits.js';
 import {
   ATTEMPT_RECORD_VERSION,
   LOCAL_OBSERVATION_PREFIX,
@@ -55,6 +70,7 @@ import {
   DEFAULT_ATTEMPT_CONFIG,
   ReplayRecordError,
   collectionSummaryOf,
+  callCompletionMatches,
   readAttemptScoreParameters,
   readCurrentLevel,
   validateActionPublication,
@@ -874,6 +890,7 @@ export type DynamoAttemptStoreOptions = {
   readonly bodyStore?: BodyStore;
   readonly now?: () => Date;
   readonly quotaLimit?: number;
+  readonly limits?: ExecutionLimits;
 };
 
 /** DynamoDB implementation. It deliberately uses the existing table and no indexes. */
@@ -883,8 +900,10 @@ export class DynamoAttemptStore implements AttemptStore {
   private readonly bodyStore?: BodyStore;
   private readonly now: () => Date;
   private readonly quotaLimit: number;
+  private readonly configuredLimits?: ExecutionLimits;
 
   public constructor(options: DynamoAttemptStoreOptions = {}) {
+    this.configuredLimits = options.limits;
     this.client = options.client ?? new DynamoDBClient({});
     this.tableName = options.tableName ?? process.env.DRAFT_TABLE_NAME ?? '';
     if (!this.tableName) throw new AttemptStoreError('Falta DRAFT_TABLE_NAME.');
@@ -894,7 +913,154 @@ export class DynamoAttemptStore implements AttemptStore {
       options.quotaLimit ?? Number(process.env.ATTEMPT_DAILY_LIMIT ?? DEFAULT_QUOTA);
   }
 
-  public async admit(input: AdmitInput): Promise<AdmitResult> {
+  private executionLimits(): ExecutionLimits | undefined {
+    if (this.configuredLimits) return this.configuredLimits;
+    // Fixtures can exercise historical records without operational limits. The
+    // deployed service always reads private configuration and fails closed.
+    if (process.env.NODE_ENV === 'test') return undefined;
+    return readExecutionLimits();
+  }
+
+  private async readLedger(
+    pk: string,
+    day: string,
+  ): Promise<{ amountMicros: number; version: number } | undefined> {
+    const response = await this.client.send(
+      new GetItemCommand({
+        TableName: this.tableName,
+        Key: key(pk, `SPEND#${day}`),
+        ConsistentRead: true,
+      }),
+    );
+    if (!response.Item) return undefined;
+    const row = unmarshall(response.Item);
+    if (
+      !Number.isSafeInteger(row.amountMicros) ||
+      !Number.isSafeInteger(row.version) ||
+      (row.amountMicros as number) < 0
+    )
+      throw new BudgetUnavailableError();
+    return { amountMicros: row.amountMicros as number, version: row.version as number };
+  }
+
+  private async budgetWrites(
+    owner: string,
+    day: string,
+    delta: number,
+    reserve: boolean,
+    limits?: ExecutionLimits,
+  ): Promise<TransactWriteItem[]> {
+    const entries = await Promise.all([
+      this.readLedger('GLOBAL#INFERENCE_BUDGET', day),
+      this.readLedger(`USER#${owner}`, day),
+    ]);
+    return entries.map((existing, index) => {
+      const amountMicros = (existing?.amountMicros ?? 0) + delta;
+      const limit = index === 0 ? limits?.globalDailyMicros : limits?.userDailyMicros;
+      if (
+        amountMicros < 0 ||
+        !Number.isSafeInteger(amountMicros) ||
+        (reserve &&
+          (limit === undefined || amountMicros > limit || (delta === 0 && amountMicros === limit)))
+      )
+        throw new BudgetUnavailableError();
+      return {
+        Put: {
+          TableName: this.tableName,
+          Item: itemOf({
+            PK: index === 0 ? 'GLOBAL#INFERENCE_BUDGET' : `USER#${owner}`,
+            SK: `SPEND#${day}`,
+            entity: 'inference-spend',
+            day,
+            amountMicros,
+            version: (existing?.version ?? 0) + 1,
+          }),
+          ConditionExpression: existing ? '#version = :version' : 'attribute_not_exists(PK)',
+          ...(existing
+            ? {
+                ExpressionAttributeNames: { '#version': 'version' },
+                ExpressionAttributeValues: marshall({ ':version': existing.version }),
+              }
+            : {}),
+        },
+      };
+    });
+  }
+
+  private async releaseCapacity(
+    current: PersistedAttempt,
+    now = this.now().toISOString(),
+  ): Promise<void> {
+    if (
+      current.capacitySlot === undefined ||
+      current.capacityExpiresAt === undefined ||
+      !terminalAttempt(current)
+    )
+      return;
+    const calls = await this.getCalls(current.owner, current.id);
+    const safeDeadline = current.runtimeDeadline ?? current.capacityExpiresAt;
+    if (
+      safeDeadline >= now &&
+      calls.some((call) => call.status === 'started' || call.status === 'unknown')
+    )
+      return;
+    // Conditional deletion is safe even when a later admission has replaced an
+    // expired lease. Failure leaves a recoverable lease, never frees a new one.
+    for (const [pk, sk] of [
+      [`USER#${current.owner}`, 'ACTIVE_ATTEMPT'],
+      ['GLOBAL#ATTEMPT_CAPACITY', `SLOT#${current.capacitySlot}`],
+    ]) {
+      try {
+        await this.client.send(
+          new DeleteItemCommand({
+            TableName: this.tableName,
+            Key: key(pk!, sk!),
+            ConditionExpression: '#attemptId = :attemptId',
+            ExpressionAttributeNames: { '#attemptId': 'attemptId' },
+            ExpressionAttributeValues: marshall({ ':attemptId': current.id }),
+          }),
+        );
+      } catch (error) {
+        if (!isConditional(error)) throw error;
+      }
+    }
+  }
+
+  private async availableCapacity(
+    owner: string,
+    now: string,
+    limits: ExecutionLimits,
+  ): Promise<number> {
+    const readSlot = async (pk: string, sk: string) => {
+      const response = await this.client.send(
+        new GetItemCommand({ TableName: this.tableName, Key: key(pk, sk), ConsistentRead: true }),
+      );
+      if (!response.Item) return undefined;
+      const lease = unmarshall(response.Item);
+      if (
+        typeof lease.expiresAt !== 'string' ||
+        typeof lease.owner !== 'string' ||
+        typeof lease.attemptId !== 'string'
+      )
+        throw new AttemptCapacityError();
+      const attempt = await this.closeExpired(lease.owner, lease.attemptId, now);
+      if (attempt && terminalAttempt(attempt)) {
+        await this.releaseCapacity(attempt, now);
+        const after = await this.client.send(
+          new GetItemCommand({ TableName: this.tableName, Key: key(pk, sk), ConsistentRead: true }),
+        );
+        if (!after.Item) return undefined;
+      }
+      return lease.expiresAt < now ? undefined : lease;
+    };
+    if (await readSlot(`USER#${owner}`, 'ACTIVE_ATTEMPT')) throw new AttemptCapacityError();
+    for (let slot = 0; slot < limits.globalActiveAttempts; slot += 1) {
+      if (!(await readSlot('GLOBAL#ATTEMPT_CAPACITY', `SLOT#${slot}`))) return slot;
+    }
+    throw new AttemptCapacityError();
+  }
+
+  public async admit(input: AdmitInput, capacityRetry = 0): Promise<AdmitResult> {
     if (!input.requestKey || input.requestKey.length > 256)
       throw new AttemptStoreError('La clave de solicitud no es válida.');
     const animationEnabled = input.animationEnabled === true;
@@ -905,6 +1071,7 @@ export class DynamoAttemptStore implements AttemptStore {
         throw new IdempotencyConflictError();
       return { attempt: summaryOf(existing), admitted: false };
     }
+    validateWritableDraft(input.draft);
     const draftResponse = await this.client.send(
       new GetItemCommand({
         TableName: this.tableName,
@@ -933,6 +1100,34 @@ export class DynamoAttemptStore implements AttemptStore {
     const nowDate = input.now ? new Date(input.now) : this.now();
     const now = nowDate.toISOString();
     const day = calendarDay(nowDate);
+    const limits = this.executionLimits();
+    let capacitySlot: number | undefined;
+    let admissionBudgetWrites: TransactWriteItem[] = [];
+    try {
+      if (limits) {
+        capacitySlot = await this.availableCapacity(input.owner, now, limits);
+        admissionBudgetWrites = await this.budgetWrites(input.owner, day, 0, true, limits);
+      }
+    } catch (error) {
+      // Another session can commit this request after the initial mapping read,
+      // before the capacity or spend precheck. Recover it before rejecting.
+      const winner = await this.getByRequest(input.owner, input.requestKey);
+      if (winner) {
+        if (fingerprintOf(winner.draft, winner.animationEnabled) !== fingerprint)
+          throw new IdempotencyConflictError();
+        return { attempt: summaryOf(winner), admitted: false };
+      }
+      throw error;
+    }
+    const capacityExpiresAt =
+      capacitySlot === undefined
+        ? undefined
+        : new Date(
+            nowDate.getTime() +
+              config.startTimeoutMs +
+              config.runtimeLifetimeMs +
+              config.terminationMarginMs,
+          ).toISOString();
     const id = `${now.replace(/[-:.TZ]/gu, '').slice(0, 14)}-${randomUUID()}`;
     const initial = initialSnapshot(config.levelDefinition);
     const record: PersistedAttempt = {
@@ -974,6 +1169,8 @@ export class DynamoAttemptStore implements AttemptStore {
       nextCall: 1,
       startDeadline: new Date(nowDate.getTime() + config.startTimeoutMs).toISOString(),
       sessionId: `attempt-${id}`,
+      capacitySlot,
+      capacityExpiresAt,
     };
     const requestItem = itemOf({
       PK: `USER#${input.owner}`,
@@ -1005,6 +1202,30 @@ export class DynamoAttemptStore implements AttemptStore {
       await this.client.send(
         new TransactWriteItemsCommand({
           TransactItems: [
+            ...admissionBudgetWrites,
+            ...(capacitySlot === undefined
+              ? []
+              : [
+                  ...[
+                    [`USER#${input.owner}`, 'ACTIVE_ATTEMPT'],
+                    ['GLOBAL#ATTEMPT_CAPACITY', `SLOT#${capacitySlot}`],
+                  ].map(([pk, sk]) => ({
+                    Put: {
+                      TableName: this.tableName,
+                      Item: itemOf({
+                        PK: pk,
+                        SK: sk,
+                        entity: 'attempt-capacity',
+                        attemptId: id,
+                        owner: input.owner,
+                        expiresAt: capacityExpiresAt,
+                      }),
+                      ConditionExpression: 'attribute_not_exists(PK) OR #expiresAt < :now',
+                      ExpressionAttributeNames: { '#expiresAt': 'expiresAt' },
+                      ExpressionAttributeValues: marshall({ ':now': now }),
+                    },
+                  })),
+                ]),
             {
               ConditionCheck: {
                 TableName: this.tableName,
@@ -1109,9 +1330,17 @@ export class DynamoAttemptStore implements AttemptStore {
           !draftsEqual(input.draft, currentAfterDraft)
         )
           throw new AdmissionConflictError();
+        if (limits) {
+          await this.availableCapacity(input.owner, now, limits);
+          await this.budgetWrites(input.owner, day, 0, true, limits);
+        }
         const quotaAfter = await this.quota(input.owner);
         if (quotaAfter.used >= quotaAfter.limit)
           throw new QuotaExceededError(quotaAfter.day, quotaAfter.used, quotaAfter.limit);
+        if (limits) {
+          if (capacityRetry < 4) return this.admit(input, capacityRetry + 1);
+          throw new AttemptCapacityError();
+        }
         throw new AttemptStoreError(
           'No se pudo confirmar la admisión; consultá la clave para reintentar.',
           { cause: error },
@@ -1520,7 +1749,9 @@ export class DynamoAttemptStore implements AttemptStore {
         if (!isConditional(error))
           throw new AttemptStoreError('No se pudo cancelar el intento.', { cause: error });
       }
-      return this.get(owner, attemptId);
+      const after = await this.get(owner, attemptId);
+      if (after) await this.releaseCapacity(after, now);
+      return after;
     }
     if (current.status !== 'running') return current;
     try {
@@ -1555,6 +1786,7 @@ export class DynamoAttemptStore implements AttemptStore {
     attemptId: string,
     executorId: string,
     call: CallRecord,
+    budgetRetry = 0,
   ): Promise<CallRecord | undefined> {
     const current = await this.get(owner, attemptId);
     if (
@@ -1565,8 +1797,25 @@ export class DynamoAttemptStore implements AttemptStore {
       call.seq !== current.nextCall
     )
       return undefined;
+    const limits = this.executionLimits();
+    const budget = limits
+      ? {
+          day: calendarDay(new Date(call.createdAt)),
+          reservedMicros: reserveCallCost(
+            call.countedInputTokens ?? NaN,
+            current.config.model.maxTokens,
+            limits,
+          ),
+          rates: limits.rates,
+        }
+      : undefined;
+    const budgetTransactions =
+      budget && limits
+        ? await this.budgetWrites(owner, budget.day, budget.reservedMicros, true, limits)
+        : [];
     const auditedCall: CallRecord = {
       ...call,
+      budget,
       modelKey: current.config.model.key,
       modelId: current.config.model.modelId,
       region: current.config.model.region,
@@ -1582,6 +1831,7 @@ export class DynamoAttemptStore implements AttemptStore {
       await this.client.send(
         new TransactWriteItemsCommand({
           TransactItems: [
+            ...budgetTransactions,
             {
               Update: {
                 TableName: this.tableName,
@@ -1620,8 +1870,13 @@ export class DynamoAttemptStore implements AttemptStore {
     } catch (error) {
       const calls = await this.getCalls(owner, attemptId);
       const found = calls.find((item) => item.seq === auditedCall.seq);
-      if (found) return found;
-      if (isConditional(error) || isTransactionCancellation(error)) return undefined;
+      if (found) return undefined;
+      if (isConditional(error) || isTransactionCancellation(error)) {
+        if (limits && budgetRetry < 4)
+          return this.beginCall(owner, attemptId, executorId, call, budgetRetry + 1);
+        if (limits) throw new BudgetUnavailableError();
+        return undefined;
+      }
       throw new AttemptStoreError('No se pudo registrar la llamada.', { cause: error });
     }
   }
@@ -1631,13 +1886,27 @@ export class DynamoAttemptStore implements AttemptStore {
     attemptId: string,
     executorId: string,
     call: CallRecord,
+    budgetRetry = 0,
   ): Promise<CallRecord | undefined> {
     const current = await this.get(owner, attemptId);
     if (!current || current.executorId !== executorId) return undefined;
     const storedCalls = await this.getCalls(owner, attemptId);
     const storedCall = storedCalls.find((item) => item.seq === call.seq);
+    const cost = storedCall?.budget
+      ? measuredCallCost(call.usage, storedCall.budget.rates)
+      : undefined;
+    const budget = storedCall?.budget
+      ? { ...storedCall.budget, ...(cost === undefined ? {} : { settledMicros: cost }) }
+      : undefined;
+    const delta =
+      budget && cost !== undefined
+        ? cost - (storedCall!.budget!.settledMicros ?? storedCall!.budget!.reservedMicros)
+        : 0;
+    const budgetTransactions =
+      budget && delta !== 0 ? await this.budgetWrites(owner, budget.day, delta, false) : [];
     const effectiveCall: CallRecord = {
       ...call,
+      budget,
       ...(call.rawAction === undefined && storedCall?.rawAction !== undefined
         ? { rawAction: storedCall.rawAction }
         : {}),
@@ -1653,6 +1922,7 @@ export class DynamoAttemptStore implements AttemptStore {
       ':responseStatus': effectiveCall.responseStatus,
       ':errorCode': effectiveCall.errorCode,
       ':rawAction': effectiveCall.rawAction,
+      ':budget': effectiveCall.budget,
     };
     const names: Record<string, string> = {
       '#attemptId': 'attemptId',
@@ -1674,6 +1944,11 @@ export class DynamoAttemptStore implements AttemptStore {
     const callCondition = effectiveCall.responseSha256
       ? '#attemptId = :attemptId AND #seq = :seq AND #requestKey = :requestKey AND #responseKey = :responseKey AND (attribute_not_exists(#responseSha256) OR #responseSha256 = :responseSha256)'
       : '#attemptId = :attemptId AND #seq = :seq AND #requestKey = :requestKey AND #responseKey = :responseKey AND attribute_not_exists(#responseSha256)';
+    const budgetCondition = storedCall?.budget ? ' AND #budget = :previousBudget' : '';
+    if (storedCall?.budget) {
+      names['#budget'] = 'budget';
+      values[':previousBudget'] = storedCall.budget;
+    }
     const rawActionCondition =
       call.rawAction === undefined
         ? ''
@@ -1685,6 +1960,7 @@ export class DynamoAttemptStore implements AttemptStore {
       ['responseStatus', effectiveCall.responseStatus],
       ['errorCode', effectiveCall.errorCode],
       ['rawAction', effectiveCall.rawAction],
+      ['budget', effectiveCall.budget],
     ] as const)
       if (value !== undefined) {
         sets.push(`#${name} = :${name}`);
@@ -1710,6 +1986,7 @@ export class DynamoAttemptStore implements AttemptStore {
       await this.client.send(
         new TransactWriteItemsCommand({
           TransactItems: [
+            ...budgetTransactions,
             {
               Update: {
                 TableName: this.tableName,
@@ -1718,7 +1995,7 @@ export class DynamoAttemptStore implements AttemptStore {
                   `CALL#${String(effectiveCall.seq).padStart(8, '0')}`,
                 ),
                 UpdateExpression: `SET ${sets.join(', ')}`,
-                ConditionExpression: `${callCondition}${rawActionCondition} AND (#status = :started OR #status = :incoming OR (#status = :received AND (:incoming = :invalid OR :incoming = :error)))`,
+                ConditionExpression: `${callCondition}${rawActionCondition}${budgetCondition} AND (#status = :started OR #status = :incoming OR (#status = :received AND (:incoming = :invalid OR :incoming = :error)))`,
                 ExpressionAttributeNames: names,
                 ExpressionAttributeValues: marshall(
                   {
@@ -1803,10 +2080,13 @@ export class DynamoAttemptStore implements AttemptStore {
           ],
         }),
       );
+      if (terminalAttempt(current)) await this.releaseCapacity(current);
       return clone(effectiveCall);
     } catch (error) {
-      if (isTransactionCancellation(error) || isConditional(error))
-        return this.findCall(owner, attemptId, call.seq);
+      const committed = await this.findCall(owner, attemptId, call.seq);
+      if (callCompletionMatches(committed, effectiveCall)) return committed;
+      if ((isTransactionCancellation(error) || isConditional(error)) && budget && budgetRetry < 4)
+        return this.finishCall(owner, attemptId, executorId, call, budgetRetry + 1);
       throw new AttemptStoreError('No se pudo guardar el resultado de la llamada.', {
         cause: error,
       });
@@ -1941,7 +2221,9 @@ export class DynamoAttemptStore implements AttemptStore {
           ],
         }),
       );
-      return this.get(owner, attemptId);
+      const after = await this.get(owner, attemptId);
+      if (after) await this.releaseCapacity(after, this.now().toISOString());
+      return after;
     } catch (error) {
       if (isTransactionCancellation(error) || isConditional(error)) {
         const after = await this.get(owner, attemptId);
@@ -1967,7 +2249,10 @@ export class DynamoAttemptStore implements AttemptStore {
     for (let retry = 0; retry < MAX_CLOSE_CONFLICT_RETRIES; retry += 1) {
       const current = await this.get(owner, attemptId);
       if (!current) return undefined;
-      if (current.status !== 'pending' && current.status !== 'running') return current;
+      if (current.status !== 'pending' && current.status !== 'running') {
+        await this.releaseCapacity(current, now);
+        return current;
+      }
       const durableCalls = await this.getCalls(owner, attemptId);
       const durableComplete =
         current.recordComplete &&
@@ -2018,7 +2303,9 @@ export class DynamoAttemptStore implements AttemptStore {
             }),
           }),
         );
-        return this.get(owner, attemptId);
+        const after = await this.get(owner, attemptId);
+        if (after) await this.releaseCapacity(after, now);
+        return after;
       } catch (error) {
         if (!isConditional(error))
           throw new AttemptStoreError('No se pudo cerrar el intento.', { cause: error });
@@ -2175,8 +2462,20 @@ export class DynamoAttemptStore implements AttemptStore {
         });
     }
     const current = await this.get(owner, attemptId);
-    const recoveredCalls = await this.getCalls(owner, attemptId);
+    let recoveredCalls = await this.getCalls(owner, attemptId);
     if (!current || recoveredCalls.length === 0) return;
+    if (current.executorId) {
+      for (const call of recoveredCalls) {
+        if (
+          call.budget &&
+          measuredCallCost(call.usage, call.budget.rates) !== undefined &&
+          call.budget.settledMicros === undefined
+        ) {
+          await this.finishCall(owner, attemptId, current.executorId, call);
+        }
+      }
+      recoveredCalls = await this.getCalls(owner, attemptId);
+    }
     // A normal poll can observe the durable CALL between beginCall and the
     // response audit. Keep the header's prior integrity while that call is
     // still active; terminal closure will classify an unresolved call as
@@ -2405,6 +2704,7 @@ export class S3BodyStore implements BodyStore {
 export type MemoryAttemptStoreOptions = {
   readonly now?: () => Date;
   readonly quotaLimit?: number;
+  readonly limits?: ExecutionLimits;
   readonly draft?: DraftSnapshot;
   readonly bodyStore?: BodyStore;
 };
@@ -2417,15 +2717,18 @@ export class MemoryAttemptStore implements AttemptStore {
   private readonly actions = new Map<string, unknown[]>();
   private readonly snapshots = new Map<string, Map<string, unknown>>();
   private readonly quotaUsed = new Map<string, number>();
+  private readonly spend = new Map<string, number>();
   private readonly animationPreferences = new Map<string, AnimationPreference>();
   private readonly now: () => Date;
   private readonly quotaLimit: number;
+  private readonly configuredLimits?: ExecutionLimits;
   private readonly bodyStore: BodyStore;
   private draftSnapshot: DraftSnapshot;
 
   public constructor(options: MemoryAttemptStoreOptions = {}) {
     this.now = options.now ?? (() => new Date());
     this.quotaLimit = options.quotaLimit ?? DEFAULT_QUOTA;
+    this.configuredLimits = options.limits;
     this.bodyStore = options.bodyStore ?? new MemoryBodyStore();
     this.draftSnapshot = options.draft ?? { version: 0, draft: createDefaultDraft() };
   }
@@ -2445,6 +2748,7 @@ export class MemoryAttemptStore implements AttemptStore {
       if (!record) throw new AttemptStoreError('La admisión existe sin su cabecera.');
       return { attempt: summaryOf(clone(record)), admitted: false };
     }
+    validateWritableDraft(input.draft);
     if (
       input.expectedVersion !== this.draftSnapshot.version ||
       !draftsEqual(input.draft, this.draftSnapshot.draft)
@@ -2459,6 +2763,55 @@ export class MemoryAttemptStore implements AttemptStore {
     const nowDate = input.now ? new Date(input.now) : this.now();
     const now = nowDate.toISOString();
     const day = calendarDay(nowDate);
+    const limits = this.configuredLimits;
+    let capacitySlot: number | undefined;
+    if (limits) {
+      const occupied = [...this.records.values()].filter((attempt) => {
+        if (attempt.capacitySlot === undefined || attempt.capacityExpiresAt === undefined)
+          return false;
+        if (attempt.capacityExpiresAt < now) return false;
+        if (attempt.status === 'pending' && attempt.startDeadline < now) {
+          void this.close(
+            attempt.owner,
+            attempt.id,
+            'error',
+            'start_deadline_expired',
+            undefined,
+            now,
+          );
+          return false;
+        }
+        if (attempt.runtimeDeadline && attempt.runtimeDeadline < now) {
+          void this.close(
+            attempt.owner,
+            attempt.id,
+            'error',
+            'runtime_deadline_expired',
+            attempt.executorId,
+            now,
+          );
+          return false;
+        }
+        return (
+          !terminalAttempt(attempt) ||
+          (this.calls.get(attempt.id) ?? []).some(
+            (call) => call.status === 'started' || call.status === 'unknown',
+          )
+        );
+      });
+      if (occupied.some((attempt) => attempt.owner === input.owner))
+        throw new AttemptCapacityError();
+      capacitySlot = Array.from({ length: limits.globalActiveAttempts }, (_, slot) => slot).find(
+        (slot) => !occupied.some((attempt) => attempt.capacitySlot === slot),
+      );
+      if (capacitySlot === undefined) throw new AttemptCapacityError();
+    }
+    if (
+      limits &&
+      (this.budgetAmount(day) >= limits.globalDailyMicros ||
+        this.budgetAmount(day, input.owner) >= limits.userDailyMicros)
+    )
+      throw new BudgetUnavailableError();
     const used = this.quotaUsed.get(`${input.owner}\u0000${day}`) ?? 0;
     if (used >= this.quotaLimit) throw new QuotaExceededError(day, used, this.quotaLimit);
 
@@ -2503,6 +2856,16 @@ export class MemoryAttemptStore implements AttemptStore {
       nextCall: 1,
       startDeadline: new Date(nowDate.getTime() + config.startTimeoutMs).toISOString(),
       sessionId: `attempt-${id}`,
+      capacitySlot,
+      capacityExpiresAt:
+        capacitySlot === undefined
+          ? undefined
+          : new Date(
+              nowDate.getTime() +
+                config.startTimeoutMs +
+                config.runtimeLifetimeMs +
+                config.terminationMarginMs,
+            ).toISOString(),
     };
     this.records.set(id, record);
     this.requests.set(requestMapKey, { fingerprint, attemptId: id });
@@ -2706,6 +3069,27 @@ export class MemoryAttemptStore implements AttemptStore {
     return clone(record);
   }
 
+  public budgetAmount(day: string, owner?: string): number {
+    return this.spend.get(`${owner ?? 'GLOBAL'}\u0000${day}`) ?? 0;
+  }
+
+  private adjustBudget(owner: string, day: string, delta: number, reserve: boolean): void {
+    const limits = this.configuredLimits;
+    if (!limits) return;
+    const globalKey = `GLOBAL\u0000${day}`;
+    const userKey = `${owner}\u0000${day}`;
+    const global = (this.spend.get(globalKey) ?? 0) + delta;
+    const user = (this.spend.get(userKey) ?? 0) + delta;
+    if (
+      global < 0 ||
+      user < 0 ||
+      (reserve && (global > limits.globalDailyMicros || user > limits.userDailyMicros))
+    )
+      throw new BudgetUnavailableError();
+    this.spend.set(globalKey, global);
+    this.spend.set(userKey, user);
+  }
+
   public async beginCall(
     owner: string,
     attemptId: string,
@@ -2722,9 +3106,22 @@ export class MemoryAttemptStore implements AttemptStore {
     )
       return undefined;
     const existing = this.calls.get(attemptId)?.find((item) => item.seq === call.seq);
-    if (existing) return clone(existing);
+    if (existing) return undefined;
+    const budget = this.configuredLimits
+      ? {
+          day: calendarDay(new Date(call.createdAt)),
+          reservedMicros: reserveCallCost(
+            call.countedInputTokens ?? NaN,
+            record.config.model.maxTokens,
+            this.configuredLimits,
+          ),
+          rates: this.configuredLimits.rates,
+        }
+      : undefined;
+    if (budget) this.adjustBudget(owner, budget.day, budget.reservedMicros, true);
     const auditedCall: CallRecord = {
       ...call,
+      budget,
       modelKey: record.config.model.key,
       modelId: record.config.model.modelId,
       region: record.config.model.region,
@@ -2753,9 +3150,14 @@ export class MemoryAttemptStore implements AttemptStore {
       (existing.responseSha256 !== undefined && existing.responseSha256 !== call.responseSha256)
     )
       return undefined;
-    if (!rawActionCompatible(existing, call)) return clone(existing);
+    if (!rawActionCompatible(existing, call)) return undefined;
+    const cost = existing.budget ? measuredCallCost(call.usage, existing.budget.rates) : undefined;
+    const budget = existing.budget
+      ? { ...existing.budget, ...(cost === undefined ? {} : { settledMicros: cost }) }
+      : undefined;
     const effectiveCall: CallRecord = {
       ...call,
+      budget,
       ...(call.rawAction === undefined && existing.rawAction !== undefined
         ? { rawAction: existing.rawAction }
         : {}),
@@ -2769,7 +3171,14 @@ export class MemoryAttemptStore implements AttemptStore {
       existing.status === effectiveCall.status ||
       (existing.status === 'received' &&
         (effectiveCall.status === 'invalid' || effectiveCall.status === 'error'));
-    if (!legalStatus) return clone(existing);
+    if (!legalStatus) return undefined;
+    if (budget && cost !== undefined)
+      this.adjustBudget(
+        owner,
+        budget.day,
+        cost - (existing.budget!.settledMicros ?? existing.budget!.reservedMicros),
+        false,
+      );
     items[index] = clone(effectiveCall);
     this.calls.set(attemptId, items);
     const completed = items.filter((item) => item.status !== 'started');
