@@ -36,7 +36,7 @@ function resolvePolicyTokens(value: unknown): unknown {
 }
 
 describe('PromptRunnerAccessStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, () => {
-  it('allows WAF discovery before association while restricting pool access to this app', () => {
+  it('allows WAF discovery before association while restricting pool access to its exact ARN', () => {
     const app = new cdk.App();
     const stack = new PromptRunnerAccessStack(app, 'TestIdentityDiscovery', {
       env: { account: APPLICATION_ACCOUNT, region: APPLICATION_REGION },
@@ -58,11 +58,13 @@ describe('PromptRunnerAccessStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, (
       Action: 'wafv2:GetWebACLForResource',
       Resource: `arn:aws:wafv2:${APPLICATION_REGION}:${APPLICATION_ACCOUNT}:regional/webacl/*/*`,
     });
-    expect(
-      document.Statement.find((statement) => statement.Sid === 'AssociateOwnIdentityPool'),
-    ).toMatchObject({
-      Condition: { StringEquals: { 'aws:ResourceTag/Application': 'prompt-runner-game' } },
-    });
+    const poolPermission = document.Statement.find(
+      (statement) => statement.Sid === 'AssociateOwnIdentityPool',
+    );
+    expect(poolPermission?.Resource).toBe(
+      `arn:aws:cognito-idp:${APPLICATION_REGION}:${APPLICATION_ACCOUNT}:userpool/us-east-1_4LuUPZZFf`,
+    );
+    expect(poolPermission?.Condition).toBeUndefined();
     expect(JSON.stringify(document).length).toBeLessThanOrEqual(6144);
   });
 
