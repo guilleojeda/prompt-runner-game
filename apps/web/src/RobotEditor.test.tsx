@@ -87,10 +87,10 @@ describe('RobotEditor', () => {
     expect((screen.getByRole('checkbox', { name: 'Esperar' }) as HTMLInputElement).checked).toBe(
       false,
     );
-    expect(
-      (screen.getByLabelText('Modelo para el próximo intento') as HTMLSelectElement).value,
-    ).toBe('claude-sonnet-4.6');
-    expect(screen.getAllByRole('option')).toHaveLength(1);
+    expect(screen.getByLabelText('Modelo fijo para el próximo intento').textContent).toBe(
+      'Claude Sonnet 4.6',
+    );
+    expect(screen.queryAllByRole('option')).toHaveLength(0);
     expect(screen.getByText('Guardado')).toBeTruthy();
     expect(screen.queryByText(/cerca del límite de tamaño/)).toBeNull();
     expect(screen.queryByRole('button', { name: /Probar/i })).toBeNull();
@@ -118,6 +118,26 @@ describe('RobotEditor', () => {
     expect(container.querySelectorAll('.character-count')).toHaveLength(ROBOT_CATALOG.length + 1);
     expect(container.querySelector('.byte-count')).toBeNull();
     expect(screen.queryByText(/bytes UTF-8/)).toBeNull();
+  });
+
+  it('returns focus to the editor heading when requested from a terminal result', async () => {
+    const editorRef = createRef<RobotEditorHandle>();
+    const scrollIntoView = vi.fn();
+    const previousScroll = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    try {
+      render(<RobotEditor ref={editorRef} api={api()} session={session()} />);
+      await screen.findByRole('heading', { name: 'Prepará tu robot' });
+
+      editorRef.current?.focusEditor?.();
+
+      expect(document.activeElement).toBe(
+        screen.getByRole('heading', { name: 'Prepará tu robot' }),
+      );
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'start', behavior: 'smooth' });
+    } finally {
+      HTMLElement.prototype.scrollIntoView = previousScroll;
+    }
   });
 
   it('keeps a historical oversized field readable and explains the current field limit', async () => {
@@ -233,19 +253,19 @@ describe('RobotEditor', () => {
     });
   });
 
-  it('keeps the current model fixed and disables the selector as an attempt starts', async () => {
+  it('keeps the current model fixed as an attempt starts', async () => {
     const editorRef = createRef<RobotEditorHandle>();
     const onTry = vi.fn();
     render(<RobotEditor ref={editorRef} api={api()} session={session()} onTry={onTry} />);
-    const selector = await screen.findByLabelText('Modelo para el próximo intento');
-    expect((selector as HTMLSelectElement).value).toBe('claude-sonnet-4.6');
+    const model = await screen.findByLabelText('Modelo fijo para el próximo intento');
+    expect(model.textContent).toBe('Claude Sonnet 4.6');
     expect((screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement).disabled).toBe(
       false,
     );
 
     fireEvent.click(screen.getByRole('button', { name: 'Probar' }));
     expect(onTry).toHaveBeenCalledOnce();
-    expect((selector as HTMLSelectElement).disabled).toBe(true);
+    expect(model.textContent).toBe('Claude Sonnet 4.6');
   });
 
   it('blocks Probar while a recovered configuration is applying but keeps editing available', async () => {

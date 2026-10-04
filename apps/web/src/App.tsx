@@ -203,13 +203,13 @@ function AccountCard({
   disabled: boolean;
 }) {
   return (
-    <section className="auth-card account-card" aria-labelledby="account-title">
+    <section className="auth-card account-card account-summary" aria-labelledby="account-title">
       <div className="account-mark" aria-hidden="true">
         ✓
       </div>
       <div className="auth-card-content">
-        <p className="card-kicker">Cuenta confirmada</p>
-        <h2 id="account-title">Cuenta confirmada</h2>
+        <p className="card-kicker">Cuenta</p>
+        <h2 id="account-title">Sesión confirmada</h2>
         <p>
           Sesión activa para <strong>{identity.email}</strong>.
         </p>
@@ -283,6 +283,7 @@ export function App({
   const [attemptBusy, setAttemptBusy] = useState(false);
   const [configurationBusy, setConfigurationBusy] = useState(false);
   const [attemptPreferenceReady, setAttemptPreferenceReady] = useState(false);
+  const [attemptControlsHost, setAttemptControlsHost] = useState<HTMLDivElement | null>(null);
   const clientRef = useRef<AuthClient | null>(authClient ?? null);
   const configRef = useRef<AuthConfig | null>(null);
   const draftApiRef = useRef<DraftApi | null>(draftApi ?? null);
@@ -619,6 +620,14 @@ export function App({
     setApiAuthError(true);
   }, []);
 
+  const returnToEditor = useCallback((): void => {
+    editorRef.current?.focusEditor?.();
+  }, []);
+
+  const handleAttemptControlsHostChange = useCallback((node: HTMLDivElement | null): void => {
+    setAttemptControlsHost(node);
+  }, []);
+
   return (
     <main className="shell">
       <header>
@@ -687,7 +696,7 @@ export function App({
           phase === 'signing-in') && (
           <>
             {editorApi && editorConfig && session.user.scopes.includes(editorConfig.apiScope) && (
-              <CoursePreview />
+              <CoursePreview locked={attemptBusy || configurationBusy} />
             )}
             {editorApi && editorConfig && session.user.scopes.includes(editorConfig.apiScope) && (
               <RobotEditor
@@ -699,22 +708,9 @@ export function App({
                 tryLocked={configurationBusy}
                 onTry={runnerApi ? () => attemptWorkspaceRef.current?.start() : undefined}
                 onAuthRequired={handleApiAuthRequired}
+                onAttemptControlsHostChange={handleAttemptControlsHostChange}
               />
             )}
-            {savedApi &&
-              editorApi &&
-              editorConfig &&
-              session.user.scopes.includes(editorConfig.apiScope) && (
-                <SavedRobots
-                  key={session.identity.sub}
-                  api={savedApi}
-                  editor={editorRef}
-                  session={session}
-                  paused={renewing || phase !== 'account' || apiAuthError}
-                  locked={attemptBusy || configurationBusy || !attemptPreferenceReady}
-                  onAuthRequired={handleApiAuthRequired}
-                />
-              )}
             {runnerApi &&
               editorApi &&
               editorConfig &&
@@ -729,6 +725,21 @@ export function App({
                   onConfigurationBusyChange={setConfigurationBusy}
                   onPreferenceReadyChange={setAttemptPreferenceReady}
                   onAuthRequired={handleApiAuthRequired}
+                  onReturnToEditor={returnToEditor}
+                  attemptControlsHost={attemptControlsHost}
+                  historySlot={
+                    savedApi ? (
+                      <SavedRobots
+                        key={session.identity.sub}
+                        api={savedApi}
+                        editor={editorRef}
+                        session={session}
+                        paused={renewing || phase !== 'account' || apiAuthError}
+                        locked={attemptBusy || configurationBusy || !attemptPreferenceReady}
+                        onAuthRequired={handleApiAuthRequired}
+                      />
+                    ) : null
+                  }
                 />
               )}
             {editorApi && editorConfig && !session.user.scopes.includes(editorConfig.apiScope) && (

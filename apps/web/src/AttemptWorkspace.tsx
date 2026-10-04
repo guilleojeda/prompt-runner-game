@@ -5,8 +5,10 @@ import {
   useImperativeHandle,
   useRef,
   useState,
+  type ReactNode,
   type RefObject,
 } from 'react';
+import { createPortal } from 'react-dom';
 import type { AuthSession } from './auth.js';
 import {
   AttemptApiFailure,
@@ -81,6 +83,9 @@ interface AttemptWorkspaceProps {
   readonly onConfigurationBusyChange?: (busy: boolean) => void;
   readonly onPreferenceReadyChange?: (ready: boolean) => void;
   readonly onAuthRequired?: () => void;
+  readonly onReturnToEditor?: () => void;
+  readonly historySlot?: ReactNode;
+  readonly attemptControlsHost?: HTMLElement | null;
 }
 
 type ConfigurationState = {
@@ -217,6 +222,12 @@ function formatMetric(value: number | null): string {
   return value === null ? 'desconocido' : value.toLocaleString('es-AR');
 }
 
+function formatDateTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.valueOf())) return value;
+  return date.toLocaleString('es-AR', { dateStyle: 'medium', timeStyle: 'short' });
+}
+
 function formatProgress(value: number): string {
   const percent = value >= 0 && value <= 1 ? value * 100 : value;
   return `${Math.round(percent)}%`;
@@ -290,7 +301,7 @@ function rankFor(attempts: readonly AttemptSummary[], index: number): number {
 }
 
 function historyComparisonMetrics(attempt: AttemptSummary): string {
-  return `${attempt.turnsUsed} / ${attempt.maxTurns} turnos, ${formatMetric(attempt.gameTokens)} tokens para puntaje, ${attempt.collectedObjectIds.length} objetos, ${attempt.modelLabel}, ${attempt.createdAt}`;
+  return `${attempt.turnsUsed} / ${attempt.maxTurns} turnos, ${formatMetric(attempt.gameTokens)} tokens para puntaje, ${attempt.collectedObjectIds.length} objetos, ${attempt.modelLabel}, ${formatDateTime(attempt.createdAt)}`;
 }
 
 function historyDetailMetrics(attempt: AttemptSummary): string {
@@ -308,6 +319,7 @@ function ResultCard({
   onConfiguration,
   configurationBusy,
   busy,
+  onReturnToEditor,
 }: {
   attempt: AttemptSummary;
   onReplay: () => void;
@@ -315,6 +327,7 @@ function ResultCard({
   onConfiguration: () => void;
   configurationBusy: boolean;
   busy: boolean;
+  onReturnToEditor?: () => void;
 }) {
   const technicalError = attempt.reason ? technicalReasonLabel(attempt.reason) : null;
   const tokenPenalty =
@@ -334,6 +347,13 @@ function ResultCard({
           <span>Puntaje</span>
           <strong>{attempt.score === null ? 'Desconocido' : formatScore(attempt.score)}</strong>
         </div>
+      )}
+      {attempt.status === 'error' && (
+        <p className="attempt-result-note">
+          <strong>Causa:</strong> {technicalError ?? 'el cálculo no pudo completarse.'}{' '}
+          <strong>Acción:</strong> Podés volver al editor y probar de nuevo; un nuevo intento
+          consume cuota.
+        </p>
       )}
       <dl className="attempt-result-summary">
         {attempt.status !== 'victory' && (
@@ -454,10 +474,24 @@ function ResultCard({
           {configurationBusy ? 'Cargando configuración…' : 'Ver configuración'}
         </button>
       )}
+      {onReturnToEditor && isTerminal(attempt.status) && (
+        <button
+          className="secondary-button replay-again"
+          type="button"
+          onClick={onReturnToEditor}
+          disabled={busy}
+        >
+          Volver al editor
+        </button>
+      )}
       <details className="attempt-agent-details">
         <summary>Detalles del agente</summary>
         <p className="attempt-status" data-status={attempt.status}>
           {attempt.recordComplete ? 'Registro completo' : 'Registro incompleto'}
+        </p>
+        <p className="attempt-token-help">
+          Tokens: unidades de texto procesadas por el modelo; pueden ser desconocidas según el
+          proveedor.
         </p>
         <dl className="attempt-metrics">
           <div>
@@ -848,6 +882,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       onConfigurationBusyChange,
       onPreferenceReadyChange,
       onAuthRequired,
+      onReturnToEditor,
+      historySlot,
+      attemptControlsHost,
     }: AttemptWorkspaceProps,
     ref,
   ) {
@@ -893,6 +930,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     const configurationControllerRef = useRef<AbortController | null>(null);
     const configurationApplyingRef = useRef(false);
     const configurationTriggerRef = useRef<HTMLElement | null>(null);
+    const decisionInspectorTriggerRef = useRef<HTMLElement | null>(null);
     const animationEnabledRef = useRef(true);
     const preferenceVersionRef = useRef(0);
     const preferenceGenerationRef = useRef(0);
@@ -922,7 +960,10 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       }
     }, [mode]);
     const clearDecisionInspector = useCallback((): void => {
+      const trigger = decisionInspectorTriggerRef.current;
+      decisionInspectorTriggerRef.current = null;
       setDecisionInspectorTarget(null);
+      if (trigger?.isConnected) trigger.focus();
     }, []);
     const clearConfiguration = useCallback((): void => {
       configurationOperationRef.current += 1;
@@ -1946,6 +1987,8 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         if (busy || configurationApplyingRef.current || !current || !isTerminal(current.status)) {
           return;
         }
+        decisionInspectorTriggerRef.current =
+          document.activeElement instanceof HTMLElement ? document.activeElement : null;
         setDecisionInspectorTarget(current);
         setDecisionInspectorSelection(initialSelection);
         setDecisionInspectorOpenVersion((version) => version + 1);
@@ -1970,6 +2013,8 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           );
           return;
         }
+        decisionInspectorTriggerRef.current =
+          document.activeElement instanceof HTMLElement ? document.activeElement : null;
         setDecisionInspectorTarget(target);
         setDecisionInspectorSelection(initialSelection);
         setDecisionInspectorOpenVersion((version) => version + 1);
@@ -2299,24 +2344,18 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       onAuthRequired?.();
     }, [clearDecisionInspector, onAuthRequired]);
 
-    return (
-      <section className="attempt-workspace" aria-labelledby="attempt-workspace-title">
-        <div className="attempt-heading">
-          <div>
-            <p className="card-kicker">Terreno con recompensa y puerta</p>
-            <h2 id="attempt-workspace-title">Probar al agente</h2>
-            <p>Probá tu robot para ver cómo recorre el terreno.</p>
+    const attemptControls = (
+      <div className="attempt-controls" aria-label="Controles del intento">
+        {quota && (
+          <div
+            className="quota-badge"
+            aria-label={`Cuota: ${quota.remaining} de ${quota.limit} intentos disponibles`}
+          >
+            <strong>{quota.remaining}</strong>
+            <span>de {quota.limit} intentos disponibles</span>
+            <small>Se renueva el {formatDateTime(quota.resetsAt)}</small>
           </div>
-          {quota && (
-            <div
-              className="quota-badge"
-              aria-label={`Cuota: ${quota.remaining} intentos disponibles`}
-            >
-              <strong>{quota.remaining}</strong>
-              <span>intentos disponibles hoy</span>
-            </div>
-          )}
-        </div>
+        )}
 
         <div className="animation-preference">
           <label htmlFor="animation-enabled">
@@ -2370,11 +2409,40 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             </button>
           </div>
         )}
+      </div>
+    );
+
+    return (
+      <section className="attempt-workspace" aria-labelledby="attempt-workspace-title">
+        <div className="attempt-heading">
+          <div>
+            <p className="card-kicker">Terreno con recompensa y puerta</p>
+            <h2 id="attempt-workspace-title">Probar al agente</h2>
+            <p>Probá tu robot para ver cómo recorre el terreno.</p>
+          </div>
+        </div>
+
+        {attemptControlsHost ? createPortal(attemptControls, attemptControlsHost) : attemptControls}
 
         <div ref={presentationRef}>
           {error && (
             <div className="attempt-error" role="alert">
               <p>{error}</p>
+              {(mode === 'unknown' ||
+                mode === 'replay-error' ||
+                mode === 'idle' ||
+                mode === 'result') && (
+                <p className="attempt-error-guidance">
+                  <strong>Acción disponible:</strong>{' '}
+                  {mode === 'unknown'
+                    ? 'Comprobar estado conserva el mismo intento.'
+                    : mode === 'replay-error'
+                      ? playbackReachedEnd
+                        ? 'Reintentar cierre vuelve a enviar el cierre de la presentación.'
+                        : 'Reintentar reproducción vuelve a consultar el registro; Ver resultado muestra el cierre guardado.'
+                      : 'Reintentar consultas vuelve a consultar cuota e historial.'}
+                </p>
+              )}
               {mode === 'unknown' && (
                 <button
                   className="secondary-button"
@@ -2503,7 +2571,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
                 <p>
                   {mode === 'preparing-replay'
                     ? 'Comprobando los gráficos…'
-                    : 'La secuencia avanza sola a velocidad fija.'}
+                    : 'La secuencia avanza sola a velocidad fija y no vuelve a llamar al modelo.'}
                 </p>
               </div>
               <ReplayScene
@@ -2521,6 +2589,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
               onReplay={replayCurrentAttempt}
               onInspect={(selection) => openDecisionInspector(selection)}
               onConfiguration={() => void openConfiguration(attempt.id)}
+              onReturnToEditor={onReturnToEditor}
               configurationBusy={
                 configurationState?.targetId === attempt.id &&
                 (configurationState.status === 'loading' ||
@@ -2546,7 +2615,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             key={`${sessionSub}:${decisionInspectorTarget.id}:${decisionInspectorOpenVersion}`}
             api={api}
             attemptId={decisionInspectorTarget.id}
-            targetLabel={`${statusLabel(decisionInspectorTarget.status)}, ${decisionInspectorTarget.createdAt}`}
+            targetLabel={`${statusLabel(decisionInspectorTarget.status)}, ${formatDateTime(decisionInspectorTarget.createdAt)}`}
             initialSelection={decisionInspectorSelection}
             onAuthRequired={handleDecisionInspectorAuthRequired}
             onClose={clearDecisionInspector}
@@ -2570,6 +2639,8 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             </button>
           </>
         )}
+
+        {historySlot}
 
         {(mode === 'idle' || mode === 'result') && (
           <HistoryList

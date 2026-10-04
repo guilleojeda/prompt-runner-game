@@ -481,7 +481,7 @@ const CourseTileNumbers = () => (
 );
 
 /** A static first-phase overview, rendered with the same authored terrain as replay. */
-export const CoursePreview = () => (
+export const CoursePreview = ({ locked = false }: { readonly locked?: boolean }) => (
   <section className="course-preview" aria-labelledby="course-preview-title">
     <div className="course-preview__heading">
       <div>
@@ -516,6 +516,31 @@ export const CoursePreview = () => (
       recompensa opcional de 25 puntos. La llave de la casilla 6 abre la puerta de la casilla 9. La
       salida está en la casilla 10. Hay hasta 24 acciones para llegar.
     </p>
+    <details
+      className="course-preview__help"
+      aria-disabled={locked}
+      onClick={locked ? (event) => event.preventDefault() : undefined}
+    >
+      <summary tabIndex={locked ? -1 : 0}>Reglas del recorrido</summary>
+      <div className="course-preview__help-copy">
+        <p>
+          En cada turno el agente recibe sólo la orientación actual, los objetos de su casilla y lo
+          que tiene inmediatamente a izquierda y derecha. Cada decisión es independiente: no recibe
+          el historial de turnos ni el mapa completo.
+        </p>
+        <p>
+          Los tramos pueden ser suelo, pozo, rama, barrera baja, barrera alta o plataforma. Cada
+          acción habilitada tiene un efecto propio y el motor resuelve si puede aplicarse al
+          obstáculo presente; una descripción no cambia esas reglas.
+        </p>
+        <p>
+          Las barreras y la plataforma periódicas pueden cambiar después de cada acción. Agarrar
+          objeto sólo recoge un objeto que está en la casilla actual. La llave abre la puerta
+          cerrada; la salida queda después de la puerta. El recorrido tiene un límite de 24
+          acciones.
+        </p>
+      </div>
+    </details>
   </section>
 );
 
