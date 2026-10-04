@@ -36,6 +36,36 @@ function resolvePolicyTokens(value: unknown): unknown {
 }
 
 describe('PromptRunnerAccessStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, () => {
+  it('allows WAF discovery before association while restricting pool access to this app', () => {
+    const app = new cdk.App();
+    const stack = new PromptRunnerAccessStack(app, 'TestIdentityDiscovery', {
+      env: { account: APPLICATION_ACCOUNT, region: APPLICATION_REGION },
+      githubOidcProviderArn: `arn:aws:iam::${APPLICATION_ACCOUNT}:oidc-provider/token.actions.githubusercontent.com`,
+    });
+    const resources = Template.fromStack(stack).findResources('AWS::IAM::ManagedPolicy');
+    const policy = Object.values(resources).find(
+      (resource) =>
+        resource.Properties.ManagedPolicyName ===
+        'prompt-runner-game-beta-operations-cfn-execution',
+    );
+    const document = resolvePolicyTokens(policy?.Properties.PolicyDocument) as {
+      Statement: Array<{ Sid: string; Action: unknown; Resource: unknown; Condition?: unknown }>;
+    };
+    const discovery = document.Statement.find(
+      (statement) => statement.Sid === 'ReadIdentityWebAclAssociation',
+    );
+    expect(discovery).toMatchObject({
+      Action: 'wafv2:GetWebACLForResource',
+      Resource: `arn:aws:wafv2:${APPLICATION_REGION}:${APPLICATION_ACCOUNT}:regional/webacl/*/*`,
+    });
+    expect(
+      document.Statement.find((statement) => statement.Sid === 'AssociateOwnIdentityPool'),
+    ).toMatchObject({
+      Condition: { StringEquals: { 'aws:ResourceTag/Application': 'prompt-runner-game' } },
+    });
+    expect(JSON.stringify(document).length).toBeLessThanOrEqual(6144);
+  });
+
   it('restricts GitHub OIDC to the approved audience and main branch subject', () => {
     const app = new cdk.App();
     const stack = new PromptRunnerAccessStack(app, 'TestAccess', {

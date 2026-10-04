@@ -824,6 +824,14 @@ export class PromptRunnerAccessStack extends cdk.Stack {
           resources: [cognitoUserPoolArn],
           conditions: { StringEquals: { 'aws:ResourceTag/Application': 'prompt-runner-game' } },
         }),
+        // For an unassociated pool, WAF authorizes this discovery read against
+        // the regional wildcard ARN rather than an ACL name. Cognito's
+        // dependent permission above still restricts the pool to this app.
+        new iam.PolicyStatement({
+          sid: 'ReadIdentityWebAclAssociation',
+          actions: ['wafv2:GetWebACLForResource'],
+          resources: [`arn:${cdk.Aws.PARTITION}:wafv2:${region}:${account}:regional/webacl/*/*`],
+        }),
         // Cognito's WAF integration requires this permission-only action on
         // '*'. The dependent Cognito permission above still limits pools to
         // this application; the region condition bounds the WAF operation.
