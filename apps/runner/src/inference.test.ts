@@ -11,6 +11,7 @@ import {
   DEFAULT_DECISION_MODEL_CONFIG,
   DecisionFailure,
   executeDecision,
+  countConverseInputTokens,
   type DecisionAudit,
   type DecisionInput,
   type TransportReceipt,
@@ -171,7 +172,10 @@ describe('auditable Strands Bedrock decision', () => {
 
     expect(MODEL_CATALOG.map((entry) => entry.key)).toEqual(['claude-sonnet-4.6']);
     await expect(
-      executeDecision(inputForModel(profile!), recorded.audit, { requestHandler: handler }),
+      executeDecision(inputForModel(profile!), recorded.audit, {
+        countInputTokens: async () => 100,
+        requestHandler: handler,
+      }),
     ).resolves.toMatchObject({ action: { name: 'tool_1', input: {} } });
 
     expect(handler.requests).toHaveLength(1);
@@ -202,7 +206,10 @@ describe('auditable Strands Bedrock decision', () => {
 
     for (const candidate of candidates) {
       await expect(
-        executeDecision(inputForModel(candidate), recorded.audit, { requestHandler: handler }),
+        executeDecision(inputForModel(candidate), recorded.audit, {
+          countInputTokens: async () => 100,
+          requestHandler: handler,
+        }),
       ).rejects.toMatchObject({ code: 'invalid_input' });
     }
     expect(handler.requests).toHaveLength(0);
@@ -226,7 +233,10 @@ describe('auditable Strands Bedrock decision', () => {
     const recorded = recordingAudit();
 
     await expect(
-      executeDecision(input(), recorded.audit, { requestHandler: handler }),
+      executeDecision(input(), recorded.audit, {
+        countInputTokens: async () => 100,
+        requestHandler: handler,
+      }),
     ).rejects.toMatchObject({ code: 'invalid_response' });
     expect(handler.requests).toHaveLength(1);
     expect(recorded.receipts).toHaveLength(1);
@@ -245,9 +255,11 @@ describe('auditable Strands Bedrock decision', () => {
     const recorded = recordingAudit();
 
     const first = await executeDecision(input({ derecha: 'pozo' }), recorded.audit, {
+      countInputTokens: async () => 100,
       requestHandler: handler,
     });
     const second = await executeDecision(input({ derecha: 'suelo' }), recorded.audit, {
+      countInputTokens: async () => 100,
       requestHandler: handler,
     });
 
@@ -342,7 +354,10 @@ describe('auditable Strands Bedrock decision', () => {
       const recorded = recordingAudit();
 
       await expect(
-        executeDecision(input(), recorded.audit, { requestHandler: handler }),
+        executeDecision(input(), recorded.audit, {
+          countInputTokens: async () => 100,
+          requestHandler: handler,
+        }),
       ).rejects.toMatchObject({ code: expected });
       expect(handler.requests).toHaveLength(1);
       expect(recorded.receipts).toHaveLength(1);
@@ -356,6 +371,7 @@ describe('auditable Strands Bedrock decision', () => {
     const recorded = recordingAudit();
 
     const failure = await executeDecision(input(), recorded.audit, {
+      countInputTokens: async () => 100,
       requestHandler: handler,
     }).catch((error: unknown) => error);
 
@@ -377,7 +393,10 @@ describe('auditable Strands Bedrock decision', () => {
     const recorded = recordingAudit();
 
     await expect(
-      executeDecision(input(), recorded.audit, { requestHandler: handler }),
+      executeDecision(input(), recorded.audit, {
+        countInputTokens: async () => 100,
+        requestHandler: handler,
+      }),
     ).rejects.toMatchObject({
       code: 'throttled',
       usage: { normalized: { inputTokens: null, outputTokens: null, gameTokens: null } },
@@ -425,7 +444,10 @@ describe('auditable Strands Bedrock decision', () => {
     const recorded = recordingAudit();
 
     await expect(
-      executeDecision(input(), recorded.audit, { requestHandler: handler }),
+      executeDecision(input(), recorded.audit, {
+        countInputTokens: async () => 100,
+        requestHandler: handler,
+      }),
     ).rejects.toMatchObject({ code: 'provider_error' });
     expect(handler.requests).toHaveLength(1);
     expect(recorded.receipts[0]?.bytes).toEqual(bytes);
@@ -446,7 +468,10 @@ describe('auditable Strands Bedrock decision', () => {
     const recorded = recordingAudit();
 
     await expect(
-      executeDecision(input(), recorded.audit, { requestHandler: handler }),
+      executeDecision(input(), recorded.audit, {
+        countInputTokens: async () => 100,
+        requestHandler: handler,
+      }),
     ).rejects.toMatchObject({ code: 'throttled' });
     expect(handler.requests).toHaveLength(1);
     expect(recorded.receipts).toEqual([
@@ -465,7 +490,10 @@ describe('auditable Strands Bedrock decision', () => {
     const recorded = recordingAudit();
 
     await expect(
-      executeDecision(input(), recorded.audit, { requestHandler: handler }),
+      executeDecision(input(), recorded.audit, {
+        countInputTokens: async () => 100,
+        requestHandler: handler,
+      }),
     ).rejects.toMatchObject({
       code: 'throttled',
       usage: { normalized: { inputTokens: null, outputTokens: null, gameTokens: null } },
@@ -489,7 +517,10 @@ describe('auditable Strands Bedrock decision', () => {
     const recorded = recordingAudit();
 
     await expect(
-      executeDecision(input(), recorded.audit, { requestHandler: handler }),
+      executeDecision(input(), recorded.audit, {
+        countInputTokens: async () => 100,
+        requestHandler: handler,
+      }),
     ).rejects.toMatchObject({ code: 'throttled' });
     expect(handler.requests).toHaveLength(1);
     expect(recorded.receipts[0]?.bytes).toEqual(bytes);
@@ -508,7 +539,10 @@ describe('auditable Strands Bedrock decision', () => {
     const recorded = recordingAudit();
 
     await expect(
-      executeDecision(input(), recorded.audit, { requestHandler: handler }),
+      executeDecision(input(), recorded.audit, {
+        countInputTokens: async () => 100,
+        requestHandler: handler,
+      }),
     ).rejects.toMatchObject({ code: 'provider_error' });
     expect(handler.requests).toHaveLength(1);
   });
@@ -523,7 +557,10 @@ describe('auditable Strands Bedrock decision', () => {
     };
 
     await expect(
-      executeDecision(input(), audit, { requestHandler: handler }),
+      executeDecision(input(), audit, {
+        countInputTokens: async () => 100,
+        requestHandler: handler,
+      }),
     ).rejects.toMatchObject({
       code: 'audit_failed',
     });
@@ -541,7 +578,10 @@ describe('auditable Strands Bedrock decision', () => {
     };
 
     await expect(
-      executeDecision(input(), audit, { requestHandler: handler }),
+      executeDecision(input(), audit, {
+        countInputTokens: async () => 100,
+        requestHandler: handler,
+      }),
     ).rejects.toMatchObject({
       code: 'audit_failed',
     });
@@ -557,6 +597,7 @@ describe('auditable Strands Bedrock decision', () => {
 
     await expect(
       executeDecision(input(), audit, {
+        countInputTokens: async () => 100,
         requestHandler: handler,
         timeoutMs: 1_000,
         responseAuditTimeoutMs: 20,
@@ -582,7 +623,11 @@ describe('auditable Strands Bedrock decision', () => {
     const recorded = recordingAudit();
 
     await expect(
-      executeDecision(input(), recorded.audit, { requestHandler: handler, timeoutMs: 20 }),
+      executeDecision(input(), recorded.audit, {
+        countInputTokens: async () => 100,
+        requestHandler: handler,
+        timeoutMs: 20,
+      }),
     ).rejects.toMatchObject({ code: 'timeout' });
     expect(handler.requests).toHaveLength(1);
     expect(recorded.requests).toHaveLength(1);
@@ -612,6 +657,7 @@ describe('auditable Strands Bedrock decision', () => {
       };
       const controller = new AbortController();
       const resultPromise = executeDecision(input(), audit, {
+        countInputTokens: async () => 100,
         requestHandler: handler,
         signal: controller.signal,
         timeoutMs: abortMode === 'deadline' ? 20 : 1_000,
@@ -658,5 +704,95 @@ describe('auditable Strands Bedrock decision', () => {
     expect(Buffer.compare(recorded.receipts[0]?.bytes ?? new Uint8Array(), largeBytes)).toBe(0);
     expect(Buffer.compare(downstream, largeBytes)).toBe(0);
     expect(largeBytes.byteLength).toBeGreaterThan(400 * 1024);
+  });
+});
+
+describe('native CountTokens authorization', () => {
+  beforeEach(() => {
+    vi.stubEnv('AWS_ACCESS_KEY_ID', 'test-access-key');
+    vi.stubEnv('AWS_SECRET_ACCESS_KEY', 'test-secret-key');
+    vi.stubEnv('AWS_SESSION_TOKEN', 'test-session-token');
+  });
+  afterEach(() => vi.unstubAllEnvs());
+  afterEach(() => vi.restoreAllMocks());
+  it('counts the complete serialized Converse prompt before authorizing the model transport', async () => {
+    const { BedrockRuntimeClient } = await import('@aws-sdk/client-bedrock-runtime');
+    const order: string[] = [];
+    const countClient = new BedrockRuntimeClient({ region: 'us-east-1' });
+    const countSpy = vi.spyOn(countClient, 'send').mockImplementation(async (command) => {
+      order.push('count');
+      expect(command.constructor.name).toBe('CountTokensCommand');
+      expect(command.input).toMatchObject({
+        modelId: 'anthropic.claude-sonnet-4-6',
+        input: {
+          converse: {
+            system: expect.any(Array),
+            messages: expect.any(Array),
+            toolConfig: expect.any(Object),
+          },
+        },
+      });
+      return { inputTokens: 123 };
+    });
+    const handler = new QueueHandler([{ bytes: responseBytes([toolUse('tool_1', {})]) }]);
+    const recorded = recordingAudit();
+    await executeDecision(
+      input(),
+      {
+        ...recorded.audit,
+        beforeSend: async (bytes, count) => {
+          order.push('authorize');
+          expect(count).toBe(123);
+          const command = countSpy.mock.calls[0][0];
+          const counted = (command.input as { input: { converse: unknown } }).input.converse;
+          const request = JSON.parse(decoder.decode(bytes));
+          expect(counted).toEqual({
+            messages: request.messages,
+            system: request.system,
+            toolConfig: request.toolConfig,
+          });
+        },
+      },
+      {
+        requestHandler: handler,
+        countInputTokens: (bytes, signal) =>
+          countConverseInputTokens(bytes, DEFAULT_DECISION_MODEL_CONFIG, countClient, signal),
+      },
+    );
+    expect(order).toEqual(['count', 'authorize']);
+    expect(handler.requests).toHaveLength(1);
+  });
+  it('stops before authorization and Converse when native counting is unavailable', async () => {
+    const { BedrockRuntimeClient } = await import('@aws-sdk/client-bedrock-runtime');
+    const countClient = new BedrockRuntimeClient({ region: 'us-east-1' });
+    vi.spyOn(countClient, 'send').mockRejectedValue(new Error('unsupported CountTokens'));
+    const handler = new QueueHandler([{ bytes: responseBytes([toolUse('tool_1', {})]) }]);
+    const recorded = recordingAudit();
+    await expect(
+      executeDecision(input(), recorded.audit, {
+        requestHandler: handler,
+        countInputTokens: (bytes, signal) =>
+          countConverseInputTokens(bytes, DEFAULT_DECISION_MODEL_CONFIG, countClient, signal),
+      }),
+    ).rejects.toMatchObject({ code: 'token_count_unavailable' });
+    expect(handler.requests).toHaveLength(0);
+    expect(recorded.requests).toHaveLength(0);
+  });
+  it('keeps economic rejection distinct from transport errors and makes no model request', async () => {
+    const { BudgetUnavailableError } = await import('../../../shared/server/execution-limits.js');
+    const handler = new QueueHandler([{ bytes: responseBytes([toolUse('tool_1', {})]) }]);
+    await expect(
+      executeDecision(
+        input(),
+        {
+          beforeSend: async () => {
+            throw new BudgetUnavailableError();
+          },
+          afterReceive: async () => undefined,
+        },
+        { requestHandler: handler, countInputTokens: async () => 123 },
+      ),
+    ).rejects.toMatchObject({ code: 'inference_budget_unavailable' });
+    expect(handler.requests).toHaveLength(0);
   });
 });

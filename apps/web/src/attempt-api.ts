@@ -1,4 +1,4 @@
-import { validateDraft, type RobotDraft } from '../../../shared/robot.js';
+import { validateDraft, validateWritableDraft, type RobotDraft } from '../../../shared/robot.js';
 import type {
   AnimationPreference,
   AttemptStatus,
@@ -88,7 +88,14 @@ export interface AttemptApi {
 }
 
 export type AttemptApiFailureCode =
-  'authentication' | 'conflict' | 'quota_exceeded' | 'not_found' | 'invalid' | 'network' | 'server';
+  | 'authentication'
+  | 'attempt_unavailable'
+  | 'conflict'
+  | 'quota_exceeded'
+  | 'not_found'
+  | 'invalid'
+  | 'network'
+  | 'server';
 
 export class AttemptApiFailure extends Error {
   public constructor(
@@ -654,6 +661,10 @@ function errorMessage(body: unknown, fallback: string): string {
     : fallback;
 }
 
+function responseCode(body: unknown): string | null {
+  return isRecord(body) && typeof body.code === 'string' ? body.code : null;
+}
+
 function bindFetch(fetchImpl: typeof globalThis.fetch): typeof globalThis.fetch {
   return fetchImpl.bind(globalThis);
 }
@@ -669,17 +680,26 @@ export class AttemptApiClient implements AttemptApi {
     this.tokenProvider = options.tokenProvider;
   }
 
-  public createAttempt(
+  public async createAttempt(
     requestKey: string,
     expectedVersion: number,
     draft: RobotDraft,
     animationEnabled: boolean,
     signal?: AbortSignal,
   ): Promise<AttemptAdmission> {
+    let writableDraft: RobotDraft;
+    try {
+      writableDraft = validateWritableDraft(draft);
+    } catch (error) {
+      throw new AttemptApiFailure(
+        'invalid',
+        error instanceof Error ? error.message : 'La configuración del robot no es válida.',
+      );
+    }
     return this.request(
       'POST',
       'attempts',
-      { requestKey, expectedVersion, draft, animationEnabled },
+      { requestKey, expectedVersion, draft: writableDraft, animationEnabled },
       parseAdmission,
       'No se pudo admitir el intento.',
       signal,
@@ -898,6 +918,33 @@ export class AttemptApiClient implements AttemptApi {
     }
     const parsed = await readBody(response);
     if (!response.ok) {
+      // A native gateway 429 is not player quota; only our explicit code means that.
+      if (response.status === 429 && responseCode(parsed) === 'quota_exceeded') {
+        throw new AttemptApiFailure(
+          'quota_exceeded',
+          errorMessage(parsed, 'Alcanzaste la cuota diaria.'),
+          response.status,
+        );
+      }
+      if (responseCode(parsed) === 'attempt_unavailable') {
+        throw new AttemptApiFailure(
+          'attempt_unavailable',
+          errorMessage(
+            parsed,
+            'No se puede iniciar una partida por ahora. Podés consultar tus partidas o intentarlo más tarde.',
+          ),
+          response.status,
+          false,
+        );
+      }
+      if (response.status === 429) {
+        throw new AttemptApiFailure(
+          'attempt_unavailable',
+          'Están llegando muchas solicitudes. Esperá un momento y volvé a intentar.',
+          response.status,
+          false,
+        );
+      }
       if (response.status === 401 || response.status === 403) {
         throw new AttemptApiFailure(
           'authentication',
@@ -916,13 +963,6 @@ export class AttemptApiClient implements AttemptApi {
         throw new AttemptApiFailure(
           'conflict',
           errorMessage(parsed, 'La solicitud ya no es válida.'),
-          response.status,
-        );
-      }
-      if (response.status === 429) {
-        throw new AttemptApiFailure(
-          'quota_exceeded',
-          errorMessage(parsed, 'Alcanzaste la cuota diaria.'),
           response.status,
         );
       }

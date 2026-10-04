@@ -9,10 +9,12 @@ import {
   aws_logs as logs,
   aws_s3 as s3,
   aws_s3_assets as s3assets,
+  custom_resources as custom,
 } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import { MODEL_CATALOG, type ModelProfile } from '../../shared/models.js';
 import { STARTER_LAMBDA_NAME } from './robot.js';
+import { executionLimitEnvironment, type PrivateLimits } from './private-limits.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -24,12 +26,15 @@ export const AGENT_RUNTIME_NAME = 'prompt_runner_game_agent_runtime';
 export const AGENT_RUNTIME_ROLE_NAME = 'prompt-runner-game-agent-runtime-us-east-1';
 export const STARTER_LAMBDA_ROLE_NAME = 'prompt-runner-game-attempt-starter-execution-us-east-1';
 export const STARTER_LOG_GROUP_NAME = `/aws/lambda/${STARTER_LAMBDA_NAME}`;
+export const LOG_RETENTION_ROLE_NAME = 'prompt-runner-game-log-retention-us-east-1';
+export const LOG_RETENTION_GROUP_NAME = '/aws/lambda/prompt-runner-game-log-retention';
 export const AGENT_RUNTIME_MAX_LIFETIME_SECONDS = 30 * 60;
 export const STARTER_MAX_EVENT_AGE_SECONDS = 5 * 60;
 export const attemptBodiesBucketNameFor = (account: string, region: string): string =>
   `${ATTEMPT_BODIES_BUCKET_PREFIX}-${account}-${region}`;
 
 export interface ExecutionResourcesProps {
+  readonly limits: PrivateLimits;
   readonly draftTable: dynamodb.Table;
   readonly apiFunction: lambda.Function;
   readonly apiExecutionRole: iam.Role;
@@ -118,6 +123,7 @@ export function createExecutionResources(
 
   const starterLogGroup = new logs.LogGroup(scope, 'AttemptStarterLogGroup', {
     logGroupName: STARTER_LOG_GROUP_NAME,
+    retention: logs.RetentionDays.ONE_MONTH,
   });
   const starterExecutionRole = new iam.Role(scope, 'AttemptStarterExecutionRole', {
     roleName: STARTER_LAMBDA_ROLE_NAME,
@@ -127,7 +133,8 @@ export function createExecutionResources(
   starterExecutionRole.addToPolicy(
     new iam.PolicyStatement({
       sid: 'ReadAndClaimAttempt',
-      actions: ['dynamodb:GetItem', 'dynamodb:UpdateItem'],
+      // Expiry also reads call records and conditionally releases capacity.
+      actions: ['dynamodb:GetItem', 'dynamodb:UpdateItem', 'dynamodb:Query', 'dynamodb:DeleteItem'],
       resources: [props.draftTable.tableArn],
     }),
   );
@@ -221,6 +228,7 @@ export function createExecutionResources(
         'dynamodb:PutItem',
         'dynamodb:UpdateItem',
         'dynamodb:Query',
+        'dynamodb:DeleteItem',
       ],
       resources: [props.draftTable.tableArn],
     }),
@@ -230,6 +238,17 @@ export function createExecutionResources(
       sid: 'ReadWriteInferenceBodies',
       actions: ['s3:GetObject', 's3:PutObject'],
       resources: [attemptBodiesBucket.arnForObjects('*')],
+    }),
+  );
+
+  runnerExecutionRole.addToPolicy(
+    new iam.PolicyStatement({
+      sid: 'CountApprovedModelTokens',
+      actions: ['bedrock:CountTokens'],
+      resources: MODEL_CATALOG.map(
+        (profile) =>
+          `arn:${cdk.Aws.PARTITION}:bedrock:${props.region}::foundation-model/${foundationModelIdFor(profile)}`,
+      ),
     }),
   );
 
@@ -267,6 +286,7 @@ export function createExecutionResources(
       },
     },
     environmentVariables: {
+      ...executionLimitEnvironment(props.limits),
       DRAFT_TABLE_NAME: props.draftTable.tableName,
       ATTEMPT_BODIES_BUCKET: attemptBodiesBucket.bucketName,
       BUILD_REVISION: props.buildRevision,
@@ -284,6 +304,52 @@ export function createExecutionResources(
   });
   runnerRuntime.node.addDependency(runnerExecutionRole);
   runnerRuntime.node.addDependency(runnerCodeAsset);
+
+  // AgentCore owns this group and may already have created it. A native
+  // LogGroup resource would conflict with that existing group on adoption.
+  // Two scoped SDK operations create it idempotently, then set retention.
+  const retentionRole = new iam.Role(scope, 'LogRetentionRole', {
+    roleName: LOG_RETENTION_ROLE_NAME,
+    assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+  });
+  const retentionLogs = new logs.LogGroup(scope, 'LogRetentionHelperLogs', {
+    logGroupName: LOG_RETENTION_GROUP_NAME,
+    retention: logs.RetentionDays.ONE_MONTH,
+  });
+  const runtimeLogGroupName = `/aws/bedrock-agentcore/runtimes/${runnerRuntime.attrAgentRuntimeId}-DEFAULT`;
+  const scopedRuntimeLogs = `${runtimeLogGroupArn}:*`;
+  const policy = custom.AwsCustomResourcePolicy.fromStatements([
+    new iam.PolicyStatement({
+      actions: ['logs:CreateLogGroup', 'logs:PutRetentionPolicy'],
+      resources: [runtimeLogGroupArn, scopedRuntimeLogs],
+    }),
+  ]);
+  const runtimeLogGroup = new custom.AwsCustomResource(scope, 'EnsureRuntimeLogGroup', {
+    onUpdate: {
+      service: 'CloudWatchLogs',
+      action: 'createLogGroup',
+      parameters: { logGroupName: runtimeLogGroupName },
+      physicalResourceId: custom.PhysicalResourceId.of(runtimeLogGroupName),
+      ignoreErrorCodesMatching: 'ResourceAlreadyExistsException',
+    },
+    policy,
+    role: retentionRole,
+    logGroup: retentionLogs,
+    installLatestAwsSdk: false,
+  });
+  const retention = new custom.AwsCustomResource(scope, 'RuntimeLogRetention', {
+    onUpdate: {
+      service: 'CloudWatchLogs',
+      action: 'putRetentionPolicy',
+      parameters: { logGroupName: runtimeLogGroupName, retentionInDays: 30 },
+      physicalResourceId: custom.PhysicalResourceId.of(runtimeLogGroupName),
+    },
+    policy,
+    role: retentionRole,
+    logGroup: retentionLogs,
+    installLatestAwsSdk: false,
+  });
+  retention.node.addDependency(runtimeLogGroup);
 
   // The starter waits only for Runtime acknowledgement and never receives a
   // browser token or model permission. The API can read body metadata during

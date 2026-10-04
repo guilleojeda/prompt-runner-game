@@ -2,7 +2,13 @@ import { type DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { marshall } from '@aws-sdk/util-dynamodb';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { describe, expect, it, vi } from 'vitest';
-import { createDefaultDraft, type DraftSnapshot } from '../../../shared/robot';
+import {
+  MAX_INSTRUCTIONS_CHARACTERS,
+  MAX_SKILL_DESCRIPTION_CHARACTERS,
+  createDefaultDraft,
+  type DraftSnapshot,
+} from '../../../shared/robot';
+import type { PersistedAttempt } from '../../../shared/server/attempt.js';
 import {
   DraftConflictError,
   DraftStorageError,
@@ -10,7 +16,13 @@ import {
   type DraftStore,
 } from './draft';
 import { handleRequest } from './handler';
-import { MemoryAttemptStore } from './attempt-store';
+import {
+  AttemptCapacityError,
+  BudgetUnavailableError,
+  MemoryAttemptStore,
+  type AttemptStore,
+} from './attempt-store';
+import { SavedRobotLimitError, type SavedRobotStore } from './saved-robots';
 
 const identity = {
   sub: 'user-a',
@@ -115,6 +127,56 @@ describe('draft API handler', () => {
     expect((await attemptStore.quota('user-a')).used).toBe(0);
     expect(dispatch).not.toHaveBeenCalled();
   });
+
+  it.each([
+    [
+      'instructions',
+      (draft: ReturnType<typeof createDefaultDraft>) => ({
+        ...draft,
+        instructions: 'x'.repeat(MAX_INSTRUCTIONS_CHARACTERS + 1),
+      }),
+    ],
+    [
+      'disabled action description',
+      (draft: ReturnType<typeof createDefaultDraft>) => ({
+        ...draft,
+        skills: draft.skills.map((skill) =>
+          skill.id === 'wait'
+            ? {
+                ...skill,
+                enabled: false,
+                description: 'x'.repeat(MAX_SKILL_DESCRIPTION_CHARACTERS + 1),
+              }
+            : skill,
+        ),
+      }),
+    ],
+  ] as const)(
+    'rejects over-limit %s through direct attempt ingress before quota',
+    async (_label, makeDraft) => {
+      const draft = createDefaultDraft();
+      const attemptStore = new MemoryAttemptStore({ draft: { version: 1, draft }, quotaLimit: 1 });
+      const dispatch = vi.fn();
+      const store: DraftStore = { get: vi.fn(), put: vi.fn() };
+      const response = await handleRequest(
+        eventFor('POST', {
+          path: '/attempts',
+          body: JSON.stringify({
+            requestKey: 'oversized-text',
+            expectedVersion: 1,
+            draft: makeDraft(draft),
+            animationEnabled: false,
+          }),
+        }),
+        { ...dependencies(store), attemptStore, dispatch },
+      );
+
+      expect(response.statusCode).toBe(400);
+      expect(responseBody(response).code).toBe('invalid');
+      expect((await attemptStore.quota('user-a')).used).toBe(0);
+      expect(dispatch).not.toHaveBeenCalled();
+    },
+  );
 
   it('gets the authenticated owner default and never asks the store for a request owner', async () => {
     const snapshot: DraftSnapshot = { version: 0, draft: createDefaultDraft() };
@@ -227,6 +289,25 @@ describe('draft API handler', () => {
       { expectedVersion: 0, draft: { ...draft, owner: 'user-b' } },
       { expectedVersion: -1, draft },
       { expectedVersion: 0, draft: { ...draft, schemaVersion: 2 } },
+      {
+        expectedVersion: 0,
+        draft: { ...draft, instructions: 'x'.repeat(MAX_INSTRUCTIONS_CHARACTERS + 1) },
+      },
+      {
+        expectedVersion: 0,
+        draft: {
+          ...draft,
+          skills: draft.skills.map((skill) =>
+            skill.id === 'wait'
+              ? {
+                  ...skill,
+                  enabled: false,
+                  description: 'x'.repeat(MAX_SKILL_DESCRIPTION_CHARACTERS + 1),
+                }
+              : skill,
+          ),
+        },
+      },
     ]) {
       const invalidResponse = await handleRequest(
         eventFor('PUT', { body: JSON.stringify(body) }),
@@ -236,6 +317,151 @@ describe('draft API handler', () => {
     }
     expect(store.put).toHaveBeenCalledTimes(1);
   });
+
+  it.each([
+    [
+      'instructions',
+      (draft: ReturnType<typeof createDefaultDraft>) => ({
+        ...draft,
+        instructions: 'x'.repeat(MAX_INSTRUCTIONS_CHARACTERS + 1),
+      }),
+    ],
+    [
+      'disabled action description',
+      (draft: ReturnType<typeof createDefaultDraft>) => ({
+        ...draft,
+        skills: draft.skills.map((skill) =>
+          skill.id === 'wait'
+            ? {
+                ...skill,
+                enabled: false,
+                description: 'x'.repeat(MAX_SKILL_DESCRIPTION_CHARACTERS + 1),
+              }
+            : skill,
+        ),
+      }),
+    ],
+  ] as const)(
+    'rejects over-limit %s through direct saved-robot ingress',
+    async (_label, makeDraft) => {
+      const put = vi.fn();
+      const savedRobotStore = {
+        list: vi.fn(),
+        get: vi.fn(),
+        put,
+        delete: vi.fn(),
+      } as unknown as SavedRobotStore;
+      const draft = createDefaultDraft();
+      const response = await handleRequest(
+        eventFor('PUT', {
+          path: '/robots/123e4567-e89b-12d3-a456-426614174000',
+          body: JSON.stringify({
+            expectedVersion: 0,
+            name: 'Explorador',
+            draft: makeDraft(draft),
+          }),
+        }),
+        { ...dependencies({ get: vi.fn(), put: vi.fn() }), savedRobotStore },
+      );
+
+      expect(response.statusCode).toBe(400);
+      expect(responseBody(response).code).toBe('invalid');
+      expect(put).not.toHaveBeenCalled();
+    },
+  );
+
+  it('returns a non-conflict, number-free saved-robot limit rejection', async () => {
+    const savedRobotStore = {
+      list: vi.fn(),
+      get: vi.fn(),
+      put: vi.fn().mockRejectedValue(new SavedRobotLimitError()),
+      delete: vi.fn(),
+    } as unknown as SavedRobotStore;
+    const response = await handleRequest(
+      eventFor('PUT', {
+        path: '/robots/123e4567-e89b-12d3-a456-426614174000',
+        body: JSON.stringify({
+          expectedVersion: 0,
+          name: 'Explorador',
+          draft: createDefaultDraft(),
+        }),
+      }),
+      { ...dependencies({ get: vi.fn(), put: vi.fn() }), savedRobotStore },
+    );
+
+    expect(response.statusCode).toBe(409);
+    expect(responseBody(response)).toEqual({
+      code: 'saved_robot_limit',
+      message: 'Eliminá una configuración guardada para crear otra.',
+    });
+    expect(responseBody(response).message).not.toMatch(/\d/u);
+  });
+
+  it('keeps an oversized historical attempt configuration readable', async () => {
+    const legacyDraft = {
+      ...createDefaultDraft(),
+      instructions: 'x'.repeat(MAX_INSTRUCTIONS_CHARACTERS + 1),
+    };
+    const attempt = {
+      id: 'attempt-1',
+      status: 'victory',
+      draft: legacyDraft,
+    } as unknown as PersistedAttempt;
+    const attemptStore = {
+      get: vi.fn().mockResolvedValue(attempt),
+    } as unknown as AttemptStore;
+
+    const response = await handleRequest(
+      eventFor('GET', { path: '/attempts/attempt-1/configuration' }),
+      {
+        ...dependencies({ get: vi.fn(), put: vi.fn() }),
+        attemptStore,
+      },
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(responseBody(response)).toEqual({ attemptId: 'attempt-1', draft: legacyDraft });
+  });
+
+  it.each([
+    ['capacity', new AttemptCapacityError(), 429],
+    ['budget', new BudgetUnavailableError(), 503],
+  ] as const)(
+    'returns a generic non-quota attempt rejection for %s exhaustion',
+    async (_label, error, status) => {
+      const attemptStore = {
+        admit: vi.fn().mockRejectedValue(error),
+      } as unknown as AttemptStore;
+      const response = await handleRequest(
+        eventFor('POST', {
+          path: '/attempts',
+          body: JSON.stringify({
+            requestKey: 'limited',
+            expectedVersion: 1,
+            draft: createDefaultDraft(),
+            animationEnabled: false,
+          }),
+        }),
+        {
+          ...dependencies({ get: vi.fn(), put: vi.fn() }),
+          attemptStore,
+          dispatch: vi.fn(),
+        },
+      );
+
+      expect(response.statusCode).toBe(status);
+      expect(responseBody(response)).toEqual({
+        code: 'attempt_unavailable',
+        message:
+          'No se puede iniciar una partida por ahora. Podés consultar tus partidas o intentarlo más tarde.',
+      });
+      expect(responseBody(response)).not.toMatchObject({
+        limit: expect.anything(),
+        budget: expect.anything(),
+      });
+      expect(attemptStore.admit).toHaveBeenCalledOnce();
+    },
+  );
 
   it('rejects owner query selectors and returns no-store data responses', async () => {
     const store: DraftStore = {

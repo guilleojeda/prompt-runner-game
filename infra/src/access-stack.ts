@@ -6,6 +6,7 @@ import {
   APPLICATION_REGION,
   ASSET_DEPLOYMENT_ROLE_NAME,
   GITHUB_DEPLOY_ROLE_NAME,
+  WEBSITE_DEPLOYMENT_LOG_GROUP_NAME,
   websiteBucketNameFor,
 } from './stack.js';
 import {
@@ -21,7 +22,10 @@ import {
   STARTER_LAMBDA_ROLE_NAME,
   STARTER_LOG_GROUP_NAME,
   attemptBodiesBucketNameFor,
+  LOG_RETENTION_ROLE_NAME,
+  LOG_RETENTION_GROUP_NAME,
 } from './execution.js';
+import { LIMIT_PARAMETER_PREFIX } from './private-limits.js';
 
 export const GITHUB_OIDC_URL = 'https://token.actions.githubusercontent.com';
 export const GITHUB_OIDC_AUDIENCE = 'sts.amazonaws.com';
@@ -761,6 +765,114 @@ export class PromptRunnerAccessStack extends cdk.Stack {
           sid: 'AgentRuntimeWorkloadIdentityLifecycle',
           actions: ['bedrock-agentcore:DeleteWorkloadIdentity'],
           resources: [workloadIdentityArn, workloadIdentityDirectoryArn],
+        }),
+      ],
+    });
+
+    const identityAclArn = `arn:${cdk.Aws.PARTITION}:wafv2:${region}:${account}:regional/webacl/prompt-runner-game-identity-origin-rate-limit/*`;
+    const retentionRoleArn = `arn:${cdk.Aws.PARTITION}:iam::${account}:role/${LOG_RETENTION_ROLE_NAME}`;
+    const retentionLogArn = `arn:${cdk.Aws.PARTITION}:logs:${region}:${account}:log-group:${LOG_RETENTION_GROUP_NAME}`;
+    const deploymentLogArn = `arn:${cdk.Aws.PARTITION}:logs:${region}:${account}:log-group:${WEBSITE_DEPLOYMENT_LOG_GROUP_NAME}`;
+    new iam.ManagedPolicy(this, 'BetaOperationsCfnExecutionPolicy', {
+      managedPolicyName: 'prompt-runner-game-beta-operations-cfn-execution',
+      description: 'Private beta limits, budget notifications, and identity protection.',
+      roles: [bootstrapExecutionRole],
+      statements: [
+        new iam.PolicyStatement({
+          sid: 'ReadPrivateLimitParameters',
+          actions: ['ssm:GetParameters'],
+          resources: [
+            `arn:${cdk.Aws.PARTITION}:ssm:${region}:${account}:parameter${LIMIT_PARAMETER_PREFIX}/*`,
+          ],
+        }),
+        new iam.PolicyStatement({
+          sid: 'OwnBudgetNotifications',
+          actions: [
+            'budgets:ModifyBudget',
+            'budgets:ViewBudget',
+            'budgets:TagResource',
+            'budgets:UntagResource',
+            'budgets:ListTagsForResource',
+          ],
+          resources: [`arn:${cdk.Aws.PARTITION}:budgets::${account}:budget/prompt-runner-game-*`],
+        }),
+        new iam.PolicyStatement({
+          sid: 'IdentityWebAclLifecycle',
+          actions: [
+            'wafv2:CreateWebACL',
+            'wafv2:GetWebACL',
+            'wafv2:UpdateWebACL',
+            'wafv2:DeleteWebACL',
+            'wafv2:TagResource',
+            'wafv2:UntagResource',
+            'wafv2:ListTagsForResource',
+            'wafv2:ListResourcesForWebACL',
+            'wafv2:AssociateWebACL',
+            'wafv2:DisassociateWebACL',
+            'wafv2:GetWebACLForResource',
+          ],
+          resources: [identityAclArn, cognitoUserPoolArn],
+        }),
+        new iam.PolicyStatement({
+          sid: 'AssociateOwnIdentityPool',
+          actions: [
+            'cognito-idp:AssociateWebACL',
+            'cognito-idp:DisassociateWebACL',
+            'cognito-idp:GetWebACLForResource',
+            'cognito-idp:ListResourcesForWebACL',
+          ],
+          resources: [cognitoUserPoolArn],
+          conditions: { StringEquals: { 'aws:ResourceTag/Application': 'prompt-runner-game' } },
+        }),
+        // Cognito's WAF integration requires this permission-only action on
+        // '*'. The dependent Cognito permission above still limits pools to
+        // this application; the region condition bounds the WAF operation.
+        new iam.PolicyStatement({
+          sid: 'DisassociateIdentityWebAcl',
+          actions: ['wafv2:DisassociateWebACL'],
+          resources: ['*'],
+          conditions: { StringEquals: { 'aws:RequestedRegion': region } },
+        }),
+        new iam.PolicyStatement({
+          sid: 'RetentionHelperRoleLifecycle',
+          actions: [
+            'iam:CreateRole',
+            'iam:DeleteRole',
+            'iam:GetRole',
+            'iam:GetRolePolicy',
+            'iam:ListRolePolicies',
+            'iam:PutRolePolicy',
+            'iam:DeleteRolePolicy',
+            'iam:TagRole',
+            'iam:UntagRole',
+            'iam:UpdateAssumeRolePolicy',
+          ],
+          resources: [retentionRoleArn],
+        }),
+        new iam.PolicyStatement({
+          sid: 'PassRetentionHelperRole',
+          actions: ['iam:PassRole'],
+          resources: [retentionRoleArn],
+          conditions: { StringEquals: { 'iam:PassedToService': 'lambda.amazonaws.com' } },
+        }),
+        new iam.PolicyStatement({
+          sid: 'RetentionHelperLogs',
+          actions: [
+            'logs:CreateLogGroup',
+            'logs:DeleteLogGroup',
+            'logs:PutRetentionPolicy',
+            'logs:DeleteRetentionPolicy',
+            'logs:TagResource',
+            'logs:UntagResource',
+            'logs:ListTagsForResource',
+            'logs:GetDataProtectionPolicy',
+          ],
+          resources: [
+            retentionLogArn,
+            `${retentionLogArn}:*`,
+            deploymentLogArn,
+            `${deploymentLogArn}:*`,
+          ],
         }),
       ],
     });

@@ -1,10 +1,11 @@
 import {
   ConditionalCheckFailedException,
-  DeleteItemCommand,
   DynamoDBClient,
   GetItemCommand,
   PutItemCommand,
   QueryCommand,
+  TransactionCanceledException,
+  TransactWriteItemsCommand,
   type AttributeValue,
 } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
@@ -12,6 +13,7 @@ import { isModelKey } from '../../../shared/models.js';
 import {
   validateSavedRobotName,
   validateDraft,
+  validateWritableDraft,
   type RobotDraft,
   type SavedRobot,
   type SavedRobotSummary,
@@ -41,6 +43,13 @@ export class SavedRobotConflictError extends Error {
     super('La configuración guardada cambió en otra pestaña.');
     this.name = 'SavedRobotConflictError';
     this.current = current;
+  }
+}
+
+export class SavedRobotLimitError extends Error {
+  public constructor() {
+    super('Eliminá una configuración guardada para crear otra.');
+    this.name = 'SavedRobotLimitError';
   }
 }
 
@@ -168,19 +177,47 @@ export interface DynamoSavedRobotStoreOptions {
   readonly client?: DynamoDBClient;
   readonly tableName?: string;
   readonly now?: () => string;
+  /** Private test override; production reads SAVED_ROBOTS_LIMIT from the server environment. */
+  readonly maxCopies?: number;
 }
+
+const counterKeyFor = (owner: string): Record<string, AttributeValue> =>
+  marshall({ PK: `USER#${owner}`, SK: 'META#SAVED_ROBOTS_COUNT' });
+
+const configuredMaxCopies = (value: unknown): number | undefined => {
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value > 0 ? value : undefined;
+  }
+  if (typeof value !== 'string' || !/^[1-9]\d*$/u.test(value)) return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
+};
+
+const isTransactionCancellation = (error: unknown): boolean =>
+  error instanceof TransactionCanceledException ||
+  (error instanceof Error && error.name === 'TransactionCanceledException');
+
+const isLimitConfiguration = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
 
 /** Private named robot copies stored alongside the user's draft and attempts. */
 export class DynamoSavedRobotStore implements SavedRobotStore {
   private readonly client: DynamoDBClient;
   private readonly tableName: string;
   private readonly now: () => string;
+  private readonly maxCopies: number | undefined;
 
   public constructor(options: DynamoSavedRobotStoreOptions = {}) {
     this.client = options.client ?? new DynamoDBClient({});
     this.tableName = options.tableName ?? process.env.DRAFT_TABLE_NAME ?? '';
     if (!this.tableName) throw new SavedRobotStorageError('Falta DRAFT_TABLE_NAME.');
     this.now = options.now ?? (() => new Date().toISOString());
+    this.maxCopies =
+      options.maxCopies === undefined
+        ? configuredMaxCopies(process.env.SAVED_ROBOTS_LIMIT)
+        : isLimitConfiguration(options.maxCopies)
+          ? options.maxCopies
+          : undefined;
   }
 
   public async list(
@@ -261,6 +298,7 @@ export class DynamoSavedRobotStore implements SavedRobotStore {
   ): Promise<SavedRobot> {
     const robotId = validateSavedRobotId(id);
     const robotName = validateSavedRobotName(name);
+    const writableDraft = validateWritableDraft(draft);
     let current: SavedRobot | undefined;
     if (expectedVersion > 0) current = await this.get(owner, robotId);
     const version = expectedVersion + 1;
@@ -272,13 +310,11 @@ export class DynamoSavedRobotStore implements SavedRobotStore {
       version,
       createdAt,
       updatedAt,
-      modelKey: draft.modelKey,
-      draft,
+      modelKey: writableDraft.modelKey,
+      draft: writableDraft,
     };
     const condition =
-      expectedVersion === 0
-        ? 'attribute_not_exists(PK) AND attribute_not_exists(SK)'
-        : 'attribute_exists(PK) AND attribute_exists(SK) AND #version = :expectedVersion';
+      'attribute_exists(PK) AND attribute_exists(SK) AND #version = :expectedVersion';
     const item = marshall(
       {
         PK: `USER#${owner}`,
@@ -288,18 +324,16 @@ export class DynamoSavedRobotStore implements SavedRobotStore {
       },
       { removeUndefinedValues: true },
     );
+    if (expectedVersion === 0) return this.createCopy(owner, robot, item);
+
     try {
       await this.client.send(
         new PutItemCommand({
           TableName: this.tableName,
           Item: item,
           ConditionExpression: condition,
-          ...(expectedVersion > 0
-            ? {
-                ExpressionAttributeNames: { '#version': 'version' },
-                ExpressionAttributeValues: marshall({ ':expectedVersion': expectedVersion }),
-              }
-            : {}),
+          ExpressionAttributeNames: { '#version': 'version' },
+          ExpressionAttributeValues: marshall({ ':expectedVersion': expectedVersion }),
           ReturnValues: 'NONE',
         }),
       );
@@ -319,26 +353,188 @@ export class DynamoSavedRobotStore implements SavedRobotStore {
     expectedVersion: number,
   ): Promise<{ deleted: true }> {
     const robotId = validateSavedRobotId(id);
+    await this.ensureCounter(owner);
     try {
       await this.client.send(
-        new DeleteItemCommand({
-          TableName: this.tableName,
-          Key: keyFor(owner, robotId),
-          ConditionExpression:
-            'attribute_exists(PK) AND attribute_exists(SK) AND #version = :version',
-          ExpressionAttributeNames: { '#version': 'version' },
-          ExpressionAttributeValues: marshall({ ':version': expectedVersion }),
-          ReturnValues: 'NONE',
+        new TransactWriteItemsCommand({
+          TransactItems: [
+            {
+              Delete: {
+                TableName: this.tableName,
+                Key: keyFor(owner, robotId),
+                ConditionExpression:
+                  'attribute_exists(PK) AND attribute_exists(SK) AND #version = :version',
+                ExpressionAttributeNames: { '#version': 'version' },
+                ExpressionAttributeValues: marshall({ ':version': expectedVersion }),
+              },
+            },
+            {
+              Update: {
+                TableName: this.tableName,
+                Key: counterKeyFor(owner),
+                UpdateExpression: 'SET #count = #count - :one',
+                ConditionExpression:
+                  'attribute_exists(PK) AND attribute_exists(SK) AND #count > :zero',
+                ExpressionAttributeNames: { '#count': 'count' },
+                ExpressionAttributeValues: marshall({ ':one': 1, ':zero': 0 }),
+              },
+            },
+          ],
         }),
       );
     } catch (error) {
-      if (isConditionalFailure(error))
+      if (isConditionalFailure(error) || isTransactionCancellation(error))
         throw new SavedRobotConflictError(await this.get(owner, robotId));
       throw new SavedRobotStorageError('No se pudo eliminar la configuración guardada.', {
         cause: error,
       });
     }
     return { deleted: true };
+  }
+
+  private async createCopy(
+    owner: string,
+    robot: SavedRobot,
+    item: Record<string, AttributeValue>,
+  ): Promise<SavedRobot> {
+    if (this.maxCopies === undefined) {
+      const current = await this.get(owner, robot.id);
+      if (current) throw new SavedRobotConflictError(current);
+      throw new SavedRobotStorageError('No se pudo guardar la configuración guardada.');
+    }
+
+    await this.ensureCounter(owner);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await this.client.send(
+          new TransactWriteItemsCommand({
+            TransactItems: [
+              {
+                Update: {
+                  TableName: this.tableName,
+                  Key: counterKeyFor(owner),
+                  UpdateExpression: 'SET #count = #count + :one',
+                  ConditionExpression:
+                    'attribute_exists(PK) AND attribute_exists(SK) AND #count < :maximum',
+                  ExpressionAttributeNames: { '#count': 'count' },
+                  ExpressionAttributeValues: marshall({
+                    ':one': 1,
+                    ':maximum': this.maxCopies,
+                  }),
+                },
+              },
+              {
+                Put: {
+                  TableName: this.tableName,
+                  Item: item,
+                  ConditionExpression: 'attribute_not_exists(PK) AND attribute_not_exists(SK)',
+                },
+              },
+            ],
+          }),
+        );
+        return robot;
+      } catch (error) {
+        if (!isTransactionCancellation(error)) {
+          throw new SavedRobotStorageError('No se pudo guardar la configuración guardada.', {
+            cause: error,
+          });
+        }
+
+        const current = await this.get(owner, robot.id);
+        if (current) throw new SavedRobotConflictError(current);
+
+        const count = await this.readCounter(owner);
+        if (count === undefined) {
+          throw new SavedRobotStorageError('No se pudo guardar la configuración guardada.', {
+            cause: error,
+          });
+        }
+        if (count >= this.maxCopies) throw new SavedRobotLimitError();
+      }
+    }
+
+    throw new SavedRobotStorageError('No se pudo guardar la configuración guardada.');
+  }
+
+  /** Initialize once from a strongly consistent, paginated view of existing copies. */
+  private async ensureCounter(owner: string): Promise<number> {
+    const current = await this.readCounter(owner);
+    if (current !== undefined) return current;
+
+    let count = 0;
+    let exclusiveStartKey: Record<string, AttributeValue> | undefined;
+    try {
+      do {
+        const response = await this.client.send(
+          new QueryCommand({
+            TableName: this.tableName,
+            KeyConditionExpression: 'PK = :pk AND begins_with(SK, :prefix)',
+            ExpressionAttributeValues: marshall({ ':pk': `USER#${owner}`, ':prefix': 'ROBOT#' }),
+            ExclusiveStartKey: exclusiveStartKey,
+            ConsistentRead: true,
+            Select: 'COUNT',
+          }),
+        );
+        count += response.Count ?? response.Items?.length ?? 0;
+        if (!Number.isSafeInteger(count)) {
+          throw new SavedRobotStorageError('No se pudieron leer las configuraciones guardadas.');
+        }
+        exclusiveStartKey = response.LastEvaluatedKey;
+      } while (exclusiveStartKey);
+    } catch (error) {
+      throw new SavedRobotStorageError('No se pudieron leer las configuraciones guardadas.', {
+        cause: error,
+      });
+    }
+
+    try {
+      await this.client.send(
+        new PutItemCommand({
+          TableName: this.tableName,
+          Item: marshall({
+            PK: `USER#${owner}`,
+            SK: 'META#SAVED_ROBOTS_COUNT',
+            entity: 'saved-robot-count',
+            count,
+          }),
+          ConditionExpression: 'attribute_not_exists(PK) AND attribute_not_exists(SK)',
+          ReturnValues: 'NONE',
+        }),
+      );
+      return count;
+    } catch (error) {
+      if (isConditionalFailure(error)) {
+        const winnerCount = await this.readCounter(owner);
+        if (winnerCount !== undefined) return winnerCount;
+      }
+      throw new SavedRobotStorageError('No se pudieron leer las configuraciones guardadas.', {
+        cause: error,
+      });
+    }
+  }
+
+  private async readCounter(owner: string): Promise<number | undefined> {
+    try {
+      const response = await this.client.send(
+        new GetItemCommand({
+          TableName: this.tableName,
+          Key: counterKeyFor(owner),
+          ConsistentRead: true,
+        }),
+      );
+      if (!response.Item) return undefined;
+      const count = unmarshall(response.Item).count;
+      if (typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0) {
+        throw new SavedRobotStorageError('No se pudieron leer las configuraciones guardadas.');
+      }
+      return count;
+    } catch (error) {
+      if (error instanceof SavedRobotStorageError) throw error;
+      throw new SavedRobotStorageError('No se pudieron leer las configuraciones guardadas.', {
+        cause: error,
+      });
+    }
   }
 
   private encodeCursor(owner: string, key: Record<string, AttributeValue>): string {

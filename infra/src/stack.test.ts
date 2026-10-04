@@ -34,6 +34,106 @@ function template() {
 }
 
 describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, () => {
+  it('resolves private limits only at deployment and never publishes them as web configuration', () => {
+    const synthesized = template();
+    const parameters = synthesized.toJSON().Parameters as Record<
+      string,
+      { Type: string; Default?: string; NoEcho?: boolean }
+    >;
+    const limitParameters = Object.entries(parameters).filter(([, parameter]) =>
+      parameter.Default?.startsWith('/prompt-runner-game/limits/'),
+    );
+    expect(limitParameters.length).toBeGreaterThan(0);
+    for (const [, parameter] of limitParameters) {
+      expect(parameter.Type).toBe('AWS::SSM::Parameter::Value<String>');
+      expect(parameter.NoEcho).toBe(true);
+    }
+    const lambdas = Object.values(synthesized.findResources('AWS::Lambda::Function'));
+    const api = lambdas.find((resource) => resource.Properties.FunctionName === DRAFT_LAMBDA_NAME);
+    expect(api?.Properties.Environment.Variables).toMatchObject({
+      SAVED_ROBOTS_LIMIT: { Ref: 'SavedRobotsLimit' },
+      BEDROCK_DAILY_GLOBAL_BUDGET_USD: { Ref: 'DailyGlobalBudget' },
+      BEDROCK_DAILY_USER_BUDGET_USD: { Ref: 'DailyUserBudget' },
+    });
+    const runtime = Object.values(synthesized.findResources('AWS::BedrockAgentCore::Runtime'))[0];
+    expect(runtime.Properties.EnvironmentVariables).toMatchObject({
+      ATTEMPT_ACTIVE_GLOBAL_LIMIT: { Ref: 'ActiveAttemptLimit' },
+      BEDROCK_INPUT_USD_PER_MILLION_TOKENS: { Ref: 'InputTokenRate' },
+      BEDROCK_OUTPUT_USD_PER_MILLION_TOKENS: { Ref: 'OutputTokenRate' },
+    });
+    const deployments = synthesized.findResources('Custom::CDKBucketDeployment');
+    const published = JSON.stringify(deployments);
+    for (const [id] of limitParameters) expect(published).not.toContain(`"Ref":"${id}"`);
+    expect(published).not.toContain('BEDROCK_DAILY');
+    expect(published).not.toContain('SAVED_ROBOTS_LIMIT');
+  });
+
+  it('sets full-account monthly alerts and daily provider billing alerts without shutdown actions', () => {
+    const synthesized = template();
+    const resources = Object.values(synthesized.findResources('AWS::Budgets::Budget'));
+    expect(resources).toHaveLength(3);
+    const monthly = resources.filter(
+      (resource) => resource.Properties.Budget.TimeUnit === 'MONTHLY',
+    );
+    expect(
+      monthly.map((resource) => resource.Properties.NotificationsWithSubscribers.length),
+    ).toEqual([5, 1]);
+    const thresholds = monthly.flatMap(
+      (resource) => resource.Properties.NotificationsWithSubscribers,
+    );
+    expect(thresholds.map((entry) => entry.Notification.Threshold)).toEqual(
+      Array.from({ length: 6 }, (_, index) => ({ Ref: `MonthlyAlert${index + 1}` })),
+    );
+    for (const resource of monthly) {
+      expect(resource.Properties.Budget.CostFilters).toBeUndefined();
+      expect(resource.Properties.Budget.BudgetLimit.Amount).toEqual({
+        Ref: 'MonthlyAccountBudget',
+      });
+    }
+    for (const notification of resources.flatMap(
+      (resource) => resource.Properties.NotificationsWithSubscribers,
+    )) {
+      expect(notification.Notification).toMatchObject({
+        NotificationType: 'ACTUAL',
+        ThresholdType: 'ABSOLUTE_VALUE',
+      });
+      expect(notification.Subscribers).toEqual([
+        { SubscriptionType: 'EMAIL', Address: { Ref: 'BillingAlertRecipient' } },
+      ]);
+    }
+    const daily = resources.find((resource) => resource.Properties.Budget.TimeUnit === 'DAILY');
+    expect(daily?.Properties.Budget.CostFilters).toEqual({
+      Service: { 'Fn::Split': [',', { Ref: 'BedrockBillingServices' }] },
+    });
+    synthesized.resourceCountIs('AWS::Budgets::BudgetsAction', 0);
+  });
+
+  it('retains operational logs for one month and scopes the Runtime retention helper', () => {
+    const synthesized = template();
+    const groups = Object.values(synthesized.findResources('AWS::Logs::LogGroup'));
+    for (const group of groups) expect(group.Properties.RetentionInDays).toBe(30);
+    const calls = Object.values(synthesized.findResources('Custom::AWS')).map(
+      (resource) => resource.Properties,
+    );
+    const retention = calls.find((call) =>
+      JSON.stringify(call.Update).includes('putRetentionPolicy'),
+    );
+    expect(retention).toBeDefined();
+    expect(JSON.stringify(retention)).toContain('retentionInDays');
+    const policy = Object.values(synthesized.findResources('AWS::IAM::Policy')).find((resource) =>
+      JSON.stringify(resource.Properties.PolicyDocument).includes('logs:PutRetentionPolicy'),
+    );
+    expect(policy).toBeDefined();
+    const retentionStatements = policy?.Properties.PolicyDocument.Statement.filter(
+      (statement: { Action?: string[] }) => statement.Action?.includes('logs:PutRetentionPolicy'),
+    );
+    expect(retentionStatements).toHaveLength(1);
+    expect(JSON.stringify(retentionStatements)).toContain(
+      '/aws/bedrock-agentcore/runtimes/prompt_runner_game_agent_runtime-*',
+    );
+    expect(retentionStatements[0].Resource).not.toBe('*');
+  });
+
   it('keeps the website bucket private and grants only the OAC read path', () => {
     const synthesized = template();
 
@@ -220,7 +320,7 @@ describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, 
   it('uses the pre-created deployment role and publishes entry after assets', () => {
     const synthesized = template();
 
-    synthesized.resourceCountIs('AWS::IAM::Role', 3);
+    synthesized.resourceCountIs('AWS::IAM::Role', 4);
     synthesized.resourceCountIs('Custom::CDKBucketDeployment', 2);
     const deployments = synthesized.findResources('Custom::CDKBucketDeployment');
     const deploymentProperties = Object.values(deployments).map((resource) => resource.Properties);
@@ -263,7 +363,7 @@ describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, 
       'ClientSecret',
     );
     const functions = synthesized.findResources('AWS::Lambda::Function');
-    expect(Object.values(functions)).toHaveLength(3);
+    expect(Object.values(functions)).toHaveLength(4);
     const deploymentFunction = Object.values(functions).find(
       (resource) =>
         resource.Properties.Role ===
@@ -549,7 +649,7 @@ describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, 
         runnerPolicyJson.match(
           new RegExp(`foundation-model/${foundationModelIdFor(profile)}(?=")`, 'gu'),
         ),
-      ).toHaveLength(2);
+      ).toHaveLength(3);
     }
     expect(runnerPolicyJson).not.toContain('inference-profile/*');
     expect(runnerPolicyJson).not.toContain('gpt-6');

@@ -12,6 +12,7 @@ import {
 } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import { AuthenticationResources, LOCAL_CALLBACK_ORIGIN, ROBOT_SCOPE } from './auth.js';
+import { executionLimitEnvironment, type PrivateLimits } from './private-limits.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -27,6 +28,10 @@ export interface RobotResourcesProps {
   readonly authentication: AuthenticationResources;
   /** Origin without a trailing slash, used for the API CORS allow list. */
   readonly productionWebOrigin: string;
+  readonly limits: Pick<
+    PrivateLimits,
+    'savedRobots' | 'activeGlobal' | 'dailyGlobalUsd' | 'dailyUserUsd' | 'rates' | 'apiThrottle'
+  >;
 }
 
 export interface RobotResources {
@@ -73,6 +78,7 @@ export function createRobotResources(scope: Construct, props: RobotResourcesProp
 
   const logGroup = new logs.LogGroup(scope, 'DraftApiLogGroup', {
     logGroupName: DRAFT_LOG_GROUP_NAME,
+    retention: logs.RetentionDays.ONE_MONTH,
   });
   executionRole.addToPolicy(
     new iam.PolicyStatement({
@@ -93,6 +99,8 @@ export function createRobotResources(scope: Construct, props: RobotResourcesProp
       COGNITO_CLIENT_ID: props.authentication.userPoolClient.ref,
       COGNITO_USERINFO_URL: `${props.authentication.config.domain}/oauth2/userInfo`,
       STARTER_FUNCTION_NAME: STARTER_LAMBDA_NAME,
+      SAVED_ROBOTS_LIMIT: props.limits.savedRobots,
+      ...executionLimitEnvironment(props.limits),
     },
     timeout: cdk.Duration.seconds(15),
     logGroup,
@@ -100,7 +108,7 @@ export function createRobotResources(scope: Construct, props: RobotResourcesProp
 
   const api = new apigatewayv2.HttpApi(scope, 'DraftApi', {
     apiName: DRAFT_LAMBDA_NAME,
-    createDefaultStage: true,
+    createDefaultStage: false,
     corsPreflight: {
       allowOrigins: [props.productionWebOrigin, LOCAL_API_ORIGIN],
       allowMethods: [
@@ -113,6 +121,30 @@ export function createRobotResources(scope: Construct, props: RobotResourcesProp
       allowHeaders: ['Authorization', 'Content-Type'],
       allowCredentials: false,
     },
+  });
+  const throttle = props.limits.apiThrottle;
+  const stage = api.addStage('DefaultStage', {
+    stageName: '$default',
+    autoDeploy: true,
+    throttle: { rateLimit: throttle.rate, burstLimit: throttle.burst },
+  });
+  const stageResource = stage.node.defaultChild as apigatewayv2.CfnStage;
+  const routeThrottle = (rateLimit: number, burstLimit: number) => ({
+    ThrottlingRateLimit: rateLimit,
+    ThrottlingBurstLimit: burstLimit,
+  });
+  stageResource.addPropertyOverride('RouteSettings', {
+    'PUT /draft': routeThrottle(throttle.draftRate, throttle.draftBurst),
+    'PUT /robots/{uuid}': routeThrottle(throttle.writeRate, throttle.writeBurst),
+    'DELETE /robots/{uuid}': routeThrottle(throttle.writeRate, throttle.writeBurst),
+    'PUT /animation-preference': routeThrottle(throttle.writeRate, throttle.writeBurst),
+    'POST /attempts': routeThrottle(throttle.attemptRate, throttle.attemptBurst),
+    'POST /attempts/{attemptId}/start': routeThrottle(throttle.attemptRate, throttle.attemptBurst),
+    'POST /attempts/{attemptId}/presentation-complete': routeThrottle(
+      throttle.attemptRate,
+      throttle.attemptBurst,
+    ),
+    'POST /attempts/{attemptId}/cancel': routeThrottle(throttle.cancelRate, throttle.cancelBurst),
   });
   const authorizer = new authorizers.HttpJwtAuthorizer(
     'DraftJwtAuthorizer',

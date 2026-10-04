@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { DEFAULT_MODEL_KEY, modelByKey } from '../../../shared/models.js';
 import { createDefaultDraft, ROBOT_CATALOG } from '../../../shared/robot';
 import { MemoryAttemptStore, MemoryBodyStore } from '../../api/src/attempt-store';
@@ -832,4 +832,167 @@ describe('Runtime attempt coordinator', () => {
     expect(call.usage.reasoningTokens).toBe(2);
     expect(call.usage.gameTokens).toBe(10);
   });
+});
+
+describe('Runtime inference margin and cancellation', () => {
+  // Fictional rates/budgets test the runner; deployment amounts are private.
+  const limits = {
+    globalActiveAttempts: 2,
+    globalDailyMicros: 4000,
+    userDailyMicros: 2000,
+    rates: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1.5 },
+  };
+  const prepare = async () => {
+    const draft = createDefaultDraft();
+    const date = new Date('2026-10-04T15:00:00.000Z');
+    const store = new MemoryAttemptStore({ draft: { version: 1, draft }, limits, now: () => date });
+    const { attempt } = await store.admit({
+      owner: 'a',
+      requestKey: 'run',
+      expectedVersion: 1,
+      draft,
+      animationEnabled: false,
+    });
+    return { store, attempt, draft, date, bodies: new MemoryBodyStore() };
+  };
+  it('authorizes a retry separately and stops it before dispatch when uncertain spend left no margin', async () => {
+    const { store, attempt, date, bodies } = await prepare();
+    let entered = 0;
+    let dispatched = 0;
+    const infer: InferenceAdapter = async ({ audit }) => {
+      entered++;
+      await audit.beforeSend(new TextEncoder().encode(`request-${entered}`), 100);
+      dispatched++;
+      await audit.afterReceive({
+        bytes: null,
+        statusCode: 429,
+        requestId: null,
+        complete: false,
+        error: { name: 'ThrottlingException', message: 'throttle' },
+      });
+      throw Object.assign(new Error('throttle'), { code: 'throttled' });
+    };
+    await executeAttempt(
+      { owner: 'a', attemptId: attempt.id, executorId: 'executor' },
+      {
+        store,
+        bodies,
+        infer,
+        engine: createGameEngine(),
+        now: () => date,
+        sleep: async () => undefined,
+      },
+    );
+    expect(entered).toBe(2);
+    expect(dispatched).toBe(1);
+    expect((await store.get('a', attempt.id))?.status).toBe('error');
+    expect((await store.get('a', attempt.id))?.reason).toBe('inference_budget_unavailable');
+    expect(store.budgetAmount('2026-10-04')).toBe(1174);
+    expect(await store.getCalls('a', attempt.id)).toHaveLength(1);
+  });
+  it('keeps a cancelled dispatched call reserved, then records usage and frees capacity', async () => {
+    const { store, attempt, draft, date, bodies } = await prepare();
+    const infer: InferenceAdapter = async ({ audit }) => {
+      await audit.beforeSend(new TextEncoder().encode('request'), 100);
+      await store.requestCancel('a', attempt.id);
+      expect(store.budgetAmount('2026-10-04')).toBe(1174);
+      await expect(
+        store.admit({
+          owner: 'a',
+          requestKey: 'race',
+          expectedVersion: 1,
+          draft,
+          animationEnabled: false,
+        }),
+      ).rejects.toMatchObject({ name: 'AttemptCapacityError' });
+      await audit.afterReceive({
+        bytes: new TextEncoder().encode('{"usage":{"inputTokens":100,"outputTokens":20}}'),
+        statusCode: 200,
+        requestId: 'r',
+        complete: true,
+      });
+      return {
+        action: { name: 'tool_1', input: {} },
+        usage: {
+          inputTokens: 100,
+          outputTokens: 20,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          gameTokens: 120,
+        },
+      };
+    };
+    await executeAttempt(
+      { owner: 'a', attemptId: attempt.id, executorId: 'executor' },
+      { store, bodies, infer, engine: createGameEngine(), now: () => date },
+    );
+    expect((await store.get('a', attempt.id))?.status).toBe('cancelled');
+    expect((await store.get('a', attempt.id))?.turnsUsed).toBe(0);
+    expect(store.budgetAmount('2026-10-04')).toBe(140);
+    await expect(
+      store.admit({
+        owner: 'a',
+        requestKey: 'after',
+        expectedVersion: 1,
+        draft,
+        animationEnabled: false,
+      }),
+    ).resolves.toMatchObject({ admitted: true });
+  });
+});
+
+it('does not apply an action when a store returns a received record without the requested usage and action', async () => {
+  const draft = createDefaultDraft();
+  const now = new Date('2026-10-04T15:00:00.000Z');
+  const store = new MemoryAttemptStore({ draft: { version: 1, draft }, now: () => now });
+  const { attempt } = await store.admit({
+    owner: 'a',
+    requestKey: 'completion',
+    expectedVersion: 1,
+    draft,
+    animationEnabled: false,
+  });
+  const finish = store.finishCall.bind(store);
+  vi.spyOn(store, 'finishCall').mockImplementation(async (owner, id, executor, call) =>
+    call.rawAction === undefined
+      ? finish(owner, id, executor, call)
+      : (await store.getCalls(owner, id))[0],
+  );
+  const engine = createGameEngine();
+  const apply = vi.spyOn(engine, 'apply');
+  await executeAttempt(
+    { owner: 'a', attemptId: attempt.id, executorId: 'executor' },
+    {
+      store,
+      bodies: new MemoryBodyStore(),
+      engine,
+      now: () => now,
+      infer: async ({ audit }) => {
+        await audit.beforeSend(new TextEncoder().encode('request'));
+        await audit.afterReceive({
+          bytes: new TextEncoder().encode('{}'),
+          statusCode: 200,
+          requestId: 'r',
+          complete: true,
+        });
+        return {
+          action: { name: 'tool_1', input: {} },
+          usage: {
+            inputTokens: 10,
+            outputTokens: 20,
+            gameTokens: 30,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+          },
+        };
+      },
+    },
+  );
+  expect(apply).not.toHaveBeenCalled();
+  expect(await store.get('a', attempt.id)).toMatchObject({
+    status: 'error',
+    reason: 'call_persistence_unconfirmed',
+    turnsUsed: 0,
+  });
+  expect((await store.getCalls('a', attempt.id))[0].rawAction).toBeUndefined();
 });

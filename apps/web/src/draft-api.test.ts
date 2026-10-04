@@ -69,6 +69,26 @@ describe('DraftApiClient', () => {
     });
   });
 
+  it('treats a native API Gateway 429 as a definite save rejection without gateway text', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ message: 'Too Many Requests' }), { status: 429 }),
+      );
+    const client = new DraftApiClient(config, {
+      tokenProvider: () => 'access-token',
+      fetch: fetchImpl,
+    });
+
+    await expect(client.putDraft(0, createDefaultDraft())).rejects.toMatchObject({
+      code: 'rate_limited',
+      status: 429,
+      message: 'Están llegando muchas solicitudes. Esperá un momento y volvé a intentar.',
+      ambiguous: false,
+    });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
   it('does not turn an aborted request into an ambiguous save', async () => {
     const controller = new AbortController();
     const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => {

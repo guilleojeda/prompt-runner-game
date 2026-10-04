@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import {
   ConditionalCheckFailedException,
   TransactionCanceledException,
@@ -28,6 +29,8 @@ import { createDefaultDraft, ROBOT_CATALOG } from '../../../shared/robot.js';
 import { createClosedAttemptRecordFixture } from '../../../shared/attempt.fixture.js';
 import {
   AdmissionConflictError,
+  AttemptCapacityError,
+  BudgetUnavailableError,
   AttemptNotTerminalError,
   AttemptStoreError,
   createDynamoAttemptStore,
@@ -88,6 +91,7 @@ const itemKey = (pk: string, sk: string): string => `${pk}\u0000${sk}`;
 class DynamoHarness {
   public readonly items = new Map<string, Record<string, AttributeValue>>();
   public readonly send = vi.fn((command: CommandLike) => this.handle(command));
+  public enforceConditions = false;
   public queryPageSize = Number.POSITIVE_INFINITY;
   public rejectUnusedUpdateValues = false;
   public updateBehavior: (
@@ -120,11 +124,96 @@ class DynamoHarness {
         : values[match[2].slice(1)];
       if (field && value !== undefined) existing[field] = value;
     }
+    for (const match of expression.matchAll(
+      /(#\w+)\s*=\s*if_not_exists\((#\w+),\s*(:\w+)\)\s*\+\s*(:\w+)/g,
+    )) {
+      existing[names[match[1]]] =
+        Number(existing[names[match[2]]] ?? values[match[3]]) + Number(values[match[4]]);
+    }
     this.put(existing);
+  }
+
+  private conditionMatches(input: Record<string, unknown>): boolean {
+    const expression = String(input.ConditionExpression ?? '');
+    if (!expression) return true;
+    const rowKey = input.Item
+      ? unmarshall(input.Item as Record<string, AttributeValue>)
+      : keyFromInput(input);
+    const row = this.read(String(rowKey.PK), String(rowKey.SK)) ?? {};
+    const names = (input.ExpressionAttributeNames as Record<string, string>) ?? {};
+    const values = input.ExpressionAttributeValues
+      ? unmarshall(input.ExpressionAttributeValues as Record<string, AttributeValue>)
+      : {};
+    const tokens =
+      expression.match(
+        /attribute_not_exists|attribute_exists|#[\w]+|:[\w]+|AND|OR|>=|<=|<>|[()=<>]|PK/g,
+      ) ?? [];
+    let index = 0;
+    const operand = (token: string): unknown =>
+      token.startsWith(':') ? values[token] : row[names[token] ?? token];
+    const atom = (): boolean => {
+      const token = tokens[index++];
+      if (token === '(') {
+        const result = or();
+        if (tokens[index++] !== ')') throw new Error('Invalid condition group');
+        return result;
+      }
+      if (token === 'attribute_not_exists' || token === 'attribute_exists') {
+        index += 1;
+        const value = operand(tokens[index++]);
+        index += 1;
+        return token === 'attribute_not_exists' ? value === undefined : value !== undefined;
+      }
+      const left = operand(token);
+      const op = tokens[index++];
+      const right = operand(tokens[index++]);
+      if (op === '=') return isDeepStrictEqual(left, right);
+      if (op === '<>') return !isDeepStrictEqual(left, right);
+      if (left === undefined || right === undefined) return false;
+      if (op === '<') return (left as number) < (right as number);
+      if (op === '<=') return (left as number) <= (right as number);
+      if (op === '>') return (left as number) > (right as number);
+      if (op === '>=') return (left as number) >= (right as number);
+      throw new Error(`Unsupported condition operator ${op}`);
+    };
+    const and = (): boolean => {
+      let result = atom();
+      while (tokens[index] === 'AND') {
+        index++;
+        const next = atom();
+        result = result && next;
+      }
+      return result;
+    };
+    const or = (): boolean => {
+      let result = and();
+      while (tokens[index] === 'OR') {
+        index++;
+        const next = and();
+        result = result || next;
+      }
+      return result;
+    };
+    const result = or();
+    if (index !== tokens.length) throw new Error(`Unconsumed condition tokens: ${expression}`);
+    return result;
   }
 
   private applyTransaction(input: Record<string, unknown>): void {
     const transactItems = input.TransactItems as readonly Record<string, unknown>[];
+    if (
+      this.enforceConditions &&
+      transactItems.some(
+        (transaction) =>
+          !this.conditionMatches(
+            (transaction.Put ??
+              transaction.Update ??
+              transaction.ConditionCheck ??
+              transaction.Delete) as Record<string, unknown>,
+          ),
+      )
+    )
+      throw transactionError();
     for (const transaction of transactItems) {
       if (transaction.Put) {
         const put = transaction.Put as { Item: Record<string, AttributeValue> };
@@ -170,7 +259,14 @@ class DynamoHarness {
           : {}),
       };
     }
+    if (name === 'DeleteItemCommand') {
+      if (this.enforceConditions && !this.conditionMatches(input)) throw conditionalError();
+      const { PK, SK } = keyFromInput(input);
+      this.items.delete(itemKey(PK, SK));
+      return {};
+    }
     if (name === 'UpdateItemCommand') {
+      if (this.enforceConditions && !this.conditionMatches(input)) throw conditionalError();
       if (this.rejectUnusedUpdateValues) {
         const expression = `${String(input.UpdateExpression ?? '')} ${String(input.ConditionExpression ?? '')}`;
         const values = input.ExpressionAttributeValues
@@ -2087,8 +2183,10 @@ describe('Dynamo call finalization and recovery', () => {
       requestKey: 'attempt/other/request.json',
       updatedAt: '2026-09-21T15:00:04.000Z',
     };
-    const result = await store.finishCall('owner', attemptId, 'executor-a', forbiddenReceived);
-    expect(result?.status).toBe('invalid');
+    await expect(
+      store.finishCall('owner', attemptId, 'executor-a', forbiddenReceived),
+    ).rejects.toThrow(AttemptStoreError);
+    expect((await store.getCalls('owner', attemptId))[0].status).toBe('invalid');
     const lastTransaction = harness.send.mock.calls
       .filter(([command]) => command.constructor.name === 'TransactWriteItemsCommand')
       .at(-1)?.[0].input as { TransactItems: readonly Record<string, unknown>[] };
@@ -2141,7 +2239,11 @@ describe('Dynamo call finalization and recovery', () => {
     };
     await expect(
       store.finishCall('owner', attemptId, 'executor-a', differentAction),
-    ).resolves.toMatchObject({ status: 'received', rawAction });
+    ).rejects.toThrow(AttemptStoreError);
+    expect((await store.getCalls('owner', attemptId))[0]).toMatchObject({
+      status: 'received',
+      rawAction,
+    });
     const rejectedTransaction = harness.send.mock.calls
       .filter(([command]) => command.constructor.name === 'TransactWriteItemsCommand')
       .at(-1)?.[0].input as { TransactItems: readonly Record<string, unknown>[] };
@@ -2194,10 +2296,9 @@ describe('Dynamo call finalization and recovery', () => {
       updatedAt: '2026-09-21T15:00:04.000Z',
     };
 
-    const result = await storeFor(harness).finishCall('owner', attemptId, 'executor-a', delayed);
-
-    expect(result?.status).toBe('received');
-    expect(result?.usage).toEqual(known.usage);
+    await expect(
+      storeFor(harness).finishCall('owner', attemptId, 'executor-a', delayed),
+    ).rejects.toThrow(AttemptStoreError);
     expect(harness.read(`ATTEMPT#${attemptId}`, 'CALL#00000001')?.usage).toEqual(known.usage);
   });
 
@@ -2576,4 +2677,369 @@ describe('Dynamo call finalization and recovery', () => {
     expect(header.recordComplete).toBe(false);
     expect(call.responseKey).toContain('/response.json');
   });
+});
+
+// Fictional prices/budgets are intentionally unrelated to production configuration.
+const fictionalLimits = {
+  globalActiveAttempts: 2,
+  globalDailyMicros: 10_000,
+  userDailyMicros: 8_000,
+  rates: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1.5 },
+};
+const strictLimitsStore = (overrides = {}) => {
+  const harness = new DynamoHarness();
+  harness.enforceConditions = true;
+  const draft = createDefaultDraft();
+  for (const owner of ['a', 'b', 'c'])
+    harness.put({ PK: `USER#${owner}`, SK: 'DRAFT', version: 1, draft });
+  const store = createDynamoAttemptStore({
+    client: commandClient(harness.send),
+    tableName: 'table',
+    now: () => new Date('2026-10-04T15:00:00.000Z'),
+    limits: { ...fictionalLimits, ...overrides },
+  });
+  const admit = (owner: string, requestKey = owner, now?: string) =>
+    store.admit({ owner, requestKey, expectedVersion: 1, draft, animationEnabled: false, now });
+  const start = async (owner: string) => {
+    const { attempt } = await admit(owner);
+    await store.claim(owner, attempt.id, 'executor');
+    return attempt.id;
+  };
+  const call = (id: string, seq = 1): CallRecord => ({
+    attemptId: id,
+    seq,
+    decisionId: 'decision',
+    requestKey: `request-${seq}`,
+    responseKey: `response-${seq}`,
+    requestSha256: 'hash',
+    requestBytes: 1000,
+    countedInputTokens: 100,
+    status: 'started',
+    usage: {
+      inputTokens: null,
+      outputTokens: null,
+      gameTokens: null,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+      reasoningTokens: null,
+    },
+    modelKey: draft.modelKey,
+    modelId: 'global.anthropic.claude-sonnet-4-6',
+    region: 'us-east-1',
+    profileVersion: 'claude-sonnet-4.6-global-v1',
+    createdAt: '2026-10-04T15:00:00.000Z',
+    updatedAt: '2026-10-04T15:00:00.000Z',
+  });
+  return { harness, store, admit, start, call };
+};
+
+describe('DynamoDB capacity and spending conditions', () => {
+  it('converges duplicate admissions and survives a lost response with one slot/quota', async () => {
+    const { harness, store, admit } = strictLimitsStore();
+    harness.transactionBehavior = (input) =>
+      (input.TransactItems as { ConditionCheck?: unknown }[]).some((item) => item.ConditionCheck)
+        ? 'applyThenThrow'
+        : undefined;
+    const results = await Promise.all([admit('a'), admit('a')]);
+    expect(results[0].attempt.id).toBe(results[1].attempt.id);
+    expect((await store.quota('a')).used).toBe(1);
+    expect(harness.read('USER#a', 'ACTIVE_ATTEMPT')?.attemptId).toBe(results[0].attempt.id);
+    await expect(admit('a', 'other')).rejects.toThrow(AttemptCapacityError);
+  });
+  it('races distinct admissions into bounded slots before consuming quota', async () => {
+    const { harness, store, admit } = strictLimitsStore();
+    const results = await Promise.allSettled(['a', 'b', 'c'].map((owner) => admit(owner)));
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(2);
+    expect(
+      [...harness.items.keys()].filter((key) => key.startsWith('GLOBAL#ATTEMPT_CAPACITY')),
+    ).toHaveLength(2);
+    const rejectedOwner = ['a', 'b', 'c'][
+      results.findIndex((result) => result.status === 'rejected')
+    ];
+    expect((await store.quota(rejectedOwner)).used).toBe(0);
+    await expect(
+      admit(rejectedOwner, 'after-deadline', '2026-10-04T15:06:00.000Z'),
+    ).resolves.toMatchObject({ admitted: true });
+  });
+  it('reserves global and user spend atomically across executors', async () => {
+    const { harness, store, start, call } = strictLimitsStore({ globalDailyMicros: 1500 });
+    const ids = await Promise.all([start('a'), start('b')]);
+    const results = await Promise.allSettled(
+      ids.map((id, i) => store.beginCall(['a', 'b'][i], id, 'executor', call(id))),
+    );
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.find((result) => result.status === 'rejected')).toMatchObject({
+      reason: expect.any(BudgetUnavailableError),
+    });
+    expect(harness.read('GLOBAL#INFERENCE_BUDGET', 'SPEND#2026-10-04')?.amountMicros).toBe(1174);
+  });
+  it('does not reauthorize a committed call after the transaction response is lost', async () => {
+    const { harness, store, start, call } = strictLimitsStore();
+    const id = await start('a');
+    harness.transactionBehavior = () => 'applyThenThrow';
+    expect(await store.beginCall('a', id, 'executor', call(id))).toBeUndefined();
+    expect(await store.beginCall('a', id, 'executor', call(id))).toBeUndefined();
+    expect(harness.read('GLOBAL#INFERENCE_BUDGET', 'SPEND#2026-10-04')?.amountMicros).toBe(1174);
+    expect(await store.getCalls('a', id)).toHaveLength(1);
+  });
+  it('reconciles cache without double charging duplicate completions or reasoning', async () => {
+    const { harness, store, start, call } = strictLimitsStore();
+    const id = await start('a');
+    const begun = await store.beginCall('a', id, 'executor', call(id));
+    const finished: CallRecord = {
+      ...begun!,
+      status: 'received',
+      responseSha256: 'response',
+      usage: {
+        inputTokens: 100,
+        outputTokens: 20,
+        cacheReadTokens: 30,
+        cacheWriteTokens: 10,
+        reasoningTokens: 5,
+        gameTokens: 120,
+      },
+    };
+    await Promise.all([
+      store.finishCall('a', id, 'executor', finished),
+      store.finishCall('a', id, 'executor', finished),
+    ]);
+    expect(harness.read('GLOBAL#INFERENCE_BUDGET', 'SPEND#2026-10-04')?.amountMicros).toBe(118);
+    expect(harness.read('USER#a', 'SPEND#2026-10-04')?.amountMicros).toBe(118);
+  });
+  it('holds cancelled unknown calls until safe expiry and retains their monetary reservation', async () => {
+    const { harness, store, start, call, admit } = strictLimitsStore();
+    const id = await start('a');
+    const begun = await store.beginCall('a', id, 'executor', call(id));
+    await store.requestCancel('a', id);
+    await expect(admit('a', 'next')).rejects.toThrow(AttemptCapacityError);
+    await store.finishCall('a', id, 'executor', { ...begun!, status: 'unknown' });
+    await store.close('a', id, 'cancelled', 'cancelled', 'executor');
+    await expect(admit('a', 'next')).rejects.toThrow(AttemptCapacityError);
+    await expect(admit('a', 'next', '2026-10-04T15:38:00.000Z')).resolves.toMatchObject({
+      admitted: true,
+    });
+    expect(harness.read('GLOBAL#INFERENCE_BUDGET', 'SPEND#2026-10-04')?.amountMicros).toBe(1174);
+  });
+});
+
+describe('DynamoDB exhausted inference margin at admission', () => {
+  it.each(['GLOBAL#INFERENCE_BUDGET', 'USER#a'])(
+    'rejects %s without creating a request, slot or quota',
+    async (pk) => {
+      const { harness, store, admit } = strictLimitsStore();
+      harness.put({
+        PK: pk,
+        SK: 'SPEND#2026-10-04',
+        entity: 'inference-spend',
+        day: '2026-10-04',
+        amountMicros: pk.startsWith('GLOBAL')
+          ? fictionalLimits.globalDailyMicros
+          : fictionalLimits.userDailyMicros,
+        version: 1,
+      });
+      await expect(admit('a')).rejects.toThrow(BudgetUnavailableError);
+      expect((await store.quota('a')).used).toBe(0);
+      expect(harness.read('USER#a', 'ACTIVE_ATTEMPT')).toBeUndefined();
+      expect(harness.read('USER#a', 'REQUEST#a')).toBeUndefined();
+    },
+  );
+  it('checks exhausted budget in the same conditional transaction as admission', async () => {
+    const { harness, store, admit } = strictLimitsStore();
+    let exhausted = false;
+    harness.transactionBehavior = (input) => {
+      if (
+        !exhausted &&
+        (input.TransactItems as { ConditionCheck?: unknown }[]).some((item) => item.ConditionCheck)
+      ) {
+        exhausted = true;
+        harness.put({
+          PK: 'GLOBAL#INFERENCE_BUDGET',
+          SK: 'SPEND#2026-10-04',
+          amountMicros: fictionalLimits.globalDailyMicros,
+          version: 1,
+        });
+      }
+      return undefined;
+    };
+    await expect(admit('a')).rejects.toThrow(BudgetUnavailableError);
+    expect((await store.quota('a')).used).toBe(0);
+    expect(harness.read('USER#a', 'ACTIVE_ATTEMPT')).toBeUndefined();
+  });
+});
+
+it('recovers a request committed between the first lookup and capacity precheck', async () => {
+  const { store, admit } = strictLimitsStore();
+  const first = await admit('a');
+  const getByRequest = store.getByRequest.bind(store);
+  vi.spyOn(store, 'getByRequest')
+    .mockImplementationOnce(async () => undefined)
+    .mockImplementation(getByRequest);
+  await expect(admit('a')).resolves.toMatchObject({
+    admitted: false,
+    attempt: { id: first.attempt.id },
+  });
+  expect((await store.quota('a')).used).toBe(1);
+});
+
+it.each(['cacheReadTokens', 'cacheWriteTokens'] as const)(
+  'Dynamo keeps counted-input reservation when ordinary input is partial and %s is unknown',
+  async (field) => {
+    const { harness, store, start, call } = strictLimitsStore();
+    const id = await start('a');
+    const begun = await store.beginCall('a', id, 'executor', call(id));
+    const finished: CallRecord = {
+      ...begun!,
+      status: 'received',
+      responseSha256: 'response',
+      usage: {
+        inputTokens: 10,
+        outputTokens: 20,
+        gameTokens: 30,
+        reasoningTokens: null,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        [field]: null,
+      },
+    };
+    await Promise.all([
+      store.finishCall('a', id, 'executor', finished),
+      store.finishCall('a', id, 'executor', finished),
+    ]);
+    expect(harness.read('GLOBAL#INFERENCE_BUDGET', 'SPEND#2026-10-04')?.amountMicros).toBe(
+      begun!.budget!.reservedMicros,
+    );
+    expect(harness.read('USER#a', 'SPEND#2026-10-04')?.amountMicros).toBe(1174);
+    expect((await store.getCalls('a', id))[0].budget?.settledMicros).toBeUndefined();
+  },
+);
+
+it('rejects completion after all spending transaction retries conflict instead of returning an earlier partial receipt', async () => {
+  const { harness, store, start, call } = strictLimitsStore();
+  const id = await start('a');
+  const begun = await store.beginCall('a', id, 'executor', call(id));
+  const partial: CallRecord = {
+    ...begun!,
+    status: 'received',
+    responseSha256: 'response',
+    responseBytes: 20,
+  };
+  await store.finishCall('a', id, 'executor', partial);
+  const completed: CallRecord = {
+    ...partial,
+    rawAction: { name: 'tool_1', input: {} },
+    usage: {
+      inputTokens: 10,
+      outputTokens: 20,
+      reasoningTokens: null,
+      gameTokens: 30,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    },
+  };
+  let conflicts = 0;
+  harness.transactionBehavior = () => {
+    conflicts++;
+    return 'throw';
+  };
+  await expect(store.finishCall('a', id, 'executor', completed)).rejects.toThrow(AttemptStoreError);
+  expect(conflicts).toBe(5);
+  expect((await store.getCalls('a', id))[0]).toMatchObject({
+    status: 'received',
+    usage: partial.usage,
+  });
+  expect((await store.getCalls('a', id))[0].rawAction).toBeUndefined();
+  expect(harness.read('GLOBAL#INFERENCE_BUDGET', 'SPEND#2026-10-04')?.amountMicros).toBe(1174);
+});
+
+it('recognizes a fully committed completion and settlement after its response is lost', async () => {
+  const { harness, store, start, call } = strictLimitsStore();
+  const id = await start('a');
+  const begun = await store.beginCall('a', id, 'executor', call(id));
+  const completed: CallRecord = {
+    ...begun!,
+    status: 'received',
+    responseSha256: 'response',
+    rawAction: { name: 'tool_1', input: {} },
+    usage: {
+      inputTokens: 10,
+      outputTokens: 20,
+      reasoningTokens: null,
+      gameTokens: 30,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    },
+  };
+  harness.transactionBehavior = () => 'applyThenThrow';
+  await expect(store.finishCall('a', id, 'executor', completed)).resolves.toMatchObject({
+    usage: completed.usage,
+    rawAction: completed.rawAction,
+    budget: { settledMicros: 50 },
+  });
+  expect(harness.read('GLOBAL#INFERENCE_BUDGET', 'SPEND#2026-10-04')?.amountMicros).toBe(50);
+});
+
+it('Runtime publishes no action when the Dynamo spending completion exhausts all conflict retries', async () => {
+  const { executeAttempt, createGameEngine } = await import('../../runner/src/execute.js');
+  const { MemoryBodyStore } = await import('./attempt-store.js');
+  const { harness, store, admit } = strictLimitsStore();
+  const { attempt } = await admit('a');
+  let conflicts = 0;
+  harness.transactionBehavior = (input) => {
+    const updates = (
+      input.TransactItems as {
+        Update?: { ExpressionAttributeValues?: Record<string, AttributeValue> };
+      }[]
+    ).map((item) => item.Update);
+    if (
+      updates.some(
+        (update) =>
+          update?.ExpressionAttributeValues &&
+          unmarshall(update.ExpressionAttributeValues)[':rawAction'] !== undefined,
+      )
+    ) {
+      conflicts++;
+      return 'throw';
+    }
+    return undefined;
+  };
+  const engine = createGameEngine();
+  const apply = vi.spyOn(engine, 'apply');
+  await executeAttempt(
+    { owner: 'a', attemptId: attempt.id, executorId: 'executor' },
+    {
+      store,
+      bodies: new MemoryBodyStore(),
+      engine,
+      now: () => new Date('2026-10-04T15:00:00.000Z'),
+      infer: async ({ audit }) => {
+        await audit.beforeSend(new TextEncoder().encode('request'), 100);
+        await audit.afterReceive({
+          bytes: new TextEncoder().encode('{"usage":{"inputTokens":10,"outputTokens":20}}'),
+          statusCode: 200,
+          requestId: 'request',
+          complete: true,
+        });
+        return {
+          action: { name: 'tool_1', input: {} },
+          usage: {
+            inputTokens: 10,
+            outputTokens: 20,
+            reasoningTokens: null,
+            gameTokens: 30,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+          },
+        };
+      },
+    },
+  );
+  expect(conflicts).toBe(5);
+  expect(apply).not.toHaveBeenCalled();
+  expect(await store.get('a', attempt.id)).toMatchObject({
+    status: 'error',
+    reason: 'AttemptStoreError',
+    turnsUsed: 0,
+  });
+  expect(harness.read(`ATTEMPT#${attempt.id}`, 'ACTION#00000001')).toBeUndefined();
+  expect(harness.read('GLOBAL#INFERENCE_BUDGET', 'SPEND#2026-10-04')?.amountMicros).toBe(1174);
 });

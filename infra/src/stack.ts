@@ -5,6 +5,7 @@ import {
   aws_cloudfront as cloudfront,
   aws_cloudfront_origins as origins,
   aws_iam as iam,
+  aws_logs as logs,
   aws_s3 as s3,
   aws_s3_deployment as s3deploy,
 } from 'aws-cdk-lib';
@@ -12,6 +13,8 @@ import { Construct } from 'constructs';
 import { createAuthenticationResources, ROBOT_SCOPE } from './auth.js';
 import { createExecutionResources } from './execution.js';
 import { createRobotResources } from './robot.js';
+import { createPrivateLimits } from './private-limits.js';
+import { createBillingBudgets } from './budgets.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -20,6 +23,8 @@ export const APPLICATION_ACCOUNT = '387483252302';
 export const APPLICATION_REGION = 'us-east-1';
 export const ASSET_DEPLOYMENT_ROLE_NAME = 'prompt-runner-game-frontend-asset-deployment-us-east-1';
 export const GITHUB_DEPLOY_ROLE_NAME = 'prompt-runner-game-github-actions-deploy-us-east-1';
+export const WEBSITE_DEPLOYMENT_LOG_GROUP_NAME =
+  '/aws/lambda/PromptRunnerHosting-website-deployment';
 export const websiteBucketNameFor = (account: string) =>
   `prompt-runner-game-website-${account}-${APPLICATION_REGION}`;
 
@@ -39,6 +44,8 @@ export class PromptRunnerHostingStack extends cdk.Stack {
 
     const account = props.env?.account ?? APPLICATION_ACCOUNT;
     const buildRevision = props.buildRevision ?? 'local';
+    const limits = createPrivateLimits(this);
+    createBillingBudgets(this, limits);
     const webDistPath = path.resolve(__dirname, '../../apps/web/dist');
     const deploymentRoleArn =
       props.assetDeploymentRoleArn ??
@@ -91,14 +98,17 @@ export class PromptRunnerHostingStack extends cdk.Stack {
     cdk.Tags.of(this.distribution).add('Application', 'prompt-runner-game');
 
     const authentication = createAuthenticationResources(this, {
+      identityRateLimit: limits.identityRateLimit,
       region: props.env?.region ?? APPLICATION_REGION,
       productionWebOrigin: `https://${this.distribution.domainName}/`,
     });
     const robot = createRobotResources(this, {
+      limits,
       authentication,
       productionWebOrigin: `https://${this.distribution.domainName}`,
     });
     const execution = createExecutionResources(this, {
+      limits,
       account,
       region: props.env?.region ?? APPLICATION_REGION,
       buildRevision,
@@ -124,6 +134,11 @@ export class PromptRunnerHostingStack extends cdk.Stack {
       },
     );
 
+    const deploymentLogs = new logs.LogGroup(this, 'WebsiteDeploymentLogs', {
+      logGroupName: WEBSITE_DEPLOYMENT_LOG_GROUP_NAME,
+      retention: logs.RetentionDays.ONE_MONTH,
+    });
+
     const assetsDeployment = new s3deploy.BucketDeployment(this, 'WebsiteAssetsDeployment', {
       sources: [s3deploy.Source.asset(path.join(webDistPath, 'assets'))],
       destinationBucket: this.websiteBucket,
@@ -131,6 +146,7 @@ export class PromptRunnerHostingStack extends cdk.Stack {
       prune: true,
       retainOnDelete: true,
       role: assetDeploymentRole,
+      logGroup: deploymentLogs,
       cacheControl: [
         s3deploy.CacheControl.maxAge(cdk.Duration.days(365)),
         s3deploy.CacheControl.immutable(),
@@ -147,6 +163,7 @@ export class PromptRunnerHostingStack extends cdk.Stack {
       prune: false,
       retainOnDelete: true,
       role: assetDeploymentRole,
+      logGroup: deploymentLogs,
       cacheControl: [s3deploy.CacheControl.noCache()],
       metadata: { 'build-revision': buildRevision },
       distribution: this.distribution,
