@@ -32,6 +32,10 @@ export const GITHUB_OIDC_AUDIENCE = 'sts.amazonaws.com';
 export const GITHUB_MAIN_SUBJECT =
   'repo:guilleojeda@18320860/prompt-runner-game@1373331195:ref:refs/heads/main';
 export const BOOTSTRAP_CFN_EXECUTION_ROLE_NAME = 'cdk-hnb659fds-cfn-exec-role';
+// WAF's permission-only Cognito calls do not supply resource tags. Scope them
+// to the existing retained pool in this single deployment instead. Update this
+// ID if the pool is deliberately replaced; ordinary pool operations use tags.
+export const APPLICATION_USER_POOL_ID = 'us-east-1_4LuUPZZFf';
 
 export interface PromptRunnerAccessStackProps extends cdk.StackProps {
   /** ARN of the provider already registered in the account, when one exists. */
@@ -70,6 +74,7 @@ export class PromptRunnerAccessStack extends cdk.Stack {
     const websiteBucketArn = `arn:${cdk.Aws.PARTITION}:s3:::${websiteBucketNameFor(account)}`;
     const bootstrapAssetsBucketArn = `arn:${cdk.Aws.PARTITION}:s3:::cdk-hnb659fds-assets-${account}-${region}`;
     const cognitoUserPoolArn = `arn:${cdk.Aws.PARTITION}:cognito-idp:${region}:${account}:userpool/*`;
+    const identityProtectionPoolArn = `arn:${cdk.Aws.PARTITION}:cognito-idp:${region}:${account}:userpool/${APPLICATION_USER_POOL_ID}`;
 
     assetDeploymentRole.addToPolicy(
       new iam.PolicyStatement({
@@ -821,12 +826,11 @@ export class PromptRunnerAccessStack extends cdk.Stack {
             'cognito-idp:GetWebACLForResource',
             'cognito-idp:ListResourcesForWebACL',
           ],
-          resources: [cognitoUserPoolArn],
-          conditions: { StringEquals: { 'aws:ResourceTag/Application': 'prompt-runner-game' } },
+          resources: [identityProtectionPoolArn],
         }),
         // For an unassociated pool, WAF authorizes this discovery read against
         // the regional wildcard ARN rather than an ACL name. Cognito's
-        // dependent permission above still restricts the pool to this app.
+        // dependent permission above restricts the pool to its exact ARN.
         new iam.PolicyStatement({
           sid: 'ReadIdentityWebAclAssociation',
           actions: ['wafv2:GetWebACLForResource'],
