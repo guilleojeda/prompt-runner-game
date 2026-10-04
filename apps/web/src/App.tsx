@@ -629,7 +629,7 @@ export function App({
   }, []);
 
   return (
-    <main className="shell">
+    <main className={`shell${session ? ' shell-authenticated' : ''}`}>
       <header>
         {!attemptBusy && (
           <a className="game-home-link" href="/bienvenida.html">

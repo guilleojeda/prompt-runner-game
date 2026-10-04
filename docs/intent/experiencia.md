@@ -94,12 +94,17 @@ habilidad elegida o resultado después de una partida. Durante cálculo o reprod
 las ayudas consultables quedan bloqueadas junto con el resto de la interfaz; sólo **Cancelar** se
 mantiene operativo durante el cálculo.
 
-La cuenta se presenta en una franja compacta. El pie del editor reúne **Probar**, **Animación**, el
+En la vista autenticada, la cabecera del juego usa un espaciado compacto y conserva el enlace, la
+marca y la introducción. La cuenta se presenta en una franja compacta. El pie del editor reúne **Probar**, **Animación**, el
 saldo de cuota y su próxima renovación. La cuota muestra el saldo sobre el límite y una fecha y
-hora legibles. El único modelo operativo se muestra como información fija y no como un selector.
+hora legibles. El único modelo operativo se muestra como metadato junto al título del editor, como
+información fija y no como un selector.
 La pantalla mantiene el orden del mapa, editor y controles, resultado, copias guardadas e historial.
 Las fechas de intentos y copias usan formatos humanos; los tokens se explican brevemente como
 unidades de texto y conservan el valor desconocido cuando el proveedor no lo informa.
+
+Las acciones del resultado aparecen separadas; **Volver al editor** es la acción principal, seguida
+por los accesos de reproducción, inspección y configuración.
 
 Los errores indican una causa comprensible y una acción disponible, mientras **Detalles del agente**
 conserva el diagnóstico técnico desplegable. Desde un resultado terminal, **Volver al editor** lleva
