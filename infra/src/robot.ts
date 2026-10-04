@@ -129,6 +129,10 @@ export function createRobotResources(scope: Construct, props: RobotResourcesProp
     throttle: { rateLimit: throttle.rate, burstLimit: throttle.burst },
   });
   const stageResource = stage.node.defaultChild as apigatewayv2.CfnStage;
+  stageResource.addResourceDependency(
+    draftFunction.node.defaultChild as lambda.CfnFunction,
+    'Apply API stage changes only after the updated request handler is deployed.',
+  );
   const routeThrottle = (rateLimit: number, burstLimit: number) => ({
     ThrottlingRateLimit: rateLimit,
     ThrottlingBurstLimit: burstLimit,

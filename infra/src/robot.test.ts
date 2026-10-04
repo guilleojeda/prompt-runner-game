@@ -111,4 +111,28 @@ describe('robot infrastructure', { timeout: 15_000 }, () => {
     });
     expect(stages[0].Properties.RouteSettings).not.toHaveProperty('GET /attempts/{attemptId}');
   });
+
+  it('updates the default stage only after the API Lambda resource', () => {
+    const resources = synthesizeRobotResources().toJSON().Resources as Record<
+      string,
+      {
+        Type?: string;
+        Properties?: { FunctionName?: unknown };
+        DependsOn?: string | string[];
+      }
+    >;
+    const stage = Object.entries(resources).find(
+      ([, resource]) => resource.Type === 'AWS::ApiGatewayV2::Stage',
+    );
+    const apiFunction = Object.entries(resources).find(
+      ([, resource]) =>
+        resource.Type === 'AWS::Lambda::Function' &&
+        resource.Properties?.FunctionName === 'prompt-runner-game-draft-api',
+    );
+
+    expect(stage).toBeDefined();
+    expect(apiFunction).toBeDefined();
+    const dependencies = stage?.[1].DependsOn;
+    expect(Array.isArray(dependencies) ? dependencies : [dependencies]).toContain(apiFunction?.[0]);
+  });
 });
