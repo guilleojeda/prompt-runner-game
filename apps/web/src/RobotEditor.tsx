@@ -21,7 +21,7 @@ import {
   type RobotDraft,
   type RobotSkillId,
 } from '../../../shared/robot.js';
-import { isModelKey, MODEL_CATALOG } from '../../../shared/models.js';
+import { MODEL_CATALOG } from '../../../shared/models.js';
 import type { AuthSession } from './auth.js';
 import { DraftApiFailure, type DraftApi } from './draft-api.js';
 
@@ -35,6 +35,7 @@ export interface RobotEditorHandle {
   captureSnapshot(): Promise<DraftSnapshot | null>;
   applyDraft(draft: RobotDraft): Promise<boolean>;
   releaseAttemptLock(): void;
+  focusEditor?(): void;
 }
 
 export interface RobotEditorProps {
@@ -45,6 +46,7 @@ export interface RobotEditorProps {
   tryLocked?: boolean;
   onTry?: () => void;
   onAuthRequired?: () => void;
+  onAttemptControlsHostChange?: (node: HTMLDivElement | null) => void;
 }
 
 interface InFlightSave {
@@ -112,7 +114,16 @@ function isCurrent(
 }
 
 export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(function RobotEditor(
-  { api, session, paused = false, locked = false, tryLocked = false, onTry, onAuthRequired },
+  {
+    api,
+    session,
+    paused = false,
+    locked = false,
+    tryLocked = false,
+    onTry,
+    onAuthRequired,
+    onAttemptControlsHostChange,
+  },
   ref,
 ) {
   const [draft, setDraft] = useState<RobotDraft | null>(null);
@@ -133,6 +144,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
   const onAuthRequiredRef = useRef(onAuthRequired);
   const sendSaveRef = useRef<() => Promise<boolean>>(() => Promise.resolve(false));
   const setLoadedSnapshotRef = useRef<(snapshot: DraftSnapshot) => void>(() => undefined);
+  const editorHeadingRef = useRef<HTMLHeadingElement | null>(null);
 
   pausedRef.current = paused;
   lockedRef.current = locked;
@@ -537,6 +549,17 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     captureSnapshot,
     applyDraft,
     releaseAttemptLock: () => setAttemptClickLocked(false),
+    focusEditor: () => {
+      const heading = editorHeadingRef.current;
+      if (!heading) return;
+      heading.scrollIntoView?.({
+        block: 'start',
+        behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+          ? 'instant'
+          : 'smooth',
+      });
+      heading.focus();
+    },
   }));
 
   useEffect(() => {
@@ -622,11 +645,6 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     updateDraft({ ...draft, instructions: event.target.value });
   };
 
-  const onModelChange = (event: ChangeEvent<HTMLSelectElement>): void => {
-    if (!draft || !isModelKey(event.target.value)) return;
-    updateDraft({ ...draft, modelKey: event.target.value });
-  };
-
   const onSkillDescriptionChange = (id: RobotSkillId, value: string): void => {
     if (!draft) return;
     updateDraft({
@@ -663,11 +681,49 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
       <div className="editor-heading">
         <div>
           <p className="card-kicker">Configuración persistida</p>
-          <h2 id="robot-editor-title">Prepará tu robot</h2>
+          <h2 id="robot-editor-title" ref={editorHeadingRef} tabIndex={-1}>
+            Prepará tu robot
+          </h2>
           <p className="editor-intro">
             Elegí sus habilidades y escribí las instrucciones que recibirá. Los cambios se guardan
             automáticamente. Al probarlo, se fija exactamente lo que estás viendo.
           </p>
+          <details
+            className="editor-help"
+            aria-disabled={disabled}
+            onClick={disabled ? (event) => event.preventDefault() : undefined}
+          >
+            <summary tabIndex={disabled ? -1 : 0}>Ayuda para empezar</summary>
+            <div className="editor-help-copy">
+              <p>
+                La configuración inicial es limitada a propósito: sólo Avanzar viene habilitada y
+                las descripciones están vacías para que decidas qué comunicarle al agente.
+              </p>
+              <dl>
+                <div>
+                  <dt>Instrucciones generales</dt>
+                  <dd>Definen el objetivo y las prioridades que querés comunicar.</dd>
+                </div>
+                <div>
+                  <dt>Descripción de una habilidad</dt>
+                  <dd>
+                    Explica esa capacidad al agente. Se envía literalmente y puede quedar vacía o
+                    ser incompleta.
+                  </dd>
+                </div>
+                <div>
+                  <dt>Qué recibe el agente</dt>
+                  <dd>
+                    En cada decisión recibe tus instrucciones, las habilidades habilitadas y una
+                    observación local nueva. No recibe el mapa completo ni el historial de turnos.
+                  </dd>
+                </div>
+              </dl>
+              <p className="editor-help-example">
+                Ejemplo de descripción para Avanzar: «Camina una casilla hacia la derecha».
+              </p>
+            </div>
+          </details>
         </div>
         <span className={`save-state save-state-${status}`} role="status" aria-live="polite">
           {statusLabel(status)}
@@ -702,23 +758,15 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
 
       {draft && (
         <form className="editor-form" onSubmit={submitRetry}>
-          <fieldset className="model-selector" disabled={disabled}>
+          <fieldset className="model-selector">
             <legend>Modelo del agente</legend>
-            <label htmlFor="robot-model">Modelo para el próximo intento</label>
-            <select
-              id="robot-model"
-              value={draft.modelKey}
-              onChange={onModelChange}
-              disabled={disabled}
-            >
-              {MODEL_CATALOG.map((model) => (
-                <option key={model.key} value={model.key}>
-                  {model.label}
-                </option>
-              ))}
-            </select>
+            <p className="model-fixed" aria-label="Modelo fijo para el próximo intento">
+              {MODEL_CATALOG.find((model) => model.key === draft.modelKey)?.label ??
+                'Modelo no disponible'}
+            </p>
             <p className="field-help">
-              El modelo se guarda con la configuración y queda fijo al pulsar «Probar».
+              Robot Runner usa un único modelo fijo: se guarda con la configuración y queda
+              capturado al pulsar «Probar».
             </p>
           </fieldset>
           <fieldset disabled={disabled}>
@@ -761,7 +809,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
                       <span className="skill-help">{entry.description}</span>
                     </div>
                     <label htmlFor={`skill-description-${entry.id}`}>
-                      Descripción para el agente
+                      Descripción de {entry.name} para el agente
                     </label>
                     <textarea
                       id={`skill-description-${entry.id}`}
@@ -812,27 +860,36 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
               )}
             </div>
           )}
-          {onTry && (
-            <div className="editor-actions attempt-action">
-              <button
-                className="primary-button"
-                type="button"
-                onClick={() => {
-                  setAttemptClickLocked(true);
-                  onTry();
-                }}
-                disabled={disabled || tryLocked || status === 'conflict' || limitMessage !== null}
-              >
-                Probar
-              </button>
-              <span className="field-help">
-                Cada prueba admitida consume un intento de tu cuota diaria, aunque la canceles o
-                termine con un error.
-              </span>
-            </div>
-          )}
         </form>
       )}
+
+      <div
+        id="attempt-controls-slot"
+        className="editor-attempt-controls"
+        role="group"
+        aria-label="Controles de prueba y animación"
+        ref={onAttemptControlsHostChange}
+      >
+        {onTry && (
+          <div className="editor-actions attempt-action">
+            <button
+              className="primary-button"
+              type="button"
+              onClick={() => {
+                setAttemptClickLocked(true);
+                onTry();
+              }}
+              disabled={disabled || tryLocked || status === 'conflict' || limitMessage !== null}
+            >
+              Probar
+            </button>
+            <span className="field-help">
+              Cada prueba admitida consume un intento de tu cuota diaria, aunque la canceles o
+              termine con un error.
+            </span>
+          </div>
+        )}
+      </div>
 
       {status === 'error' && !draft && (
         <div className="editor-actions">

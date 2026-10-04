@@ -55,14 +55,14 @@ El snapshot de **Animación** es sólo una decisión de presentación para ese i
 
 Los estados de la interfaz describen qué puede hacer la persona. No son una copia de los estados del job del servidor: el job puede haber terminado mientras la interfaz sigue reproduciendo la animación automática.
 
-| Estado de interfaz | Controles habilitados | Comportamiento |
-| --- | --- | --- |
-| Edición | Campos, toggle, **Probar** e historial | Se modifica el borrador y se puede iniciar una admisión |
-| Guardando o admitiendo | Ningún control operativo mientras se confirma la admisión | Si hay conflicto o error antes de admitir, se conserva el borrador, no se usa cuota ni agente y se vuelve a Edición |
-| Cálculo | Sólo **Cancelar** | Se bloquean campos, habilidades, toggle, **Probar**, historial e inicio de otras visualizaciones |
-| Animación automática | Ninguno | Avanza a velocidad fija, hacia adelante y sin interrupciones; campos, habilidades, toggle, **Probar** e historial siguen bloqueados hasta terminar |
-| Resultado | Campos, toggle, **Probar**, historial e inspección | Se consulta el resultado, se pueden inspeccionar decisiones y se puede iniciar otro intento |
-| Visualización desde resultado o historial | Ninguno mientras se reproduce | Una vez iniciada, avanza automáticamente de principio a fin a la misma velocidad fija; no hay inferencia ni edición o navegación durante la reproducción |
+| Estado de interfaz                        | Controles habilitados                                     | Comportamiento                                                                                                                                           |
+| ----------------------------------------- | --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Edición                                   | Campos, toggle, **Probar** e historial                    | Se modifica el borrador y se puede iniciar una admisión                                                                                                  |
+| Guardando o admitiendo                    | Ningún control operativo mientras se confirma la admisión | Si hay conflicto o error antes de admitir, se conserva el borrador, no se usa cuota ni agente y se vuelve a Edición                                      |
+| Cálculo                                   | Sólo **Cancelar**                                         | Se bloquean campos, habilidades, toggle, **Probar**, historial e inicio de otras visualizaciones                                                         |
+| Animación automática                      | Ninguno                                                   | Avanza a velocidad fija, hacia adelante y sin interrupciones; campos, habilidades, toggle, **Probar** e historial siguen bloqueados hasta terminar       |
+| Resultado                                 | Campos, toggle, **Probar**, historial e inspección        | Se consulta el resultado, se pueden inspeccionar decisiones y se puede iniciar otro intento                                                              |
+| Visualización desde resultado o historial | Ninguno mientras se reproduce                             | Una vez iniciada, avanza automáticamente de principio a fin a la misma velocidad fija; no hay inferencia ni edición o navegación durante la reproducción |
 
 Durante el cálculo **Cancelar** es el único control operativo. No se habilita edición parcial ni se permite cambiar el toggle o las instrucciones hasta que el intento llegue a un estado terminal. La animación se muestra completa, en orden y a una única velocidad fija. Durante ella no hay controles para pausar, retroceder, avanzar, saltar turnos, reiniciar ni modificar la velocidad. El bloqueo continúa hasta presentar el resultado.
 
@@ -77,6 +77,35 @@ Los estados de resultado no se consultan ni permiten editar mientras una animaci
 ## Edición y diagnóstico
 
 La vista principal reúne el recorrido y el robot, las habilidades, sus descripciones, las instrucciones generales, el toggle **Animación**, **Probar**, el historial y los resultados. No requiere editar JSON, código, schemas ni infraestructura.
+
+La orientación inicial aparece como ayuda contextual separada de los campos editables. Presenta la
+configuración inicial limitada como un desafío: sólo Avanzar viene habilitada y las descripciones
+están vacías a propósito. También distingue el papel de las instrucciones generales
+(objetivo y prioridades) del de cada descripción de habilidad (texto literal que recibe el agente).
+También aclara que, en cada decisión, el agente recibe las instrucciones, las habilidades
+habilitadas y una observación local nueva, sin mapa completo ni historial de turnos. La ayuda puede
+incluir un ejemplo breve y físicamente correcto de descripción, sin proponer una configuración o
+una ruta ganadora.
+
+El mapa inicial ofrece reglas consultables sobre los tipos de obstáculo, el efecto determinista de
+las acciones y la recogida de objetos. La misma ayuda explica que las observaciones son locales y
+que las decisiones son independientes; no agrega orientación para analizar una observación,
+habilidad elegida o resultado después de una partida. Durante cálculo o reproducción automática,
+las ayudas consultables quedan bloqueadas junto con el resto de la interfaz; sólo **Cancelar** se
+mantiene operativo durante el cálculo.
+
+La cuenta se presenta en una franja compacta. El pie del editor reúne **Probar**, **Animación**, el
+saldo de cuota y su próxima renovación. La cuota muestra el saldo sobre el límite y una fecha y
+hora legibles. El único modelo operativo se muestra como información fija y no como un selector.
+La pantalla mantiene el orden del mapa, editor y controles, resultado, copias guardadas e historial.
+Las fechas de intentos y copias usan formatos humanos; los tokens se explican brevemente como
+unidades de texto y conservan el valor desconocido cuando el proveedor no lo informa.
+
+Los errores indican una causa comprensible y una acción disponible, mientras **Detalles del agente**
+conserva el diagnóstico técnico desplegable. Desde un resultado terminal, **Volver al editor** lleva
+el foco al editor sin cargar otra configuración ni modificar el borrador visible. Los paneles de
+configuración e inspección reciben el foco al abrirse y devuelven el foco al control que los abrió al
+cerrarse.
 
 Cada habilidad presenta su nombre humano, si está habilitada, su descripción y sus parámetros en términos comprensibles. El identificador opaco puede consultarse en el diagnóstico. La información explicativa para la persona no se convierte automáticamente en instrucciones del modelo; ese límite pertenece al [contrato del agente](agente.md). No se requiere un sistema complejo de control de versiones para las configuraciones.
 

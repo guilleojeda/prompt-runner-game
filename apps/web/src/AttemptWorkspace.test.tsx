@@ -519,7 +519,7 @@ describe('AttemptWorkspace', () => {
     );
     expect(await screen.findByRole('heading', { name: 'Inspeccionar decisiones' })).toBeTruthy();
     expect(
-      screen.getByText('Intento inspeccionado: Recorrido incompleto, 2026-09-21T12:00:30.000Z'),
+      screen.getByText(/Intento inspeccionado: Recorrido incompleto, 21 sept 2026/),
     ).toBeTruthy();
     expect(screen.queryByText(/Intento inspeccionado: Victoria,/)).toBeNull();
     await waitFor(() =>
@@ -2169,6 +2169,10 @@ describe('AttemptWorkspace', () => {
     expect(
       within(agentDetails as HTMLElement).getByText('Error del proveedor del agente'),
     ).toBeTruthy();
+    expect(result?.querySelector('.attempt-result-note')?.textContent).toContain(
+      'Acción: Podés volver al editor y probar de nuevo; un nuevo intento consume cuota.',
+    );
+    expect(within(result as HTMLElement).queryByText(/probar otra configuración/)).toBeNull();
     expect(within(result as HTMLElement).queryByText(/Causa registrada/)).toBeNull();
     expect(
       within(historySection as HTMLElement).queryByText('Admitido, esperando inicio'),
@@ -2289,8 +2293,9 @@ describe('AttemptWorkspace', () => {
       .getByRole('heading', { name: 'Tus mejores soluciones' })
       .closest('section') as HTMLElement;
     const rankingCards = within(ranking).getAllByRole('article');
-    expect(rankingCards[1]?.textContent).toContain('2026-09-21T12:00:01.000Z');
-    expect(rankingCards[2]?.textContent).toContain('2026-09-21T12:00:00.000Z');
+    expect(rankingCards[1]?.textContent).toContain('900 tokens para puntaje');
+    expect(rankingCards[2]?.textContent).toContain('1.100 tokens para puntaje');
+    expect(rankingCards[1]?.textContent).toContain('21 sept 2026');
     expect(screen.getByText(/Victorias sin puntaje exacto:/)).toBeTruthy();
     expect(screen.getByText(/Victorias con registro incompleto:/)).toBeTruthy();
     expect(screen.getByText(/Otros resultados:/)).toBeTruthy();

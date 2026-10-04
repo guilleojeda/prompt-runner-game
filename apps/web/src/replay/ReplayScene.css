@@ -68,6 +68,36 @@
   line-height: 1.55;
 }
 
+.course-preview__help {
+  margin-top: 0.9rem;
+  border: 1px solid rgba(155, 197, 158, 0.38);
+  border-radius: 0.6rem;
+  background: rgba(66, 104, 69, 0.12);
+}
+
+.course-preview__help summary {
+  padding: 0.7rem 0.8rem;
+  color: #bde0bf;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.course-preview__help summary:focus-visible {
+  outline: 3px solid #f2c879;
+  outline-offset: 2px;
+}
+
+.course-preview__help-copy {
+  padding: 0 0.8rem 0.75rem;
+  color: #d4c9bc;
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+.course-preview__help-copy p:last-child {
+  margin-bottom: 0;
+}
+
 .replay-scene__canvas {
   display: block;
   width: 100%;

@@ -443,6 +443,11 @@ export function DecisionInspector({
   const indexControllerRef = useRef<AbortController | null>(null);
   const initialScrollNumberRef = useRef<number | null>(null);
   const detailContainerRef = useRef<HTMLDivElement | null>(null);
+  const headingRef = useRef<HTMLHeadingElement | null>(null);
+
+  useEffect(() => {
+    headingRef.current?.focus();
+  }, [attemptId]);
 
   const loadIndex = useCallback(
     async (signal?: AbortSignal): Promise<void> => {
@@ -588,7 +593,9 @@ export function DecisionInspector({
       <div className="decision-inspector-heading">
         <div>
           <p className="card-kicker">Mapa para el jugador</p>
-          <h3 id="decision-inspector-title">Inspeccionar decisiones</h3>
+          <h3 id="decision-inspector-title" ref={headingRef} tabIndex={-1}>
+            Inspeccionar decisiones
+          </h3>
           {targetLabel && (
             <p className="decision-inspector-target">Intento inspeccionado: {targetLabel}</p>
           )}

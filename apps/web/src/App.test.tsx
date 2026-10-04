@@ -201,6 +201,54 @@ describe('access screen', () => {
     expect(attemptApi.getReplay).not.toHaveBeenCalled();
   });
 
+  it('keeps the editor control bar mounted when the draft arrives after attempt data', async () => {
+    let releaseDraft!: (snapshot: DraftSnapshot) => void;
+    const authClient = client({ initialize: vi.fn().mockResolvedValue(session()) });
+    const draftApi: DraftApi = {
+      getDraft: vi.fn(
+        () =>
+          new Promise<DraftSnapshot>((resolve) => {
+            releaseDraft = resolve;
+          }),
+      ),
+      putDraft: vi.fn(),
+    };
+    const attemptApi = emptyAttemptApi();
+    const savedRobotApi: SavedRobotApi = {
+      listRobots: vi.fn().mockResolvedValue({ robots: [] }),
+      getRobot: vi.fn(),
+      saveRobot: vi.fn(),
+      deleteRobot: vi.fn(),
+    };
+    render(
+      <App
+        authClient={authClient}
+        draftApi={draftApi}
+        savedRobotApi={savedRobotApi}
+        attemptApi={attemptApi}
+        configLoader={async () => config}
+      />,
+    );
+
+    const controls = await waitFor(() => {
+      const host = document.querySelector('#attempt-controls-slot');
+      if (!host) throw new Error('Todavía no existe el pie del editor.');
+      return host as HTMLElement;
+    });
+    expect(within(controls).getByRole('checkbox', { name: 'Animación' })).toBeTruthy();
+    expect(within(controls).getByText('de 100 intentos disponibles')).toBeTruthy();
+    expect(
+      (within(controls).getByRole('button', { name: 'Probar' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+
+    releaseDraft({ version: 0, draft: createDefaultDraft() });
+    await waitFor(() =>
+      expect(
+        (within(controls).getByRole('button', { name: 'Probar' }) as HTMLButtonElement).disabled,
+      ).toBe(false),
+    );
+  });
+
   it('keeps the logout label while the signed-in account loads its attempts', async () => {
     window.sessionStorage.clear();
     const authClient = client({ initialize: vi.fn().mockResolvedValue(session()) });
