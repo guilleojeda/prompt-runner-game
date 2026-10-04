@@ -681,9 +681,20 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
       <div className="editor-heading">
         <div>
           <p className="card-kicker">Configuración persistida</p>
-          <h2 id="robot-editor-title" ref={editorHeadingRef} tabIndex={-1}>
-            Prepará tu robot
-          </h2>
+          <div className="editor-title-line">
+            <h2 id="robot-editor-title" ref={editorHeadingRef} tabIndex={-1}>
+              Prepará tu robot
+            </h2>
+            {draft && (
+              <span className="editor-model-meta">
+                Modelo del agente:{' '}
+                <strong aria-label="Modelo fijo para el próximo intento">
+                  {MODEL_CATALOG.find((model) => model.key === draft.modelKey)?.label ??
+                    'Modelo no disponible'}
+                </strong>
+              </span>
+            )}
+          </div>
           <p className="editor-intro">
             Elegí sus habilidades y escribí las instrucciones que recibirá. Los cambios se guardan
             automáticamente. Al probarlo, se fija exactamente lo que estás viendo.
@@ -758,17 +769,6 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
 
       {draft && (
         <form className="editor-form" onSubmit={submitRetry}>
-          <fieldset className="model-selector">
-            <legend>Modelo del agente</legend>
-            <p className="model-fixed" aria-label="Modelo fijo para el próximo intento">
-              {MODEL_CATALOG.find((model) => model.key === draft.modelKey)?.label ??
-                'Modelo no disponible'}
-            </p>
-            <p className="field-help">
-              Robot Runner usa un único modelo fijo: se guarda con la configuración y queda
-              capturado al pulsar «Probar».
-            </p>
-          </fieldset>
           <fieldset disabled={disabled}>
             <legend>Instrucciones generales</legend>
             <label htmlFor="robot-instructions">Qué debe tener en cuenta el robot</label>

@@ -432,58 +432,55 @@ function ResultCard({
           </p>
         </section>
       )}
-      {attempt.recordComplete && attempt.turnsUsed > 0 && (
-        <button
-          className="secondary-button replay-again"
-          type="button"
-          onClick={onReplay}
-          disabled={busy}
-        >
-          Ver de nuevo
-        </button>
-      )}
-      {onInspect && (
-        <button
-          className="secondary-button replay-again"
-          type="button"
-          onClick={() => onInspect('first')}
-          disabled={busy}
-        >
-          Inspeccionar decisiones
-        </button>
-      )}
-      {onInspect && attempt.status !== 'victory' && (
-        <button
-          className="secondary-button replay-again"
-          type="button"
-          onClick={() =>
-            onInspect(attempt.status === 'defeat' ? 'last-action-or-decision' : 'last-decision')
-          }
-          disabled={busy}
-        >
-          {attempt.status === 'defeat' ? 'Ir a la última acción' : 'Ver último paso'}
-        </button>
-      )}
-      {isTerminal(attempt.status) && (
-        <button
-          className="secondary-button replay-again"
-          type="button"
-          onClick={onConfiguration}
-          disabled={busy || configurationBusy}
-        >
-          {configurationBusy ? 'Cargando configuración…' : 'Ver configuración'}
-        </button>
-      )}
-      {onReturnToEditor && isTerminal(attempt.status) && (
-        <button
-          className="secondary-button replay-again"
-          type="button"
-          onClick={onReturnToEditor}
-          disabled={busy}
-        >
-          Volver al editor
-        </button>
-      )}
+      <div className="attempt-result-actions">
+        {onReturnToEditor && isTerminal(attempt.status) && (
+          <button
+            className="primary-button"
+            type="button"
+            onClick={onReturnToEditor}
+            disabled={busy}
+          >
+            Volver al editor
+          </button>
+        )}
+        {attempt.recordComplete && attempt.turnsUsed > 0 && (
+          <button className="secondary-button" type="button" onClick={onReplay} disabled={busy}>
+            Ver de nuevo
+          </button>
+        )}
+        {onInspect && (
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={() => onInspect('first')}
+            disabled={busy}
+          >
+            Inspeccionar decisiones
+          </button>
+        )}
+        {onInspect && attempt.status !== 'victory' && (
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={() =>
+              onInspect(attempt.status === 'defeat' ? 'last-action-or-decision' : 'last-decision')
+            }
+            disabled={busy}
+          >
+            {attempt.status === 'defeat' ? 'Ir a la última acción' : 'Ver último paso'}
+          </button>
+        )}
+        {isTerminal(attempt.status) && (
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={onConfiguration}
+            disabled={busy || configurationBusy}
+          >
+            {configurationBusy ? 'Cargando configuración…' : 'Ver configuración'}
+          </button>
+        )}
+      </div>
       <details className="attempt-agent-details">
         <summary>Detalles del agente</summary>
         <p className="attempt-status" data-status={attempt.status}>

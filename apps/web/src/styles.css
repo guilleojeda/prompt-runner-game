@@ -70,6 +70,27 @@ button:focus-visible {
   gap: 1.25rem;
 }
 
+.shell-authenticated {
+  align-content: start;
+  padding: 3rem 0 5rem;
+}
+
+.shell-authenticated .game-home-link {
+  margin-bottom: 0.75rem;
+}
+
+.shell-authenticated h1 {
+  max-width: none;
+  margin-bottom: 0.25rem;
+  font-size: clamp(2.2rem, 5vw, 4rem);
+}
+
+.shell-authenticated .intro {
+  margin-bottom: 1.1rem;
+  font-size: 1rem;
+  line-height: 1.45;
+}
+
 .eyebrow {
   margin: 0;
   color: #d8b36a;
@@ -838,10 +859,6 @@ h1 {
   border-radius: 0.45rem;
 }
 
-.replay-again {
-  margin: 0.3rem 0 0.8rem;
-}
-
 .attempt-error {
   border-color: rgba(237, 146, 128, 0.5);
   background: rgba(118, 47, 42, 0.2);
@@ -1279,6 +1296,28 @@ h1 {
   font-size: clamp(1.5rem, 3vw, 2rem);
 }
 
+.editor-title-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.9rem;
+}
+
+.editor-title-line h2 {
+  margin-bottom: 0;
+}
+
+.editor-model-meta {
+  color: #b9b4a8;
+  font-size: 0.88rem;
+  line-height: 1.4;
+}
+
+.editor-model-meta strong {
+  color: #f2efe8;
+  font-weight: 700;
+}
+
 .editor-intro,
 .field-help,
 .editor-hint,
@@ -1292,6 +1331,14 @@ h1 {
 .editor-intro {
   max-width: 42rem;
   margin-bottom: 0;
+}
+
+.attempt-result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.65rem;
+  margin-top: 1rem;
 }
 
 .save-state {
@@ -1366,17 +1413,6 @@ h1 {
   color: #f7f1e1;
   background: rgba(20, 19, 15, 0.65);
   font: inherit;
-}
-
-.model-fixed {
-  width: min(100%, 28rem);
-  margin: 0;
-  padding: 0.65rem 0.7rem;
-  border: 1px solid rgba(216, 179, 106, 0.45);
-  border-radius: 0.45rem;
-  color: #f7f1e1;
-  background: rgba(216, 179, 106, 0.1);
-  font-weight: 700;
 }
 
 .editor-form select:focus {
@@ -1788,6 +1824,10 @@ button:disabled {
   .shell {
     width: min(100% - 2rem, 62rem);
     padding: 4rem 0;
+  }
+
+  .shell.shell-authenticated {
+    padding: 2rem 0 3rem;
   }
 
   .auth-card {
