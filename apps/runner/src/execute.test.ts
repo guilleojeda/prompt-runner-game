@@ -855,6 +855,48 @@ describe('Runtime inference margin and cancellation', () => {
     });
     return { store, attempt, draft, date, bodies: new MemoryBodyStore() };
   };
+  it('closes cancellation during the pre-dispatch audit without a provider call or reservation', async () => {
+    const { store, attempt, draft, date, bodies } = await prepare();
+    let dispatched = 0;
+    const infer: InferenceAdapter = async ({ audit }) => {
+      await store.requestCancel('a', attempt.id);
+      try {
+        await audit.beforeSend(new TextEncoder().encode('request'), 100);
+      } catch (cause) {
+        // The native inference adapter wraps a rejected audit in this boundary.
+        throw Object.assign(new Error('Pre-dispatch audit failed', { cause }), {
+          code: 'audit_failed',
+        });
+      }
+      dispatched++;
+      throw new Error('Cancelled authorization must not dispatch');
+    };
+    await executeAttempt(
+      { owner: 'a', attemptId: attempt.id, executorId: 'executor' },
+      { store, bodies, infer, engine: createGameEngine(), now: () => date },
+    );
+    expect(dispatched).toBe(0);
+    expect(await store.get('a', attempt.id)).toMatchObject({
+      status: 'cancelled',
+      reason: 'cancelled_before_dispatch',
+      calls: 0,
+      turnsUsed: 0,
+    });
+    expect(await store.getCalls('a', attempt.id)).toEqual([]);
+    expect(store.budgetAmount('2026-10-04')).toBe(0);
+    expect((await store.getReplayRecord('a', attempt.id))?.actions).toEqual([]);
+    expect(
+      (
+        await store.admit({
+          owner: 'a',
+          requestKey: 'after-cancellation',
+          expectedVersion: 1,
+          draft,
+          animationEnabled: false,
+        })
+      ).admitted,
+    ).toBe(true);
+  });
   it('authorizes a retry separately and stops it before dispatch when uncertain spend left no margin', async () => {
     const { store, attempt, date, bodies } = await prepare();
     let entered = 0;

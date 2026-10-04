@@ -427,6 +427,20 @@ export const executeAttempt = async (
             continue;
           }
         }
+        // Cancellation can arrive while CountTokens or the pre-dispatch audit
+        // is awaiting storage. Inference wraps that rejected authorization as
+        // an audit failure, but no provider call has been authorized yet.
+        if (!call) {
+          const latest = await dependencies.store.get(input.owner, activeRecord.id);
+          if (
+            latest?.cancelRequested &&
+            latest.status === 'running' &&
+            latest.executorId === executorId
+          ) {
+            await closeAttempt('cancelled', 'cancelled_before_dispatch');
+            return;
+          }
+        }
         await dependencies.store.recoverBodies?.(input.owner, activeRecord.id);
         await closeAttempt(
           'error',
