@@ -556,20 +556,36 @@ describe('RobotEditor', () => {
     expect(screen.getByDisplayValue(sent.instructions)).toBeTruthy();
   });
 
-  it('shows a retry for an initial load failure without exposing editable defaults', async () => {
+  it('blocks trying until an initial load failure is recovered without exposing editable defaults', async () => {
     const getDraft = vi
       .fn()
       .mockRejectedValueOnce(new DraftApiFailure('network', 'offline'))
       .mockResolvedValueOnce(snapshot());
     const draftApi = api({ getDraft });
-    render(<RobotEditor api={draftApi} session={session()} />);
+    const onTry = vi.fn();
+    render(<RobotEditor api={draftApi} session={session()} onTry={onTry} />);
+
+    const tryButton = screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement;
+    expect(tryButton.disabled).toBe(true);
 
     expect((await screen.findByRole('alert')).textContent).toContain('offline');
     expect(screen.getByText('No se pudo cargar la configuración')).toBeTruthy();
     expect(screen.queryByLabelText('Qué debe tener en cuenta el robot')).toBeNull();
+    expect(tryButton.disabled).toBe(true);
+    fireEvent.click(tryButton);
+    expect(onTry).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Reintentar carga' }));
     expect(await screen.findByLabelText('Qué debe tener en cuenta el robot')).toBeTruthy();
     expect(getDraft).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(tryButton.disabled).toBe(false);
+
+    fireEvent.change(screen.getByLabelText('Qué debe tener en cuenta el robot'), {
+      target: { value: 'Cambio pendiente después de recuperar la carga' },
+    });
+    expect(tryButton.disabled).toBe(false);
+    fireEvent.click(tryButton);
+    expect(onTry).toHaveBeenCalledOnce();
   });
 
   it('keeps a save failure heading distinct from an initial load failure', async () => {

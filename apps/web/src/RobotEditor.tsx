@@ -882,7 +882,13 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
                 setAttemptClickLocked(true);
                 onTry();
               }}
-              disabled={disabled || tryLocked || status === 'conflict' || limitMessage !== null}
+              disabled={
+                disabled ||
+                draft === null ||
+                tryLocked ||
+                status === 'conflict' ||
+                limitMessage !== null
+              }
             >
               Probar
             </button>
