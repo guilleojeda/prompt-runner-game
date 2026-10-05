@@ -958,6 +958,7 @@ export class PromptRunnerAccessStack extends cdk.Stack {
             'cloudfront:DeleteFunction',
             'cloudfront:DescribeFunction',
             'cloudfront:GetFunction',
+            'cloudfront:ListTagsForResource',
             'cloudfront:PublishFunction',
             'cloudfront:UpdateFunction',
           ],

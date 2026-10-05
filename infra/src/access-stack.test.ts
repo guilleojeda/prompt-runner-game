@@ -220,6 +220,15 @@ describe('PromptRunnerAccessStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, (
       },
       'ForAllValues:StringEquals': { 'acm:DomainNames': [PUBLIC_DOMAIN] },
     });
+    expect(bySid('PublicDomainRoutingFunction').Action).toEqual([
+      'cloudfront:CreateFunction',
+      'cloudfront:DeleteFunction',
+      'cloudfront:DescribeFunction',
+      'cloudfront:GetFunction',
+      'cloudfront:ListTagsForResource',
+      'cloudfront:PublishFunction',
+      'cloudfront:UpdateFunction',
+    ]);
     expect(JSON.stringify(bySid('PublicDomainRoutingFunction').Resource)).toContain(
       `:cloudfront::${APPLICATION_ACCOUNT}:function/${PUBLIC_ROUTING_FUNCTION_NAME}`,
     );
