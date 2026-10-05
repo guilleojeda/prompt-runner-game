@@ -88,12 +88,14 @@ export const managedLoginSettings = {
 };
 
 export function managedLoginAssets() {
+  // Cognito's SVG allowlist omits ARIA attributes; leave the web favicon unchanged.
   const favicon = readFileSync(
     new URL('../../apps/web/public/favicon.svg', import.meta.url),
     'utf8',
-  );
+  ).replace(/\s(?:role|aria-label)="[^"]*"/gu, '');
   const robot = favicon.replace(/<svg\b[^>]*>/u, '').replace(/<\/svg>\s*$/u, '');
-  const logo = `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="64" viewBox="0 0 320 64" role="img" aria-label="Robot Runner: A puro prompt">
+  const logo = `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="64" viewBox="0 0 320 64">
+    <title>Robot Runner: A puro prompt</title>
     <g transform="translate(4 8) scale(.75)">${robot}</g>
     <text x="66" y="20" fill="#d8b36a" font-family="Arial, sans-serif" font-size="10" font-weight="700" letter-spacing="1.5">A PURO PROMPT</text>
     <text x="66" y="51" fill="#f7f1e1" font-family="Georgia, serif" font-size="34" letter-spacing="-1.5">Robot Runner</text>
