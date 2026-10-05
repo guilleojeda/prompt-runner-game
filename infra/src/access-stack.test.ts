@@ -214,10 +214,9 @@ describe('PromptRunnerAccessStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, (
         ],
       ],
     });
-    expect(bySid('RequestPublicDomainCertificate').Condition).toMatchObject({
+    expect(bySid('RequestPublicDomainCertificate').Condition).toEqual({
       StringEquals: {
         'aws:RequestedRegion': APPLICATION_REGION,
-        'aws:RequestTag/Application': 'prompt-runner-game',
       },
       'ForAllValues:StringEquals': { 'acm:DomainNames': [PUBLIC_DOMAIN] },
     });

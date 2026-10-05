@@ -930,7 +930,6 @@ export class PromptRunnerAccessStack extends cdk.Stack {
           conditions: {
             StringEquals: {
               'aws:RequestedRegion': region,
-              'aws:RequestTag/Application': 'prompt-runner-game',
             },
             'ForAllValues:StringEquals': { 'acm:DomainNames': [PUBLIC_DOMAIN] },
           },
