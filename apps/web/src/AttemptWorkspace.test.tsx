@@ -987,6 +987,7 @@ describe('AttemptWorkspace', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Ver resultado' }));
     expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
     expect(getReplay).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Compartir resultado' })).toBeTruthy();
   });
 
   it.each([

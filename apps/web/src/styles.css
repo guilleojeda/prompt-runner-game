@@ -1341,6 +1341,80 @@ h1 {
   margin-top: 1rem;
 }
 
+.result-sharing {
+  margin-top: 1rem;
+}
+
+.result-share-panel {
+  margin-top: 1rem;
+  padding: 1.25rem;
+  border: 1px solid #4b5340;
+  border-radius: 1rem;
+  background: #141a14;
+}
+
+.result-share-panel p {
+  color: #b9b4a8;
+  line-height: 1.5;
+}
+
+.result-share-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.result-share-heading h4 {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.result-share-heading h4:focus {
+  outline: none;
+}
+
+.result-share-image {
+  display: block;
+  width: 100%;
+  max-width: 40rem;
+  height: auto;
+  border-radius: 0.75rem;
+}
+
+.result-share-download {
+  display: inline-block;
+  text-decoration: none;
+}
+
+.result-share-download:focus-visible {
+  outline: 3px solid #f2c879;
+  outline-offset: 3px;
+}
+
+.result-share-text-label {
+  display: block;
+  margin: 1.25rem 0 0.5rem;
+}
+
+.result-share-text {
+  width: 100%;
+  resize: vertical;
+  min-height: 8rem;
+  padding: 0.8rem;
+  border: 1px solid #4b5340;
+  border-radius: 0.5rem;
+  background: #1b211b;
+  color: #f2efe8;
+  font: inherit;
+  line-height: 1.5;
+}
+
+.result-share-text:focus-visible {
+  outline: 3px solid #f2c879;
+  outline-offset: 3px;
+}
+
 .save-state {
   flex: 0 0 auto;
   padding: 0.45rem 0.65rem;
