@@ -204,10 +204,13 @@ describe('SavedRobots', () => {
     render(<SavedRobots api={savedApi} editor={editor()} session={session()} />);
 
     expect(await screen.findAllByRole('button', { name: /Mismo nombre.*Cargar/ })).toHaveLength(2);
+    expect(screen.getByRole('button', { name: /Mismo nombre Copia 1/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Mismo nombre Copia 2/ })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Cargar más' }));
     await waitFor(() =>
       expect(screen.getAllByRole('button', { name: /Mismo nombre.*Cargar/ })).toHaveLength(3),
     );
+    expect(screen.getByRole('button', { name: /Mismo nombre Copia 3/ })).toBeTruthy();
     for (const [index, expectedId] of ['robot-a', 'robot-b', 'robot-c'].entries()) {
       fireEvent.click(screen.getAllByRole('button', { name: /Mismo nombre.*Cargar/ })[index]!);
       await waitFor(() => expect(getRobot).toHaveBeenCalledTimes(index + 1));

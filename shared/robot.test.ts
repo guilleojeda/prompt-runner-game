@@ -53,7 +53,9 @@ describe('current robot draft contract', () => {
       'tool_7',
     ]);
     expect(ROBOT_CATALOG[3]?.name).toBe('Agacharse y avanzar');
-    expect(ROBOT_CATALOG[4]?.description).toContain('ningún efecto');
+    expect(ROBOT_CATALOG[4]?.description).toBe(
+      'No mueve al robot ni supera obstáculos. Consume un turno y puede cambiar el terreno.',
+    );
     expect(ROBOT_CATALOG[5]).toMatchObject({
       name: 'Esperar',
       opaqueId: 'tool_6',

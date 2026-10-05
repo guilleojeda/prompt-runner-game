@@ -121,7 +121,8 @@ const catalogEntries: RobotCatalogEntry[] = [
     id: 'swim',
     name: 'Nadar',
     opaqueId: 'tool_5',
-    description: 'No produce ningún efecto en este recorrido.',
+    description:
+      'No mueve al robot ni supera obstáculos. Consume un turno y puede cambiar el terreno.',
     inputSchema: noArguments,
   },
   {

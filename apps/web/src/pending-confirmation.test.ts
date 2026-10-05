@@ -109,12 +109,57 @@ describe('pending Cognito confirmation', () => {
     });
     await expect(client.confirm('pending@example.com', 'old')).rejects.toMatchObject({
       code: 'operation-limit',
+      message: expect.stringContaining('Intentá de nuevo más tarde.'),
     });
     await expect(client.resend('pending@example.com')).rejects.toMatchObject({
       code: 'rate-limit',
+      message: expect.stringContaining('Intentá de nuevo más tarde.'),
     });
-    await expect(client.resend('pending@example.com')).rejects.toMatchObject({ code: 'network' });
+    await expect(client.resend('pending@example.com')).rejects.toMatchObject({
+      code: 'network',
+      message: expect.stringContaining('Revisá tu conexión e intentá de nuevo.'),
+    });
     expect(fetchImpl).toHaveBeenCalledTimes(4);
+  });
+
+  it('does not expose provider details in recoverable confirmation messages', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockRejectedValue(new TypeError('offline'));
+    const client = new CognitoPendingConfirmationClient(config, { fetch: fetchImpl });
+
+    const failure = await client
+      .confirm('pending@example.com', '123456')
+      .catch((error: unknown) => error);
+
+    expect(failure).toMatchObject({ code: 'network' });
+    expect((failure as ConfirmationFailure).message).toContain('servicio de confirmación');
+    expect((failure as ConfirmationFailure).message).not.toMatch(/Cognito|JSON|HTTPS|API/iu);
+    expect((failure as ConfirmationFailure).cause).toBeInstanceOf(TypeError);
+  });
+
+  it('uses a user-facing recovery message for an invalid provider response', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response('not-json', { status: 200 }));
+    const client = new CognitoPendingConfirmationClient(config, { fetch: fetchImpl });
+
+    const failure = await client
+      .confirm('pending@example.com', '123456')
+      .catch((error: unknown) => error);
+
+    expect(failure).toMatchObject({ code: 'network' });
+    expect((failure as ConfirmationFailure).message).toContain('Intentá de nuevo.');
+    expect((failure as ConfirmationFailure).message).not.toMatch(/Cognito|JSON|HTTPS|API/iu);
+    expect((failure as ConfirmationFailure).cause).toBeInstanceOf(Error);
+  });
+
+  it('keeps invalid confirmation configuration actionable without exposing provider details', () => {
+    expect(
+      () =>
+        new CognitoPendingConfirmationClient({
+          ...config,
+          issuer: 'http://cognito.example.test/region',
+        }),
+    ).toThrow('Volvé a cargar la página o contactá al soporte.');
   });
 
   it('treats a resend parameter error as invalid email input', async () => {

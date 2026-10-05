@@ -155,7 +155,7 @@ describe('RobotEditor', () => {
     expect(container.querySelector('.configuration-size-warning')).toBeNull();
     expect(screen.queryByText(/bytes UTF-8/)).toBeNull();
     expect(container.querySelector('#robot-instructions')?.nextElementSibling?.textContent).toBe(
-      `${draft.instructions.length.toLocaleString('es-AR')} / 1.000 caracteres · supera el máximo`,
+      `${draft.instructions.length.toLocaleString('es-AR')} / 1.000 caracteres, supera el máximo`,
     );
   });
 
@@ -182,7 +182,7 @@ describe('RobotEditor', () => {
     expect(instructions.value).toBe(oversizedInstructions);
     expect(
       container.querySelector('#skill-description-wait')?.nextElementSibling?.textContent,
-    ).toBe('501 / 500 caracteres · supera el máximo');
+    ).toBe('501 / 500 caracteres, supera el máximo');
     expect((screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement).disabled).toBe(
       true,
     );
@@ -565,10 +565,27 @@ describe('RobotEditor', () => {
     render(<RobotEditor api={draftApi} session={session()} />);
 
     expect((await screen.findByRole('alert')).textContent).toContain('offline');
+    expect(screen.getByText('No se pudo cargar la configuración')).toBeTruthy();
     expect(screen.queryByLabelText('Qué debe tener en cuenta el robot')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Reintentar carga' }));
     expect(await screen.findByLabelText('Qué debe tener en cuenta el robot')).toBeTruthy();
     expect(getDraft).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps a save failure heading distinct from an initial load failure', async () => {
+    const draftApi = api({
+      putDraft: vi.fn().mockRejectedValue(new DraftApiFailure('network', 'No se pudo guardar.')),
+    });
+    render(<RobotEditor api={draftApi} session={session()} />);
+
+    const instructions = await screen.findByLabelText('Qué debe tener en cuenta el robot');
+    fireEvent.change(instructions, { target: { value: 'Cambio que no se pudo guardar' } });
+
+    await waitFor(() => expect(screen.getByText('No se pudo guardar.')).toBeTruthy(), {
+      timeout: 2_000,
+    });
+    expect(screen.getByText('No se pudo confirmar el guardado')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Reintentar guardado' })).toBeTruthy();
   });
 
   it('blocks the editor when the persisted draft is incompatible instead of showing defaults', async () => {

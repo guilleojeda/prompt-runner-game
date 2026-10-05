@@ -231,9 +231,7 @@ describe('AttemptWorkspace', () => {
       await waitFor(() => expect(screen.queryByText('Cargando preferencia guardada…')).toBeNull());
       expect(scroll).not.toHaveBeenCalled();
       act(() => ref.current!.start());
-      expect(
-        screen.getByText('Guardando la configuración visible y admitiendo el intento…'),
-      ).toBeTruthy();
+      expect(screen.getByText('Guardando la configuración e iniciando el intento…')).toBeTruthy();
       expect(scroll).toHaveBeenCalledOnce();
       expect(scroll).toHaveBeenLastCalledWith({ block: 'start', behavior: 'smooth' });
 
@@ -251,6 +249,54 @@ describe('AttemptWorkspace', () => {
       if (previousScroll) HTMLElement.prototype.scrollIntoView = previousScroll;
       else Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
     }
+  });
+
+  it('points an invalid attempt with no skills to enabling a skill and trying again', async () => {
+    const createAttempt = vi
+      .fn()
+      .mockRejectedValue(
+        new AttemptApiFailure('conflict', 'Seleccioná al menos una habilidad', 409),
+      );
+    const attemptApi = api({ createAttempt });
+    const editor = {
+      current: {
+        captureSnapshot: vi.fn().mockResolvedValue({ version: 1, draft: createDefaultDraft() }),
+      },
+    } as unknown as { current: RobotEditorHandle | null };
+    const ref = { current: null } as { current: AttemptWorkspaceHandle | null };
+    render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+
+    await screen.findByRole('heading', { name: 'Historial' });
+    await waitFor(() => expect(screen.queryByText('Cargando preferencia guardada…')).toBeNull());
+    await act(async () => {
+      ref.current!.start();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(await screen.findByText('Seleccioná al menos una habilidad')).toBeTruthy();
+    expect(
+      screen.getByText('Habilitá al menos una habilidad y volvé a pulsar Probar.'),
+    ).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Reintentar consultas' })).toBeNull();
+  });
+
+  it('offers the quota and history refresh after a history query error', async () => {
+    const listAttempts = vi
+      .fn()
+      .mockRejectedValueOnce(new AttemptApiFailure('network', 'No se pudo cargar el historial.'))
+      .mockResolvedValue({ attempts: [] });
+    const attemptApi = api({ listAttempts });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+
+    expect(await screen.findByRole('button', { name: 'Reintentar consultas' })).toBeTruthy();
+    expect(
+      screen.getByText('Reintentar consultas vuelve a consultar cuota e historial.'),
+    ).toBeTruthy();
+    const callsBeforeRetry = listAttempts.mock.calls.length;
+    fireEvent.click(screen.getByRole('button', { name: 'Reintentar consultas' }));
+    await waitFor(() => expect(listAttempts.mock.calls.length).toBeGreaterThan(callsBeforeRetry));
   });
 
   it('opens decision inspection from history and from the visible result', async () => {
@@ -1211,7 +1257,8 @@ describe('AttemptWorkspace', () => {
     render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Fallar reproducción' }));
-    expect(await screen.findByText('Faltan símbolos')).toBeTruthy();
+    expect(await screen.findByText('No se pudo preparar la reproducción.')).toBeTruthy();
+    expect(screen.queryByText('Faltan símbolos')).toBeNull();
     expect(screen.queryByRole('heading', { name: 'Victoria' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Ver resultado' }));
     expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
@@ -1233,6 +1280,43 @@ describe('AttemptWorkspace', () => {
     await waitFor(() =>
       expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toBeNull(),
     );
+  });
+
+  it('points a failed presentation completion to its retry action', async () => {
+    const pending = {
+      ...summary('victory'),
+      turnsUsed: 8,
+      animationEnabled: true,
+      presentationComplete: false,
+    };
+    setCurrentRecovery(
+      'prompt-runner:attempt-recovery',
+      JSON.stringify({ sub: 'subject-a', attemptId: pending.id }),
+    );
+    const completePresentation = vi
+      .fn()
+      .mockRejectedValue(new AttemptApiFailure('network', 'No se pudo guardar el cierre.', 503));
+    const attemptApi = api({
+      getAttempt: vi.fn().mockResolvedValue(pending),
+      getReplay: vi.fn().mockResolvedValue(replayRecord()),
+      completePresentation,
+    });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Recursos listos' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Completar reproducción' }));
+
+    expect(
+      await screen.findByText(
+        'No se pudo guardar el cierre de la presentación: No se pudo guardar el cierre.',
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.getByText('Reintentar cierre de presentación vuelve a enviar el cierre.'),
+    ).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Reintentar cierre de presentación' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Reintentar consultas' })).toBeNull();
   });
 
   it('shows and unlocks the result while the automatic presentation mark is still pending', async () => {
@@ -1992,7 +2076,15 @@ describe('AttemptWorkspace', () => {
     const getAttemptRequest = vi
       .fn()
       .mockRejectedValue(new AttemptApiFailure('not_found', 'not found', 404));
-    const attemptApi = api({ createAttempt, getAttemptRequest });
+    const getQuota = vi.fn().mockResolvedValue({
+      day: '2026-09-21',
+      used: 0,
+      limit: 100,
+      remaining: 100,
+      resetsAt: '2026-09-22T03:00:00.000Z',
+    });
+    const listAttempts = vi.fn().mockResolvedValue({ attempts: [] });
+    const attemptApi = api({ createAttempt, getAttemptRequest, getQuota, listAttempts });
     const editor = {
       current: {
         captureSnapshot: vi.fn().mockResolvedValue({ version: 9, draft: createDefaultDraft() }),
@@ -2010,6 +2102,13 @@ describe('AttemptWorkspace', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Comprobar estado' }));
     expect(await screen.findByRole('button', { name: 'Reintentar consultas' })).toBeTruthy();
     expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toBeNull();
+    const quotaCallsBeforeRetry = getQuota.mock.calls.length;
+    const historyCallsBeforeRetry = listAttempts.mock.calls.length;
+    fireEvent.click(screen.getByRole('button', { name: 'Reintentar consultas' }));
+    await waitFor(() => {
+      expect(getQuota.mock.calls.length).toBeGreaterThan(quotaCallsBeforeRetry);
+      expect(listAttempts.mock.calls.length).toBeGreaterThan(historyCallsBeforeRetry);
+    });
 
     await act(async () => {
       (ref.current as AttemptWorkspaceHandle).start();
@@ -2151,7 +2250,7 @@ describe('AttemptWorkspace', () => {
     expect(historySection).not.toBeNull();
     expect(within(historySection as HTMLElement).getByText('Error de ejecución')).toBeTruthy();
     expect(
-      within(historySection as HTMLElement).queryByText('Admitido, esperando inicio'),
+      within(historySection as HTMLElement).queryByText('Intento recibido, esperando inicio'),
     ).toBeNull();
 
     fireEvent.click(
@@ -2176,7 +2275,7 @@ describe('AttemptWorkspace', () => {
     expect(within(result as HTMLElement).queryByText(/probar otra configuración/)).toBeNull();
     expect(within(result as HTMLElement).queryByText(/Causa registrada/)).toBeNull();
     expect(
-      within(historySection as HTMLElement).queryByText('Admitido, esperando inicio'),
+      within(historySection as HTMLElement).queryByText('Intento recibido, esperando inicio'),
     ).toBeNull();
   });
 
@@ -2227,7 +2326,7 @@ describe('AttemptWorkspace', () => {
       expect(within(historySection as HTMLElement).getByText('Error de ejecución')).toBeTruthy();
     });
     expect(
-      within(historySection as HTMLElement).queryByText('Admitido, esperando inicio'),
+      within(historySection as HTMLElement).queryByText('Intento recibido, esperando inicio'),
     ).toBeNull();
   });
 
@@ -2359,11 +2458,11 @@ describe('AttemptWorkspace', () => {
       .closest('section') as HTMLElement;
     const configurationRows = within(configuration).getAllByRole('listitem');
     expect(configurationRows[0]?.textContent).toContain('Avanzar');
-    expect(configurationRows[0]?.textContent).toContain('Enviada al agente');
-    expect(configurationRows[0]?.textContent).toContain('Descripción: omitida');
+    expect(configurationRows[0]?.textContent).toContain('enviada al agente');
+    expect(configurationRows[0]?.textContent).toContain('descripción: omitida');
     expect(configurationRows[1]?.textContent).toContain('Retroceder');
-    expect(configurationRows[1]?.textContent).toContain('No enviada al agente');
-    expect(configurationRows[1]?.textContent).toContain('Descripción: vacía');
+    expect(configurationRows[1]?.textContent).toContain('no enviada al agente');
+    expect(configurationRows[1]?.textContent).toContain('descripción: vacía');
     view.rerender(
       <AttemptWorkspace api={attemptApi} editor={editor} session={session()} authPaused />,
     );

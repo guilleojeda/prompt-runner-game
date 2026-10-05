@@ -50,6 +50,28 @@ type WorkspaceMode =
   | 'replay-error'
   | 'result';
 
+type WorkspaceErrorGuidance =
+  'check-status' | 'queries' | 'enable-skill' | 'replay' | 'presentation-completion';
+
+interface WorkspaceError {
+  readonly message: string;
+  readonly guidance?: WorkspaceErrorGuidance;
+}
+
+const workspaceError = (message: string, guidance?: WorkspaceErrorGuidance): WorkspaceError => ({
+  message,
+  guidance,
+});
+
+function admissionErrorGuidance(error: unknown): WorkspaceErrorGuidance | undefined {
+  if (!(error instanceof AttemptApiFailure)) return undefined;
+  if (error.message.trim().replace(/[.!?]+$/, '') === 'Seleccioná al menos una habilidad') {
+    return 'enable-skill';
+  }
+  if (error.code === 'quota_exceeded') return 'queries';
+  return undefined;
+}
+
 interface FrozenAdmission {
   readonly requestKey: string;
   readonly expectedVersion: number;
@@ -173,7 +195,7 @@ function technicalReasonLabel(reason: string): string | null {
 function statusLabel(status: AttemptStatus): string {
   switch (status) {
     case 'pending':
-      return 'Admitido, esperando inicio';
+      return 'Intento recibido, esperando inicio';
     case 'running':
       return 'Preparando intento';
     case 'victory':
@@ -837,7 +859,7 @@ function ConfigurationPreview({
                   return (
                     <li key={skill.id}>
                       <strong>{entry?.name ?? 'Habilidad no disponible'}</strong>,{' '}
-                      {skill.enabled ? 'Enviada al agente' : 'No enviada al agente'}, Descripción:{' '}
+                      {skill.enabled ? 'enviada al agente' : 'no enviada al agente'}, descripción:{' '}
                       {description}
                     </li>
                   );
@@ -883,7 +905,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
   ) {
     const [mode, setMode] = useState<WorkspaceMode>('loading');
     const [attempt, setAttempt] = useState<AttemptSummary | null>(null);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<WorkspaceError | null>(null);
     const [quota, setQuota] = useState<QuotaSummary | null>(null);
     const [history, setHistory] = useState<readonly AttemptSummary[]>([]);
     const [historyCursor, setHistoryCursor] = useState<string | undefined>();
@@ -1227,7 +1249,12 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         setCompletionBusy(false);
         if (kind === 'automatic' && !target.recordComplete) {
           setMode('replay-error');
-          setError('El registro está incompleto y no se puede reproducir sin omitir acciones.');
+          setError(
+            workspaceError(
+              'El registro está incompleto y no se puede reproducir sin omitir acciones.',
+              'replay',
+            ),
+          );
           return;
         }
         setMode('preparing-replay');
@@ -1252,9 +1279,12 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           if (generationRef.current !== generation || replayEpochRef.current !== epoch) return;
           if (isAuthenticationFailure(replayFailure)) onAuthRequired?.();
           setError(
-            replayFailure instanceof AttemptApiFailure
-              ? replayFailure.message
-              : 'No se pudo cargar una reproducción completa. El resultado original sigue guardado.',
+            workspaceError(
+              replayFailure instanceof AttemptApiFailure
+                ? replayFailure.message
+                : 'No se pudo cargar una reproducción completa. El resultado original sigue guardado.',
+              'replay',
+            ),
           );
           setMode('replay-error');
         }
@@ -1363,7 +1393,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         } catch (historyError) {
           if (!signal?.aborted && generationRef.current === operationGeneration) {
             if (isAuthenticationFailure(historyError)) onAuthRequired?.();
-            setError(attemptErrorMessage(historyError));
+            setError(workspaceError(attemptErrorMessage(historyError), 'queries'));
           }
         } finally {
           if (!signal?.aborted && generationRef.current === operationGeneration) {
@@ -1385,7 +1415,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         } catch (quotaError) {
           if (!signal?.aborted && generationRef.current === operationGeneration) {
             if (isAuthenticationFailure(quotaError)) onAuthRequired?.();
-            setError(attemptErrorMessage(quotaError));
+            setError(workspaceError(attemptErrorMessage(quotaError), 'queries'));
           }
         }
       },
@@ -1434,9 +1464,14 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           }
           if (isTransientAdmissionFailure(retryError)) {
             setError(
-              retryError instanceof AttemptApiFailure && retryError.ambiguous
-                ? 'No se confirmó la admisión. Podés comprobarla con la misma clave.'
-                : attemptErrorMessage(retryError),
+              workspaceError(
+                retryError instanceof AttemptApiFailure && retryError.ambiguous
+                  ? 'No pudimos confirmar si comenzó el intento. Pulsá Comprobar estado para consultar el mismo intento.'
+                  : attemptErrorMessage(retryError),
+                retryError instanceof AttemptApiFailure && retryError.ambiguous
+                  ? 'check-status'
+                  : admissionErrorGuidance(retryError),
+              ),
             );
             setMode('unknown');
             if (isAuthenticationFailure(retryError)) onAuthRequired?.();
@@ -1446,7 +1481,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           frozenRef.current = null;
           startLockRef.current = false;
           setMode('idle');
-          setError(attemptErrorMessage(retryError));
+          setError(
+            workspaceError(attemptErrorMessage(retryError), admissionErrorGuidance(retryError)),
+          );
           return true;
         }
       },
@@ -1483,14 +1520,17 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             }
             if (reference.requestKey && !reference.attemptId) {
               setError(
-                'No se confirmó la admisión. Conservamos la clave, pero falta el snapshot exacto para reintentar.',
+                workspaceError(
+                  'No pudimos confirmar si comenzó el intento. Pulsá Comprobar estado para consultar el mismo intento.',
+                  'check-status',
+                ),
               );
               setMode('unknown');
               return true;
             }
             return false;
           }
-          setError(attemptErrorMessage(recoveryError));
+          setError(workspaceError(attemptErrorMessage(recoveryError), 'check-status'));
           setMode('unknown');
           return true;
         }
@@ -1529,7 +1569,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         } catch (initialError) {
           if (controller.signal.aborted || generationRef.current !== generation) return;
           if (isAuthenticationFailure(initialError)) onAuthRequired?.();
-          setError(attemptErrorMessage(initialError));
+          setError(workspaceError(attemptErrorMessage(initialError)));
           setMode('unknown');
         }
       })();
@@ -1582,7 +1622,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
               return;
             }
             if (isAuthenticationFailure(startError)) onAuthRequired?.();
-            setError(attemptErrorMessage(startError));
+            setError(workspaceError(attemptErrorMessage(startError), 'check-status'));
             setMode('unknown');
             return;
           }
@@ -1640,7 +1680,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         snapshot = await editor.current?.captureSnapshot();
       } catch (captureError) {
         snapshot = null;
-        setError(attemptErrorMessage(captureError));
+        setError(workspaceError(attemptErrorMessage(captureError)));
       }
       if (!snapshot) {
         clearAttemptRecovery(sessionSub);
@@ -1649,7 +1689,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         setError(
           (current) =>
             current ??
-            'No se pudo confirmar la configuración visible. Revisá el guardado y reintentá.',
+            workspaceError(
+              'No se pudo confirmar la configuración visible. Revisá el guardado y reintentá.',
+            ),
         );
         return;
       }
@@ -1694,7 +1736,12 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           return;
         }
         if (admissionError instanceof AttemptApiFailure && admissionError.ambiguous) {
-          setError('No se confirmó la admisión. Podés comprobarla con la misma clave.');
+          setError(
+            workspaceError(
+              'No pudimos confirmar si comenzó el intento. Pulsá Comprobar estado para consultar el mismo intento.',
+              'check-status',
+            ),
+          );
           setMode('unknown');
           return;
         }
@@ -1702,7 +1749,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           admissionError instanceof AttemptApiFailure &&
           admissionError.code === 'authentication'
         ) {
-          setError(admissionError.message);
+          setError(workspaceError(admissionError.message, 'check-status'));
           setMode('unknown');
           onAuthRequired?.();
           return;
@@ -1711,7 +1758,12 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         frozenRef.current = null;
         setMode('idle');
         startLockRef.current = false;
-        setError(attemptErrorMessage(admissionError));
+        setError(
+          workspaceError(
+            attemptErrorMessage(admissionError),
+            admissionErrorGuidance(admissionError),
+          ),
+        );
         if (isAuthenticationFailure(admissionError)) onAuthRequired?.();
       }
     }, [
@@ -1756,7 +1808,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           : {}),
       };
       if (!reference.attemptId && !reference.requestKey) {
-        setError('No hay una referencia de recuperación para este intento.');
+        setError(workspaceError('No hay una referencia de recuperación para este intento.'));
         return;
       }
       try {
@@ -1784,13 +1836,18 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           return;
         }
         if (!(lookupError instanceof AttemptApiFailure && lookupError.code === 'not_found')) {
-          setError(attemptErrorMessage(lookupError));
+          setError(workspaceError(attemptErrorMessage(lookupError), 'check-status'));
           if (isAuthenticationFailure(lookupError)) onAuthRequired?.();
           return;
         }
       }
       if (!frozen || !reference.requestKey || reference.attemptId) {
-        setError('Todavía no se puede confirmar este intento. Volvé a consultar más tarde.');
+        setError(
+          workspaceError(
+            'Todavía no se puede confirmar este intento. Volvé a consultar más tarde.',
+            'check-status',
+          ),
+        );
         return;
       }
       await retryFrozenAdmission(frozen, {
@@ -1825,7 +1882,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         }
         if (isAuthenticationFailure(cancelError)) onAuthRequired?.();
         setMode('unknown');
-        setError(attemptErrorMessage(cancelError));
+        setError(workspaceError(attemptErrorMessage(cancelError), 'check-status'));
       } finally {
         if (
           generationRef.current === operationGeneration &&
@@ -1865,7 +1922,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           }
           setMode(previousMode);
           if (isAuthenticationFailure(openError)) onAuthRequired?.();
-          setError(attemptErrorMessage(openError));
+          setError(workspaceError(attemptErrorMessage(openError)));
         }
       },
       [api, applyAttempt, busy, clearConfiguration, clearDecisionInspector, onAuthRequired],
@@ -1995,14 +2052,20 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         if (busy || configurationApplyingRef.current) return;
         const target = history.find((item) => item.id === id);
         if (!target) {
-          setError('No se encontró ese intento en el historial. Volvé a cargar las consultas.');
+          setError(
+            workspaceError(
+              'No se encontró ese intento en el historial. Volvé a cargar las consultas.',
+            ),
+          );
           return;
         }
         if (!isTerminal(target.status) || !target.presentationComplete) {
           setError(
-            !isTerminal(target.status)
-              ? 'Este intento todavía no está cerrado para inspeccionar.'
-              : 'Primero hay que terminar la presentación para inspeccionar este intento.',
+            workspaceError(
+              !isTerminal(target.status)
+                ? 'Este intento todavía no está cerrado para inspeccionar.'
+                : 'Primero hay que terminar la presentación para inspeccionar este intento.',
+            ),
           );
           return;
         }
@@ -2037,7 +2100,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           if (!isTerminal(next.status) || !next.recordComplete) {
             attemptRef.current = next;
             setAttempt(next);
-            setError('Este intento todavía no tiene un registro cerrado para reproducir.');
+            setError(
+              workspaceError('Este intento todavía no tiene un registro cerrado para reproducir.'),
+            );
             setMode(
               isTerminal(next.status)
                 ? 'result'
@@ -2065,7 +2130,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             return;
           }
           if (isAuthenticationFailure(replayOpenError)) onAuthRequired?.();
-          setError(attemptErrorMessage(replayOpenError));
+          setError(workspaceError(attemptErrorMessage(replayOpenError)));
           setMode('result');
         }
       },
@@ -2136,7 +2201,10 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             }
             if (isAuthenticationFailure(completionError)) onAuthRequired?.();
             setError(
-              `No se pudo guardar el cierre de la presentación: ${attemptErrorMessage(completionError)}`,
+              workspaceError(
+                `No se pudo guardar el cierre de la presentación: ${attemptErrorMessage(completionError)}`,
+                'presentation-completion',
+              ),
             );
           })
           .finally(() => {
@@ -2173,7 +2241,12 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
               return;
             }
             if (refreshed.id !== id) {
-              setError('El intento consultado no coincide con el resultado abierto.');
+              setError(
+                workspaceError(
+                  'El intento consultado no coincide con el resultado abierto.',
+                  'replay',
+                ),
+              );
               setMode('replay-error');
               return;
             }
@@ -2186,7 +2259,10 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             }
             if (!refreshed.recordComplete) {
               setError(
-                'El registro sigue incompleto. Podés volver a intentarlo o ver el resultado guardado.',
+                workspaceError(
+                  'El registro sigue incompleto. Podés volver a intentarlo o ver el resultado guardado.',
+                  'replay',
+                ),
               );
               setMode('replay-error');
               return;
@@ -2206,7 +2282,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
               return;
             }
             if (isAuthenticationFailure(refreshError)) onAuthRequired?.();
-            setError(attemptErrorMessage(refreshError));
+            setError(workspaceError(attemptErrorMessage(refreshError), 'replay'));
             setMode('replay-error');
           });
         return;
@@ -2262,17 +2338,12 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       completePresentationInBackground(current);
     }, [completePresentationInBackground, playbackKind, replayAttemptId]);
 
-    const onReplayError = useCallback(
-      (replayFailure: Error): void => {
-        if (!replayAttemptId || attemptRef.current?.id !== replayAttemptId) return;
-        setReplayRecord(null);
-        setError(
-          replayFailure.message || 'No se pudieron preparar todos los recursos de animación.',
-        );
-        setMode('replay-error');
-      },
-      [replayAttemptId],
-    );
+    const onReplayError = useCallback((): void => {
+      if (!replayAttemptId || attemptRef.current?.id !== replayAttemptId) return;
+      setReplayRecord(null);
+      setError(workspaceError('No se pudo preparar la reproducción.', 'replay'));
+      setMode('replay-error');
+    }, [replayAttemptId]);
 
     const loadMore = useCallback(async (): Promise<void> => {
       if (!historyCursor || loadingHistory || busy) return;
@@ -2286,7 +2357,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       } catch (historyError) {
         if (generationRef.current !== operationGeneration) return;
         if (isAuthenticationFailure(historyError)) onAuthRequired?.();
-        setError(attemptErrorMessage(historyError));
+        setError(workspaceError(attemptErrorMessage(historyError), 'queries'));
       } finally {
         if (generationRef.current === operationGeneration) setLoadingHistory(false);
       }
@@ -2316,7 +2387,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         } catch (pollError) {
           if (controller.signal.aborted || operationEpochRef.current !== operationEpoch) return;
           setMode('unknown');
-          setError(attemptErrorMessage(pollError));
+          setError(workspaceError(attemptErrorMessage(pollError), 'check-status'));
           if (isAuthenticationFailure(pollError)) onAuthRequired?.();
         }
       };
@@ -2405,6 +2476,16 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       </div>
     );
 
+    const currentErrorGuidance: WorkspaceErrorGuidance | undefined =
+      error?.guidance ??
+      (mode === 'unknown'
+        ? 'check-status'
+        : mode === 'replay-error'
+          ? playbackReachedEnd
+            ? 'presentation-completion'
+            : 'replay'
+          : undefined);
+
     return (
       <section className="attempt-workspace" aria-labelledby="attempt-workspace-title">
         <div className="attempt-heading">
@@ -2420,22 +2501,27 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         <div ref={presentationRef}>
           {error && (
             <div className="attempt-error" role="alert">
-              <p>{error}</p>
+              <p>{error.message}</p>
               {(mode === 'unknown' ||
                 mode === 'replay-error' ||
                 mode === 'idle' ||
-                mode === 'result') && (
-                <p className="attempt-error-guidance">
-                  <strong>Acción disponible:</strong>{' '}
-                  {mode === 'unknown'
-                    ? 'Comprobar estado conserva el mismo intento.'
-                    : mode === 'replay-error'
-                      ? playbackReachedEnd
-                        ? 'Reintentar cierre vuelve a enviar el cierre de la presentación.'
-                        : 'Reintentar reproducción vuelve a consultar el registro; Ver resultado muestra el cierre guardado.'
-                      : 'Reintentar consultas vuelve a consultar cuota e historial.'}
-                </p>
-              )}
+                mode === 'result') &&
+                currentErrorGuidance && (
+                  <p className="attempt-error-guidance">
+                    <strong>Acción disponible:</strong>{' '}
+                    {currentErrorGuidance === 'check-status'
+                      ? 'Comprobar estado conserva el mismo intento.'
+                      : currentErrorGuidance === 'replay'
+                        ? 'Reintentar reproducción vuelve a consultar el registro; Ver resultado muestra el cierre guardado.'
+                        : currentErrorGuidance === 'presentation-completion'
+                          ? mode === 'replay-error'
+                            ? 'Reintentar cierre vuelve a enviar el cierre de la presentación.'
+                            : 'Reintentar cierre de presentación vuelve a enviar el cierre.'
+                          : currentErrorGuidance === 'enable-skill'
+                            ? 'Habilitá al menos una habilidad y volvé a pulsar Probar.'
+                            : 'Reintentar consultas vuelve a consultar cuota e historial.'}
+                  </p>
+                )}
               {mode === 'unknown' && (
                 <button
                   className="secondary-button"
@@ -2464,7 +2550,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
                   </button>
                 </>
               )}
-              {(mode === 'idle' || mode === 'result') && (
+              {(mode === 'idle' || mode === 'result') && currentErrorGuidance === 'queries' && (
                 <button
                   className="secondary-button"
                   type="button"
@@ -2506,7 +2592,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
 
           {mode === 'admitting' && (
             <p className="attempt-message" role="status">
-              Guardando la configuración visible y admitiendo el intento…
+              Guardando la configuración e iniciando el intento…
             </p>
           )}
           {mode === 'opening' && (

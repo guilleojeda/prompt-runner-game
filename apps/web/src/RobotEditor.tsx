@@ -85,10 +85,10 @@ const DRAFT_SIZE_WARNING_THRESHOLD = Math.ceil(MAX_DRAFT_BYTES * 0.9);
 function formatCharacterCount(value: string, maximum: number): string {
   const count = countCharacters(value);
   const formatted = `${count.toLocaleString('es-AR')} / ${maximum.toLocaleString('es-AR')} caracteres`;
-  return count > maximum ? `${formatted} · supera el máximo` : formatted;
+  return count > maximum ? `${formatted}, supera el máximo` : formatted;
 }
 
-function statusLabel(status: EditorStatus): string {
+function statusLabel(status: EditorStatus, isLoadError: boolean): string {
   switch (status) {
     case 'loading':
       return 'Cargando configuración…';
@@ -101,7 +101,9 @@ function statusLabel(status: EditorStatus): string {
     case 'conflict':
       return 'Conflicto de edición';
     case 'error':
-      return 'No se pudo confirmar el guardado';
+      return isLoadError
+        ? 'No se pudo cargar la configuración'
+        : 'No se pudo confirmar el guardado';
   }
 }
 
@@ -672,6 +674,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
   const byteCount = draft ? draftByteLength(draft) : 0;
   const limitMessage = draft ? draftLimitMessage(draft) : null;
   const shouldWarnAboutDraftSize = byteCount >= DRAFT_SIZE_WARNING_THRESHOLD;
+  const isLoadError = status === 'error' && draft === null && confirmedRef.current === null;
   return (
     <section
       className="robot-editor"
@@ -737,7 +740,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
           </details>
         </div>
         <span className={`save-state save-state-${status}`} role="status" aria-live="polite">
-          {statusLabel(status)}
+          {statusLabel(status, isLoadError)}
         </span>
       </div>
 
