@@ -83,6 +83,13 @@ function isSecureOrLocalhost(url: URL): boolean {
   return url.protocol === 'https:' || url.href === 'http://localhost:5173/';
 }
 
+function isSecureOriginOrLocalhost(url: URL): boolean {
+  return (
+    (url.protocol === 'https:' && url.username === '' && url.password === '') ||
+    (url.origin === 'http://localhost:5173' && url.username === '' && url.password === '')
+  );
+}
+
 /** Validate the public contract before any identifier can reach the OIDC library. */
 export function validateAuthConfig(value: unknown): AuthConfig {
   if (!isRecord(value)) {
@@ -120,11 +127,10 @@ export function validateAuthConfig(value: unknown): AuthConfig {
   if (
     !redirectUri ||
     !logoutUri ||
-    !isSecureOrLocalhost(redirectUri) ||
-    !isSecureOrLocalhost(logoutUri) ||
-    !config.redirectUri.endsWith('/') ||
+    !isSecureOriginOrLocalhost(redirectUri) ||
+    !isSecureOriginOrLocalhost(logoutUri) ||
     !config.logoutUri.endsWith('/') ||
-    redirectUri.pathname !== '/' ||
+    redirectUri.pathname !== '/jugar' ||
     logoutUri.pathname !== '/' ||
     redirectUri.origin !== logoutUri.origin ||
     redirectUri.search ||

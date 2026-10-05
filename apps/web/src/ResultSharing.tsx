@@ -19,7 +19,7 @@ function SharePanel({ result, onClose }: { result: ShareResult; onClose: () => v
   const [notice, setNotice] = useState('');
   const [sharing, setSharing] = useState(false);
   const [retry, setRetry] = useState(0);
-  const url = new URL('/bienvenida.html', window.location.origin).href;
+  const url = new URL('/', window.location.origin).href;
   const text = shareText(result, url);
 
   useEffect(() => {

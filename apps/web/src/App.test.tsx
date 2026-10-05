@@ -46,8 +46,8 @@ const config: AuthConfig = {
   issuer: 'https://cognito-idp.us-east-1.amazonaws.com/us-east-1_test',
   clientId: 'client-public',
   domain: 'https://prompt-runner.auth.us-east-1.amazoncognito.com',
-  redirectUri: 'https://d1ilpq1n58tzqo.cloudfront.net/',
-  logoutUri: 'https://d1ilpq1n58tzqo.cloudfront.net/',
+  redirectUri: 'https://robotrunner.guilleojeda.com/jugar',
+  logoutUri: 'https://robotrunner.guilleojeda.com/',
   apiBaseUrl: 'https://api.example.test/',
   apiScope: 'prompt-runner/robot',
 };

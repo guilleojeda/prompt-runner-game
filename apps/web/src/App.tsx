@@ -632,7 +632,7 @@ export function App({
     <main className={`shell${session ? ' shell-authenticated' : ''}`}>
       <header>
         {!attemptBusy && (
-          <a className="game-home-link" href="/bienvenida.html">
+          <a className="game-home-link" href="/">
             Acerca de Robot Runner
           </a>
         )}
@@ -844,7 +844,7 @@ export function App({
       {!attemptBusy && (
         <footer className="game-footer">
           <span>Guille Ojeda</span>
-          <a href="/privacidad/index.html">Privacidad</a>
+          <a href="/privacidad">Privacidad</a>
           <a href="mailto:contacto@guilleojeda.com">Contacto</a>
         </footer>
       )}

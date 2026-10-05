@@ -14,8 +14,8 @@ const config = {
   issuer: 'https://cognito-idp.us-east-1.amazonaws.com/us-east-1_test',
   clientId: 'client-public',
   domain: 'https://prompt-runner.auth.us-east-1.amazoncognito.com',
-  redirectUri: 'https://d1ilpq1n58tzqo.cloudfront.net/',
-  logoutUri: 'https://d1ilpq1n58tzqo.cloudfront.net/',
+  redirectUri: 'https://robotrunner.guilleojeda.com/jugar',
+  logoutUri: 'https://robotrunner.guilleojeda.com/',
   apiBaseUrl: 'https://api.example.test/',
   apiScope: 'prompt-runner/robot',
 };
@@ -171,6 +171,26 @@ describe('auth configuration and Cognito boundaries', () => {
     expect(validateAuthConfig(deployedConfig).apiBaseUrl).toBe(deployedConfig.apiBaseUrl);
   });
 
+  it('accepts the canonical game callback and root logout URLs', () => {
+    expect(validateAuthConfig(config)).toMatchObject({
+      redirectUri: 'https://robotrunner.guilleojeda.com/jugar',
+      logoutUri: 'https://robotrunner.guilleojeda.com/',
+    });
+  });
+
+  it('accepts the local game callback and root logout URLs', () => {
+    expect(
+      validateAuthConfig({
+        ...config,
+        redirectUri: 'http://localhost:5173/jugar',
+        logoutUri: 'http://localhost:5173/',
+      }),
+    ).toMatchObject({
+      redirectUri: 'http://localhost:5173/jugar',
+      logoutUri: 'http://localhost:5173/',
+    });
+  });
+
   beforeEach(() => {
     window.sessionStorage.clear();
     vi.restoreAllMocks();
@@ -184,6 +204,42 @@ describe('auth configuration and Cognito boundaries', () => {
     expect(() => validateAuthConfig({ ...config, domain: `${config.domain}/` })).toThrow(
       'terminar en /',
     );
+    expect(() =>
+      validateAuthConfig({ ...config, redirectUri: 'https://robotrunner.guilleojeda.com/' }),
+    ).toThrow('URL de retorno');
+    expect(() =>
+      validateAuthConfig({ ...config, redirectUri: 'https://robotrunner.guilleojeda.com/jugar/' }),
+    ).toThrow('URL de retorno');
+    expect(() =>
+      validateAuthConfig({
+        ...config,
+        redirectUri: 'https://robotrunner.guilleojeda.com/jugar?next=/',
+      }),
+    ).toThrow('URL de retorno');
+    expect(() =>
+      validateAuthConfig({
+        ...config,
+        redirectUri: 'https://robotrunner.guilleojeda.com/jugar#fragment',
+      }),
+    ).toThrow('URL de retorno');
+    expect(() =>
+      validateAuthConfig({ ...config, logoutUri: 'https://robotrunner.guilleojeda.com/?next=/' }),
+    ).toThrow('URL de retorno');
+    expect(() =>
+      validateAuthConfig({ ...config, logoutUri: 'https://robotrunner.guilleojeda.com/#fragment' }),
+    ).toThrow('URL de retorno');
+    expect(() =>
+      validateAuthConfig({ ...config, redirectUri: 'https://other.example.test/jugar' }),
+    ).toThrow('URL de retorno');
+    expect(() =>
+      validateAuthConfig({
+        ...config,
+        redirectUri: 'https://user@robotrunner.guilleojeda.com/jugar',
+      }),
+    ).toThrow('URL de retorno');
+    expect(() =>
+      validateAuthConfig({ ...config, apiBaseUrl: 'http://localhost:5173/api' }),
+    ).toThrow('URL de la API');
     expect(() => validateAuthConfig({ ...config, redirectUri: 'http://localhost:3000/' })).toThrow(
       'URL de retorno',
     );

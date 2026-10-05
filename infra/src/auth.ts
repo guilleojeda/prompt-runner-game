@@ -41,7 +41,10 @@ export function createAuthenticationResources(
   props: AuthenticationResourcesProps,
 ): AuthenticationResources {
   const localWebOrigin = props.localWebOrigin ?? LOCAL_CALLBACK_ORIGIN;
-  const callbackUrls = [props.productionWebOrigin, localWebOrigin];
+  const productionWebOrigin = props.productionWebOrigin.replace(/\/$/, '');
+  const localOrigin = localWebOrigin.replace(/\/$/, '');
+  const callbackUrls = [`${productionWebOrigin}/jugar`, `${localOrigin}/jugar`];
+  const logoutUrls = [`${productionWebOrigin}/`, `${localOrigin}/`];
 
   const userPool = new cognito.CfnUserPool(scope, 'UserPool', {
     userPoolName: 'prompt-runner-game-users',
@@ -155,7 +158,7 @@ export function createAuthenticationResources(
     allowedOAuthFlows: ['code'],
     allowedOAuthScopes: ['openid', 'email', ROBOT_SCOPE],
     callbackUrLs: callbackUrls,
-    logoutUrLs: callbackUrls,
+    logoutUrLs: logoutUrls,
     supportedIdentityProviders: ['COGNITO'],
     readAttributes: ['email', 'email_verified'],
     writeAttributes: ['email'],
@@ -193,8 +196,8 @@ export function createAuthenticationResources(
     issuer,
     clientId: userPoolClient.ref,
     domain,
-    redirectUri: props.productionWebOrigin,
-    logoutUri: props.productionWebOrigin,
+    redirectUri: `${productionWebOrigin}/jugar`,
+    logoutUri: `${productionWebOrigin}/`,
   };
 
   return { userPool, userPoolClient, resourceServer, userPoolDomain, managedLoginBranding, config };
