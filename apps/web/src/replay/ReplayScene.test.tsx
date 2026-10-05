@@ -373,11 +373,38 @@ describe('ReplayScene', () => {
       />,
     );
 
-    expect((await screen.findByRole('alert')).textContent).toContain('catálogo gráfico actual');
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'No se pudo preparar la reproducción.',
+    );
     expect(error).toHaveBeenCalledOnce();
+    expect(error.mock.calls[0]?.[0].cause.message).toContain('Faltan símbolos');
     expect(ready).not.toHaveBeenCalled();
     expect(complete).not.toHaveBeenCalled();
     expect(pendingFrames.size).toBe(0);
+  });
+
+  it('maps a browser artwork loading error to a safe Spanish message', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockRejectedValue(new TypeError('Failed to fetch'));
+    vi.stubGlobal('fetch', fetchMock);
+    const error = vi.fn();
+    render(
+      <ReplayScene
+        record={doorVictoryRecord()}
+        onReady={vi.fn()}
+        onComplete={vi.fn()}
+        onError={error}
+      />,
+    );
+
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'No se pudo preparar la reproducción.',
+    );
+    expect(error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'No se pudo preparar la reproducción.',
+        cause: expect.objectContaining({ message: 'Failed to fetch' }),
+      }),
+    );
   });
 
   it.each(['right', 'left'] as const)(

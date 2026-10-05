@@ -107,7 +107,7 @@ const resolutionLabel = (resolution: unknown): string | null => {
   if (typeof resolution.outcome === 'string') {
     const outcome: Record<string, string> = {
       moved: 'se movió',
-      no_op: 'no produjo cambios',
+      no_op: 'el robot permaneció en la misma casilla',
       fall: 'terminó en una caída',
       collision: 'terminó en una colisión',
       picked_up: 'recogió un objeto',
@@ -119,7 +119,7 @@ const resolutionLabel = (resolution: unknown): string | null => {
       moved: 'movimiento válido',
       left_boundary: 'límite izquierdo',
       right_boundary: 'límite derecho',
-      swim_no_effect: 'nadar no produce efecto',
+      swim_no_effect: 'nadar mantuvo al robot en la misma casilla',
       wait: 'espera',
       no_object_here: 'no había un objeto en la casilla',
       door_locked: 'la puerta estaba cerrada',

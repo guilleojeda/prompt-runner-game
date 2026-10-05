@@ -40,6 +40,13 @@ export class AuthFailure extends Error {
   }
 }
 
+const INVALID_ACCESS_CONFIGURATION_MESSAGE =
+  'No se pudo preparar el acceso. Volvé a cargar la página o contactá al soporte.';
+const INVALID_GAME_CONFIGURATION_MESSAGE =
+  'No se pudo preparar la conexión con el juego. Volvé a cargar la página o contactá al soporte.';
+const BLOCKED_STORAGE_MESSAGE =
+  'Este navegador no permite guardar los datos temporales del acceso. Probá otra ventana o revisá las restricciones de almacenamiento del navegador.';
+
 export interface AuthClient {
   initialize(url?: string): Promise<AuthSession | null>;
   beginLogin(): Promise<void>;
@@ -93,12 +100,15 @@ function isSecureOriginOrLocalhost(url: URL): boolean {
 /** Validate the public contract before any identifier can reach the OIDC library. */
 export function validateAuthConfig(value: unknown): AuthConfig {
   if (!isRecord(value)) {
-    throw new AuthFailure('configuration', 'La configuración de acceso no es válida.');
+    throw new AuthFailure('configuration', INVALID_ACCESS_CONFIGURATION_MESSAGE);
   }
 
   for (const key of CONFIG_KEYS) {
     if (typeof value[key] !== 'string' || value[key].trim() === '') {
-      throw new AuthFailure('configuration', 'La configuración de acceso está incompleta.');
+      throw new AuthFailure(
+        'configuration',
+        'Falta información para preparar el acceso. Volvé a cargar la página o contactá al soporte.',
+      );
     }
   }
 
@@ -110,7 +120,7 @@ export function validateAuthConfig(value: unknown): AuthConfig {
   const apiBaseUrl = isAbsoluteUrl(config.apiBaseUrl);
 
   if (!issuer || issuer.protocol !== 'https:' || issuer.search || issuer.hash) {
-    throw new AuthFailure('configuration', 'El emisor de acceso no es una URL HTTPS válida.');
+    throw new AuthFailure('configuration', INVALID_ACCESS_CONFIGURATION_MESSAGE);
   }
   if (
     !domain ||
@@ -119,10 +129,10 @@ export function validateAuthConfig(value: unknown): AuthConfig {
     domain.search ||
     domain.hash
   ) {
-    throw new AuthFailure('configuration', 'El dominio de acceso no es válido.');
+    throw new AuthFailure('configuration', INVALID_ACCESS_CONFIGURATION_MESSAGE);
   }
   if (config.domain.endsWith('/')) {
-    throw new AuthFailure('configuration', 'El dominio de acceso no debe terminar en /.');
+    throw new AuthFailure('configuration', INVALID_ACCESS_CONFIGURATION_MESSAGE);
   }
   if (
     !redirectUri ||
@@ -138,13 +148,16 @@ export function validateAuthConfig(value: unknown): AuthConfig {
     logoutUri.search ||
     logoutUri.hash
   ) {
-    throw new AuthFailure('configuration', 'La URL de retorno de acceso no es válida.');
+    throw new AuthFailure(
+      'configuration',
+      'No se pudo preparar el regreso al juego. Volvé a cargar la página o contactá al soporte.',
+    );
   }
   if (!apiBaseUrl || !isSecureOrLocalhost(apiBaseUrl) || apiBaseUrl.search || apiBaseUrl.hash) {
-    throw new AuthFailure('configuration', 'La URL de la API no es válida.');
+    throw new AuthFailure('configuration', INVALID_GAME_CONFIGURATION_MESSAGE);
   }
   if (!/^[-a-zA-Z0-9_./]+$/u.test(config.apiScope) || config.apiScope.includes(' ')) {
-    throw new AuthFailure('configuration', 'El alcance de la API no es válido.');
+    throw new AuthFailure('configuration', INVALID_GAME_CONFIGURATION_MESSAGE);
   }
 
   return {
@@ -166,22 +179,29 @@ export async function loadAuthConfig(
   try {
     response = await bindFetch(fetchImpl)(endpoint, { headers: { Accept: 'application/json' } });
   } catch (error) {
-    throw new AuthFailure('configuration', 'No se pudo cargar la configuración de acceso.', {
-      cause: error,
-    });
+    throw new AuthFailure(
+      'configuration',
+      'No se pudo cargar la configuración de acceso. Volvé a cargar la página o intentá de nuevo.',
+      { cause: error },
+    );
   }
 
   if (!response.ok) {
-    throw new AuthFailure('configuration', 'La configuración de acceso no está disponible.');
+    throw new AuthFailure(
+      'configuration',
+      'La configuración de acceso no está disponible. Volvé a cargar la página o intentá de nuevo.',
+    );
   }
 
   let body: unknown;
   try {
     body = await response.json();
   } catch (error) {
-    throw new AuthFailure('configuration', 'La configuración de acceso no contiene JSON válido.', {
-      cause: error,
-    });
+    throw new AuthFailure(
+      'configuration',
+      'No se pudo leer la configuración de acceso. Volvé a cargar la página o contactá al soporte.',
+      { cause: error },
+    );
   }
 
   return validateAuthConfig(body);
@@ -193,10 +213,13 @@ function validVerifiedEmail(value: unknown): value is true | 'true' {
 
 function identityFromClaims(claims: unknown, expectedSub?: string): AuthIdentity {
   if (!isRecord(claims) || typeof claims.sub !== 'string' || claims.sub.trim() === '') {
-    throw new AuthFailure('identity', 'Cognito no devolvió una identidad válida.');
+    throw new AuthFailure(
+      'identity',
+      'No se pudo validar la identidad de tu cuenta. Volvé a ingresar.',
+    );
   }
   if (expectedSub !== undefined && claims.sub !== expectedSub) {
-    throw new AuthFailure('identity', 'La identidad de la sesión no coincide.');
+    throw new AuthFailure('identity', 'La sesión no coincide con tu cuenta. Volvé a ingresar.');
   }
   if (typeof claims.email !== 'string' || claims.email.trim() === '') {
     throw new AuthFailure('identity', 'La cuenta no tiene un email válido.');
@@ -308,10 +331,7 @@ export class CognitoAuthClient implements AuthClient {
     const storage = options.storage ?? defaultStorage();
     this.storage = storage;
     if (!options.userManager && !storage) {
-      throw new AuthFailure(
-        'configuration',
-        'Este navegador no permite guardar la sesión de acceso. Habilitá sessionStorage e intentá de nuevo.',
-      );
+      throw new AuthFailure('configuration', BLOCKED_STORAGE_MESSAGE);
     }
     this.manager =
       options.userManager ??
@@ -337,10 +357,7 @@ export class CognitoAuthClient implements AuthClient {
   public async beginLogin(): Promise<void> {
     this.storage?.removeItem(LOGOUT_WARNING_STORAGE_KEY);
     if (!this.storage) {
-      throw new AuthFailure(
-        'configuration',
-        'Este navegador no permite guardar la transacción de acceso. Habilitá sessionStorage e intentá de nuevo.',
-      );
+      throw new AuthFailure('configuration', BLOCKED_STORAGE_MESSAGE);
     }
     const nonce = createNonce();
     this.storage.setItem(NONCE_STORAGE_KEY, nonce);
@@ -369,7 +386,7 @@ export class CognitoAuthClient implements AuthClient {
       this.navigateToCognitoLogout();
       throw new AuthFailure(
         'logout',
-        'Se cerró la sesión local, pero no se pudo completar el cierre remoto.',
+        'Se cerró la sesión en este dispositivo, pero no pudimos completar el cierre.',
       );
     }
 
@@ -403,14 +420,18 @@ export class CognitoAuthClient implements AuthClient {
       this.storage.removeItem(LOGOUT_WARNING_STORAGE_KEY);
       throw new AuthFailure(
         'logout',
-        'La sesión local se cerró, pero el proveedor no confirmó la revocación remota.',
+        'La sesión se cerró en este dispositivo, pero no pudimos confirmar el cierre completo.',
       );
     }
     let user: User | null;
     try {
       user = await this.manager.getUser();
     } catch (error) {
-      throw authFailure(error, 'No se pudo recuperar la sesión.', 'session');
+      throw authFailure(
+        error,
+        'No se pudo recuperar la sesión. Volvé a ingresar para continuar.',
+        'session',
+      );
     }
     if (!user) {
       return null;
@@ -456,10 +477,10 @@ export class CognitoAuthClient implements AuthClient {
 
   private async validateSession(user: User): Promise<AuthSession> {
     if (!user.access_token) {
-      throw new AuthFailure('identity', 'La sesión no tiene un token de acceso.');
+      throw new AuthFailure('identity', 'No se pudo validar tu sesión. Volvé a ingresar.');
     }
     if (typeof user.profile.sub !== 'string' || user.profile.sub.trim() === '') {
-      throw new AuthFailure('identity', 'La sesión no tiene una identidad válida.');
+      throw new AuthFailure('identity', 'No se pudo validar tu sesión. Volvé a ingresar.');
     }
     let claims: unknown;
     try {

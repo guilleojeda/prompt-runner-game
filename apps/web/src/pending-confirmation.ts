@@ -40,14 +40,19 @@ function issuerEndpoint(config: AuthConfig): string {
   try {
     issuer = new URL(config.issuer);
   } catch (error) {
-    throw new ConfirmationFailure('configuration', 'La configuración de acceso no es válida.', {
-      cause: error,
-    });
+    throw new ConfirmationFailure(
+      'configuration',
+      'No se pudo preparar la confirmación del email. Volvé a cargar la página o contactá al soporte.',
+      { cause: error },
+    );
   }
 
   const region = /^cognito-idp\.([a-z0-9-]+)\.amazonaws\.com$/iu.exec(issuer.hostname)?.[1];
   if (issuer.protocol !== 'https:' || !region || issuer.search || issuer.hash) {
-    throw new ConfirmationFailure('configuration', 'No se pudo identificar la región de Cognito.');
+    throw new ConfirmationFailure(
+      'configuration',
+      'No se pudo preparar la confirmación del email. Volvé a cargar la página o contactá al soporte.',
+    );
   }
   return `https://cognito-idp.${region}.amazonaws.com/`;
 }
@@ -113,13 +118,13 @@ function failureFor(
     if (operation === 'ConfirmSignUp') {
       return new ConfirmationFailure(
         'operation-limit',
-        'La confirmación alcanzó un límite de Cognito. El email no se confirmó; intentá de nuevo más tarde.',
+        'Se alcanzó un límite de intentos. No se pudo confirmar el email. Intentá de nuevo más tarde.',
         { cause },
       );
     }
     return new ConfirmationFailure(
       'rate-limit',
-      'Se alcanzó un límite de reenvío de Cognito. Reintentá cuando el límite se restablezca.',
+      'Se alcanzó un límite de reenvío. No se pudo enviar otro código. Intentá de nuevo más tarde.',
       { cause },
     );
   }
@@ -184,7 +189,7 @@ export class CognitoPendingConfirmationClient implements PendingConfirmationClie
     } catch (error) {
       throw new ConfirmationFailure(
         'network',
-        'No se pudo comunicar con Cognito. Revisá tu conexión e intentá de nuevo.',
+        'No se pudo comunicar con el servicio de confirmación. Revisá tu conexión e intentá de nuevo.',
         { cause: error },
       );
     }
@@ -197,9 +202,11 @@ export class CognitoPendingConfirmationClient implements PendingConfirmationClie
       }
     } catch (error) {
       if (response.ok) {
-        throw new ConfirmationFailure('network', 'Cognito devolvió una respuesta inválida.', {
-          cause: error,
-        });
+        throw new ConfirmationFailure(
+          'network',
+          'El servicio de confirmación devolvió una respuesta inválida. Intentá de nuevo.',
+          { cause: error },
+        );
       }
     }
 

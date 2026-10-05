@@ -199,53 +199,53 @@ describe('auth configuration and Cognito boundaries', () => {
   it('rejects missing, insecure, and slash-terminated public configuration', () => {
     expect(() => validateAuthConfig({})).toThrowError(AuthFailure);
     expect(() => validateAuthConfig({ ...config, domain: 'http://login.example.test' })).toThrow(
-      'dominio',
+      'Volvé a cargar la página',
     );
     expect(() => validateAuthConfig({ ...config, domain: `${config.domain}/` })).toThrow(
-      'terminar en /',
+      'Volvé a cargar la página',
     );
     expect(() =>
       validateAuthConfig({ ...config, redirectUri: 'https://robotrunner.guilleojeda.com/' }),
-    ).toThrow('URL de retorno');
+    ).toThrow('regreso al juego');
     expect(() =>
       validateAuthConfig({ ...config, redirectUri: 'https://robotrunner.guilleojeda.com/jugar/' }),
-    ).toThrow('URL de retorno');
+    ).toThrow('regreso al juego');
     expect(() =>
       validateAuthConfig({
         ...config,
         redirectUri: 'https://robotrunner.guilleojeda.com/jugar?next=/',
       }),
-    ).toThrow('URL de retorno');
+    ).toThrow('regreso al juego');
     expect(() =>
       validateAuthConfig({
         ...config,
         redirectUri: 'https://robotrunner.guilleojeda.com/jugar#fragment',
       }),
-    ).toThrow('URL de retorno');
+    ).toThrow('regreso al juego');
     expect(() =>
       validateAuthConfig({ ...config, logoutUri: 'https://robotrunner.guilleojeda.com/?next=/' }),
-    ).toThrow('URL de retorno');
+    ).toThrow('regreso al juego');
     expect(() =>
       validateAuthConfig({ ...config, logoutUri: 'https://robotrunner.guilleojeda.com/#fragment' }),
-    ).toThrow('URL de retorno');
+    ).toThrow('regreso al juego');
     expect(() =>
       validateAuthConfig({ ...config, redirectUri: 'https://other.example.test/jugar' }),
-    ).toThrow('URL de retorno');
+    ).toThrow('regreso al juego');
     expect(() =>
       validateAuthConfig({
         ...config,
         redirectUri: 'https://user@robotrunner.guilleojeda.com/jugar',
       }),
-    ).toThrow('URL de retorno');
+    ).toThrow('regreso al juego');
     expect(() =>
       validateAuthConfig({ ...config, apiBaseUrl: 'http://localhost:5173/api' }),
-    ).toThrow('URL de la API');
+    ).toThrow('conexión con el juego');
     expect(() => validateAuthConfig({ ...config, redirectUri: 'http://localhost:3000/' })).toThrow(
-      'URL de retorno',
+      'regreso al juego',
     );
     expect(() =>
       validateAuthConfig({ ...config, logoutUri: config.logoutUri.slice(0, -1) }),
-    ).toThrow('URL de retorno');
+    ).toThrow('regreso al juego');
   });
 
   it('reports an unavailable config without opening an OAuth redirect', async () => {
@@ -254,6 +254,43 @@ describe('auth configuration and Cognito boundaries', () => {
     expect(fetchImpl).toHaveBeenCalledWith('/auth-config.json', {
       headers: { Accept: 'application/json' },
     });
+  });
+
+  it('keeps configuration diagnostics out of the user message while preserving the cause', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response('not-json', { status: 200 }));
+
+    const failure = await loadAuthConfig(fetchImpl).catch((error: unknown) => error);
+
+    expect(failure).toMatchObject({
+      code: 'configuration',
+      cause: expect.any(Error),
+    });
+    expect((failure as AuthFailure).message).toContain('Volvé a cargar la página');
+    expect((failure as AuthFailure).message).not.toMatch(/JSON|HTTPS|API|Cognito|sessionStorage/iu);
+  });
+
+  it('explains blocked browser storage without naming the storage implementation', () => {
+    const storageGetter = vi.spyOn(window, 'sessionStorage', 'get').mockImplementation(() => {
+      throw new Error('storage blocked');
+    });
+
+    try {
+      let failure: unknown;
+      try {
+        new CognitoAuthClient(config);
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(AuthFailure);
+      expect((failure as AuthFailure).message).toContain(
+        'Probá otra ventana o revisá las restricciones de almacenamiento',
+      );
+      expect((failure as AuthFailure).message).not.toMatch(/sessionStorage/iu);
+    } finally {
+      storageGetter.mockRestore();
+    }
   });
 
   it('builds the Cognito logout endpoint with only the registered parameters', () => {

@@ -55,7 +55,7 @@ function modelLabel(modelKey: string): string {
 function formatDate(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.valueOf())) return value;
-  return date.toLocaleDateString('es-AR', { dateStyle: 'medium' });
+  return date.toLocaleString('es-AR', { dateStyle: 'medium', timeStyle: 'short' });
 }
 
 function newRobotId(): string {
@@ -175,6 +175,13 @@ export function SavedRobots({
 
   const busy = paused || locked || listBusy || operation !== null;
   const selectedSummary = selected ? summaryFromRobot(selected) : null;
+  const copiesByName = new Map<string, number>();
+  const copyNumbers = new Map<string, number>();
+  for (const robot of robots) {
+    const number = (copiesByName.get(robot.name) ?? 0) + 1;
+    copiesByName.set(robot.name, number);
+    copyNumbers.set(robot.id, number);
+  }
 
   const handleLoadMore = async (): Promise<void> => {
     if (!nextCursor || busy) return;
@@ -666,8 +673,11 @@ export function SavedRobots({
                 >
                   <span className="saved-robot-item-main">
                     <strong>{robot.name}</strong>
+                    {(copiesByName.get(robot.name) ?? 0) > 1 && (
+                      <span>Copia {copyNumbers.get(robot.id)}</span>
+                    )}
                     <span>
-                      {modelLabel(robot.modelKey)} , actualizado {formatDate(robot.updatedAt)}
+                      {modelLabel(robot.modelKey)}, actualizado {formatDate(robot.updatedAt)}
                     </span>
                   </span>
                   <span className="saved-robot-item-date">

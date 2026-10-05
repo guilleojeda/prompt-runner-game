@@ -206,6 +206,29 @@ describe('DecisionInspector', () => {
     expect(screen.queryByText('invalid_response')).toBeNull();
   });
 
+  it('describes no-op actions as staying in the same square', async () => {
+    const noOpDetail: DecisionDetail = {
+      ...detail(1),
+      result: {
+        kind: 'action',
+        action: { kind: 'swim' },
+        resolution: { outcome: 'no_op', reason: 'swim_no_effect' },
+        beforeSupport: 2,
+        afterSupport: 2,
+        turnsUsed: 1,
+      },
+    };
+    const api = inspectorApi({ getDecision: vi.fn().mockResolvedValue(noOpDetail) });
+    render(<DecisionInspector api={api} attemptId="attempt-1" onClose={vi.fn()} />);
+
+    expect(
+      await screen.findByText(
+        'Resolución: el robot permaneció en la misma casilla, nadar mantuvo al robot en la misma casilla.',
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/no produjo cambios|no produce efecto/)).toBeNull();
+  });
+
   it('uses an honest Spanish fallback for cancellation and unknown technical reasons', async () => {
     const cancellation: DecisionDetail = {
       ...detail(1),

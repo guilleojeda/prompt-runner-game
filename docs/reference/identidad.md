@@ -29,6 +29,8 @@ Classic Hosted UI admite personalización limitada de logo/CSS, pero el parámet
 
 **Implicación:** las interfaces administradas difieren tanto en idioma como en registro passwordless. Que un plan permita OTP no demuestra que su página administrada permita crear una cuenta sin contraseña. La opción elegida usa Managed Login con email y contraseña, confirmación por código y correo enviado mediante SES nativo.
 
+Managed Login no permite modificar los textos individuales de su formulario; `lang=es` usa la traducción de AWS. Su branding controla los ajustes visuales admitidos, pero el CSS de Hosted UI clásico no afecta este modo. Un mensaje incorrecto del validador nativo necesita una corrección del proveedor; no se debe sustituir el flujo de acceso ni agregar claves de CSS no admitidas para ocultarlo. [Límites de texto del editor](https://docs.aws.amazon.com/cognito/latest/developerguide/managed-login-brandingeditor.html#managed-login-brandingeditor-text), [SetUICustomization](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_SetUICustomization.html). Comprobado el 5 de octubre de 2026.
+
 ## Modalidades de envío de correo
 
 | Configuración | Requisitos y límites publicados |

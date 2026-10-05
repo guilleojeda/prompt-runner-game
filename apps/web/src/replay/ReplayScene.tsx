@@ -45,6 +45,8 @@ const ROBOT_SYMBOL: Readonly<Record<ReplayPose, string>> = Object.freeze({
 
 const symbolHref = (symbol: string): string => `${artworkUrl}#${symbol}`;
 
+const SAFE_REPLAY_ERROR = 'No se pudo preparar la reproducción.';
+
 const preloadSymbols = async (symbols: readonly string[]): Promise<void> => {
   if (!artworkUrl) throw new Error('No se encontró el catálogo gráfico de la animación.');
   const response = await fetch(artworkUrl, { cache: 'force-cache' });
@@ -571,7 +573,7 @@ const ReplayPlayer = ({ record, onReady, onComplete, onError }: ReplaySceneProps
       })
       .catch((cause: unknown) => {
         if (cancelled) return;
-        const replayError = cause instanceof Error ? cause : new Error(String(cause));
+        const replayError = new Error(SAFE_REPLAY_ERROR, { cause });
         setError(replayError);
         onErrorRef.current(replayError);
       });
