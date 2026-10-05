@@ -15,6 +15,45 @@ const synthesizeAuthentication = () => {
 
 // First CDK synthesis also pays construct startup cost under the full suite.
 describe('authentication infrastructure', { timeout: 15_000 }, () => {
+  it('keeps dark color overrides distinct so Cognito emits them in its dark stylesheet', () => {
+    const template = synthesizeAuthentication();
+    const branding = Object.values(template.findResources('AWS::Cognito::ManagedLoginBranding'))[0];
+    const settings = branding.Properties.Settings;
+    expect(settings.categories.global.colorSchemeMode).toBe('DARK');
+
+    const compareColors = (
+      dark: Record<string, unknown>,
+      light: Record<string, unknown>,
+      path: string,
+    ) => {
+      for (const [key, value] of Object.entries(dark)) {
+        const colorPath = `${path}.${key}`;
+        if (typeof value === 'object' && value !== null) {
+          compareColors(
+            value as Record<string, unknown>,
+            light[key] as Record<string, unknown>,
+            colorPath,
+          );
+        } else if (/color$/iu.test(key)) {
+          expect(value, colorPath).not.toBe(light[key]);
+        }
+      }
+    };
+    for (const group of ['componentClasses', 'components']) {
+      for (const [name, value] of Object.entries(settings[group]) as Array<
+        [string, Record<string, unknown>]
+      >) {
+        if (value.darkMode) {
+          compareColors(
+            value.darkMode as Record<string, unknown>,
+            value.lightMode as Record<string, unknown>,
+            `${group}.${name}`,
+          );
+        }
+      }
+    }
+  });
+
   it('uploads a logo within Cognito’s supported 1:1 to 4:1 aspect ratio', () => {
     const template = synthesizeAuthentication();
     const branding = Object.values(template.findResources('AWS::Cognito::ManagedLoginBranding'))[0];
