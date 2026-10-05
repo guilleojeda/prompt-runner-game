@@ -240,13 +240,13 @@ function SessionLoadingCard() {
 
 function AuthBrand() {
   return (
-    <div className="auth-brand" aria-label="Robot Runner: A puro prompt">
+    <a className="auth-brand" href="/" aria-label="Acerca de Robot Runner">
       <img src="/favicon.svg" width="48" height="48" alt="" />
       <div>
         <p className="auth-brand-tagline">A puro prompt</p>
         <h1>Robot Runner</h1>
       </div>
-    </div>
+    </a>
   );
 }
 

@@ -170,6 +170,13 @@ afterEach(() => {
 });
 
 describe('access screen', () => {
+  it('keeps the guest brand linked to the Robot Runner home page', async () => {
+    render(<App authClient={client()} />);
+
+    const homeLink = await screen.findByRole('link', { name: 'Acerca de Robot Runner' });
+    expect(homeLink.getAttribute('href')).toBe('/');
+  });
+
   it('places the static course preview before the editor without starting an inference', async () => {
     const createAttempt = vi.fn();
     const authClient = client({ initialize: vi.fn().mockResolvedValue(session()) });
