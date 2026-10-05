@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { aws_cognito as cognito, aws_wafv2 as wafv2 } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
+import { managedLoginAssets, managedLoginSettings } from './auth-branding.js';
 
 export const COGNITO_DOMAIN_PREFIX = 'prompt-runner-game';
 export const LOCAL_CALLBACK_ORIGIN = 'http://localhost:5173/';
@@ -187,7 +188,9 @@ export function createAuthenticationResources(
   const managedLoginBranding = new cognito.CfnManagedLoginBranding(scope, 'ManagedLoginBranding', {
     userPoolId: userPool.ref,
     clientId: userPoolClient.ref,
-    useCognitoProvidedValues: true,
+    useCognitoProvidedValues: false,
+    settings: managedLoginSettings,
+    assets: managedLoginAssets(),
   });
 
   const issuer = `https://cognito-idp.${props.region}.amazonaws.com/${userPool.ref}`;
