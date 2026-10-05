@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import { Match, Template } from 'aws-cdk-lib/assertions';
 import { describe, expect, it } from 'vitest';
 import { APPLICATION_ACCOUNT, APPLICATION_REGION, PromptRunnerHostingStack } from './stack.js';
+import { PUBLIC_DOMAIN, PUBLIC_ORIGIN, PUBLIC_HOSTED_ZONE_ID_PARAMETER } from './domain.js';
 import {
   DRAFT_LAMBDA_NAME,
   DRAFT_LAMBDA_ROLE_NAME,
@@ -34,6 +35,42 @@ function template() {
 }
 
 describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, () => {
+  it('serves the public alias with a DNS-validated certificate and records in the prepared child zone', () => {
+    const synthesized = template();
+    expect(synthesized.toJSON().Parameters.PublicHostedZoneId).toMatchObject({
+      Type: 'AWS::SSM::Parameter::Value<String>',
+      Default: PUBLIC_HOSTED_ZONE_ID_PARAMETER,
+    });
+    synthesized.resourceCountIs('AWS::Route53::HostedZone', 0);
+    synthesized.hasResourceProperties('AWS::CertificateManager::Certificate', {
+      DomainName: PUBLIC_DOMAIN,
+      ValidationMethod: 'DNS',
+      DomainValidationOptions: [
+        { DomainName: PUBLIC_DOMAIN, HostedZoneId: { Ref: 'PublicHostedZoneId' } },
+      ],
+    });
+    for (const type of ['A', 'AAAA'])
+      synthesized.hasResourceProperties('AWS::Route53::RecordSet', {
+        Type: type,
+        Name: `${PUBLIC_DOMAIN}.`,
+        HostedZoneId: { Ref: 'PublicHostedZoneId' },
+        AliasTarget: { DNSName: Match.anyValue(), HostedZoneId: Match.anyValue() },
+      });
+    synthesized.hasResourceProperties('AWS::CloudFront::Distribution', {
+      DistributionConfig: {
+        Aliases: [PUBLIC_DOMAIN],
+        ViewerCertificate: {
+          AcmCertificateArn: Match.anyValue(),
+          SslSupportMethod: 'sni-only',
+          MinimumProtocolVersion: 'TLSv1.2_2021',
+        },
+        DefaultCacheBehavior: {
+          FunctionAssociations: [{ EventType: 'viewer-request', FunctionARN: Match.anyValue() }],
+        },
+      },
+    });
+    expect(synthesized.toJSON().Outputs.WebsiteUrl.Value).toBe(PUBLIC_ORIGIN);
+  });
   it('resolves private limits only at deployment and never publishes them as web configuration', () => {
     const synthesized = template();
     const parameters = synthesized.toJSON().Parameters as Record<
@@ -288,11 +325,11 @@ describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, 
     });
     expect(client.Properties).not.toHaveProperty('ClientSecret');
     expect(client.Properties.CallbackURLs).toHaveLength(2);
-    expect(client.Properties.LogoutURLs).toEqual(client.Properties.CallbackURLs);
-    expect(client.Properties.CallbackURLs[1]).toBe('http://localhost:5173/');
-    expect(client.Properties.CallbackURLs[0]).toEqual({
-      'Fn::Join': ['', ['https://', { 'Fn::GetAtt': [expect.any(String), 'DomainName'] }, '/']],
-    });
+    expect(client.Properties.CallbackURLs).toEqual([
+      `${PUBLIC_ORIGIN}/jugar`,
+      'http://localhost:5173/jugar',
+    ]);
+    expect(client.Properties.LogoutURLs).toEqual([`${PUBLIC_ORIGIN}/`, 'http://localhost:5173/']);
 
     synthesized.hasResourceProperties('AWS::Cognito::UserPoolDomain', {
       Domain: 'prompt-runner-game',
@@ -350,8 +387,6 @@ describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, 
       '<<marker:0xbaba:1>>': expect.anything(),
       '<<marker:0xbaba:2>>': expect.anything(),
       '<<marker:0xbaba:3>>': expect.anything(),
-      '<<marker:0xbaba:4>>': expect.anything(),
-      '<<marker:0xbaba:5>>': expect.anything(),
     });
     const authConfigMarkers = JSON.stringify(websiteEntry?.[1].Properties.SourceMarkers[1]);
     expect(authConfigMarkers).toContain('cognito-idp.us-east-1.amazonaws.com');
@@ -411,10 +446,7 @@ describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, 
         AllowCredentials: false,
         AllowHeaders: ['Authorization', 'Content-Type'],
         AllowMethods: ['GET', 'PUT', 'POST', 'DELETE', 'OPTIONS'],
-        AllowOrigins: [
-          { 'Fn::Join': ['', ['https://', { 'Fn::GetAtt': [expect.any(String), 'DomainName'] }]] },
-          'http://localhost:5173',
-        ],
+        AllowOrigins: [PUBLIC_ORIGIN, 'http://localhost:5173'],
       },
     });
     const routes = Object.values(synthesized.findResources('AWS::ApiGatewayV2::Route'));

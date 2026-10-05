@@ -4,10 +4,13 @@ import * as cdk from 'aws-cdk-lib';
 import {
   aws_cloudfront as cloudfront,
   aws_cloudfront_origins as origins,
+  aws_certificatemanager as acm,
   aws_iam as iam,
   aws_logs as logs,
   aws_s3 as s3,
   aws_s3_deployment as s3deploy,
+  aws_route53 as route53,
+  aws_route53_targets as targets,
 } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import { createAuthenticationResources, ROBOT_SCOPE } from './auth.js';
@@ -15,6 +18,13 @@ import { createExecutionResources } from './execution.js';
 import { createRobotResources } from './robot.js';
 import { createPrivateLimits } from './private-limits.js';
 import { createBillingBudgets } from './budgets.js';
+import {
+  PUBLIC_DOMAIN,
+  PUBLIC_ORIGIN,
+  PUBLIC_ROUTING_FUNCTION_NAME,
+  publicHostedZoneId,
+  publicRoutingCode,
+} from './domain.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -70,6 +80,24 @@ export class PromptRunnerHostingStack extends cdk.Stack {
       originAccessControl,
     });
 
+    const zone = route53.HostedZone.fromHostedZoneAttributes(this, 'PublicHostedZone', {
+      hostedZoneId: publicHostedZoneId(this),
+      zoneName: PUBLIC_DOMAIN,
+    });
+    const certificate = new acm.Certificate(this, 'PublicWebsiteCertificate', {
+      domainName: PUBLIC_DOMAIN,
+      validation: acm.CertificateValidation.fromDns(zone),
+    });
+    cdk.Tags.of(certificate).add('Application', 'prompt-runner-game');
+    const publicRouting = new cloudfront.Function(this, 'PublicWebsiteRouting', {
+      functionName: PUBLIC_ROUTING_FUNCTION_NAME,
+      runtime: cloudfront.FunctionRuntime.JS_2_0,
+      code: cloudfront.FunctionCode.fromInline(publicRoutingCode),
+    });
+    const routePages = [
+      { function: publicRouting, eventType: cloudfront.FunctionEventType.VIEWER_REQUEST },
+    ];
+
     const immutableAssetsPolicy = new cloudfront.CachePolicy(this, 'ImmutableAssetsCachePolicy', {
       cachePolicyName: 'prompt-runner-game-immutable-assets',
       comment: 'Content-hashed Vite assets served with immutable caching.',
@@ -82,30 +110,39 @@ export class PromptRunnerHostingStack extends cdk.Stack {
 
     this.distribution = new cloudfront.Distribution(this, 'WebsiteDistribution', {
       defaultRootObject: 'index.html',
+      domainNames: [PUBLIC_DOMAIN],
+      certificate,
       defaultBehavior: {
         origin,
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+        functionAssociations: routePages,
       },
       additionalBehaviors: {
         'assets/*': {
           origin,
           viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
           cachePolicy: immutableAssetsPolicy,
+          functionAssociations: routePages,
         },
       },
     });
     cdk.Tags.of(this.distribution).add('Application', 'prompt-runner-game');
+    const websiteAlias = route53.RecordTarget.fromAlias(
+      new targets.CloudFrontTarget(this.distribution),
+    );
+    new route53.ARecord(this, 'PublicWebsiteIpv4', { zone, target: websiteAlias });
+    new route53.AaaaRecord(this, 'PublicWebsiteIpv6', { zone, target: websiteAlias });
 
     const authentication = createAuthenticationResources(this, {
       identityRateLimit: limits.identityRateLimit,
       region: props.env?.region ?? APPLICATION_REGION,
-      productionWebOrigin: `https://${this.distribution.domainName}/`,
+      productionWebOrigin: PUBLIC_ORIGIN,
     });
     const robot = createRobotResources(this, {
       limits,
       authentication,
-      productionWebOrigin: `https://${this.distribution.domainName}`,
+      productionWebOrigin: PUBLIC_ORIGIN,
     });
     const execution = createExecutionResources(this, {
       limits,
@@ -170,6 +207,9 @@ export class PromptRunnerHostingStack extends cdk.Stack {
       distributionPaths: [
         '/',
         '/index.html',
+        '/jugar',
+        '/jugar/*',
+        '/privacidad',
         '/bienvenida.html',
         '/privacidad/index.html',
         '/screenshots/*',
@@ -187,8 +227,10 @@ export class PromptRunnerHostingStack extends cdk.Stack {
 
     new cdk.CfnOutput(this, 'WebsiteUrl', {
       description: 'HTTPS URL served by CloudFront.',
-      value: `https://${this.distribution.domainName}`,
+      value: PUBLIC_ORIGIN,
     });
+    new cdk.CfnOutput(this, 'PublicHostedZoneIdOutput', { value: zone.hostedZoneId });
+    new cdk.CfnOutput(this, 'PublicWebsiteCertificateArn', { value: certificate.certificateArn });
     new cdk.CfnOutput(this, 'WebsiteBucketName', {
       description: 'Private S3 bucket used by CloudFront.',
       value: this.websiteBucket.bucketName,

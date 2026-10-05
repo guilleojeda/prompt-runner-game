@@ -9,6 +9,16 @@ function developmentAuthConfig(): Plugin {
   return {
     name: 'development-auth-config',
     configureServer(server) {
+      server.middlewares.use((request, _response, next) => {
+        const requestUrl = request.url ?? '/';
+        const queryStart = requestUrl.indexOf('?');
+        const pathname = queryStart === -1 ? requestUrl : requestUrl.slice(0, queryStart);
+        if (pathname === '/jugar' || pathname === '/privacidad') {
+          request.url = `${pathname}/${queryStart === -1 ? '' : requestUrl.slice(queryStart)}`;
+        }
+        next();
+      });
+
       if (!authConfigUrl) {
         return;
       }
@@ -20,9 +30,8 @@ function developmentAuthConfig(): Plugin {
             return;
           }
           const config = (await upstream.json()) as Record<string, unknown>;
-          const localOrigin = 'http://localhost:5173/';
-          config.redirectUri = localOrigin;
-          config.logoutUri = localOrigin;
+          config.redirectUri = 'http://localhost:5173/jugar';
+          config.logoutUri = 'http://localhost:5173/';
           response.statusCode = 200;
           response.setHeader('Content-Type', 'application/json');
           response.setHeader('Cache-Control', 'no-store');
@@ -49,8 +58,8 @@ export default defineConfig({
     manifest: true,
     rollupOptions: {
       input: {
-        game: fileURLToPath(new URL('./index.html', import.meta.url)),
-        welcome: fileURLToPath(new URL('./bienvenida.html', import.meta.url)),
+        landing: fileURLToPath(new URL('./index.html', import.meta.url)),
+        game: fileURLToPath(new URL('./jugar/index.html', import.meta.url)),
         privacy: fileURLToPath(new URL('./privacidad/index.html', import.meta.url)),
       },
       output: {

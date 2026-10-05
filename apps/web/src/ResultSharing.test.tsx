@@ -80,14 +80,14 @@ describe('result sharing', () => {
     });
     const negative = shareResult({ ...victory, score: -37.2, gameTokens: null });
     expect(negative).not.toBeNull();
-    expect(shareText(negative!, 'https://game.test/bienvenida.html')).toBe(
-      'Hice -37,20 puntos. ¿Me ganás?\nRobot Runner: A puro prompt\nhttps://game.test/bienvenida.html',
+    expect(shareText(negative!, 'https://game.test/')).toBe(
+      'Hice -37,20 puntos. ¿Me ganás?\nRobot Runner: A puro prompt\nhttps://game.test/',
     );
     const unknown = shareResult({ ...victory, score: null });
-    expect(shareText(unknown!, 'https://game.test/bienvenida.html')).toContain(
+    expect(shareText(unknown!, 'https://game.test/')).toContain(
       'Mi robot ganó. ¿Podés hacer que el tuyo llegue a la salida?',
     );
-    expect(shareText(unknown!, 'https://game.test/bienvenida.html')).not.toMatch(/\d|puntos/);
+    expect(shareText(unknown!, 'https://game.test/')).not.toMatch(/\d|puntos/);
   });
 
   it.each(['defeat', 'incomplete'] as const)(
@@ -95,8 +95,8 @@ describe('result sharing', () => {
     (status) => {
       const result = shareResult({ ...victory, status, progress: 0.8, finalSupport: 2 });
       expect(result).toEqual({ kind: 'progress', percent: 80 });
-      expect(shareText(result!, 'https://game.test/bienvenida.html')).toBe(
-        'No pude hacerlo llegar. ¿Vos podés? Mi robot llegó al 80% del nivel.\nRobot Runner: A puro prompt\nhttps://game.test/bienvenida.html',
+      expect(shareText(result!, 'https://game.test/')).toBe(
+        'No pude hacerlo llegar. ¿Vos podés? Mi robot llegó al 80% del nivel.\nRobot Runner: A puro prompt\nhttps://game.test/',
       );
     },
   );
@@ -125,7 +125,7 @@ describe('result sharing', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Copiar texto y enlace' }));
     await screen.findByText('Texto y enlace copiados.');
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
-      `Hice 834,40 puntos. ¿Me ganás?\nRobot Runner: A puro prompt\n${window.location.origin}/bienvenida.html`,
+      `Hice 834,40 puntos. ¿Me ganás?\nRobot Runner: A puro prompt\n${window.location.origin}/`,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Cerrar' }));
     expect(document.activeElement).toBe(

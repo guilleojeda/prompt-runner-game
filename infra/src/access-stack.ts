@@ -26,6 +26,12 @@ import {
   LOG_RETENTION_GROUP_NAME,
 } from './execution.js';
 import { LIMIT_PARAMETER_PREFIX } from './private-limits.js';
+import {
+  PUBLIC_DOMAIN,
+  PUBLIC_HOSTED_ZONE_ID_PARAMETER,
+  PUBLIC_ROUTING_FUNCTION_NAME,
+  publicHostedZoneId,
+} from './domain.js';
 
 export const GITHUB_OIDC_URL = 'https://token.actions.githubusercontent.com';
 export const GITHUB_OIDC_AUDIENCE = 'sts.amazonaws.com';
@@ -884,6 +890,80 @@ export class PromptRunnerAccessStack extends cdk.Stack {
             `${retentionLogArn}:*`,
             deploymentLogArn,
             `${deploymentLogArn}:*`,
+          ],
+        }),
+      ],
+    });
+
+    const domainZoneId = publicHostedZoneId(this);
+    const domainCertificateArn = `arn:${cdk.Aws.PARTITION}:acm:${region}:${account}:certificate/*`;
+    new iam.ManagedPolicy(this, 'PublicDomainCfnExecutionPolicy', {
+      managedPolicyName: 'prompt-runner-game-public-domain-cfn-execution',
+      description: 'Public website certificate, prepared child DNS zone, and page routing.',
+      roles: [bootstrapExecutionRole],
+      statements: [
+        new iam.PolicyStatement({
+          sid: 'ReadPublicDomainZone',
+          actions: ['ssm:GetParameters'],
+          resources: [
+            `arn:${cdk.Aws.PARTITION}:ssm:${region}:${account}:parameter${PUBLIC_HOSTED_ZONE_ID_PARAMETER}`,
+          ],
+        }),
+        new iam.PolicyStatement({
+          sid: 'PublicDomainDnsRecords',
+          actions: [
+            'route53:GetHostedZone',
+            'route53:ListResourceRecordSets',
+            'route53:ChangeResourceRecordSets',
+          ],
+          resources: [`arn:${cdk.Aws.PARTITION}:route53:::hostedzone/${domainZoneId}`],
+        }),
+        new iam.PolicyStatement({
+          sid: 'PublicDomainDnsPropagation',
+          actions: ['route53:GetChange'],
+          resources: [`arn:${cdk.Aws.PARTITION}:route53:::change/*`],
+        }),
+        new iam.PolicyStatement({
+          sid: 'RequestPublicDomainCertificate',
+          actions: ['acm:RequestCertificate'],
+          resources: ['*'],
+          conditions: {
+            StringEquals: {
+              'aws:RequestedRegion': region,
+              'aws:RequestTag/Application': 'prompt-runner-game',
+            },
+            'ForAllValues:StringEquals': { 'acm:DomainNames': [PUBLIC_DOMAIN] },
+          },
+        }),
+        new iam.PolicyStatement({
+          sid: 'PublicDomainCertificate',
+          actions: [
+            'acm:DescribeCertificate',
+            'acm:ListTagsForCertificate',
+            'acm:DeleteCertificate',
+            'acm:AddTagsToCertificate',
+            'acm:RemoveTagsFromCertificate',
+          ],
+          resources: [domainCertificateArn],
+          conditions: {
+            StringEquals: {
+              'aws:RequestedRegion': region,
+              'aws:ResourceTag/Application': 'prompt-runner-game',
+            },
+          },
+        }),
+        new iam.PolicyStatement({
+          sid: 'PublicDomainRoutingFunction',
+          actions: [
+            'cloudfront:CreateFunction',
+            'cloudfront:DeleteFunction',
+            'cloudfront:DescribeFunction',
+            'cloudfront:GetFunction',
+            'cloudfront:PublishFunction',
+            'cloudfront:UpdateFunction',
+          ],
+          resources: [
+            `arn:${cdk.Aws.PARTITION}:cloudfront::${account}:function/${PUBLIC_ROUTING_FUNCTION_NAME}`,
           ],
         }),
       ],

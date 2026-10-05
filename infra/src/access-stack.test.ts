@@ -4,6 +4,11 @@ import { describe, expect, it } from 'vitest';
 import { PromptRunnerAccessStack } from './access-stack.js';
 import { APPLICATION_ACCOUNT, APPLICATION_REGION } from './stack.js';
 import {
+  PUBLIC_DOMAIN,
+  PUBLIC_HOSTED_ZONE_ID_PARAMETER,
+  PUBLIC_ROUTING_FUNCTION_NAME,
+} from './domain.js';
+import {
   AGENT_RUNTIME_NAME,
   AGENT_RUNTIME_ROLE_NAME,
   STARTER_LAMBDA_ROLE_NAME,
@@ -165,7 +170,12 @@ describe('PromptRunnerAccessStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, (
       ClientIdList: ['sts.amazonaws.com'],
     });
     synthesized.resourceCountIs('AWS::CloudFormation::CustomResource', 0);
-    expect(synthesized.toJSON().Parameters).toBeUndefined();
+    expect(synthesized.toJSON().Parameters).toEqual({
+      PublicHostedZoneId: {
+        Type: 'AWS::SSM::Parameter::Value<String>',
+        Default: PUBLIC_HOSTED_ZONE_ID_PARAMETER,
+      },
+    });
     expect(synthesized.toJSON().Rules).toBeUndefined();
     expect(
       Object.values(synthesized.toJSON().Resources).every(
@@ -177,6 +187,55 @@ describe('PromptRunnerAccessStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, (
           (resource.Type.startsWith('AWS::IAM::') || resource.Type === 'AWS::CDK::Metadata'),
       ),
     ).toBe(true);
+  });
+
+  it('limits public-domain deployment to the prepared child zone, certificate name, and routing function', () => {
+    const stack = new PromptRunnerAccessStack(new cdk.App(), 'DomainAccess', {
+      env: { account: APPLICATION_ACCOUNT, region: APPLICATION_REGION },
+    });
+    const policies = Object.values(
+      Template.fromStack(stack).findResources('AWS::IAM::ManagedPolicy'),
+    );
+    const policy = policies.find(
+      (entry) =>
+        entry.Properties.ManagedPolicyName === 'prompt-runner-game-public-domain-cfn-execution',
+    );
+    expect(policy).toBeDefined();
+    const statements = policy!.Properties.PolicyDocument.Statement;
+    const bySid = (sid: string) => statements.find((entry: { Sid: string }) => entry.Sid === sid);
+    expect(bySid('PublicDomainDnsRecords').Resource).toEqual({
+      'Fn::Join': [
+        '',
+        [
+          'arn:',
+          { Ref: 'AWS::Partition' },
+          ':route53:::hostedzone/',
+          { Ref: 'PublicHostedZoneId' },
+        ],
+      ],
+    });
+    expect(bySid('RequestPublicDomainCertificate').Condition).toMatchObject({
+      StringEquals: {
+        'aws:RequestedRegion': APPLICATION_REGION,
+        'aws:RequestTag/Application': 'prompt-runner-game',
+      },
+      'ForAllValues:StringEquals': { 'acm:DomainNames': [PUBLIC_DOMAIN] },
+    });
+    expect(JSON.stringify(bySid('PublicDomainRoutingFunction').Resource)).toContain(
+      `:cloudfront::${APPLICATION_ACCOUNT}:function/${PUBLIC_ROUTING_FUNCTION_NAME}`,
+    );
+    expect(JSON.stringify(policy)).not.toContain('719535286359');
+    const tagStatements = statements.filter((entry: { Action: string | string[] }) =>
+      [entry.Action].flat().includes('acm:AddTagsToCertificate'),
+    );
+    expect(tagStatements).toHaveLength(1);
+    expect(tagStatements[0].Condition.StringEquals['aws:ResourceTag/Application']).toBe(
+      'prompt-runner-game',
+    );
+    expect(tagStatements[0].Condition.StringEquals['aws:RequestTag/Application']).toBeUndefined();
+    expect(statements.flatMap((entry: { Action: string[] }) => entry.Action)).not.toContain(
+      'route53:CreateHostedZone',
+    );
   });
 
   it('keeps the physical execution policy and grants only the configured Cognito lifecycle', () => {

@@ -2,11 +2,11 @@
 
 Juego de Guille Ojeda para aprender a configurar agentes de inteligencia artificial. El participante configura las habilidades e instrucciones de un agente real y pulsa Probar. La interfaz bloquea la edición mientras se calcula el intento; después reproduce una animación si estaba habilitada y muestra el resultado.
 
-**Portada publicada:** [Robot Runner: A puro prompt](https://d1ilpq1n58tzqo.cloudfront.net/bienvenida.html). **Juego:** [Jugar](https://d1ilpq1n58tzqo.cloudfront.net). **Privacidad:** [Leer la política](https://d1ilpq1n58tzqo.cloudfront.net/privacidad/index.html).
+**Portada:** [Robot Runner: A puro prompt](https://robotrunner.guilleojeda.com/). **Juego:** [Jugar](https://robotrunner.guilleojeda.com/jugar). **Privacidad:** [Leer la política](https://robotrunner.guilleojeda.com/privacidad).
 
 **Estado del proyecto:** beta pública gratuita en español y para computadora, con registro abierto, email verificado y 100 intentos diarios por cuenta. Incluye acceso Cognito, borrador y robots guardados por cuenta, y ejecución real del nivel principal con recompensa, llave y puerta mediante AgentCore Runtime, Strands y Bedrock. Probar guarda la configuración visible y fija el intento; la animación opcional presenta las acciones guardadas antes del resultado. El historial propio permite volver a ver intentos del contrato vigente, inspeccionar sus decisiones, comparar victorias cargadas y recuperar una configuración anterior para probarla de nuevo.
 
-La portada y privacidad son HTML estático dentro de `apps/web/`, comparten build y hosting con el juego y se actualizan automáticamente al publicar `main` mediante el CI existente. Las capturas en `apps/web/public/screenshots/` muestran los componentes reales renderizados localmente con una configuración de ejemplo. La portada se puede abrir localmente en `http://localhost:5173/bienvenida.html`, sin credenciales. El dominio `robotrunner.guilleojeda.com` todavía no está conectado; la promoción de la portada a `/` y la ubicación definitiva del juego se resolverán antes de conectarlo.
+La portada (`apps/web/index.html`), el juego (`apps/web/jugar/index.html`) y privacidad (`apps/web/privacidad/index.html`) son HTML estático dentro de `apps/web/` y comparten build y hosting. El sitio usa `https://robotrunner.guilleojeda.com/` como portada, `/jugar` para el juego y `/privacidad` para la política. Las capturas en `apps/web/public/screenshots/` muestran los componentes reales renderizados localmente con una configuración de ejemplo. La portada se puede abrir localmente en `http://localhost:5173/` y el juego en `http://localhost:5173/jugar`, sin credenciales.
 
 ## Desarrollo local
 
@@ -17,10 +17,10 @@ npm ci
 npm run dev
 ```
 
-Vite usa `http://localhost:5173/`, registrado como retorno de Cognito. Para probar el acceso real con el mismo ambiente publicado:
+Vite sirve la portada en `http://localhost:5173/` y el juego en `http://localhost:5173/jugar`. El retorno local de Cognito es `http://localhost:5173/jugar` y el cierre de sesión vuelve a `/`. Para probar el acceso real con el mismo ambiente publicado:
 
 ```sh
-VITE_AUTH_CONFIG_URL=https://d1ilpq1n58tzqo.cloudfront.net/auth-config.json npm run dev
+VITE_AUTH_CONFIG_URL=https://robotrunner.guilleojeda.com/auth-config.json npm run dev
 ```
 
 El servidor de desarrollo obtiene la configuración pública y adapta los retornos a localhost; usa la misma API y los mismos datos del ambiente publicado. Sin esa configuración, la web informa que no puede iniciar el acceso. Para ejecutar los mismos controles que GitHub Actions, sin credenciales AWS:
