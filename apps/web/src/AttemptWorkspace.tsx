@@ -32,6 +32,8 @@ import { DEFAULT_SCORE_RULES, LEVEL } from '../../../shared/game.js';
 import { MODEL_CATALOG } from '../../../shared/models.js';
 import { DecisionInspector } from './DecisionInspector.js';
 import { ReplayScene } from './replay/ReplayScene.js';
+import { ResultSharing } from './ResultSharing.js';
+import { formatScore } from './result-sharing.js';
 
 type WorkspaceMode =
   | 'loading'
@@ -231,13 +233,6 @@ function formatDateTime(value: string): string {
 function formatProgress(value: number): string {
   const percent = value >= 0 && value <= 1 ? value * 100 : value;
   return `${Math.round(percent)}%`;
-}
-
-function formatScore(value: number): string {
-  return value.toLocaleString('es-AR', {
-    minimumFractionDigits: DEFAULT_SCORE_RULES.decimalPlaces,
-    maximumFractionDigits: DEFAULT_SCORE_RULES.decimalPlaces,
-  });
 }
 
 function makeRequestKey(): string {
@@ -481,6 +476,7 @@ function ResultCard({
           </button>
         )}
       </div>
+      <ResultSharing key={attempt.id} attempt={attempt} disabled={busy} />
       <details className="attempt-agent-details">
         <summary>Detalles del agente</summary>
         <p className="attempt-status" data-status={attempt.status}>
