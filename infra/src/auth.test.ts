@@ -15,6 +15,23 @@ const synthesizeAuthentication = () => {
 
 // First CDK synthesis also pays construct startup cost under the full suite.
 describe('authentication infrastructure', { timeout: 15_000 }, () => {
+  it('uploads a logo within Cognito’s supported 1:1 to 4:1 aspect ratio', () => {
+    const template = synthesizeAuthentication();
+    const branding = Object.values(template.findResources('AWS::Cognito::ManagedLoginBranding'))[0];
+    const logo = branding.Properties.Assets.find(
+      (asset: { Category: string }) => asset.Category === 'FORM_LOGO',
+    );
+    const svg = Buffer.from(logo.Bytes, 'base64').toString('utf8');
+    const root = svg.match(/^<svg\b[^>]*>/u)?.[0] ?? '';
+    const width = Number(root.match(/\bwidth="([\d.]+)"/u)?.[1]);
+    const height = Number(root.match(/\bheight="([\d.]+)"/u)?.[1]);
+    expect(width).toBeGreaterThan(0);
+    expect(height).toBeGreaterThan(0);
+    expect(width / height).toBeGreaterThanOrEqual(1);
+    expect(width / height).toBeLessThanOrEqual(4);
+    expect(svg).toContain('Robot Runner');
+  });
+
   it('associates an allow-by-default, five-minute per-IP rate rule with the user pool', () => {
     const template = synthesizeAuthentication();
     const webAclResources = template.findResources('AWS::WAFv2::WebACL');

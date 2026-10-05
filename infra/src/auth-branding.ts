@@ -94,11 +94,11 @@ export function managedLoginAssets() {
     'utf8',
   ).replace(/\s(?:role|aria-label)="[^"]*"/gu, '');
   const robot = favicon.replace(/<svg\b[^>]*>/u, '').replace(/<\/svg>\s*$/u, '');
-  const logo = `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="64" viewBox="0 0 320 64">
+  const logo = `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="80" viewBox="0 0 320 80">
     <title>Robot Runner: A puro prompt</title>
-    <g transform="translate(4 8) scale(.75)">${robot}</g>
-    <text x="66" y="20" fill="#d8b36a" font-family="Arial, sans-serif" font-size="10" font-weight="700" letter-spacing="1.5">A PURO PROMPT</text>
-    <text x="66" y="51" fill="#f7f1e1" font-family="Georgia, serif" font-size="34" letter-spacing="-1.5">Robot Runner</text>
+    <g transform="translate(4 16) scale(.75)">${robot}</g>
+    <text x="66" y="28" fill="#d8b36a" font-family="Arial, sans-serif" font-size="10" font-weight="700" letter-spacing="1.5">A PURO PROMPT</text>
+    <text x="66" y="59" fill="#f7f1e1" font-family="Georgia, serif" font-size="34" letter-spacing="-1.5">Robot Runner</text>
   </svg>`;
   const background = `<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
     <defs><radialGradient id="glow" cx="22%" cy="0%" r="70%"><stop stop-color="#273022"/><stop offset="1" stop-color="#14130f"/></radialGradient></defs>
