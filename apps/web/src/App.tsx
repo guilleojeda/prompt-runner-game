@@ -78,12 +78,8 @@ function LoginCard({
 }) {
   return (
     <section className="auth-card" aria-labelledby="access-title">
-      <div className="robot" aria-hidden="true">
-        <span className="robot-eye" />
-        <span className="robot-eye" />
-      </div>
       <div className="auth-card-content">
-        <p className="card-kicker">Acceso seguro</p>
+        <p className="card-kicker">Acceso al juego</p>
         <h2 id="access-title">Entrá para continuar</h2>
         <p>Registrate con tu email o ingresá a tu cuenta.</p>
         {message && (
@@ -91,17 +87,19 @@ function LoginCard({
             {message}
           </p>
         )}
-        <button className="primary-button" type="button" onClick={onLogin} disabled={busy}>
-          {busy ? 'Abriendo acceso…' : 'Entrar o crear una cuenta'}
-        </button>
-        <button
-          className="text-button"
-          type="button"
-          onClick={onPendingConfirmation}
-          disabled={busy}
-        >
-          Confirmar una cuenta pendiente
-        </button>
+        <div className="auth-card-actions">
+          <button className="primary-button" type="button" onClick={onLogin} disabled={busy}>
+            {busy ? 'Abriendo acceso…' : 'Entrar o crear una cuenta'}
+          </button>
+          <button
+            className="text-button"
+            type="button"
+            onClick={onPendingConfirmation}
+            disabled={busy}
+          >
+            Confirmar una cuenta pendiente
+          </button>
+        </div>
       </div>
     </section>
   );
@@ -129,15 +127,12 @@ function PendingConfirmationCard({
 
   return (
     <section className="auth-card confirmation-card" aria-labelledby="confirmation-title">
-      <div className="account-mark" aria-hidden="true">
-        @
-      </div>
       <div className="auth-card-content">
         <p className="card-kicker">Confirmación de email</p>
         <h2 id="confirmation-title">Retomá tu cuenta</h2>
         <p>Usá el código que recibiste para confirmar el email con el que te registraste.</p>
         {error && (
-          <p className="form-error" role="alert" aria-live="assertive">
+          <p id="confirmation-error" className="form-error" role="alert" aria-live="assertive">
             {error}
           </p>
         )}
@@ -147,6 +142,7 @@ function PendingConfirmationCard({
           </p>
         )}
         <form
+          aria-busy={busy}
           onSubmit={(event) => {
             event.preventDefault();
             onConfirm(email, code);
@@ -161,6 +157,7 @@ function PendingConfirmationCard({
             onChange={(event) => setEmail(event.target.value)}
             required
             disabled={busy}
+            aria-describedby={error ? 'confirmation-error' : undefined}
           />
           <label htmlFor="pending-code">Código de confirmación</label>
           <input
@@ -172,6 +169,7 @@ function PendingConfirmationCard({
             onChange={(event) => setCode(event.target.value)}
             required
             disabled={busy}
+            aria-describedby={error ? 'confirmation-error' : undefined}
           />
           <button className="primary-button" type="submit" disabled={busy}>
             {operation === 'confirm' ? 'Confirmando…' : 'Confirmar email'}
@@ -204,9 +202,6 @@ function AccountCard({
 }) {
   return (
     <section className="auth-card account-card account-summary" aria-labelledby="account-title">
-      <div className="account-mark" aria-hidden="true">
-        ✓
-      </div>
       <div className="auth-card-content">
         <p className="card-kicker">Cuenta</p>
         <h2 id="account-title">Sesión confirmada</h2>
@@ -227,6 +222,34 @@ function AccountCard({
   );
 }
 
+function SessionLoadingCard() {
+  return (
+    <section className="auth-card session-card" aria-labelledby="session-loading-title">
+      <div className="auth-card-content">
+        <p className="card-kicker">Tu cuenta</p>
+        <h2 id="session-loading-title">Comprobando tu sesión…</h2>
+        <p>El juego estará disponible cuando termine la comprobación.</p>
+        <div className="auth-status" role="status" aria-live="polite">
+          <span className="spinner" aria-hidden="true" />
+          <span>Comprobando el acceso…</span>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function AuthBrand() {
+  return (
+    <div className="auth-brand" aria-label="Robot Runner: A puro prompt">
+      <img src="/favicon.svg" width="48" height="48" alt="" />
+      <div>
+        <p className="auth-brand-tagline">A puro prompt</p>
+        <h1>Robot Runner</h1>
+      </div>
+    </div>
+  );
+}
+
 function ErrorNotice({
   message,
   onRetry,
@@ -237,7 +260,7 @@ function ErrorNotice({
   retryLabel?: string;
 }) {
   return (
-    <section className="notice error-notice" role="alert" aria-live="assertive">
+    <section className="notice error-notice auth-notice" role="alert" aria-live="assertive">
       <p>{message}</p>
       {onRetry && (
         <button className="secondary-button" type="button" onClick={onRetry}>
@@ -629,27 +652,34 @@ export function App({
   }, []);
 
   return (
-    <main className={`shell${session ? ' shell-authenticated' : ''}`}>
-      <header>
-        {!attemptBusy && (
-          <a className="game-home-link" href="/">
-            Acerca de Robot Runner
-          </a>
-        )}
-        <p className="eyebrow">A puro prompt</p>
-        <h1>Robot Runner</h1>
-        <p className="intro">
-          Configurá sus instrucciones y observá cómo decide recorrer el mundo, una decisión a la
-          vez.
-        </p>
-      </header>
+    <main className={`shell${session ? ' shell-authenticated' : ' shell-auth'}`}>
+      {session ? (
+        <header>
+          {!attemptBusy && (
+            <a className="game-home-link" href="/">
+              Acerca de Robot Runner
+            </a>
+          )}
+          <p className="eyebrow">A puro prompt</p>
+          <h1>Robot Runner</h1>
+          <p className="intro">
+            Configurá sus instrucciones y observá cómo decide recorrer el mundo, una decisión a la
+            vez.
+          </p>
+        </header>
+      ) : (
+        <header className="auth-header">
+          <AuthBrand />
+        </header>
+      )}
 
-      {phase === 'loading' && (
-        <section className="notice" role="status" aria-live="polite">
+      {phase === 'loading' && !session && (
+        <section className="notice auth-notice" role="status" aria-live="polite">
           <span className="spinner" aria-hidden="true" />
           <p>Comprobando tu sesión…</p>
         </section>
       )}
+      {phase === 'loading' && session && <SessionLoadingCard />}
 
       {phase === 'visitor' && (
         <LoginCard
@@ -808,7 +838,7 @@ export function App({
         </section>
       )}
       {phase === 'logging-out' && session === null && (
-        <section className="notice" role="status" aria-live="polite">
+        <section className="notice auth-notice" role="status" aria-live="polite">
           <span className="spinner" aria-hidden="true" />
           <p>Cerrando tu sesión…</p>
         </section>

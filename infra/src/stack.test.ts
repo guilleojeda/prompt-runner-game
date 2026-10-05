@@ -336,7 +336,7 @@ describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, 
       ManagedLoginVersion: 2,
     });
     synthesized.hasResourceProperties('AWS::Cognito::ManagedLoginBranding', {
-      UseCognitoProvidedValues: true,
+      UseCognitoProvidedValues: false,
     });
     synthesized.hasResourceProperties('AWS::Cognito::UserPoolResourceServer', {
       Identifier: 'prompt-runner',
@@ -350,8 +350,10 @@ describe('PromptRunnerHostingStack', { timeout: CDK_SYNTH_STARTUP_TIMEOUT_MS }, 
     const branding = Object.values(
       synthesized.findResources('AWS::Cognito::ManagedLoginBranding'),
     )[0];
-    expect(branding.Properties).not.toHaveProperty('Settings');
-    expect(branding.Properties).not.toHaveProperty('Assets');
+    expect(branding.Properties.Settings.categories.global.colorSchemeMode).toBe('DARK');
+    expect(branding.Properties.Assets.map((asset: { Category: string }) => asset.Category)).toEqual(
+      ['FORM_LOGO', 'PAGE_BACKGROUND', 'FAVICON_SVG'],
+    );
   });
 
   it('uses the pre-created deployment role and publishes entry after assets', () => {
