@@ -1521,7 +1521,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             if (reference.requestKey && !reference.attemptId) {
               setError(
                 workspaceError(
-                  'No pudimos confirmar si comenzó el intento. Pulsá Comprobar estado para consultar el mismo intento.',
+                  'No pudimos recuperar la configuración usada para iniciar el intento. Podés comprobar si llegó a comenzar.',
                   'check-status',
                 ),
               );
