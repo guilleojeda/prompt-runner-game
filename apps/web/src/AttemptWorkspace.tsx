@@ -2555,6 +2555,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
                   className="secondary-button"
                   type="button"
                   onClick={() => {
+                    setError(null);
                     void refreshQuota();
                     void refreshHistory();
                   }}
