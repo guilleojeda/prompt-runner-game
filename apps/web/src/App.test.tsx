@@ -236,17 +236,19 @@ describe('access screen', () => {
       return host as HTMLElement;
     });
     expect(within(controls).getByRole('checkbox', { name: 'Animación' })).toBeTruthy();
-    expect(within(controls).getByText('de 100 intentos disponibles')).toBeTruthy();
-    expect(
-      (within(controls).getByRole('button', { name: 'Probar' }) as HTMLButtonElement).disabled,
-    ).toBe(true);
+    const tryButton = within(controls).getByRole('button', { name: 'Probar' }) as HTMLButtonElement;
+    expect(tryButton.disabled).toBe(true);
+
+    await screen.findByText('Todavía no hay intentos guardados.');
+    await within(controls).findByText('de 100 intentos disponibles');
+    await within(controls).findByText('El resultado aparece después de la reproducción.');
+    expect(document.querySelector('#attempt-controls-slot')).toBe(controls);
+    expect(controls.isConnected).toBe(true);
+    expect(within(controls).getByRole('checkbox', { name: 'Animación' })).toBeTruthy();
+    expect(tryButton.disabled).toBe(true);
 
     releaseDraft({ version: 0, draft: createDefaultDraft() });
-    await waitFor(() =>
-      expect(
-        (within(controls).getByRole('button', { name: 'Probar' }) as HTMLButtonElement).disabled,
-      ).toBe(false),
-    );
+    await waitFor(() => expect(tryButton.disabled).toBe(false));
   });
 
   it('keeps the logout label while the signed-in account loads its attempts', async () => {
