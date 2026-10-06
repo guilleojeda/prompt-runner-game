@@ -557,6 +557,7 @@ export function DecisionInspector({
     initialScrollNumberRef.current = null;
     setSelectedSupport(support);
     const first = index?.decisions.find((item) => item.originSupport === support);
+    if (selectedNumber === (first?.number ?? null)) return;
     setSelectedNumber(first?.number ?? null);
     setDetail(null);
     setDetailError(null);
@@ -565,6 +566,7 @@ export function DecisionInspector({
   const selectDecision = (item: DecisionIndexItem): void => {
     initialScrollNumberRef.current = null;
     setSelectedSupport(item.originSupport);
+    if (selectedNumber === item.number) return;
     setSelectedNumber(item.number);
     setDetail(null);
     setDetailError(null);

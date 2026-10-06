@@ -46,6 +46,7 @@ export interface RobotEditorProps {
   tryLocked?: boolean;
   onTry?: () => void;
   onAuthRequired?: () => void;
+  onConfigurationAvailabilityChange?: (available: boolean) => void;
   onAttemptControlsHostChange?: (node: HTMLDivElement | null) => void;
 }
 
@@ -124,6 +125,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     tryLocked = false,
     onTry,
     onAuthRequired,
+    onConfigurationAvailabilityChange,
     onAttemptControlsHostChange,
   },
   ref,
@@ -152,6 +154,15 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
   lockedRef.current = locked;
   sessionRef.current = session;
   onAuthRequiredRef.current = onAuthRequired;
+
+  useEffect(() => {
+    onConfigurationAvailabilityChange?.(draft !== null);
+  }, [draft, onConfigurationAvailabilityChange]);
+
+  useEffect(
+    () => () => onConfigurationAvailabilityChange?.(false),
+    [onConfigurationAvailabilityChange],
+  );
 
   const updateDraft = (next: RobotDraft): void => {
     if (pausedRef.current || lockedRef.current) {

@@ -306,6 +306,7 @@ export function App({
   const [attemptBusy, setAttemptBusy] = useState(false);
   const [configurationBusy, setConfigurationBusy] = useState(false);
   const [attemptPreferenceReady, setAttemptPreferenceReady] = useState(false);
+  const [editorReadySubject, setEditorReadySubject] = useState<string | null>(null);
   const [attemptControlsHost, setAttemptControlsHost] = useState<HTMLDivElement | null>(null);
   const clientRef = useRef<AuthClient | null>(authClient ?? null);
   const configRef = useRef<AuthConfig | null>(null);
@@ -333,6 +334,10 @@ export function App({
     }
     currentSessionRef.current = nextSession;
     setSession(nextSession);
+  }, []);
+
+  const handleEditorAvailabilityChange = useCallback((available: boolean): void => {
+    setEditorReadySubject(available ? (currentSessionRef.current?.identity.sub ?? null) : null);
   }, []);
 
   useEffect(() => {
@@ -738,6 +743,7 @@ export function App({
                 tryLocked={configurationBusy}
                 onTry={runnerApi ? () => attemptWorkspaceRef.current?.start() : undefined}
                 onAuthRequired={handleApiAuthRequired}
+                onConfigurationAvailabilityChange={handleEditorAvailabilityChange}
                 onAttemptControlsHostChange={handleAttemptControlsHostChange}
               />
             )}
@@ -764,6 +770,7 @@ export function App({
                         api={savedApi}
                         editor={editorRef}
                         session={session}
+                        configurationAvailable={editorReadySubject === session.identity.sub}
                         paused={renewing || phase !== 'account' || apiAuthError}
                         locked={attemptBusy || configurationBusy || !attemptPreferenceReady}
                         onAuthRequired={handleApiAuthRequired}

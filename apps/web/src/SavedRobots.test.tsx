@@ -142,7 +142,9 @@ describe('SavedRobots', () => {
     const savedApi = api({ listRobots: vi.fn().mockResolvedValue({ robots: [] }) });
     render(<SavedRobots api={savedApi} editor={editor()} session={session()} />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Guardar como nueva' }));
+    const create = await screen.findByRole('button', { name: 'Guardar como nueva' });
+    await waitFor(() => expect((create as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(create);
     expect(screen.getAllByRole('button', { name: 'Guardar como nueva' })).toHaveLength(1);
 
     const input = screen.getByLabelText('Nombre para la nueva copia');
@@ -261,7 +263,7 @@ describe('SavedRobots', () => {
       saveRobot,
       getRobot,
     });
-    render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
+    const view = render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Guardar como nueva' }));
     fireEvent.change(screen.getByLabelText('Nombre para la nueva copia'), {
@@ -273,6 +275,20 @@ describe('SavedRobots', () => {
     expect(saveRobot).toHaveBeenCalledTimes(1);
     const firstId = saveRobot.mock.calls[0]?.[0];
 
+    view.rerender(
+      <SavedRobots
+        api={savedApi}
+        editor={editorRef}
+        session={session()}
+        configurationAvailable={false}
+      />,
+    );
+    expect(
+      (screen.getByRole('button', { name: 'Guardar como nueva' }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+    const pendingName = screen.getByLabelText('Nombre para la nueva copia') as HTMLInputElement;
+    expect(pendingName.disabled).toBe(true);
+    expect(pendingName.value).toBe('Persistente');
     fireEvent.submit(form);
     await waitFor(() => expect(getRobot).toHaveBeenCalledTimes(2));
     expect(saveRobot).toHaveBeenCalledTimes(1);
