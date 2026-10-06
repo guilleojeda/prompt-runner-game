@@ -923,6 +923,102 @@ describe('access screen', () => {
     expect(logout).toHaveBeenCalledOnce();
   });
 
+  it('cancels a pending discard-and-logout prompt when Probar starts admission', async () => {
+    window.sessionStorage.clear();
+    const logout = vi.fn().mockResolvedValue(undefined);
+    const createAttempt = vi.fn(() => new Promise<never>(() => undefined));
+    const draftApi: DraftApi = {
+      getDraft: vi.fn().mockResolvedValue({ version: 1, draft: createDefaultDraft() }),
+      putDraft: vi
+        .fn()
+        .mockImplementation(async (version, draft) => ({ version: version + 1, draft })),
+    };
+    render(
+      <App
+        authClient={client({ initialize: vi.fn().mockResolvedValue(session()), logout })}
+        draftApi={draftApi}
+        attemptApi={{ ...emptyAttemptApi(), createAttempt }}
+        configLoader={async () => config}
+      />,
+    );
+
+    const tryButton = await screen.findByRole('button', { name: 'Probar' });
+    await waitFor(() => expect((tryButton as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.change(screen.getByLabelText('Qué debe tener en cuenta el robot'), {
+      target: { value: 'Cambios locales para la admisión' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Cerrar sesión' }));
+    expect(screen.getByRole('heading', { name: 'Tenés cambios sin confirmar' })).toBeTruthy();
+
+    fireEvent.click(tryButton);
+    await waitFor(() => expect(createAttempt).toHaveBeenCalledOnce());
+
+    expect(screen.queryByRole('heading', { name: 'Tenés cambios sin confirmar' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Descartar cambios locales y salir' })).toBeNull();
+    expect(
+      (screen.getByRole('button', { name: 'Cerrar sesión' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(screen.getByRole('heading', { name: 'Sesión confirmada' })).toBeTruthy();
+    expect(logout).not.toHaveBeenCalled();
+  });
+
+  it('keeps the session and admits the snapshot when an awaited save resolves after Probar', async () => {
+    window.sessionStorage.clear();
+    const logout = vi.fn().mockResolvedValue(undefined);
+    const createAttempt = vi.fn(() => new Promise<never>(() => undefined));
+    let resolvePut!: (snapshot: DraftSnapshot) => void;
+    const putDraft = vi.fn<DraftApi['putDraft']>().mockReturnValue(
+      new Promise<DraftSnapshot>((resolve) => {
+        resolvePut = resolve;
+      }),
+    );
+    const draftApi: DraftApi = {
+      getDraft: vi.fn().mockResolvedValue({ version: 1, draft: createDefaultDraft() }),
+      putDraft,
+    };
+    render(
+      <App
+        authClient={client({ initialize: vi.fn().mockResolvedValue(session()), logout })}
+        draftApi={draftApi}
+        attemptApi={{ ...emptyAttemptApi(), createAttempt }}
+        configLoader={async () => config}
+      />,
+    );
+
+    const tryButton = await screen.findByRole('button', { name: 'Probar' });
+    await waitFor(() => expect((tryButton as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.change(screen.getByLabelText('Qué debe tener en cuenta el robot'), {
+      target: { value: 'Guardado pendiente antes de probar' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Cerrar sesión' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Esperar guardado' }));
+    await waitFor(() => expect(putDraft).toHaveBeenCalledOnce());
+
+    fireEvent.click(tryButton);
+    expect(screen.queryByRole('heading', { name: 'Tenés cambios sin confirmar' })).toBeNull();
+    expect(screen.getByRole('heading', { name: 'Sesión confirmada' })).toBeTruthy();
+    expect(logout).not.toHaveBeenCalled();
+    await act(async () => {
+      resolvePut({
+        version: 2,
+        draft: { ...createDefaultDraft(), instructions: 'Guardado pendiente antes de probar' },
+      });
+    });
+    await waitFor(() => expect(createAttempt).toHaveBeenCalledOnce());
+
+    expect(createAttempt).toHaveBeenCalledWith(
+      expect.any(String),
+      2,
+      expect.objectContaining({ instructions: 'Guardado pendiente antes de probar' }),
+      true,
+    );
+    expect(logout).not.toHaveBeenCalled();
+    expect(screen.getByRole('heading', { name: 'Sesión confirmada' })).toBeTruthy();
+    expect(
+      (screen.getByRole('button', { name: 'Cerrar sesión' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+  });
+
   it('locks editor fields and logout in the same click that starts admission', async () => {
     const authClient = client({ initialize: vi.fn().mockResolvedValue(session()) });
     const draftApi: DraftApi = {

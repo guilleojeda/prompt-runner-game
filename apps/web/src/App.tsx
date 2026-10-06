@@ -584,6 +584,13 @@ export function App({
     void performLogout();
   };
 
+  const startAttempt = () => {
+    logoutAttemptRef.current += 1;
+    setLogoutPrompt(false);
+    setLogoutChoiceBusy(false);
+    attemptWorkspaceRef.current?.start();
+  };
+
   const waitAndLogout = async () => {
     const attempt = logoutAttemptRef.current + 1;
     logoutAttemptRef.current = attempt;
@@ -741,7 +748,7 @@ export function App({
                 paused={renewing || phase !== 'account' || apiAuthError}
                 locked={attemptBusy || !attemptPreferenceReady}
                 tryLocked={configurationBusy}
-                onTry={runnerApi ? () => attemptWorkspaceRef.current?.start() : undefined}
+                onTry={runnerApi ? startAttempt : undefined}
                 onAuthRequired={handleApiAuthRequired}
                 onConfigurationAvailabilityChange={handleEditorAvailabilityChange}
                 onAttemptControlsHostChange={handleAttemptControlsHostChange}
