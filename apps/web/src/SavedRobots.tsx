@@ -43,6 +43,7 @@ export interface SavedRobotsProps {
   api: SavedRobotApi;
   editor: RefObject<RobotEditorHandle | null>;
   session: AuthSession;
+  configurationAvailable?: boolean;
   paused?: boolean;
   locked?: boolean;
   onAuthRequired?: () => void;
@@ -114,6 +115,7 @@ export function SavedRobots({
   api,
   editor,
   session,
+  configurationAvailable = true,
   paused = false,
   locked = false,
   onAuthRequired,
@@ -206,7 +208,7 @@ export function SavedRobots({
   };
 
   const handleSelect = async (summary: SavedRobotSummary): Promise<void> => {
-    if (busy) return;
+    if (busy || !configurationAvailable) return;
     setOperation('load');
     setError(null);
     setErrorKind(null);
@@ -368,6 +370,7 @@ export function SavedRobots({
     event.preventDefault();
     let intent = pendingCreateRef.current;
     const retryingPendingCreate = intent !== null;
+    if (!configurationAvailable && !retryingPendingCreate) return;
     let createId = intent?.id;
     let createName = intent?.name;
     if (!intent) {
@@ -605,6 +608,7 @@ export function SavedRobots({
     selected !== null &&
     nameMode === null &&
     conflict === null;
+  const canSaveAsNew = configurationAvailable || pendingCreate !== null;
   return (
     <section className="saved-robots" aria-labelledby="saved-robots-title" aria-busy={busy}>
       <div className="saved-robots-heading">
@@ -668,7 +672,7 @@ export function SavedRobots({
                   className={`saved-robot-item${selected?.id === robot.id ? ' is-selected' : ''}`}
                   type="button"
                   onClick={() => void handleSelect(robot)}
-                  disabled={busy}
+                  disabled={busy || !configurationAvailable}
                   aria-pressed={selected?.id === robot.id}
                 >
                   <span className="saved-robot-item-main">
@@ -713,7 +717,7 @@ export function SavedRobots({
               setErrorKind(null);
               setMessage(null);
             }}
-            disabled={paused || locked || listBusy || operation !== null}
+            disabled={paused || locked || listBusy || operation !== null || !canSaveAsNew}
           >
             Guardar como nueva
           </button>
@@ -780,7 +784,13 @@ export function SavedRobots({
             value={newName}
             onChange={(event) => setNewName(event.target.value)}
             required
-            disabled={paused || locked || operation !== null || pendingCreate !== null}
+            disabled={
+              paused ||
+              locked ||
+              operation !== null ||
+              pendingCreate !== null ||
+              !configurationAvailable
+            }
           />
           {error && errorKind === 'new' && (
             <p className="saved-robots-control-error" role="alert" aria-live="assertive">
@@ -797,7 +807,7 @@ export function SavedRobots({
             <button
               className="primary-button"
               type="submit"
-              disabled={paused || locked || operation !== null}
+              disabled={paused || locked || operation !== null || !canSaveAsNew}
             >
               Guardar como nueva
             </button>

@@ -179,6 +179,55 @@ describe('DecisionInspector', () => {
     expect(screen.getByText('Elegí una decisión para ver su ficha.')).toBeTruthy();
   });
 
+  it.each(['decision list', 'selected support on the map'] as const)(
+    'keeps the loaded detail when reselecting the active decision from the %s',
+    async (control) => {
+      const getDecision = vi.fn().mockResolvedValue(detail(1));
+      const api = inspectorApi({ getDecision });
+      render(<DecisionInspector api={api} attemptId="attempt-1" onClose={vi.fn()} />);
+
+      expect(await screen.findByRole('heading', { name: 'Decisión 1, casilla 2' })).toBeTruthy();
+      fireEvent.click(
+        control === 'decision list'
+          ? screen.getAllByRole('button', { name: /Decisión 1/ })[0]!
+          : screen.getByRole('button', {
+              name: /Casilla 2, Casilla, Tramo 1[–-]2: pozo, recompensa, 2 decisiones/,
+            }),
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(screen.getByRole('heading', { name: 'Decisión 1, casilla 2' })).toBeTruthy();
+      expect(screen.queryByText('Elegí una decisión para ver su ficha.')).toBeNull();
+      expect(getDecision).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('keeps the retry control when reselecting a decision whose detail failed', async () => {
+    const getDecision = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('local transient failure'))
+      .mockResolvedValue(detail(1));
+    const api = inspectorApi({ getDecision });
+    render(<DecisionInspector api={api} attemptId="attempt-1" onClose={vi.fn()} />);
+
+    await screen.findByRole('button', { name: 'Reintentar ficha' });
+    expect(screen.getByRole('button', { name: 'Reintentar ficha' })).toBeTruthy();
+    expect(getDecision).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getAllByRole('button', { name: /Decisión 1/ })[0]!);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(screen.getByRole('button', { name: 'Reintentar ficha' })).toBeTruthy();
+    expect(getDecision).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Reintentar ficha' }));
+    expect(await screen.findByRole('heading', { name: 'Decisión 1, casilla 2' })).toBeTruthy();
+    expect(getDecision).toHaveBeenCalledTimes(2);
+  });
+
   it('renders no-action result codes in Spanish without exposing raw codes', async () => {
     const providerFailure: DecisionDetail = {
       ...detail(1),

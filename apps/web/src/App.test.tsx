@@ -258,6 +258,80 @@ describe('access screen', () => {
     await waitFor(() => expect(tryButton.disabled).toBe(false));
   });
 
+  it('keeps saved-copy actions unavailable until the editor configuration loads', async () => {
+    const savedDraft = { ...createDefaultDraft(), instructions: 'Configuración guardada.' };
+    const savedCopy: SavedRobot = {
+      id: 'saved-copy',
+      name: 'Explorador guardado',
+      version: 1,
+      createdAt: '2026-09-29T12:00:00.000Z',
+      updatedAt: '2026-09-29T12:00:00.000Z',
+      modelKey: savedDraft.modelKey,
+      draft: savedDraft,
+    };
+    const getDraft = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('No se pudo cargar.'))
+      .mockResolvedValueOnce({ version: 0, draft: createDefaultDraft() });
+    const draftApi: DraftApi = { getDraft, putDraft: vi.fn() };
+    const listRobots = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('No se pudo cargar la lista.'))
+      .mockResolvedValueOnce({
+        robots: [
+          {
+            id: savedCopy.id,
+            name: savedCopy.name,
+            version: savedCopy.version,
+            createdAt: savedCopy.createdAt,
+            updatedAt: savedCopy.updatedAt,
+            modelKey: savedCopy.modelKey,
+          },
+        ],
+      });
+    const savedRobotApi: SavedRobotApi = {
+      listRobots,
+      getRobot: vi.fn().mockResolvedValue(savedCopy),
+      saveRobot: vi.fn(),
+      deleteRobot: vi.fn(),
+    };
+    render(
+      <App
+        authClient={client({ initialize: vi.fn().mockResolvedValue(session()) })}
+        draftApi={draftApi}
+        savedRobotApi={savedRobotApi}
+        attemptApi={emptyAttemptApi()}
+        configLoader={async () => config}
+      />,
+    );
+
+    const savedSection = (await screen.findByRole('heading', { name: 'Tus robots' })).closest(
+      'section',
+    ) as HTMLElement;
+    const retryList = await within(savedSection).findByRole('button', {
+      name: 'Reintentar lista',
+    });
+    await waitFor(() => expect((retryList as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(retryList);
+    const copyButton = await within(savedSection).findByRole('button', {
+      name: /Explorador guardado.*Cargar/,
+    });
+    const createButton = within(savedSection).getByRole('button', {
+      name: 'Guardar como nueva',
+    }) as HTMLButtonElement;
+    expect((copyButton as HTMLButtonElement).disabled).toBe(true);
+    expect(createButton.disabled).toBe(true);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Reintentar carga' }));
+    await screen.findByDisplayValue(createDefaultDraft().instructions);
+    await waitFor(() => {
+      expect((copyButton as HTMLButtonElement).disabled).toBe(false);
+      expect(createButton.disabled).toBe(false);
+    });
+    expect(getDraft).toHaveBeenCalledTimes(2);
+    expect(listRobots).toHaveBeenCalledTimes(2);
+  });
+
   it('keeps the logout label while the signed-in account loads its attempts', async () => {
     window.sessionStorage.clear();
     const authClient = client({ initialize: vi.fn().mockResolvedValue(session()) });
