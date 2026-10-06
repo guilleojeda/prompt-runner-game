@@ -102,6 +102,7 @@ interface AttemptWorkspaceProps {
   readonly api: AttemptApi;
   readonly editor: RefObject<RobotEditorHandle | null>;
   readonly session: AuthSession;
+  readonly configurationAvailable?: boolean;
   readonly authPaused?: boolean;
   readonly onBusyChange?: (busy: boolean) => void;
   readonly onConfigurationBusyChange?: (busy: boolean) => void;
@@ -772,6 +773,7 @@ function HistoryList({
 function ConfigurationPreview({
   state,
   busy,
+  configurationAvailable,
   onApply,
   onRetry,
   onClose,
@@ -784,6 +786,7 @@ function ConfigurationPreview({
     readonly applied?: boolean;
   };
   busy: boolean;
+  configurationAvailable: boolean;
   onApply: () => void;
   onRetry: () => void;
   onClose: () => void;
@@ -876,7 +879,7 @@ function ConfigurationPreview({
             className="primary-button"
             type="button"
             onClick={onApply}
-            disabled={busy || state.status === 'applying'}
+            disabled={busy || state.status === 'applying' || !configurationAvailable}
           >
             {state.status === 'applying' ? 'Aplicando configuración…' : 'Usar esta configuración'}
           </button>
@@ -892,6 +895,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       api,
       editor,
       session,
+      configurationAvailable = true,
       authPaused = false,
       onBusyChange,
       onConfigurationBusyChange,
@@ -1987,6 +1991,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         !configuration ||
         busy ||
         authPaused ||
+        !configurationAvailable ||
         current.status === 'applying' ||
         configurationApplyingRef.current
       )
@@ -2015,7 +2020,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
                   ? {}
                   : {
                       message:
-                        'No se pudo aplicar la configuración. El editor conserva su contenido y muestra la causa.',
+                        'No se pudo aplicar la configuración. Revisá el estado del editor y volvé a intentarlo.',
                     }),
               }
             : state,
@@ -2029,7 +2034,14 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           onConfigurationBusyChange?.(false);
         }
       }
-    }, [authPaused, busy, configurationState, editor, onConfigurationBusyChange]);
+    }, [
+      authPaused,
+      busy,
+      configurationAvailable,
+      configurationState,
+      editor,
+      onConfigurationBusyChange,
+    ]);
 
     const openDecisionInspector = useCallback(
       (initialSelection: DecisionInitialSelection = 'first'): void => {
@@ -2684,6 +2696,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           <ConfigurationPreview
             state={configurationState}
             busy={busy || authPaused || configurationState.status === 'applying'}
+            configurationAvailable={configurationAvailable}
             onApply={() => void applyConfiguration()}
             onRetry={() => void openConfiguration(configurationState.targetId, false)}
             onClose={closeConfiguration}

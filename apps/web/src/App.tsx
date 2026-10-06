@@ -756,6 +756,7 @@ export function App({
                   api={runnerApi}
                   editor={editorRef}
                   session={session}
+                  configurationAvailable={editorReadySubject === session.identity.sub}
                   authPaused={renewing || phase !== 'account' || apiAuthError}
                   onBusyChange={handleAttemptBusyChange}
                   onConfigurationBusyChange={setConfigurationBusy}
