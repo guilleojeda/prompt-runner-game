@@ -2552,6 +2552,43 @@ describe('AttemptWorkspace', () => {
     expect(attemptApi.createAttempt).not.toHaveBeenCalled();
   });
 
+  it('keeps history configuration preview and closing available while the editor is unavailable', async () => {
+    const terminal = { ...summary('victory'), id: 'attempt-editor-unavailable' };
+    const recovered = { ...createDefaultDraft(), instructions: 'Snapshot consultable' };
+    const applyDraft = vi.fn().mockResolvedValue(true);
+    const attemptApi = api({
+      listAttempts: vi.fn().mockResolvedValue({ attempts: [terminal] }),
+      getConfiguration: vi.fn().mockResolvedValue({ attemptId: terminal.id, draft: recovered }),
+    });
+    const editor = { current: { applyDraft } } as unknown as { current: RobotEditorHandle | null };
+    render(
+      <AttemptWorkspace
+        api={attemptApi}
+        editor={editor}
+        session={session()}
+        configurationAvailable={false}
+      />,
+    );
+
+    const history = await screen.findByRole('heading', { name: 'Historial' });
+    fireEvent.click(
+      within(history.closest('section') as HTMLElement).getAllByRole('button', {
+        name: 'Ver configuración',
+      })[0]!,
+    );
+    expect(await screen.findByText('Snapshot consultable')).toBeTruthy();
+    const applyButton = screen.getByRole('button', { name: 'Usar esta configuración' });
+    expect((applyButton as HTMLButtonElement).disabled).toBe(true);
+    expect(attemptApi.getConfiguration).toHaveBeenCalledWith(terminal.id, expect.any(AbortSignal));
+    expect(attemptApi.createAttempt).not.toHaveBeenCalled();
+    expect(applyDraft).not.toHaveBeenCalled();
+
+    const closeButton = screen.getByRole('button', { name: 'Cerrar' });
+    expect((closeButton as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(closeButton);
+    expect(screen.queryByRole('heading', { name: 'Configuración del intento' })).toBeNull();
+  });
+
   it('moves keyboard focus into the configuration and returns it to the history control', async () => {
     const terminal = { ...summary('victory'), id: 'attempt-focus', score: 100, gameTokens: 700 };
     const attemptApi = api({
@@ -2631,7 +2668,7 @@ describe('AttemptWorkspace', () => {
     expect(attemptApi.createAttempt).not.toHaveBeenCalled();
   });
 
-  it('shows a failed configuration apply and keeps the editor content available', async () => {
+  it('shows an actionable configuration apply failure without promising editor content', async () => {
     const terminal = {
       ...summary('victory'),
       id: 'attempt-config-failure',
@@ -2657,6 +2694,8 @@ describe('AttemptWorkspace', () => {
     expect((await screen.findByRole('alert')).textContent).toContain(
       'No se pudo aplicar la configuración',
     );
+    expect(screen.getByRole('alert').textContent).toContain('estado del editor');
+    expect(screen.getByRole('alert').textContent).not.toContain('conserva su contenido');
     expect(applyDraft).toHaveBeenCalledWith(recovered);
   });
 

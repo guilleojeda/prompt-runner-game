@@ -332,6 +332,98 @@ describe('access screen', () => {
     expect(listRobots).toHaveBeenCalledTimes(2);
   });
 
+  it('previews history while the editor load fails, then applies the snapshot after retry', async () => {
+    const sourceSummary: AttemptSummary = {
+      id: 'attempt-editor-retry',
+      createdAt: '2026-09-21T12:00:00.000Z',
+      updatedAt: '2026-09-21T12:00:01.000Z',
+      status: 'victory',
+      cancelRequested: false,
+      levelId: LEVEL.id,
+      modelKey: 'claude-sonnet-4.6',
+      modelLabel: 'Claude Sonnet 4.6',
+      modelId: 'global.anthropic.claude-sonnet-4-6',
+      turnsUsed: 8,
+      maxTurns: LEVEL.maxTurns,
+      calls: 8,
+      inputTokens: null,
+      outputTokens: null,
+      reasoningTokens: null,
+      gameTokens: 700,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+      score: 100,
+      collectedObjectIds: [],
+      objectPoints: 0,
+      progress: 1,
+      finalSupport: LEVEL.exit.support,
+      animationEnabled: false,
+      presentationComplete: true,
+      recordComplete: true,
+    };
+    const recovered = { ...createDefaultDraft(), instructions: 'Recuperada desde el historial' };
+    const getDraft = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('No se pudo cargar el borrador.'))
+      .mockResolvedValueOnce({ version: 0, draft: createDefaultDraft() });
+    const draftApi: DraftApi = { getDraft, putDraft: vi.fn() };
+    const attemptApi: AttemptApi = {
+      ...emptyAttemptApi(),
+      listAttempts: vi.fn().mockResolvedValue({ attempts: [sourceSummary] }),
+      getConfiguration: vi
+        .fn()
+        .mockResolvedValue({ attemptId: sourceSummary.id, draft: recovered }),
+    };
+    render(
+      <App
+        authClient={client({ initialize: vi.fn().mockResolvedValue(session()) })}
+        draftApi={draftApi}
+        attemptApi={attemptApi}
+        configLoader={async () => config}
+      />,
+    );
+
+    const history = await screen.findByRole('heading', { name: 'Historial' });
+    const openConfiguration = () =>
+      fireEvent.click(
+        within(history.closest('section') as HTMLElement).getAllByRole('button', {
+          name: 'Ver configuración',
+        })[0]!,
+      );
+    openConfiguration();
+    expect(await screen.findByText('Recuperada desde el historial')).toBeTruthy();
+    expect(
+      (screen.getByRole('button', { name: 'Usar esta configuración' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    expect(attemptApi.getConfiguration).toHaveBeenCalledOnce();
+    expect((screen.getByRole('button', { name: 'Cerrar' }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Cerrar' }));
+    expect(screen.queryByRole('heading', { name: 'Configuración del intento' })).toBeNull();
+
+    openConfiguration();
+    expect(await screen.findByText('Recuperada desde el historial')).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button', { name: 'Reintentar carga' }));
+    await screen.findByDisplayValue(createDefaultDraft().instructions);
+    await waitFor(() =>
+      expect(
+        (screen.getByRole('button', { name: 'Usar esta configuración' }) as HTMLButtonElement)
+          .disabled,
+      ).toBe(false),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Usar esta configuración' }));
+    expect(await screen.findByDisplayValue('Recuperada desde el historial')).toBeTruthy();
+    expect(
+      await screen.findByText(
+        'Configuración cargada en el editor. Se guarda como una edición normal.',
+      ),
+    ).toBeTruthy();
+    expect(getDraft).toHaveBeenCalledTimes(2);
+    expect(attemptApi.createAttempt).not.toHaveBeenCalled();
+  });
+
   it('keeps the logout label while the signed-in account loads its attempts', async () => {
     window.sessionStorage.clear();
     const authClient = client({ initialize: vi.fn().mockResolvedValue(session()) });
