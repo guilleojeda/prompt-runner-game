@@ -1281,6 +1281,58 @@ describe('access screen', () => {
     expect(screen.getByRole('button', { name: 'Volver a ingresar' })).toBeTruthy();
   });
 
+  it('pauses the preference controls and offers re-entry after a preference auth failure', async () => {
+    window.sessionStorage.clear();
+    const authClient = client({ initialize: vi.fn().mockResolvedValue(session()) });
+    const draftApi: DraftApi = {
+      getDraft: vi.fn().mockResolvedValue({ version: 0, draft: createDefaultDraft() }),
+      putDraft: vi.fn().mockResolvedValue({ version: 1, draft: createDefaultDraft() }),
+    };
+    const authError = new AttemptApiFailure('authentication', 'Tu sesión dejó de ser válida.', 401);
+    const getAnimationPreference = vi
+      .fn()
+      .mockResolvedValueOnce({ animationEnabled: true, version: 0 })
+      .mockRejectedValueOnce(authError);
+    const putAnimationPreference = vi.fn().mockRejectedValue(authError);
+    const attemptApi = {
+      ...emptyAttemptApi(),
+      getAnimationPreference,
+      putAnimationPreference,
+    };
+    render(
+      <App
+        authClient={authClient}
+        draftApi={draftApi}
+        attemptApi={attemptApi}
+        configLoader={async () => config}
+      />,
+    );
+
+    await screen.findByRole('heading', { name: 'Historial' });
+    const animation = screen.getByRole('checkbox', { name: 'Animación' }) as HTMLInputElement;
+    await waitFor(() => expect(animation.disabled).toBe(false));
+    fireEvent.click(animation);
+
+    await waitFor(() => expect(putAnimationPreference).toHaveBeenCalledOnce());
+    await waitFor(() => expect(getAnimationPreference).toHaveBeenCalledTimes(2));
+    expect(await screen.findByRole('button', { name: 'Volver a ingresar' })).toBeTruthy();
+    expect(screen.getByText('a@example.com')).toBeTruthy();
+    expect(
+      screen.getByText('La sesión necesita volver a validarse antes de continuar.'),
+    ).toBeTruthy();
+    expect(animation.disabled).toBe(true);
+    expect(
+      (
+        screen
+          .getByLabelText('Qué debe tener en cuenta el robot')
+          .closest('fieldset') as HTMLFieldSetElement
+      ).disabled,
+    ).toBe(true);
+
+    fireEvent.click(animation);
+    expect(putAnimationPreference).toHaveBeenCalledOnce();
+  });
+
   it('loads an attempt configuration, saves it as a copy, then tests the visible draft', async () => {
     window.sessionStorage.clear();
     const authClient = client({ initialize: vi.fn().mockResolvedValue(session()) });
