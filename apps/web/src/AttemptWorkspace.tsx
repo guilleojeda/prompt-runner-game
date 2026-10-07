@@ -1304,11 +1304,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         setReplayRecord(null);
         setPlaybackReachedEnd(false);
         clearDecisionInspector();
-        setError(null);
-        completionOperationRef.current += 1;
-        completionBusyRef.current = false;
-        completionAttemptRef.current = null;
-        setCompletionBusy(false);
+        setError((current) => (current?.guidance === 'presentation-completion' ? current : null));
         if (kind === 'automatic' && !target.recordComplete) {
           setMode('replay-error');
           setError(
@@ -1370,7 +1366,8 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
 
     const applyAttempt = useCallback(
       (next: AttemptSummary, options: { clearRequest?: boolean } = {}): void => {
-        if (attemptRef.current && attemptRef.current.id !== next.id) {
+        const sameAttempt = attemptRef.current?.id === next.id;
+        if (attemptRef.current && !sameAttempt) {
           completionOperationRef.current += 1;
           completionBusyRef.current = false;
           completionAttemptRef.current = null;
@@ -1404,7 +1401,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             ...(frozen ?? {}),
           });
         }
-        setError(null);
+        setError((current) =>
+          sameAttempt && current?.guidance === 'presentation-completion' ? current : null,
+        );
         if (needsAutomaticPresentation(next)) {
           void beginReplay(next, 'automatic');
         } else {
@@ -2158,7 +2157,10 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         clearDecisionInspector();
         clearConfiguration();
         setMode('opening');
-        setError(null);
+        const sameAttempt = attemptRef.current?.id === id;
+        setError((current) =>
+          sameAttempt && current?.guidance === 'presentation-completion' ? current : null,
+        );
         try {
           const next = await api.getAttempt(id);
           if (
@@ -2166,6 +2168,14 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             operationEpochRef.current !== operationEpoch
           ) {
             return;
+          }
+          if (attemptRef.current && attemptRef.current.id !== next.id) {
+            completionOperationRef.current += 1;
+            completionBusyRef.current = false;
+            completionAttemptRef.current = null;
+            setCompletionBusy(false);
+            setPlaybackKind(null);
+            setPlaybackReachedEnd(false);
           }
           if (!isTerminal(next.status) || !next.recordComplete) {
             attemptRef.current = next;
@@ -2258,8 +2268,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
               items.map((item) => (item.id === completed.id ? completed : item)),
             );
             setPlaybackReachedEnd(false);
-            setPlaybackKind((kind) => (kind === 'automatic' ? null : kind));
-            setError(null);
+            setError((current) =>
+              current?.guidance === 'presentation-completion' ? null : current,
+            );
           })
           .catch((completionError: unknown) => {
             if (
@@ -2286,6 +2297,11 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       },
       [api, onAuthRequired, sessionSub],
     );
+
+    const retryPresentationCompletion = useCallback((): void => {
+      const current = attemptRef.current;
+      if (current) completePresentationInBackground(current);
+    }, [completePresentationInBackground]);
 
     const retryReplay = useCallback((): void => {
       const current = attemptRef.current;
@@ -2372,17 +2388,20 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     const showResultAfterReplayError = useCallback((): void => {
       const current = attemptRef.current;
       if (!current || !isTerminal(current.status)) return;
+      const manualReplay = playbackKind === 'manual';
       const shouldComplete =
         current.animationEnabled && !current.presentationComplete && current.turnsUsed > 0;
       setReplayRecord(null);
       setPlaybackKind(shouldComplete ? 'automatic' : null);
       setPlaybackReachedEnd(shouldComplete);
-      setError(null);
+      setError((currentError) =>
+        currentError?.guidance === 'presentation-completion' ? currentError : null,
+      );
       setMode('result');
-      if (shouldComplete) {
+      if (shouldComplete && !manualReplay && error?.guidance !== 'presentation-completion') {
         completePresentationInBackground(current);
       }
-    }, [completePresentationInBackground]);
+    }, [completePresentationInBackground, error, playbackKind]);
 
     const replayAttemptId = replayRecord?.id;
 
@@ -2401,12 +2420,17 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         setMode('result');
         return;
       }
-      setPlaybackReachedEnd(true);
+      setPlaybackReachedEnd(!current.presentationComplete);
+      if (current.presentationComplete) setPlaybackKind(null);
       setReplayRecord(null);
-      setError(null);
+      setError((currentError) =>
+        currentError?.guidance === 'presentation-completion' ? currentError : null,
+      );
       setMode('result');
-      completePresentationInBackground(current);
-    }, [completePresentationInBackground, playbackKind, replayAttemptId]);
+      if (!current.presentationComplete && error?.guidance !== 'presentation-completion') {
+        completePresentationInBackground(current);
+      }
+    }, [completePresentationInBackground, error, playbackKind, replayAttemptId]);
 
     const onReplayError = useCallback((): void => {
       if (!replayAttemptId || attemptRef.current?.id !== replayAttemptId) return;
@@ -2774,23 +2798,26 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           />
         )}
 
-        {mode === 'result' && playbackReachedEnd && playbackKind === 'automatic' && (
-          <>
-            {completionBusy && (
-              <p className="attempt-message" role="status">
-                Guardando el cierre de la presentación…
-              </p>
-            )}
-            <button
-              className="secondary-button"
-              type="button"
-              onClick={retryReplay}
-              disabled={completionBusy}
-            >
-              Reintentar cierre de presentación
-            </button>
-          </>
-        )}
+        {mode === 'result' &&
+          ((playbackReachedEnd && playbackKind === 'automatic') ||
+            error?.guidance === 'presentation-completion' ||
+            completionBusy) && (
+            <>
+              {completionBusy && (
+                <p className="attempt-message" role="status">
+                  Guardando el cierre de la presentación…
+                </p>
+              )}
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={retryPresentationCompletion}
+                disabled={completionBusy}
+              >
+                Reintentar cierre de presentación
+              </button>
+            </>
+          )}
 
         {historySlot}
 

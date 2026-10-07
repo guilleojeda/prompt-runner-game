@@ -317,6 +317,7 @@ export function App({
   const editorRef = useRef<RobotEditorHandle | null>(null);
   const attemptWorkspaceRef = useRef<AttemptWorkspaceHandle | null>(null);
   const logoutAttemptRef = useRef(0);
+  const sessionEndRef = useRef(0);
   const draftApiFactoryRef = useRef(draftApiFactory);
   const savedRobotApiFactoryRef = useRef(savedRobotApiFactory);
   const attemptApiFactoryRef = useRef(attemptApiFactory);
@@ -429,12 +430,19 @@ export function App({
 
     const delay = Math.max(1, expiresAt * 1000 - Date.now());
     const timer = window.setTimeout(() => {
+      const sessionEnd = sessionEndRef.current;
       setRenewing(true);
       setError(null);
       setPhase('loading');
       void client
         .initialize()
         .then((renewedSession) => {
+          if (
+            sessionEndRef.current !== sessionEnd ||
+            currentSessionRef.current?.identity.sub !== session.identity.sub
+          ) {
+            return;
+          }
           const sameIdentity =
             renewedSession !== null && renewedSession.identity.sub === session.identity.sub;
           if (renewedSession && !sameIdentity) {
@@ -447,6 +455,12 @@ export function App({
           setRetryAction(null);
         })
         .catch((renewalError: unknown) => {
+          if (
+            sessionEndRef.current !== sessionEnd ||
+            currentSessionRef.current?.identity.sub !== session.identity.sub
+          ) {
+            return;
+          }
           setError(errorMessage(renewalError));
           setRetryAction(retryActionForError(renewalError, true));
           setRenewing(true);
@@ -547,6 +561,7 @@ export function App({
 
   const performLogout = async () => {
     logoutAttemptRef.current += 1;
+    sessionEndRef.current += 1;
     if (session) {
       clearAttemptRecovery(session.identity.sub);
     }
@@ -613,6 +628,7 @@ export function App({
   };
 
   const restoreSession = async () => {
+    const sessionEnd = sessionEndRef.current;
     const client = clientRef.current;
     if (!client) {
       setRetryAction('config');
@@ -628,6 +644,9 @@ export function App({
     setPhase('loading');
     try {
       const restoredSession = await client.initialize();
+      if (sessionEndRef.current !== sessionEnd) {
+        return;
+      }
       const previous = currentSessionRef.current;
       const sameIdentity =
         restoredSession !== null &&
@@ -638,6 +657,9 @@ export function App({
       setRetryAction(null);
       setPhase(sameIdentity ? 'account' : 'visitor');
     } catch (restoreError) {
+      if (sessionEndRef.current !== sessionEnd) {
+        return;
+      }
       setError(errorMessage(restoreError));
       setRetryAction(retryActionForError(restoreError, true));
       setPhase('error');

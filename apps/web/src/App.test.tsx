@@ -169,6 +169,12 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+async function flushAuthMicrotasks(): Promise<void> {
+  for (let index = 0; index < 12; index += 1) {
+    await Promise.resolve();
+  }
+}
+
 describe('access screen', () => {
   it('keeps the guest brand linked to the Robot Runner home page', async () => {
     render(<App authClient={client()} />);
@@ -613,6 +619,287 @@ describe('access screen', () => {
     );
     expect(screen.queryByText('a@example.com')).toBeNull();
     expect(screen.getByRole('button', { name: 'Completar cierre remoto' })).toBeTruthy();
+  });
+
+  it.each(['resolved', 'remote-failure'] as const)(
+    'ignores a late successful renewal after logout %s',
+    async (logoutOutcome) => {
+      vi.useFakeTimers();
+      window.sessionStorage.clear();
+      const initial = session('a@example.com', (Date.now() + 5_000) / 1000);
+      let resolveRenewal!: (value: AuthSession) => void;
+      const initialize = vi
+        .fn<() => Promise<AuthSession | null>>()
+        .mockResolvedValueOnce(initial)
+        .mockImplementationOnce(
+          () =>
+            new Promise<AuthSession>((resolve) => {
+              resolveRenewal = resolve;
+            }),
+        );
+      const logoutMessage = 'Se cerró la sesión local, pero no se pudo completar el cierre remoto.';
+      const logout =
+        logoutOutcome === 'resolved'
+          ? vi.fn().mockResolvedValue(undefined)
+          : vi.fn().mockRejectedValue(new AuthFailure('logout', logoutMessage));
+      const authClient = client({ initialize, logout });
+      const draftApi: DraftApi = {
+        getDraft: vi.fn().mockResolvedValue({ version: 1, draft: createDefaultDraft() }),
+        putDraft: vi.fn().mockReturnValue(new Promise<never>(() => undefined)),
+      };
+      render(
+        <App
+          authClient={authClient}
+          draftApi={draftApi}
+          attemptApi={emptyAttemptApi()}
+          configLoader={async () => config}
+        />,
+      );
+
+      await act(flushAuthMicrotasks);
+      expect(screen.getByLabelText('Qué debe tener en cuenta el robot')).toBeTruthy();
+      fireEvent.change(screen.getByLabelText('Qué debe tener en cuenta el robot'), {
+        target: { value: 'Cambio ficticio pendiente' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Cerrar sesión' }));
+      expect(screen.getByRole('heading', { name: 'Tenés cambios sin confirmar' })).toBeTruthy();
+      await act(async () => {
+        vi.advanceTimersByTime(5_000);
+        await flushAuthMicrotasks();
+      });
+      expect(initialize).toHaveBeenCalledTimes(2);
+      expect(screen.getByRole('heading', { name: 'Comprobando tu sesión…' })).toBeTruthy();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Descartar cambios locales y salir' }));
+      await act(flushAuthMicrotasks);
+      expect(logout).toHaveBeenCalledOnce();
+      if (logoutOutcome === 'resolved') {
+        expect(screen.getByRole('button', { name: 'Entrar o crear una cuenta' })).toBeTruthy();
+      } else {
+        expect(screen.getByText(logoutMessage)).toBeTruthy();
+        expect(screen.queryByRole('heading', { name: 'Sesión confirmada' })).toBeNull();
+      }
+
+      await act(async () => {
+        resolveRenewal(session('a@example.com', (Date.now() + 600_000) / 1000));
+        await flushAuthMicrotasks();
+      });
+
+      if (logoutOutcome === 'resolved') {
+        expect(screen.getByRole('button', { name: 'Entrar o crear una cuenta' })).toBeTruthy();
+      } else {
+        expect(screen.getByText(logoutMessage)).toBeTruthy();
+        expect(screen.queryByRole('heading', { name: 'Sesión confirmada' })).toBeNull();
+      }
+      expect(logout).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('ignores a late renewal failure after logout without replacing the remote logout error', async () => {
+    vi.useFakeTimers();
+    window.sessionStorage.clear();
+    const initial = session('a@example.com', (Date.now() + 5_000) / 1000);
+    let rejectRenewal!: (error: unknown) => void;
+    const initialize = vi
+      .fn<() => Promise<AuthSession | null>>()
+      .mockResolvedValueOnce(initial)
+      .mockImplementationOnce(
+        () =>
+          new Promise<AuthSession>((_resolve, reject) => {
+            rejectRenewal = reject;
+          }),
+      );
+    const logoutMessage = 'Se cerró la sesión local, pero no se pudo completar el cierre remoto.';
+    const authClient = client({
+      initialize,
+      logout: vi.fn().mockRejectedValue(new AuthFailure('logout', logoutMessage)),
+    });
+    const draftApi: DraftApi = {
+      getDraft: vi.fn().mockResolvedValue({ version: 1, draft: createDefaultDraft() }),
+      putDraft: vi.fn().mockReturnValue(new Promise<never>(() => undefined)),
+    };
+    render(
+      <App
+        authClient={authClient}
+        draftApi={draftApi}
+        attemptApi={emptyAttemptApi()}
+        configLoader={async () => config}
+      />,
+    );
+
+    await act(flushAuthMicrotasks);
+    expect(screen.getByLabelText('Qué debe tener en cuenta el robot')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Qué debe tener en cuenta el robot'), {
+      target: { value: 'Cambio ficticio pendiente' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Cerrar sesión' }));
+    await act(async () => {
+      vi.advanceTimersByTime(5_000);
+      await flushAuthMicrotasks();
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Descartar cambios locales y salir' }));
+    await act(flushAuthMicrotasks);
+    expect(screen.getByText(logoutMessage)).toBeTruthy();
+
+    await act(async () => {
+      rejectRenewal(new AuthFailure('network', 'Error tardío de renovación.'));
+      await flushAuthMicrotasks();
+    });
+
+    expect(screen.getByText(logoutMessage)).toBeTruthy();
+    expect(screen.queryByText('Error tardío de renovación.')).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Sesión confirmada' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Completar cierre remoto' })).toBeTruthy();
+  });
+
+  it.each(['resolved', 'rejected'] as const)(
+    'ignores a late session restoration after logout when it is %s',
+    async (restoreOutcome) => {
+      vi.useFakeTimers();
+      window.sessionStorage.clear();
+      const initial = session('a@example.com', (Date.now() + 5_000) / 1000);
+      let resolveRestore!: (value: AuthSession) => void;
+      let rejectRestore!: (error: unknown) => void;
+      const initialize = vi
+        .fn<() => Promise<AuthSession | null>>()
+        .mockResolvedValueOnce(initial)
+        .mockRejectedValueOnce(new AuthFailure('network', 'No se pudo renovar la sesión.'))
+        .mockImplementationOnce(
+          () =>
+            new Promise<AuthSession>((resolve, reject) => {
+              resolveRestore = resolve;
+              rejectRestore = reject;
+            }),
+        );
+      const logout = vi.fn().mockResolvedValue(undefined);
+      const authClient = client({ initialize, logout });
+      const draftApi: DraftApi = {
+        getDraft: vi.fn().mockResolvedValue({ version: 1, draft: createDefaultDraft() }),
+        putDraft: vi.fn().mockReturnValue(new Promise<never>(() => undefined)),
+      };
+      render(
+        <App
+          authClient={authClient}
+          draftApi={draftApi}
+          attemptApi={emptyAttemptApi()}
+          configLoader={async () => config}
+        />,
+      );
+
+      await act(flushAuthMicrotasks);
+      expect(screen.getByLabelText('Qué debe tener en cuenta el robot')).toBeTruthy();
+      fireEvent.change(screen.getByLabelText('Qué debe tener en cuenta el robot'), {
+        target: { value: 'Cambio ficticio pendiente' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Cerrar sesión' }));
+      await act(async () => {
+        vi.advanceTimersByTime(5_000);
+        await flushAuthMicrotasks();
+      });
+      expect(screen.getByRole('button', { name: 'Revalidar sesión' })).toBeTruthy();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Revalidar sesión' }));
+      await act(flushAuthMicrotasks);
+      expect(initialize).toHaveBeenCalledTimes(3);
+      fireEvent.click(screen.getByRole('button', { name: 'Descartar cambios locales y salir' }));
+      await act(flushAuthMicrotasks);
+      expect(screen.getByRole('button', { name: 'Entrar o crear una cuenta' })).toBeTruthy();
+      expect(logout).toHaveBeenCalledOnce();
+
+      await act(async () => {
+        if (restoreOutcome === 'resolved') {
+          resolveRestore(session('a@example.com', (Date.now() + 600_000) / 1000));
+        } else {
+          rejectRestore(new AuthFailure('network', 'Error tardío de revalidación.'));
+        }
+        await flushAuthMicrotasks();
+      });
+
+      expect(screen.getByRole('button', { name: 'Entrar o crear una cuenta' })).toBeTruthy();
+      expect(screen.queryByRole('heading', { name: 'Sesión confirmada' })).toBeNull();
+      expect(screen.queryByText('Error tardío de revalidación.')).toBeNull();
+      expect(logout).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('keeps a pending renewal valid when Esperar guardado is clicked while paused', async () => {
+    vi.useFakeTimers();
+    window.sessionStorage.clear();
+    const initial = session('a@example.com', (Date.now() + 5_000) / 1000, 'old-token');
+    const renewed = session('a@example.com', (Date.now() + 600_000) / 1000, 'new-token');
+    let resolveRenewal!: (value: AuthSession) => void;
+    const initialize = vi
+      .fn<() => Promise<AuthSession | null>>()
+      .mockResolvedValueOnce(initial)
+      .mockImplementationOnce(
+        () =>
+          new Promise<AuthSession>((resolve) => {
+            resolveRenewal = resolve;
+          }),
+      );
+    let resolvePut!: (snapshot: DraftSnapshot) => void;
+    const putDraft = vi.fn<DraftApi['putDraft']>().mockReturnValue(
+      new Promise<DraftSnapshot>((resolve) => {
+        resolvePut = resolve;
+      }),
+    );
+    const draftApi: DraftApi = {
+      getDraft: vi.fn().mockResolvedValue({ version: 0, draft: createDefaultDraft() }),
+      putDraft,
+    };
+    const logout = vi.fn().mockResolvedValue(undefined);
+    const authClient = client({ initialize, logout });
+    const instructions = 'Guardar antes de salir tras renovar';
+    render(
+      <App
+        authClient={authClient}
+        draftApi={draftApi}
+        attemptApi={emptyAttemptApi()}
+        configLoader={async () => config}
+      />,
+    );
+
+    await act(flushAuthMicrotasks);
+    expect(screen.getByLabelText('Qué debe tener en cuenta el robot')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Qué debe tener en cuenta el robot'), {
+      target: { value: instructions },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Cerrar sesión' }));
+    expect(screen.getByRole('heading', { name: 'Tenés cambios sin confirmar' })).toBeTruthy();
+    await act(async () => {
+      vi.advanceTimersByTime(600);
+      await flushAuthMicrotasks();
+    });
+    expect(putDraft).toHaveBeenCalledOnce();
+    await act(async () => {
+      vi.advanceTimersByTime(4_400);
+      await flushAuthMicrotasks();
+    });
+    expect(initialize).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole('heading', { name: 'Comprobando tu sesión…' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Esperar guardado' }));
+    await act(flushAuthMicrotasks);
+    expect(screen.getByRole('heading', { name: 'Tenés cambios sin confirmar' })).toBeTruthy();
+    expect(logout).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveRenewal(renewed);
+      await flushAuthMicrotasks();
+    });
+    expect(screen.getByRole('heading', { name: 'Sesión confirmada' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Tenés cambios sin confirmar' })).toBeTruthy();
+    expect(logout).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Esperar guardado' }));
+    await act(flushAuthMicrotasks);
+    await act(async () => {
+      resolvePut({ version: 1, draft: { ...createDefaultDraft(), instructions } });
+      await flushAuthMicrotasks();
+    });
+    expect(logout).toHaveBeenCalledOnce();
+    expect(screen.getByRole('button', { name: 'Entrar o crear una cuenta' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Sesión confirmada' })).toBeNull();
   });
 
   it('retries a configuration failure and reaches the visitor state', async () => {
