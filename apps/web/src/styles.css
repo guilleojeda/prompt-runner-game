@@ -303,6 +303,7 @@ h1 {
 
 .saved-robots {
   width: min(100%, 62rem);
+  overflow-wrap: anywhere;
   padding: 1.5rem;
   border: 1px solid rgba(242, 239, 232, 0.14);
   border-radius: 1rem;
@@ -372,10 +373,6 @@ h1 {
   flex: 1 1 18rem;
   min-width: 0;
   gap: 0.25rem;
-}
-
-.saved-robot-item-main strong {
-  overflow-wrap: anywhere;
 }
 
 .saved-robot-item-main span,
@@ -1692,6 +1689,7 @@ h1 {
 }
 
 .conflict-preview {
+  overflow-wrap: anywhere;
   margin: 0.8rem 0 1rem;
   padding: 0.7rem;
   border-left: 3px solid #d8b36a;
