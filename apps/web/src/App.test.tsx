@@ -338,6 +338,168 @@ describe('access screen', () => {
     expect(listRobots).toHaveBeenCalledTimes(2);
   });
 
+  it('preserves an edit made during a saved-copy load and applies it after an explicit retry', async () => {
+    const loadedDraft = { ...createDefaultDraft(), instructions: 'Copia guardada.' };
+    const localDraft = { ...createDefaultDraft(), instructions: 'Edición posterior.' };
+    const savedCopy: SavedRobot = {
+      id: 'saved-copy-late',
+      name: 'Explorador tardío',
+      version: 1,
+      createdAt: '2026-09-29T12:00:00.000Z',
+      updatedAt: '2026-09-29T12:00:00.000Z',
+      modelKey: loadedDraft.modelKey,
+      draft: loadedDraft,
+    };
+    let resolveRobot!: (robot: SavedRobot) => void;
+    const getRobot = vi.fn().mockReturnValue(
+      new Promise<SavedRobot>((resolve) => {
+        resolveRobot = resolve;
+      }),
+    );
+    const putDraft = vi
+      .fn()
+      .mockImplementation(async (version: number, draft: typeof localDraft) => ({
+        version: version + 1,
+        draft,
+      }));
+    const savedRobotApi: SavedRobotApi = {
+      listRobots: vi.fn().mockResolvedValue({
+        robots: [
+          {
+            id: savedCopy.id,
+            name: savedCopy.name,
+            version: savedCopy.version,
+            createdAt: savedCopy.createdAt,
+            updatedAt: savedCopy.updatedAt,
+            modelKey: savedCopy.modelKey,
+          },
+        ],
+      }),
+      getRobot,
+      saveRobot: vi.fn(),
+      deleteRobot: vi.fn(),
+    };
+    const draftApi: DraftApi = {
+      getDraft: vi.fn().mockResolvedValue({ version: 0, draft: createDefaultDraft() }),
+      putDraft,
+    };
+    render(
+      <App
+        authClient={client({ initialize: vi.fn().mockResolvedValue(session()) })}
+        draftApi={draftApi}
+        savedRobotApi={savedRobotApi}
+        attemptApi={emptyAttemptApi()}
+        configLoader={async () => config}
+      />,
+    );
+
+    const instructions = await screen.findByLabelText('Qué debe tener en cuenta el robot');
+    const copyButton = await screen.findByRole('button', {
+      name: /Explorador tardío.*Cargar/,
+    });
+    fireEvent.click(copyButton);
+    fireEvent.change(instructions, { target: { value: localDraft.instructions } });
+    await act(async () => {
+      resolveRobot(savedCopy);
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(screen.getByDisplayValue(localDraft.instructions)).toBeTruthy());
+    expect(screen.queryByDisplayValue(loadedDraft.instructions)).toBeNull();
+    await waitFor(() => expect(putDraft).toHaveBeenCalledOnce(), { timeout: 2_000 });
+    expect(putDraft.mock.calls[0]?.[1]).toMatchObject({ instructions: localDraft.instructions });
+    expect(putDraft.mock.calls[0]?.[1]).not.toMatchObject({
+      instructions: loadedDraft.instructions,
+    });
+    expect(screen.queryByText(`Cargaste «${savedCopy.name}».`)).toBeNull();
+
+    getRobot.mockResolvedValueOnce(savedCopy);
+    fireEvent.click(copyButton);
+    await waitFor(() => expect(screen.getByDisplayValue(loadedDraft.instructions)).toBeTruthy());
+    expect(await screen.findByText(`Cargaste «${savedCopy.name}».`)).toBeTruthy();
+  });
+
+  it('rejects a saved-copy response that arrives after Probar starts', async () => {
+    const loadedDraft = { ...createDefaultDraft(), instructions: 'No debe entrar.' };
+    const savedCopy: SavedRobot = {
+      id: 'saved-copy-locked',
+      name: 'Explorador bloqueado',
+      version: 1,
+      createdAt: '2026-09-29T12:00:00.000Z',
+      updatedAt: '2026-09-29T12:00:00.000Z',
+      modelKey: loadedDraft.modelKey,
+      draft: loadedDraft,
+    };
+    let resolveRobot!: (robot: SavedRobot) => void;
+    const getRobot = vi.fn().mockReturnValue(
+      new Promise<SavedRobot>((resolve) => {
+        resolveRobot = resolve;
+      }),
+    );
+    const createAttempt = vi.fn(() => new Promise<never>(() => undefined));
+    const putDraft = vi.fn().mockImplementation(async (version: number, draft) => ({
+      version: version + 1,
+      draft,
+    }));
+    const savedRobotApi: SavedRobotApi = {
+      listRobots: vi.fn().mockResolvedValue({
+        robots: [
+          {
+            id: savedCopy.id,
+            name: savedCopy.name,
+            version: savedCopy.version,
+            createdAt: savedCopy.createdAt,
+            updatedAt: savedCopy.updatedAt,
+            modelKey: savedCopy.modelKey,
+          },
+        ],
+      }),
+      getRobot,
+      saveRobot: vi.fn(),
+      deleteRobot: vi.fn(),
+    };
+    const draftApi: DraftApi = {
+      getDraft: vi.fn().mockResolvedValue({ version: 0, draft: createDefaultDraft() }),
+      putDraft,
+    };
+    render(
+      <App
+        authClient={client({ initialize: vi.fn().mockResolvedValue(session()) })}
+        draftApi={draftApi}
+        savedRobotApi={savedRobotApi}
+        attemptApi={{ ...emptyAttemptApi(), createAttempt }}
+        configLoader={async () => config}
+      />,
+    );
+
+    const instructions = await screen.findByLabelText('Qué debe tener en cuenta el robot');
+    fireEvent.click(await screen.findByRole('button', { name: /Explorador bloqueado.*Cargar/ }));
+    const tryButton = await screen.findByRole('button', { name: 'Probar' });
+    await waitFor(() => expect((tryButton as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(tryButton);
+    await waitFor(() =>
+      expect((instructions.closest('fieldset') as HTMLFieldSetElement).disabled).toBe(true),
+    );
+    expect(createAttempt).toHaveBeenCalledWith(
+      expect.any(String),
+      1,
+      expect.objectContaining({ instructions: createDefaultDraft().instructions }),
+      true,
+    );
+
+    await act(async () => {
+      resolveRobot(savedCopy);
+      await Promise.resolve();
+    });
+    await waitFor(() =>
+      expect(screen.getByDisplayValue(createDefaultDraft().instructions)).toBeTruthy(),
+    );
+    expect(screen.queryByDisplayValue(loadedDraft.instructions)).toBeNull();
+    expect(
+      putDraft.mock.calls.every((call) => call[1]?.instructions !== loadedDraft.instructions),
+    ).toBe(true);
+  });
+
   it('previews history while the editor load fails, then applies the snapshot after retry', async () => {
     const sourceSummary: AttemptSummary = {
       id: 'attempt-editor-retry',

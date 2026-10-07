@@ -441,6 +441,81 @@ describe('RobotEditor', () => {
     expect(screen.queryByDisplayValue('Configuración antigua')).toBeNull();
   });
 
+  it('does not replace an edit made while an async draft load is pending', async () => {
+    let resolveLoad!: (draft: RobotDraft) => void;
+    const loadedDraft = { ...createDefaultDraft(), instructions: 'Versión cargada' };
+    const localDraft = { ...createDefaultDraft(), instructions: 'Edición posterior' };
+    const pendingLoad = new Promise<RobotDraft>((resolve) => {
+      resolveLoad = resolve;
+    });
+    const putDraft = vi.fn().mockResolvedValue(snapshot(1, localDraft));
+    const editorRef = createRef<RobotEditorHandle>();
+    render(<RobotEditor ref={editorRef} api={api({ putDraft })} session={session()} />);
+    await screen.findByDisplayValue(createDefaultDraft().instructions);
+
+    const applying = editorRef.current?.applyDraft(() => pendingLoad);
+    fireEvent.change(screen.getByLabelText('Qué debe tener en cuenta el robot'), {
+      target: { value: localDraft.instructions },
+    });
+    await act(async () => {
+      resolveLoad(loadedDraft);
+      expect(await applying).toBe(false);
+    });
+
+    expect(screen.getByDisplayValue(localDraft.instructions)).toBeTruthy();
+    expect(screen.queryByDisplayValue(loadedDraft.instructions)).toBeNull();
+    await waitFor(() => expect(putDraft).toHaveBeenCalledOnce(), { timeout: 2_000 });
+    expect(putDraft.mock.calls[0]?.[1]).toMatchObject({ instructions: localDraft.instructions });
+    expect(putDraft.mock.calls[0]?.[1]).not.toMatchObject({
+      instructions: loadedDraft.instructions,
+    });
+  });
+
+  it('keeps a conflict that appears while an async draft load is pending', async () => {
+    vi.useFakeTimers();
+    const localDraft = { ...createDefaultDraft(), instructions: 'Edición local.' };
+    const remoteDraft = { ...createDefaultDraft(), instructions: 'Versión remota.' };
+    const remote = snapshot(1, remoteDraft);
+    let rejectSave!: (error: DraftApiFailure) => void;
+    let resolveLoad!: (draft: RobotDraft) => void;
+    const pendingSave = new Promise<never>((_resolve, reject) => {
+      rejectSave = reject;
+    });
+    const pendingLoad = new Promise<RobotDraft>((resolve) => {
+      resolveLoad = resolve;
+    });
+    const putDraft = vi.fn().mockReturnValueOnce(pendingSave).mockResolvedValue(snapshot(2));
+    const editorRef = createRef<RobotEditorHandle>();
+    render(<RobotEditor ref={editorRef} api={api({ putDraft })} session={session()} />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    fireEvent.change(screen.getByLabelText('Qué debe tener en cuenta el robot'), {
+      target: { value: localDraft.instructions },
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(600);
+    });
+    expect(putDraft).toHaveBeenCalledOnce();
+
+    const applying = editorRef.current?.applyDraft(() => pendingLoad);
+    await act(async () => {
+      rejectSave(new DraftApiFailure('conflict', 'conflict', 409, remote));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByText(/Otra pestaña guardó una versión distinta/)).toBeTruthy();
+
+    await act(async () => {
+      resolveLoad(remoteDraft);
+      expect(await applying).toBe(false);
+    });
+    expect(putDraft).toHaveBeenCalledOnce();
+    expect(screen.getByDisplayValue(localDraft.instructions)).toBeTruthy();
+    expect(screen.queryByDisplayValue(remoteDraft.instructions)).toBeNull();
+  });
+
   it('debounces edits, allows one write in flight, and sends later text over the confirmed version', async () => {
     vi.useFakeTimers();
     let resolveFirst!: (value: DraftSnapshot) => void;
@@ -497,7 +572,7 @@ describe('RobotEditor', () => {
         .fn()
         .mockRejectedValue(new DraftApiFailure('conflict', 'conflict', 409, snapshot(1, remote))),
     });
-    render(<RobotEditor api={draftApi} session={session()} />);
+    const view = render(<RobotEditor api={draftApi} session={session()} />);
     await screen.findByDisplayValue(
       'Siempre preferí ir a la derecha, a menos que tengas un buen motivo para no hacerlo',
     );
@@ -517,8 +592,22 @@ describe('RobotEditor', () => {
           (item) => item.textContent?.includes('Retroceder') && item.textContent?.includes('Volvé'),
         ),
     ).toBe(true);
-    expect(screen.getByRole('button', { name: 'Usar la versión guardada' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Guardar mis cambios' })).toBeTruthy();
+    view.rerender(<RobotEditor api={draftApi} session={session()} locked />);
+    expect(
+      (screen.getByRole('button', { name: 'Usar la versión guardada' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    expect(
+      (screen.getByRole('button', { name: 'Guardar mis cambios' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    view.rerender(<RobotEditor api={draftApi} session={session()} />);
+    expect(
+      (screen.getByRole('button', { name: 'Usar la versión guardada' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
+    expect(
+      (screen.getByRole('button', { name: 'Guardar mis cambios' }) as HTMLButtonElement).disabled,
+    ).toBe(false);
     fireEvent.change(screen.getByLabelText('Qué debe tener en cuenta el robot'), {
       target: { value: 'Otra edición local antes de resolver' },
     });
@@ -526,6 +615,41 @@ describe('RobotEditor', () => {
     expect(draftApi.putDraft).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole('button', { name: 'Usar la versión guardada' }));
     expect(screen.getByDisplayValue('Versión de la otra pestaña')).toBeTruthy();
+  });
+
+  it('allows saving local conflict changes after the editor unlocks', async () => {
+    const localDraft = { ...createDefaultDraft(), instructions: 'Mi versión local.' };
+    const remoteDraft = { ...createDefaultDraft(), instructions: 'Versión remota.' };
+    const putDraft = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new DraftApiFailure('conflict', 'conflict', 409, snapshot(1, remoteDraft)),
+      )
+      .mockResolvedValueOnce(snapshot(2, localDraft));
+    const draftApi = api({ putDraft });
+    const view = render(<RobotEditor api={draftApi} session={session()} />);
+    await screen.findByDisplayValue(createDefaultDraft().instructions);
+    fireEvent.change(screen.getByLabelText('Qué debe tener en cuenta el robot'), {
+      target: { value: localDraft.instructions },
+    });
+    await waitFor(
+      () => expect(screen.getByRole('button', { name: 'Guardar mis cambios' })).toBeTruthy(),
+      {
+        timeout: 2_000,
+      },
+    );
+
+    view.rerender(<RobotEditor api={draftApi} session={session()} locked />);
+    expect(
+      (screen.getByRole('button', { name: 'Guardar mis cambios' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    view.rerender(<RobotEditor api={draftApi} session={session()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar mis cambios' }));
+
+    await waitFor(() => expect(putDraft).toHaveBeenCalledTimes(2), { timeout: 2_000 });
+    expect(putDraft.mock.calls[1]?.[0]).toBe(1);
+    expect(putDraft.mock.calls[1]?.[1]).toMatchObject({ instructions: localDraft.instructions });
+    expect(screen.getByDisplayValue(localDraft.instructions)).toBeTruthy();
   });
 
   it('reconciles a successful PUT whose response was lost without overwriting newer edits', async () => {
