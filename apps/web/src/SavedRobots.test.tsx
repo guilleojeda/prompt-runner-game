@@ -53,7 +53,12 @@ function editor(
   return {
     current: {
       captureSnapshot: vi.fn().mockResolvedValue({ version: 1, draft: snapshot }),
-      applyDraft: vi.fn().mockResolvedValue(true),
+      applyDraft: vi
+        .fn()
+        .mockImplementation(async (value: RobotDraft | (() => Promise<RobotDraft>)) => {
+          if (typeof value === 'function') await value();
+          return true;
+        }),
       hasUnconfirmedChanges: vi.fn().mockReturnValue(false),
       discardPending: vi.fn(),
       flushPending: vi.fn().mockResolvedValue(true),
@@ -95,7 +100,7 @@ describe('SavedRobots', () => {
     expect(screen.getByRole('button', { name: /Explorador.*Cargar/ })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /Explorador/ }));
     await waitFor(() =>
-      expect(editorRef.current?.applyDraft).toHaveBeenCalledWith(createDefaultDraft()),
+      expect(editorRef.current?.applyDraft).toHaveBeenCalledWith(expect.any(Function)),
     );
     expect(screen.getByText('Seleccionado:')).toBeTruthy();
 
@@ -114,6 +119,29 @@ describe('SavedRobots', () => {
       ),
     );
     expect(await screen.findByText('Guardaste «Defensa» como robot nuevo.')).toBeTruthy();
+  });
+
+  it('keeps the editor unchanged and reports auth when a copy load is rejected', async () => {
+    const onAuthRequired = vi.fn();
+    const savedApi = api({
+      getRobot: vi
+        .fn()
+        .mockRejectedValue(new SavedRobotApiFailure('authentication', 'Volvé a ingresar.', 401)),
+    });
+    const editorRef = editor();
+    render(
+      <SavedRobots
+        api={savedApi}
+        editor={editorRef}
+        session={session()}
+        onAuthRequired={onAuthRequired}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /Explorador.*Cargar/ }));
+    await waitFor(() => expect(onAuthRequired).toHaveBeenCalledOnce());
+    expect(screen.getByText('Volvé a ingresar.')).toBeTruthy();
+    expect(screen.queryByText('Seleccionado:')).toBeNull();
   });
 
   it('shows an empty state after a list retry and does not offer a mutation retry', async () => {

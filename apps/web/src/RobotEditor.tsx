@@ -33,7 +33,7 @@ export interface RobotEditorHandle {
   discardPending(): void;
   flushPending(): Promise<boolean>;
   captureSnapshot(): Promise<DraftSnapshot | null>;
-  applyDraft(draft: RobotDraft): Promise<boolean>;
+  applyDraft(draft: RobotDraft | (() => Promise<RobotDraft>)): Promise<boolean>;
   releaseAttemptLock(): void;
   focusEditor?(): void;
 }
@@ -140,10 +140,12 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
   const generationRef = useRef(0);
   const draftRef = useRef<RobotDraft | null>(null);
   const confirmedRef = useRef<DraftSnapshot | null>(null);
+  const conflictRef = useRef<DraftSnapshot | null>(null);
   const inFlightRef = useRef<InFlightSave | null>(null);
   const reconciliationRef = useRef<ReconciliationTarget | null>(null);
   const pausedRef = useRef(paused);
   const lockedRef = useRef(locked);
+  const attemptClickLockedRef = useRef(false);
   const sessionRef = useRef(session);
   const onAuthRequiredRef = useRef(onAuthRequired);
   const sendSaveRef = useRef<() => Promise<boolean>>(() => Promise.resolve(false));
@@ -152,8 +154,14 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
 
   pausedRef.current = paused;
   lockedRef.current = locked;
+  conflictRef.current = conflict;
   sessionRef.current = session;
   onAuthRequiredRef.current = onAuthRequired;
+
+  const setConflictState = (next: DraftSnapshot | null): void => {
+    conflictRef.current = next;
+    setConflict(next);
+  };
 
   useEffect(() => {
     onConfigurationAvailabilityChange?.(draft !== null);
@@ -171,7 +179,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     const copy = cloneDraft(next);
     draftRef.current = copy;
     setDraft(copy);
-    const isConflict = conflict !== null;
+    const isConflict = conflictRef.current !== null;
     const hasPendingOperation = inFlightRef.current !== null || reconciliationRef.current !== null;
     if (isConflict) {
       setStatus('conflict');
@@ -194,7 +202,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
       setMessage(null);
     }
     if (!isConflict) {
-      setConflict(null);
+      setConflictState(null);
     }
     if (!hasPendingOperation) {
       setRetryMode(null);
@@ -207,7 +215,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     draftRef.current = copy;
     reconciliationRef.current = null;
     setDraft(copy);
-    setConflict(null);
+    setConflictState(null);
     setRetryMode(null);
     setMessage(null);
     setStatus('clean');
@@ -263,7 +271,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
         if (inFlightRef.current?.operation === operation) {
           inFlightRef.current = null;
         }
-        setConflict(remote);
+        setConflictState(remote);
         setStatus('conflict');
         setMessage('Otra pestaña guardó una versión distinta. Elegí cómo resolver el conflicto.');
         reconciliationRef.current = null;
@@ -359,7 +367,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
         if (error instanceof DraftApiFailure && error.code === 'conflict') {
           if (error.current) {
             reconciliationRef.current = null;
-            setConflict(error.current);
+            setConflictState(error.current);
             setStatus('conflict');
             setMessage(
               'Otra pestaña guardó una versión distinta. Elegí cómo resolver el conflicto.',
@@ -444,7 +452,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
       !visible ||
       !confirmed ||
       pausedRef.current ||
-      conflict !== null ||
+      conflictRef.current !== null ||
       draftLimitMessage(visible) !== null
     ) {
       return null;
@@ -482,8 +490,15 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     return null;
   };
 
-  const applyDraft = async (nextDraft: RobotDraft): Promise<boolean> => {
-    if (pausedRef.current || lockedRef.current || status === 'loading' || conflict !== null) {
+  const applyDraft = async (
+    nextDraftOrLoader: RobotDraft | (() => Promise<RobotDraft>),
+  ): Promise<boolean> => {
+    if (
+      pausedRef.current ||
+      lockedRef.current ||
+      status === 'loading' ||
+      conflictRef.current !== null
+    ) {
       return false;
     }
     const generation = generationRef.current;
@@ -492,6 +507,18 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
       return false;
     }
     const frozenVisible = cloneDraft(visibleAtStart);
+    const nextDraft =
+      typeof nextDraftOrLoader === 'function' ? await nextDraftOrLoader() : nextDraftOrLoader;
+    if (
+      !isCurrent(generationRef, generation, sessionRef.current) ||
+      pausedRef.current ||
+      lockedRef.current ||
+      conflictRef.current !== null ||
+      !draftRef.current ||
+      !draftsEqual(draftRef.current, frozenVisible)
+    ) {
+      return false;
+    }
     const initialInFlight = inFlightRef.current;
     if (initialInFlight && !(await initialInFlight.promise)) {
       return false;
@@ -506,7 +533,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
       !isCurrent(generationRef, generation, sessionRef.current) ||
       pausedRef.current ||
       lockedRef.current ||
-      conflict !== null ||
+      conflictRef.current !== null ||
       !draftRef.current ||
       !draftsEqual(draftRef.current, frozenVisible)
     ) {
@@ -515,7 +542,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     const copy = cloneDraft(nextDraft);
     draftRef.current = copy;
     setDraft(copy);
-    setConflict(null);
+    setConflictState(null);
     setRetryMode(null);
     if (confirmedRef.current && draftsEqual(copy, confirmedRef.current.draft)) {
       setStatus('clean');
@@ -561,7 +588,10 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     flushPending,
     captureSnapshot,
     applyDraft,
-    releaseAttemptLock: () => setAttemptClickLocked(false),
+    releaseAttemptLock: () => {
+      attemptClickLockedRef.current = false;
+      setAttemptClickLocked(false);
+    },
     focusEditor: () => {
       const heading = editorHeadingRef.current;
       if (!heading) return;
@@ -584,7 +614,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     draftRef.current = null;
     confirmedRef.current = null;
     setDraft(null);
-    setConflict(null);
+    setConflictState(null);
     setRetryMode(null);
     setMessage(null);
     setStatus('loading');
@@ -890,6 +920,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
               className="primary-button"
               type="button"
               onClick={() => {
+                attemptClickLockedRef.current = true;
                 setAttemptClickLocked(true);
                 onTry();
               }}
@@ -948,8 +979,16 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
             <button
               className="secondary-button"
               type="button"
-              onClick={() => setLoadedSnapshot(conflict)}
-              disabled={paused}
+              onClick={() => {
+                if (pausedRef.current || lockedRef.current || attemptClickLockedRef.current) {
+                  return;
+                }
+                const currentConflict = conflictRef.current;
+                if (currentConflict) {
+                  setLoadedSnapshot(currentConflict);
+                }
+              }}
+              disabled={disabled}
             >
               Usar la versión guardada
             </button>
@@ -957,13 +996,18 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
               className="primary-button"
               type="button"
               onClick={() => {
-                confirmedRef.current = conflict;
-                setConflict(null);
+                if (pausedRef.current || lockedRef.current || attemptClickLockedRef.current) {
+                  return;
+                }
+                const currentConflict = conflictRef.current;
+                if (!currentConflict) return;
+                confirmedRef.current = currentConflict;
+                setConflictState(null);
                 setStatus('dirty');
                 setMessage(null);
                 setRetryMode('save');
               }}
-              disabled={paused}
+              disabled={disabled}
             >
               Guardar mis cambios
             </button>

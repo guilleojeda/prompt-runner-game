@@ -218,14 +218,21 @@ export function SavedRobots({
     const generation = generationRef.current;
     try {
       if (!isCurrent(generation)) return;
-      const robot = await api.getRobot(summary.id);
-      if (!isCurrent(generation)) return;
-      const applied = await editor.current?.applyDraft(robot.draft);
+      const loadedRobotRef = { current: null as SavedRobot | null };
+      const applied = await editor.current?.applyDraft(async () => {
+        loadedRobotRef.current = await api.getRobot(summary.id);
+        if (!isCurrent(generation)) throw new StaleSavedOperation();
+        return loadedRobotRef.current.draft;
+      });
       if (!isCurrent(generation)) return;
       if (!applied) {
-        setError(
-          'No se pudo cargar el robot porque hay cambios pendientes o un conflicto abierto.',
-        );
+        setError('No se pudo cargar la copia. Revisá el estado del editor y volvé a intentarlo.');
+        setErrorKind('load');
+        return;
+      }
+      const robot = loadedRobotRef.current;
+      if (!robot) {
+        setError('No se pudo cargar el robot guardado.');
         setErrorKind('load');
         return;
       }
