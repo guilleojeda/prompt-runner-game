@@ -2590,6 +2590,125 @@ describe('AttemptWorkspace', () => {
     expect(getAttemptRequest).toHaveBeenCalledOnce();
   });
 
+  it('keeps the foreground recovery reference when snapshot confirmation fails', async () => {
+    const foreground = {
+      ...summary('victory'),
+      id: 'foreground-attempt',
+      animationEnabled: false,
+      presentationComplete: true,
+    };
+    const createAttempt = vi.fn();
+    const attemptApi = api({
+      createAttempt,
+      getAttempt: vi.fn().mockResolvedValue(foreground),
+    });
+    const editor = {
+      current: {
+        captureSnapshot: vi.fn().mockResolvedValue(null),
+      },
+    } as unknown as { current: RobotEditorHandle | null };
+    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
+    render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+
+    await screen.findByText('Historial');
+    setCurrentRecovery(
+      'prompt-runner:attempt-recovery',
+      JSON.stringify({ sub: 'subject-a', attemptId: foreground.id }),
+    );
+    await act(async () => {
+      (ref.current as AttemptWorkspaceHandle).start();
+      await Promise.resolve();
+    });
+
+    expect(
+      await screen.findByText(
+        'No se pudo confirmar la configuración visible. Revisá el guardado y reintentá.',
+      ),
+    ).toBeTruthy();
+    expect(createAttempt).not.toHaveBeenCalled();
+    expect(
+      JSON.parse(window.sessionStorage.getItem('prompt-runner:attempt-recovery') ?? '{}'),
+    ).toEqual(expect.objectContaining({ sub: 'subject-a', attemptId: foreground.id }));
+  });
+
+  it('restores the foreground recovery reference after a definitive admission rejection', async () => {
+    const foreground = { ...summary('running'), id: 'foreground-running' };
+    const createAttempt = vi
+      .fn()
+      .mockRejectedValue(new AttemptApiFailure('conflict', 'draft conflict', 409));
+    const attemptApi = api({ createAttempt });
+    const editor = {
+      current: {
+        captureSnapshot: vi.fn().mockResolvedValue({ version: 2, draft: createDefaultDraft() }),
+      },
+    } as unknown as { current: RobotEditorHandle | null };
+    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
+    render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+
+    await screen.findByText('Historial');
+    setCurrentRecovery(
+      'prompt-runner:attempt-recovery',
+      JSON.stringify({ sub: 'subject-a', attemptId: foreground.id }),
+    );
+    await act(async () => {
+      (ref.current as AttemptWorkspaceHandle).start();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(await screen.findByText('draft conflict')).toBeTruthy();
+    expect(
+      JSON.parse(window.sessionStorage.getItem('prompt-runner:attempt-recovery') ?? '{}'),
+    ).toEqual(expect.objectContaining({ sub: 'subject-a', attemptId: foreground.id }));
+  });
+
+  it('rediscovers another active attempt after a missing foreground id', async () => {
+    const missingId = 'attempt-missing';
+    const active = { ...summary('running'), id: 'attempt-active' };
+    setCurrentRecovery(
+      'prompt-runner:attempt-recovery',
+      JSON.stringify({ sub: 'subject-a', attemptId: missingId }),
+    );
+    const getAttempt = vi
+      .fn()
+      .mockRejectedValue(new AttemptApiFailure('not_found', 'not found', 404));
+    const listAttempts = vi
+      .fn()
+      .mockResolvedValueOnce({ attempts: [] })
+      .mockResolvedValueOnce({ attempts: [active] });
+    const attemptApi = api({ getAttempt, listAttempts });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+
+    expect(await screen.findByRole('button', { name: 'Cancelar' })).toBeTruthy();
+    expect(getAttempt).toHaveBeenCalledWith(missingId, expect.any(AbortSignal));
+    expect(listAttempts).toHaveBeenCalledTimes(2);
+    expect(
+      JSON.parse(window.sessionStorage.getItem('prompt-runner:attempt-recovery') ?? '{}'),
+    ).toMatchObject({ sub: 'subject-a', attemptId: active.id });
+  });
+
+  it('uses state discovery when an initial recovery error has no reference', async () => {
+    const active = { ...summary('running'), id: 'attempt-discovered' };
+    const discoveryError = new AttemptApiFailure('network', 'history unavailable');
+    const listAttempts = vi
+      .fn()
+      .mockRejectedValueOnce(discoveryError)
+      .mockRejectedValueOnce(discoveryError)
+      .mockResolvedValueOnce({ attempts: [active] });
+    const attemptApi = api({ listAttempts });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+
+    expect(
+      await screen.findByText('Comprobar estado vuelve a consultar el servidor.'),
+    ).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button', { name: 'Comprobar estado' }));
+    expect(await screen.findByRole('button', { name: 'Cancelar' })).toBeTruthy();
+    expect(listAttempts).toHaveBeenCalledTimes(3);
+    expect(attemptApi.createAttempt).not.toHaveBeenCalled();
+  });
+
   it('retries a current frozen admission with animation on after reload and a 404 lookup', async () => {
     const draft = { ...createDefaultDraft(), instructions: 'Snapshot exacto' };
     setCurrentRecovery(

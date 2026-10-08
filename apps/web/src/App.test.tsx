@@ -500,6 +500,61 @@ describe('access screen', () => {
     ).toBe(true);
   });
 
+  it('does not persist an admission marker before the draft snapshot is saved', async () => {
+    window.sessionStorage.clear();
+    const authClient = client({ initialize: vi.fn().mockResolvedValue(session()) });
+    const putDraft = vi
+      .fn<DraftApi['putDraft']>()
+      .mockReturnValue(new Promise<DraftSnapshot>(() => undefined));
+    const draftApi: DraftApi = {
+      getDraft: vi.fn().mockResolvedValue({ version: 0, draft: createDefaultDraft() }),
+      putDraft,
+    };
+    const savedRobotApi: SavedRobotApi = {
+      listRobots: vi.fn().mockResolvedValue({ robots: [] }),
+      getRobot: vi.fn(),
+      saveRobot: vi.fn(),
+      deleteRobot: vi.fn(),
+    };
+    const createAttempt = vi.fn();
+    const attemptApi = { ...emptyAttemptApi(), createAttempt };
+    const first = render(
+      <App
+        authClient={authClient}
+        draftApi={draftApi}
+        savedRobotApi={savedRobotApi}
+        attemptApi={attemptApi}
+        configLoader={async () => config}
+      />,
+    );
+
+    const instructions = await screen.findByLabelText('Qué debe tener en cuenta el robot');
+    const tryButton = await screen.findByRole('button', { name: 'Probar' });
+    await waitFor(() => expect((tryButton as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.change(instructions, { target: { value: 'Edición antes de recargar' } });
+    fireEvent.click(tryButton);
+    await waitFor(() => expect(putDraft).toHaveBeenCalledOnce());
+    expect(createAttempt).not.toHaveBeenCalled();
+    expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toBeNull();
+
+    first.unmount();
+    render(
+      <App
+        authClient={authClient}
+        draftApi={draftApi}
+        savedRobotApi={savedRobotApi}
+        attemptApi={attemptApi}
+        configLoader={async () => config}
+      />,
+    );
+
+    await screen.findByText('Todavía no hay intentos guardados.');
+    const reloadedTryButton = await screen.findByRole('button', { name: 'Probar' });
+    await waitFor(() => expect((reloadedTryButton as HTMLButtonElement).disabled).toBe(false));
+    expect(screen.queryByRole('button', { name: 'Comprobar estado' })).toBeNull();
+    expect(createAttempt).not.toHaveBeenCalled();
+  });
+
   it('previews history while the editor load fails, then applies the snapshot after retry', async () => {
     const sourceSummary: AttemptSummary = {
       id: 'attempt-editor-retry',
