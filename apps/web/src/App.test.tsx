@@ -394,10 +394,15 @@ describe('access screen', () => {
     );
 
     const instructions = await screen.findByLabelText('Qué debe tener en cuenta el robot');
+    await waitFor(() =>
+      expect((instructions.closest('fieldset') as HTMLFieldSetElement).disabled).toBe(false),
+    );
     const copyButton = await screen.findByRole('button', {
       name: /Explorador tardío.*Cargar/,
     });
+    await waitFor(() => expect((copyButton as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(copyButton);
+    await waitFor(() => expect(getRobot).toHaveBeenCalledOnce());
     fireEvent.change(instructions, { target: { value: localDraft.instructions } });
     await act(async () => {
       resolveRobot(savedCopy);
