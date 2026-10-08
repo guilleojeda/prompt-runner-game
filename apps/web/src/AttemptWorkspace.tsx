@@ -1440,6 +1440,34 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       [api],
     );
 
+    const discoverActiveAttempts = useCallback(
+      async (signal?: AbortSignal, operationEpoch?: number): Promise<boolean> => {
+        const operationGeneration = generationRef.current;
+        const all = await listAllAttempts(signal);
+        if (
+          signal?.aborted ||
+          generationRef.current !== operationGeneration ||
+          (operationEpoch !== undefined && operationEpochRef.current !== operationEpoch)
+        ) {
+          return false;
+        }
+        const active = all.filter((item) => isActive(item.status));
+        attemptRef.current = null;
+        setAttempt(null);
+        setActiveCandidates([]);
+        if (active.length === 1) {
+          applyAttempt(active[0], { clearRequest: false });
+        } else if (active.length > 1) {
+          setActiveCandidates(active);
+          setMode('selecting');
+        } else {
+          setMode('idle');
+        }
+        return true;
+      },
+      [applyAttempt, listAllAttempts],
+    );
+
     const refreshHistory = useCallback(
       async (signal?: AbortSignal): Promise<void> => {
         const operationGeneration = generationRef.current;
@@ -1551,6 +1579,30 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       [api, onAuthRequired, sessionSub],
     );
 
+    const rediscoverAfterMissingRecovery = useCallback(
+      async (signal?: AbortSignal, operationEpoch?: number): Promise<boolean> => {
+        const operationGeneration = generationRef.current;
+        clearAttemptRecovery(sessionSub);
+        frozenRef.current = null;
+        try {
+          return await discoverActiveAttempts(signal, operationEpoch);
+        } catch (discoveryError) {
+          if (
+            signal?.aborted ||
+            generationRef.current !== operationGeneration ||
+            (operationEpoch !== undefined && operationEpochRef.current !== operationEpoch)
+          ) {
+            return false;
+          }
+          if (isAuthenticationFailure(discoveryError)) onAuthRequired?.();
+          setError(workspaceError(attemptErrorMessage(discoveryError), 'check-status'));
+          setMode('unknown');
+          return true;
+        }
+      },
+      [discoverActiveAttempts, onAuthRequired, sessionSub],
+    );
+
     const recoverKnownAttempt = useCallback(
       async (signal?: AbortSignal): Promise<boolean> => {
         const reference = readAttemptRecovery(sessionSub);
@@ -1589,6 +1641,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
               setMode('unknown');
               return true;
             }
+            if (reference.attemptId) return rediscoverAfterMissingRecovery(signal);
             return false;
           }
           setError(workspaceError(attemptErrorMessage(recoveryError), 'check-status'));
@@ -1596,7 +1649,14 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           return true;
         }
       },
-      [api, applyAttempt, onAuthRequired, retryFrozenAdmission, sessionSub],
+      [
+        api,
+        applyAttempt,
+        onAuthRequired,
+        rediscoverAfterMissingRecovery,
+        retryFrozenAdmission,
+        sessionSub,
+      ],
     );
 
     useEffect(() => {
@@ -1616,17 +1676,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             refreshAnimationPreference(controller.signal, true),
           ]);
           if (await recoverKnownAttempt(controller.signal)) return;
-          const all = await listAllAttempts(controller.signal);
-          if (controller.signal.aborted || generationRef.current !== generation) return;
-          const active = all.filter((item) => isActive(item.status));
-          if (active.length === 1) {
-            applyAttempt(active[0]);
-          } else if (active.length > 1) {
-            setActiveCandidates(active);
-            setMode('selecting');
-          } else {
-            setMode('idle');
-          }
+          await discoverActiveAttempts(controller.signal);
         } catch (initialError) {
           if (controller.signal.aborted || generationRef.current !== generation) return;
           if (isAuthenticationFailure(initialError)) onAuthRequired?.();
@@ -1640,7 +1690,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       };
     }, [
       applyAttempt,
-      listAllAttempts,
+      discoverActiveAttempts,
       onAuthRequired,
       refreshAnimationPreference,
       recoverKnownAttempt,
@@ -1733,7 +1783,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       const operationGeneration = generationRef.current;
       const operationEpoch = operationEpochRef.current;
       const requestKey = makeRequestKey();
-      writeAttemptRecovery({ sub: sessionSub, requestKey });
+      const foregroundRecovery = readAttemptRecovery(sessionSub);
       setMode('admitting');
       setError(null);
       let snapshot;
@@ -1744,7 +1794,6 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         setError(workspaceError(attemptErrorMessage(captureError)));
       }
       if (!snapshot) {
-        clearAttemptRecovery(sessionSub);
         setMode('idle');
         startLockRef.current = false;
         setError(
@@ -1815,7 +1864,13 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           onAuthRequired?.();
           return;
         }
-        clearAttemptRecovery(sessionSub);
+        const currentRecovery = readAttemptRecovery(sessionSub);
+        if (currentRecovery?.requestKey === requestKey) {
+          if (foregroundRecovery) writeAttemptRecovery(foregroundRecovery);
+          else clearAttemptRecovery(sessionSub);
+        } else if (!currentRecovery && !foregroundRecovery) {
+          clearAttemptRecovery(sessionSub);
+        }
         frozenRef.current = null;
         setMode('idle');
         startLockRef.current = false;
@@ -1869,7 +1924,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           : {}),
       };
       if (!reference.attemptId && !reference.requestKey) {
-        setError(workspaceError('No hay una referencia de recuperación para este intento.'));
+        await rediscoverAfterMissingRecovery(undefined, operationEpoch);
         return;
       }
       try {
@@ -1902,7 +1957,11 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           return;
         }
       }
-      if (!frozen || !reference.requestKey || reference.attemptId) {
+      if (reference.attemptId || !frozen || !reference.requestKey) {
+        if (reference.attemptId) {
+          await rediscoverAfterMissingRecovery(undefined, operationEpoch);
+          return;
+        }
         setError(
           workspaceError(
             'Todavía no se puede confirmar este intento. Volvé a consultar más tarde.',
@@ -1915,7 +1974,14 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         operationGeneration,
         operationEpoch,
       });
-    }, [api, applyAttempt, onAuthRequired, retryFrozenAdmission, sessionSub]);
+    }, [
+      api,
+      applyAttempt,
+      onAuthRequired,
+      rediscoverAfterMissingRecovery,
+      retryFrozenAdmission,
+      sessionSub,
+    ]);
 
     const cancel = useCallback(async (): Promise<void> => {
       const operationGeneration = generationRef.current;
@@ -2605,7 +2671,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
                   <p className="attempt-error-guidance">
                     <strong>Acción disponible:</strong>{' '}
                     {currentErrorGuidance === 'check-status'
-                      ? 'Comprobar estado conserva el mismo intento.'
+                      ? 'Comprobar estado vuelve a consultar el servidor.'
                       : currentErrorGuidance === 'replay'
                         ? 'Reintentar reproducción vuelve a consultar el registro; Ver resultado muestra el cierre guardado.'
                         : currentErrorGuidance === 'presentation-completion'
