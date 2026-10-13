@@ -1,5 +1,6 @@
 import { validateDraft, type DraftSnapshot, type RobotDraft } from '../../../shared/robot.js';
 import type { AuthConfig } from './auth.js';
+import { API_ACCESS_REJECTED_MESSAGE, resolveApiToken, type ApiTokenProvider } from './api-auth.js';
 
 export type DraftApiFailureCode =
   'authentication' | 'conflict' | 'invalid' | 'too_large' | 'rate_limited' | 'network' | 'server';
@@ -11,11 +12,14 @@ export class DraftApiFailure extends Error {
     public readonly status?: number,
     public readonly current?: DraftSnapshot,
     public readonly ambiguous = false,
-    options?: { cause?: unknown },
+    options?: { cause?: unknown; authContext?: number },
   ) {
     super(message, options);
     this.name = 'DraftApiFailure';
+    this.authContext = options?.authContext;
   }
+
+  public readonly authContext?: number;
 }
 
 export interface DraftApi {
@@ -27,7 +31,7 @@ export interface DraftApi {
   ): Promise<DraftSnapshot>;
 }
 
-export type DraftTokenProvider = () => string | Promise<string>;
+export type DraftTokenProvider = ApiTokenProvider;
 
 export interface DraftApiClientOptions {
   fetch?: typeof globalThis.fetch;
@@ -107,8 +111,11 @@ export class DraftApiClient implements DraftApi {
     signal?: AbortSignal,
   ): Promise<DraftSnapshot> {
     let token: string;
+    let authContext: number | undefined;
     try {
-      token = await this.tokenProvider();
+      const resolved = resolveApiToken(await this.tokenProvider());
+      token = resolved.token;
+      authContext = resolved.authContext;
     } catch (error) {
       throw new DraftApiFailure(
         'authentication',
@@ -122,7 +129,14 @@ export class DraftApiClient implements DraftApi {
       );
     }
     if (!token) {
-      throw new DraftApiFailure('authentication', 'La sesión no tiene un token de acceso.');
+      throw new DraftApiFailure(
+        'authentication',
+        'La sesión no tiene un token de acceso.',
+        undefined,
+        undefined,
+        false,
+        { authContext },
+      );
     }
 
     const init: RequestInit = {
@@ -189,8 +203,11 @@ export class DraftApiClient implements DraftApi {
     if (response.status === 401 || response.status === 403) {
       throw new DraftApiFailure(
         'authentication',
-        'Tu sesión no tiene acceso a la configuración. Volvé a ingresar para actualizarla.',
+        API_ACCESS_REJECTED_MESSAGE,
         response.status,
+        undefined,
+        false,
+        { authContext },
       );
     }
     if (response.status === 409) {

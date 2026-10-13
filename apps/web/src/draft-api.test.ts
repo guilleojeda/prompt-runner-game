@@ -89,6 +89,78 @@ describe('DraftApiClient', () => {
     expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
+  it.each([401, 403])(
+    'keeps the sent token context on an auth rejection without exposing the token (%s)',
+    async (status) => {
+      const tokenProvider = vi.fn().mockResolvedValue({
+        accessToken: 'draft-secret-token',
+        authContext: 17,
+      });
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ message: 'Volvé a ingresar para continuar.' }), { status }),
+        );
+      const client = new DraftApiClient(config, { tokenProvider, fetch: fetchImpl });
+
+      let failure: unknown;
+      try {
+        await client.getDraft();
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(failure).toMatchObject({
+        code: 'authentication',
+        status,
+        authContext: 17,
+        message: 'El acceso fue rechazado para esta operación. Podés reintentar.',
+      });
+      expect(JSON.stringify(failure)).not.toContain('draft-secret-token');
+      expect(fetchImpl).toHaveBeenCalledOnce();
+      expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({
+        headers: expect.objectContaining({ Authorization: 'Bearer draft-secret-token' }),
+      });
+      expect(tokenProvider).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('uses the token and context from one asynchronously resolved snapshot', async () => {
+    let resolveSnapshot!: (snapshot: { accessToken: string; authContext: number }) => void;
+    const tokenProvider = vi.fn(
+      () =>
+        new Promise<{ accessToken: string; authContext: number }>((resolve) => {
+          resolveSnapshot = resolve;
+        }),
+    );
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response('{}', { status: 401 }));
+    const client = new DraftApiClient(config, { tokenProvider, fetch: fetchImpl });
+
+    const request = client.getDraft();
+    resolveSnapshot({ accessToken: 'paired-token', authContext: 29 });
+    await expect(request).rejects.toMatchObject({
+      code: 'authentication',
+      authContext: 29,
+    });
+    expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({
+      headers: expect.objectContaining({ Authorization: 'Bearer paired-token' }),
+    });
+  });
+
+  it('keeps a string provider auth rejection untagged for conservative callers', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response('{}', { status: 401 }));
+    const client = new DraftApiClient(config, {
+      tokenProvider: () => 'string-provider-token',
+      fetch: fetchImpl,
+    });
+
+    await expect(client.getDraft()).rejects.toMatchObject({
+      code: 'authentication',
+      authContext: undefined,
+    });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
   it('does not turn an aborted request into an ambiguous save', async () => {
     const controller = new AbortController();
     const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => {

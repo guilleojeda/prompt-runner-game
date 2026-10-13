@@ -16,6 +16,7 @@ import { createAttemptApiClient, type AttemptApi } from './attempt-api.js';
 import { AttemptWorkspace, type AttemptWorkspaceHandle } from './AttemptWorkspace.js';
 import { CoursePreview } from './replay/ReplayScene.js';
 import { clearAttemptRecovery } from './attempt-recovery.js';
+import { type ApiAccessSnapshot, type ApiAuthRequired, type ApiTokenProvider } from './api-auth.js';
 import {
   CognitoPendingConfirmationClient,
   ConfirmationFailure,
@@ -41,9 +42,9 @@ export interface AppProps {
   confirmationClient?: PendingConfirmationClient;
   configLoader?: () => Promise<AuthConfig>;
   clientFactory?: (config: AuthConfig) => AuthClient;
-  draftApiFactory?: (config: AuthConfig, tokenProvider: () => string) => DraftApi;
-  savedRobotApiFactory?: (config: AuthConfig, tokenProvider: () => string) => SavedRobotApi;
-  attemptApiFactory?: (config: AuthConfig, tokenProvider: () => string) => AttemptApi;
+  draftApiFactory?: (config: AuthConfig, tokenProvider: ApiTokenProvider) => DraftApi;
+  savedRobotApiFactory?: (config: AuthConfig, tokenProvider: ApiTokenProvider) => SavedRobotApi;
+  attemptApiFactory?: (config: AuthConfig, tokenProvider: ApiTokenProvider) => AttemptApi;
   confirmationClientFactory?: (config: AuthConfig) => PendingConfirmationClient;
 }
 
@@ -314,6 +315,9 @@ export function App({
   const savedApiRef = useRef<SavedRobotApi | null>(savedRobotApi ?? null);
   const runnerApiRef = useRef<AttemptApi | null>(attemptApi ?? null);
   const currentSessionRef = useRef<AuthSession | null>(null);
+  const accessSnapshotRef = useRef<ApiAccessSnapshot | null>(null);
+  const nextAuthContextRef = useRef(0);
+  const apiAuthErrorContextRef = useRef<number | undefined>(undefined);
   const editorRef = useRef<RobotEditorHandle | null>(null);
   const attemptWorkspaceRef = useRef<AttemptWorkspaceHandle | null>(null);
   const logoutAttemptRef = useRef(0);
@@ -332,6 +336,28 @@ export function App({
       previousSession.identity.sub !== nextSession.identity.sub
     ) {
       clearAttemptRecovery(previousSession.identity.sub);
+    }
+
+    if (nextSession === null) {
+      accessSnapshotRef.current = null;
+      apiAuthErrorContextRef.current = undefined;
+      setApiAuthError(false);
+    } else {
+      const previousSnapshot = accessSnapshotRef.current;
+      const sameIdentity =
+        previousSession?.identity.sub === nextSession.identity.sub && previousSession !== null;
+      const tokenChanged = previousSnapshot?.accessToken !== nextSession.user.access_token;
+      if (!sameIdentity || !previousSnapshot || tokenChanged) {
+        const nextSnapshot: ApiAccessSnapshot = {
+          accessToken: nextSession.user.access_token,
+          authContext: ++nextAuthContextRef.current,
+        };
+        accessSnapshotRef.current = nextSnapshot;
+        if (apiAuthErrorContextRef.current !== nextSnapshot.authContext) {
+          apiAuthErrorContextRef.current = undefined;
+          setApiAuthError(false);
+        }
+      }
     }
     currentSessionRef.current = nextSession;
     setSession(nextSession);
@@ -358,31 +384,36 @@ export function App({
           client = nextClient;
           draftApiRef.current ??= draftApiFactoryRef.current(
             config,
-            () => currentSessionRef.current?.user.access_token ?? '',
+            () => accessSnapshotRef.current ?? '',
           );
           setEditorApi(draftApiRef.current);
           savedApiRef.current ??= savedRobotApiFactoryRef.current(
             config,
-            () => currentSessionRef.current?.user.access_token ?? '',
+            () => accessSnapshotRef.current ?? '',
           );
           setSavedApi(savedApiRef.current);
           runnerApiRef.current ??= attemptApiFactoryRef.current(
             config,
-            () => currentSessionRef.current?.user.access_token ?? '',
+            () => accessSnapshotRef.current ?? '',
           );
           setRunnerApi(runnerApiRef.current);
-        } else if (draftApiRef.current && !configRef.current) {
+        } else if (!configRef.current && (draftApiRef.current || configLoader !== loadAuthConfig)) {
           const config = await configLoader();
           configRef.current = config;
           setEditorConfig(config);
+          draftApiRef.current ??= draftApiFactoryRef.current(
+            config,
+            () => accessSnapshotRef.current ?? '',
+          );
+          setEditorApi(draftApiRef.current);
           savedApiRef.current ??= savedRobotApiFactoryRef.current(
             config,
-            () => currentSessionRef.current?.user.access_token ?? '',
+            () => accessSnapshotRef.current ?? '',
           );
           setSavedApi(savedApiRef.current);
           runnerApiRef.current ??= attemptApiFactoryRef.current(
             config,
-            () => currentSessionRef.current?.user.access_token ?? '',
+            () => accessSnapshotRef.current ?? '',
           );
           setRunnerApi(runnerApiRef.current);
         }
@@ -397,7 +428,6 @@ export function App({
         }
         applySessionState(initializedSession);
         setRenewing(false);
-        setApiAuthError(false);
         setPhase(initializedSession ? 'account' : 'visitor');
         setError(null);
         setRetryAction(null);
@@ -566,8 +596,7 @@ export function App({
       clearAttemptRecovery(session.identity.sub);
     }
     const client = clientRef.current;
-    currentSessionRef.current = null;
-    setSession(null);
+    applySessionState(null);
     setRenewing(false);
     setLogoutPrompt(false);
     if (!client) {
@@ -581,7 +610,7 @@ export function App({
       setRetryAction(null);
       setPhase('visitor');
     } catch (logoutError) {
-      setSession(null);
+      applySessionState(null);
       setError(errorMessage(logoutError));
       setRetryAction('logout');
       setPhase('error');
@@ -630,6 +659,7 @@ export function App({
   const restoreSession = async () => {
     const sessionEnd = sessionEndRef.current;
     const client = clientRef.current;
+    const previous = currentSessionRef.current;
     if (!client) {
       setRetryAction('config');
       setPhase('error');
@@ -637,8 +667,7 @@ export function App({
       return;
     }
     if (!renewing) {
-      setSession(null);
-      currentSessionRef.current = null;
+      applySessionState(null);
     }
     setError(null);
     setPhase('loading');
@@ -647,13 +676,11 @@ export function App({
       if (sessionEndRef.current !== sessionEnd) {
         return;
       }
-      const previous = currentSessionRef.current;
       const sameIdentity =
         restoredSession !== null &&
         (previous === null || restoredSession.identity.sub === previous.identity.sub);
-      currentSessionRef.current = sameIdentity ? restoredSession : null;
+      applySessionState(sameIdentity ? restoredSession : null);
       setRenewing(false);
-      setSession(sameIdentity ? restoredSession : null);
       setRetryAction(null);
       setPhase(sameIdentity ? 'account' : 'visitor');
     } catch (restoreError) {
@@ -673,8 +700,18 @@ export function App({
     }
   }, []);
 
-  const handleApiAuthRequired = useCallback((): void => {
+  const handleApiAuthRequired = useCallback<ApiAuthRequired>((authContext): boolean => {
+    const currentSession = currentSessionRef.current;
+    const currentSnapshot = accessSnapshotRef.current;
+    if (!currentSession || !currentSnapshot) {
+      return false;
+    }
+    if (authContext !== undefined && authContext !== currentSnapshot.authContext) {
+      return false;
+    }
+    apiAuthErrorContextRef.current = currentSnapshot.authContext;
     setApiAuthError(true);
+    return true;
   }, []);
 
   const returnToEditor = useCallback((): void => {

@@ -382,6 +382,42 @@ describe('AttemptApiClient', () => {
     });
   });
 
+  it.each([401, 403])(
+    'keeps the sent token context on an auth rejection without exposing the token (%s)',
+    async (status) => {
+      const tokenProvider = vi.fn().mockResolvedValue({
+        accessToken: 'attempt-secret-token',
+        authContext: 31,
+      });
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ message: 'La sesión ya no está autorizada.' }), { status }),
+        );
+      const client = new AttemptApiClient(config, { tokenProvider, fetch: fetchImpl });
+
+      let failure: unknown;
+      try {
+        await client.getQuota();
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(failure).toMatchObject({
+        code: 'authentication',
+        status,
+        authContext: 31,
+        message: 'El acceso fue rechazado para esta operación. Podés reintentar.',
+      });
+      expect(JSON.stringify(failure)).not.toContain('attempt-secret-token');
+      expect(fetchImpl).toHaveBeenCalledOnce();
+      expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({
+        headers: expect.objectContaining({ Authorization: 'Bearer attempt-secret-token' }),
+      });
+      expect(tokenProvider).toHaveBeenCalledOnce();
+    },
+  );
+
   it.each([PREVIOUS_LEVEL, LEVEL])(
     'loads a narrow replay view of timing version $version and marks presentation complete',
     async (level) => {

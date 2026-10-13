@@ -818,6 +818,61 @@ describe('AttemptWorkspace', () => {
     expect(screen.queryByRole('heading', { name: 'Inspeccionar decisiones' })).toBeNull();
   });
 
+  it('keeps the inspector open when App rejects a stale auth callback and recovers on retry', async () => {
+    const terminal = {
+      ...summary('victory'),
+      turnsUsed: 1,
+      animationEnabled: false,
+    };
+    const decisionIndex: DecisionIndex = {
+      attemptId: terminal.id,
+      levelId: LEVEL.id,
+      decisions: [{ number: 1, decisionId: 'decision-1', originSupport: 0, hasAction: true }],
+    };
+    const getDecisionIndex = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new AttemptApiFailure('authentication', 'La sesión venció.', 401, false, {
+          authContext: 9,
+        }),
+      )
+      .mockResolvedValueOnce(decisionIndex);
+    const onAuthRequired = vi.fn().mockReturnValue(false);
+    const attemptApi = api({
+      listAttempts: vi.fn().mockResolvedValue({ attempts: [terminal] }),
+      getAttempt: vi.fn().mockResolvedValue(terminal),
+      getAnimationPreference: vi.fn().mockResolvedValue({ animationEnabled: false, version: 0 }),
+      getDecisionIndex,
+    });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    render(
+      <AttemptWorkspace
+        api={attemptApi}
+        editor={editor}
+        session={session()}
+        onAuthRequired={onAuthRequired}
+      />,
+    );
+
+    const history = await screen.findByRole('heading', { name: 'Historial' });
+    fireEvent.click(
+      within(history.closest('section') as HTMLElement).getByRole('button', {
+        name: 'Inspeccionar decisiones',
+      }),
+    );
+    expect(await screen.findByRole('heading', { name: 'Inspeccionar decisiones' })).toBeTruthy();
+    expect((await screen.findByRole('alert')).textContent).toContain('La sesión venció.');
+    expect(onAuthRequired).toHaveBeenCalledWith(9);
+    expect(screen.getByRole('button', { name: 'Reintentar inspección' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reintentar inspección' }));
+    expect(
+      await screen.findByRole('button', {
+        name: /Casilla 0, Inicio, 1 decisión/,
+      }),
+    ).toBeTruthy();
+  });
+
   it('closes the inspector before starting a new presentation', async () => {
     const terminal = { ...summary('victory'), turnsUsed: 1, animationEnabled: false };
     const running = { ...summary('running'), id: 'attempt-2', animationEnabled: false };
@@ -3233,6 +3288,171 @@ describe('AttemptWorkspace', () => {
     expect(await screen.findByText('#1, 300 puntos')).toBeTruthy();
     expect(screen.getByText('11 cargados, todo el historial disponible está visible')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Cargar 20 más' })).toBeNull();
+  });
+
+  it('keeps a refreshed history sequence when an older page resolves after Probar', async () => {
+    const firstPage = { ...summary('victory'), id: 'history-old-1' };
+    const newAttempt = { ...summary('victory'), id: 'history-new' };
+    const refreshedPage = {
+      attempts: [newAttempt, firstPage],
+      nextCursor: 'cursor-after-refresh',
+    };
+    let resolveOlderPage!: (page: {
+      attempts: readonly AttemptSummary[];
+      nextCursor?: string;
+    }) => void;
+    const olderPage = new Promise<{ attempts: readonly AttemptSummary[]; nextCursor?: string }>(
+      (resolve) => {
+        resolveOlderPage = resolve;
+      },
+    );
+    let resolveRefreshedPage!: (page: {
+      attempts: readonly AttemptSummary[];
+      nextCursor?: string;
+    }) => void;
+    const pendingRefresh = new Promise<{
+      attempts: readonly AttemptSummary[];
+      nextCursor?: string;
+    }>((resolve) => {
+      resolveRefreshedPage = resolve;
+    });
+    let unpagedCalls = 0;
+    let cursorCalls = 0;
+    const listAttempts = vi.fn((cursor?: string) => {
+      if (cursor === 'cursor-after-refresh') {
+        return Promise.resolve({ attempts: [{ ...firstPage, id: 'history-old-2' }] });
+      }
+      if (cursor === 'cursor-old') {
+        cursorCalls += 1;
+        if (cursorCalls === 1) return Promise.resolve({ attempts: [] });
+        return olderPage;
+      }
+      unpagedCalls += 1;
+      if (unpagedCalls === 1) {
+        return Promise.resolve({ attempts: [firstPage], nextCursor: 'cursor-old' });
+      }
+      if (unpagedCalls === 2) {
+        return Promise.resolve({ attempts: [], nextCursor: 'cursor-old' });
+      }
+      return pendingRefresh;
+    });
+    const createAttempt = vi.fn().mockResolvedValue({
+      attempt: newAttempt,
+      dispatchConfirmed: true,
+    });
+    const attemptApi = api({ listAttempts, createAttempt });
+    const editor = {
+      current: {
+        captureSnapshot: vi.fn().mockResolvedValue({ version: 1, draft: createDefaultDraft() }),
+      },
+    } as unknown as { current: RobotEditorHandle | null };
+    const ref = { current: null } as { current: AttemptWorkspaceHandle | null };
+    render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+
+    const history = await screen.findByRole('heading', { name: 'Historial' });
+    const historySection = history.closest('section') as HTMLElement;
+    const loadMore = within(historySection).getByRole('button', { name: 'Cargar 20 más' });
+    fireEvent.click(loadMore);
+    await waitFor(() => expect(listAttempts).toHaveBeenCalledWith('cursor-old'));
+    await waitFor(() => expect((loadMore as HTMLButtonElement).disabled).toBe(true));
+
+    await waitFor(() => expect(screen.queryByText('Cargando preferencia guardada…')).toBeNull());
+    await act(async () => {
+      ref.current!.start();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(createAttempt).toHaveBeenCalledOnce());
+    await waitFor(() => expect(unpagedCalls).toBe(3));
+
+    await act(async () => resolveOlderPage({ attempts: [{ ...firstPage, id: 'history-old-2' }] }));
+    expect(within(historySection).getAllByRole('listitem')).toHaveLength(1);
+    expect((loadMore as HTMLButtonElement).disabled).toBe(true);
+
+    await act(async () => resolveRefreshedPage(refreshedPage));
+    await waitFor(() =>
+      expect(
+        (within(historySection).getByRole('button', { name: 'Cargar 20 más' }) as HTMLButtonElement)
+          .disabled,
+      ).toBe(false),
+    );
+    expect(within(historySection).getAllByRole('listitem')).toHaveLength(2);
+    expect(within(historySection).getByRole('button', { name: 'Cargar 20 más' })).toBeTruthy();
+    expect(screen.getByText('2 cargados, hay más intentos para consultar')).toBeTruthy();
+    expect(attemptApi.createAttempt).toHaveBeenCalledOnce();
+    fireEvent.click(within(historySection).getByRole('button', { name: 'Cargar 20 más' }));
+    await waitFor(() => expect(within(historySection).getAllByRole('listitem')).toHaveLength(3));
+    expect(screen.getByText('3 cargados, todo el historial disponible está visible')).toBeTruthy();
+  });
+
+  it('ignores an error and finalizer from a paginated history request superseded by refresh', async () => {
+    const firstPage = { ...summary('victory'), id: 'history-old-1' };
+    const newAttempt = { ...summary('victory'), id: 'history-new' };
+    const refreshedPage = {
+      attempts: [newAttempt, firstPage],
+      nextCursor: 'cursor-after-refresh',
+    };
+    let rejectOlderPage!: (error: unknown) => void;
+    const olderPage = new Promise<never>((_, reject) => {
+      rejectOlderPage = reject;
+    });
+    let unpagedCalls = 0;
+    let cursorCalls = 0;
+    const listAttempts = vi.fn((cursor?: string) => {
+      if (cursor === 'cursor-after-refresh') {
+        return Promise.reject(new AttemptApiFailure('network', 'current pagination failed'));
+      }
+      if (cursor === 'cursor-old') {
+        cursorCalls += 1;
+        if (cursorCalls === 1) return Promise.resolve({ attempts: [] });
+        return olderPage;
+      }
+      unpagedCalls += 1;
+      if (unpagedCalls === 1) {
+        return Promise.resolve({ attempts: [firstPage], nextCursor: 'cursor-old' });
+      }
+      if (unpagedCalls === 2) {
+        return Promise.resolve({ attempts: [], nextCursor: 'cursor-old' });
+      }
+      return Promise.resolve(refreshedPage);
+    });
+    const createAttempt = vi.fn().mockResolvedValue({
+      attempt: newAttempt,
+      dispatchConfirmed: true,
+    });
+    const attemptApi = api({ listAttempts, createAttempt });
+    const editor = {
+      current: {
+        captureSnapshot: vi.fn().mockResolvedValue({ version: 1, draft: createDefaultDraft() }),
+      },
+    } as unknown as { current: RobotEditorHandle | null };
+    const ref = { current: null } as { current: AttemptWorkspaceHandle | null };
+    render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+
+    const history = await screen.findByRole('heading', { name: 'Historial' });
+    const historySection = history.closest('section') as HTMLElement;
+    fireEvent.click(within(historySection).getByRole('button', { name: 'Cargar 20 más' }));
+    await waitFor(() => expect(cursorCalls).toBe(2));
+    await waitFor(() => expect(screen.queryByText('Cargando preferencia guardada…')).toBeNull());
+    await act(async () => {
+      ref.current!.start();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(unpagedCalls).toBe(3));
+    await waitFor(() => expect(within(historySection).getAllByRole('listitem')).toHaveLength(2));
+
+    await act(async () => rejectOlderPage(new Error('old history request failed')));
+    await waitFor(() => expect(screen.queryByText('old history request failed')).toBeNull());
+    expect(within(historySection).getAllByRole('listitem')).toHaveLength(2);
+    expect(within(historySection).getByRole('button', { name: 'Cargar 20 más' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Reintentar consultas' })).toBeNull();
+
+    fireEvent.click(within(historySection).getByRole('button', { name: 'Cargar 20 más' }));
+    expect(await screen.findByRole('button', { name: 'Reintentar consultas' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Reintentar consultas' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Reintentar consultas' })).toBeNull(),
+    );
+    expect(within(historySection).getAllByRole('listitem')).toHaveLength(2);
   });
 
   it('explains an empty history and an empty comparable set without starting inference', async () => {

@@ -195,6 +195,42 @@ describe('SavedRobotApiClient', () => {
     });
   });
 
+  it.each([401, 403])(
+    'keeps the sent token context on an auth rejection without exposing the token (%s)',
+    async (status) => {
+      const tokenProvider = vi.fn().mockResolvedValue({
+        accessToken: 'saved-secret-token',
+        authContext: 23,
+      });
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ message: 'La sesión ya no es válida.' }), { status }),
+        );
+      const client = new SavedRobotApiClient(config, { tokenProvider, fetch: fetchImpl });
+
+      let failure: unknown;
+      try {
+        await client.listRobots();
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(failure).toMatchObject({
+        code: 'authentication',
+        status,
+        authContext: 23,
+        message: 'El acceso fue rechazado para esta operación. Podés reintentar.',
+      });
+      expect(JSON.stringify(failure)).not.toContain('saved-secret-token');
+      expect(fetchImpl).toHaveBeenCalledOnce();
+      expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({
+        headers: expect.objectContaining({ Authorization: 'Bearer saved-secret-token' }),
+      });
+      expect(tokenProvider).toHaveBeenCalledOnce();
+    },
+  );
+
   it.each([
     ['zero', 0],
     ['negative', -1],

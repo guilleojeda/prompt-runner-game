@@ -328,6 +328,276 @@ describe('RobotEditor', () => {
     expect(putDraft.mock.calls[0]?.[1]).toMatchObject({ instructions: 'Configuración recuperada' });
   });
 
+  it('does not replace a clean draft when the replacement save conflicts', async () => {
+    const previous = createDefaultDraft();
+    const recovered = { ...previous, instructions: 'Configuración recuperada' };
+    const remote = { ...previous, instructions: 'Versión remota' };
+    const putDraft = vi
+      .fn()
+      .mockRejectedValue(new DraftApiFailure('conflict', 'conflict', 409, snapshot(2, remote)));
+    const editorRef = createRef<RobotEditorHandle>();
+    render(
+      <RobotEditor
+        ref={editorRef}
+        api={api({ getDraft: vi.fn().mockResolvedValue(snapshot(1, previous)), putDraft })}
+        session={session()}
+      />,
+    );
+    await screen.findByDisplayValue(previous.instructions);
+
+    let applied: boolean | undefined;
+    await act(async () => {
+      applied = await editorRef.current?.applyDraft(recovered);
+    });
+
+    expect(applied).toBe(false);
+    expect(putDraft).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({ instructions: recovered.instructions }),
+    );
+    expect(screen.getByDisplayValue(previous.instructions)).toBeTruthy();
+    expect(screen.queryByDisplayValue(recovered.instructions)).toBeNull();
+    expect(screen.getByText(/Otra pestaña guardó una versión distinta/)).toBeTruthy();
+    expect(screen.getByText(remote.instructions)).toBeTruthy();
+  });
+
+  it('keeps the clean draft visible after a definitive replacement failure', async () => {
+    const previous = createDefaultDraft();
+    const recovered = { ...previous, instructions: 'Configuración recuperada' };
+    const putDraft = vi
+      .fn()
+      .mockRejectedValue(new DraftApiFailure('network', 'No se pudo guardar la configuración.'));
+    const editorRef = createRef<RobotEditorHandle>();
+    render(
+      <RobotEditor
+        ref={editorRef}
+        api={api({ getDraft: vi.fn().mockResolvedValue(snapshot(1, previous)), putDraft })}
+        session={session()}
+      />,
+    );
+    await screen.findByDisplayValue(previous.instructions);
+
+    await act(async () => {
+      expect(await editorRef.current?.applyDraft(recovered)).toBe(false);
+    });
+
+    expect(screen.getByDisplayValue(previous.instructions)).toBeTruthy();
+    expect(screen.queryByDisplayValue(recovered.instructions)).toBeNull();
+    expect(screen.getByText('No se pudo guardar la configuración.')).toBeTruthy();
+  });
+
+  it('clears a failed replacement error on explicit retry without importing the candidate', async () => {
+    const previous = createDefaultDraft();
+    const recovered = { ...previous, instructions: 'Configuración recuperada' };
+    const putDraft = vi
+      .fn()
+      .mockRejectedValue(new DraftApiFailure('network', 'No se pudo guardar la configuración.'));
+    const editorRef = createRef<RobotEditorHandle>();
+    render(
+      <RobotEditor
+        ref={editorRef}
+        api={api({ getDraft: vi.fn().mockResolvedValue(snapshot(1, previous)), putDraft })}
+        session={session()}
+      />,
+    );
+    await screen.findByDisplayValue(previous.instructions);
+
+    await act(async () => {
+      expect(await editorRef.current?.applyDraft(recovered)).toBe(false);
+    });
+    expect(putDraft).toHaveBeenCalledOnce();
+    expect(screen.getByDisplayValue(previous.instructions)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Reintentar guardado' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reintentar guardado' }));
+    await waitFor(() => expect(screen.getByText('Guardado')).toBeTruthy());
+    expect(putDraft).toHaveBeenCalledOnce();
+    expect(screen.getByDisplayValue(previous.instructions)).toBeTruthy();
+    expect(screen.queryByDisplayValue(recovered.instructions)).toBeNull();
+    expect(screen.getByText('Guardado')).toBeTruthy();
+  });
+
+  it('keeps later typing after a failed save and retries that visible edit', async () => {
+    vi.useFakeTimers();
+    const previous = createDefaultDraft();
+    const firstEdit = { ...previous, instructions: 'Primera edición' };
+    const laterEdit = { ...previous, instructions: 'Edición posterior' };
+    let rejectSave!: (error: DraftApiFailure) => void;
+    const firstSave = new Promise<never>((_resolve, reject) => {
+      rejectSave = reject;
+    });
+    const putDraft = vi
+      .fn()
+      .mockReturnValueOnce(firstSave)
+      .mockResolvedValueOnce(snapshot(2, laterEdit));
+    render(
+      <RobotEditor
+        api={api({ getDraft: vi.fn().mockResolvedValue(snapshot(1, previous)), putDraft })}
+        session={session()}
+      />,
+    );
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const instructions = screen.getByLabelText('Qué debe tener en cuenta el robot');
+    fireEvent.change(instructions, { target: { value: firstEdit.instructions } });
+    await act(async () => {
+      vi.advanceTimersByTime(600);
+      await Promise.resolve();
+    });
+    expect(putDraft).toHaveBeenCalledOnce();
+
+    fireEvent.change(instructions, { target: { value: laterEdit.instructions } });
+    await act(async () => {
+      rejectSave(new DraftApiFailure('network', 'No se pudo guardar la configuración.'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByDisplayValue(laterEdit.instructions)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Reintentar guardado' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Reintentar guardado' }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(putDraft).toHaveBeenCalledTimes(2);
+    expect(putDraft.mock.calls[1]?.[0]).toBe(1);
+    expect(putDraft.mock.calls[1]?.[1]).toMatchObject({
+      instructions: laterEdit.instructions,
+    });
+    expect(screen.getByDisplayValue(laterEdit.instructions)).toBeTruthy();
+    expect(screen.getByText('Guardado')).toBeTruthy();
+  });
+
+  it('commits a replacement only after an ambiguous write is confirmed', async () => {
+    const previous = createDefaultDraft();
+    const recovered = { ...previous, instructions: 'Configuración recuperada' };
+    const getDraft = vi
+      .fn()
+      .mockResolvedValueOnce(snapshot(1, previous))
+      .mockResolvedValueOnce(snapshot(2, recovered));
+    const putDraft = vi
+      .fn()
+      .mockRejectedValue(new DraftApiFailure('server', 'ambiguous', undefined, undefined, true));
+    const editorRef = createRef<RobotEditorHandle>();
+    render(<RobotEditor ref={editorRef} api={{ getDraft, putDraft }} session={session()} />);
+    await screen.findByDisplayValue(previous.instructions);
+
+    await act(async () => {
+      expect(await editorRef.current?.applyDraft(recovered)).toBe(true);
+    });
+
+    expect(getDraft).toHaveBeenCalledTimes(2);
+    expect(putDraft).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({ instructions: recovered.instructions }),
+    );
+    expect(screen.getByDisplayValue(recovered.instructions)).toBeTruthy();
+    expect(screen.queryByDisplayValue(previous.instructions)).toBeNull();
+  });
+
+  it('keeps the previous draft when an ambiguous replacement cannot be reconciled', async () => {
+    const previous = createDefaultDraft();
+    const recovered = { ...previous, instructions: 'Configuración recuperada' };
+    const remote = { ...previous, instructions: 'Versión remota' };
+    const getDraft = vi
+      .fn()
+      .mockResolvedValueOnce(snapshot(1, previous))
+      .mockResolvedValueOnce(snapshot(2, remote));
+    const putDraft = vi
+      .fn()
+      .mockRejectedValue(new DraftApiFailure('server', 'ambiguous', undefined, undefined, true));
+    const editorRef = createRef<RobotEditorHandle>();
+    render(<RobotEditor ref={editorRef} api={{ getDraft, putDraft }} session={session()} />);
+    await screen.findByDisplayValue(previous.instructions);
+
+    await act(async () => {
+      expect(await editorRef.current?.applyDraft(recovered)).toBe(false);
+    });
+
+    expect(screen.getByDisplayValue(previous.instructions)).toBeTruthy();
+    expect(screen.queryByDisplayValue(recovered.instructions)).toBeNull();
+    expect(screen.getByText(remote.instructions)).toBeTruthy();
+    expect(screen.getByText(/Otra pestaña guardó una versión distinta/)).toBeTruthy();
+  });
+
+  it('does not overwrite later typing while a replacement save is in flight', async () => {
+    vi.useFakeTimers();
+    const previous = createDefaultDraft();
+    const recovered = { ...previous, instructions: 'Configuración recuperada' };
+    const later = { ...previous, instructions: 'Edición posterior' };
+    let resolveReplacement!: (value: DraftSnapshot) => void;
+    const replacement = new Promise<DraftSnapshot>((resolve) => {
+      resolveReplacement = resolve;
+    });
+    const putDraft = vi
+      .fn()
+      .mockReturnValueOnce(replacement)
+      .mockResolvedValueOnce(snapshot(2, later));
+    const editorRef = createRef<RobotEditorHandle>();
+    render(
+      <RobotEditor
+        ref={editorRef}
+        api={api({ getDraft: vi.fn().mockResolvedValue(snapshot(1, previous)), putDraft })}
+        session={session()}
+      />,
+    );
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const instructions = screen.getByLabelText('Qué debe tener en cuenta el robot');
+    const applying = editorRef.current?.applyDraft(recovered);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(putDraft).toHaveBeenCalledOnce();
+    fireEvent.change(instructions, { target: { value: later.instructions } });
+
+    await act(async () => {
+      resolveReplacement(snapshot(2, recovered));
+      expect(await applying).toBe(false);
+    });
+
+    expect(screen.getByDisplayValue(later.instructions)).toBeTruthy();
+    expect(screen.queryByDisplayValue(recovered.instructions)).toBeNull();
+    await act(async () => {
+      vi.advanceTimersByTime(600);
+      await Promise.resolve();
+    });
+    expect(putDraft).toHaveBeenCalledTimes(2);
+    expect(putDraft.mock.calls[1]?.[0]).toBe(2);
+    expect(putDraft.mock.calls[1]?.[1]).toMatchObject({ instructions: later.instructions });
+  });
+
+  it('does not commit a replacement response after the editor becomes locked', async () => {
+    let resolveReplacement!: (value: DraftSnapshot) => void;
+    const replacement = new Promise<DraftSnapshot>((resolve) => {
+      resolveReplacement = resolve;
+    });
+    const previous = createDefaultDraft();
+    const recovered = { ...previous, instructions: 'Configuración recuperada' };
+    const putDraft = vi.fn().mockReturnValue(replacement);
+    const draftApi = api({ getDraft: vi.fn().mockResolvedValue(snapshot(1, previous)), putDraft });
+    const editorRef = createRef<RobotEditorHandle>();
+    const view = render(<RobotEditor ref={editorRef} api={draftApi} session={session()} />);
+    await screen.findByDisplayValue(previous.instructions);
+    const applying = editorRef.current?.applyDraft(recovered);
+    await waitFor(() => expect(putDraft).toHaveBeenCalledOnce());
+    view.rerender(<RobotEditor ref={editorRef} api={draftApi} session={session()} locked />);
+    await act(async () => {
+      resolveReplacement(snapshot(2, recovered));
+      expect(await applying).toBe(false);
+    });
+
+    expect(screen.getByDisplayValue(previous.instructions)).toBeTruthy();
+    expect(screen.queryByDisplayValue(recovered.instructions)).toBeNull();
+  });
+
   it('keeps local content when a pending save cannot be reconciled before applying a configuration', async () => {
     vi.useFakeTimers();
     let rejectSave!: (error: DraftApiFailure) => void;

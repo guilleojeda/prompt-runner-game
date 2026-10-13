@@ -9,6 +9,7 @@ import {
 } from '../../../shared/robot.js';
 import { MODEL_CATALOG } from '../../../shared/models.js';
 import type { AuthSession } from './auth.js';
+import type { ApiAuthRequired } from './api-auth.js';
 import { type RobotEditorHandle } from './RobotEditor.js';
 import { SavedRobotApiFailure, type SavedRobotApi } from './saved-robot-api.js';
 
@@ -46,7 +47,7 @@ export interface SavedRobotsProps {
   configurationAvailable?: boolean;
   paused?: boolean;
   locked?: boolean;
-  onAuthRequired?: () => void;
+  onAuthRequired?: ApiAuthRequired;
 }
 
 function modelLabel(modelKey: string): string {
@@ -79,7 +80,7 @@ function apiErrorMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
-function isAuthError(error: unknown): boolean {
+function isAuthError(error: unknown): error is SavedRobotApiFailure {
   return error instanceof SavedRobotApiFailure && error.code === 'authentication';
 }
 
@@ -161,7 +162,7 @@ export function SavedRobots({
         setListBusy(false);
         setError(apiErrorMessage(loadError, 'No se pudieron cargar tus robots guardados.'));
         setErrorKind('list');
-        if (isAuthError(loadError)) onAuthRequired?.();
+        if (isAuthError(loadError)) onAuthRequired?.(loadError.authContext);
       });
     return () => {
       generationRef.current += 1;
@@ -201,7 +202,7 @@ export function SavedRobots({
       if (!isCurrent(generation)) return;
       setError(apiErrorMessage(loadError, 'No se pudieron cargar más robots.'));
       setErrorKind('list');
-      if (isAuthError(loadError)) onAuthRequired?.();
+      if (isAuthError(loadError)) onAuthRequired?.(loadError.authContext);
     } finally {
       if (isCurrent(generation)) setOperation(null);
     }
@@ -243,7 +244,7 @@ export function SavedRobots({
       if (!isCurrent(generation)) return;
       setError(apiErrorMessage(loadError, 'No se pudo cargar el robot guardado.'));
       setErrorKind('load');
-      if (isAuthError(loadError)) onAuthRequired?.();
+      if (isAuthError(loadError)) onAuthRequired?.(loadError.authContext);
       if (isMissingError(loadError)) {
         setRobots((current) => current.filter((robot) => robot.id !== summary.id));
         if (selected?.id === summary.id) setSelected(null);
@@ -367,7 +368,7 @@ export function SavedRobots({
           setRobots((currentItems) => currentItems.filter((item) => item.id !== current.id));
         }
       }
-      if (isAuthError(saveError)) onAuthRequired?.();
+      if (isAuthError(saveError)) onAuthRequired?.(saveError.authContext);
     } finally {
       if (isCurrent(generation)) setOperation(null);
     }
@@ -442,7 +443,7 @@ export function SavedRobots({
         setConflict(saveError.current ?? null);
         setConflictKind('save');
       }
-      if (isAuthError(saveError)) onAuthRequired?.();
+      if (isAuthError(saveError)) onAuthRequired?.(saveError.authContext);
     } finally {
       if (isCurrent(generation)) setOperation(null);
     }
@@ -523,7 +524,7 @@ export function SavedRobots({
               apiErrorMessage(readError, 'Tu sesión ya no tiene acceso a los robots guardados.'),
             );
             setErrorKind('delete');
-            onAuthRequired?.();
+            onAuthRequired?.(readError.authContext);
             return;
           }
           if (isMissingError(readError)) {
@@ -558,7 +559,7 @@ export function SavedRobots({
           }
         }
       }
-      if (isAuthError(deleteError)) onAuthRequired?.();
+      if (isAuthError(deleteError)) onAuthRequired?.(deleteError.authContext);
     } finally {
       if (isCurrent(generation)) setOperation(null);
     }

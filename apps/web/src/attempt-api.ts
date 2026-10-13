@@ -24,6 +24,7 @@ import {
 } from '../../../shared/game.js';
 import { isModelKey, type ModelKey } from '../../../shared/models.js';
 import type { AuthConfig } from './auth.js';
+import { API_ACCESS_REJECTED_MESSAGE, resolveApiToken, type ApiTokenProvider } from './api-auth.js';
 
 export type { AttemptStatus, AttemptSummary } from '../../../shared/attempt.js';
 export type {
@@ -103,14 +104,17 @@ export class AttemptApiFailure extends Error {
     message: string,
     public readonly status?: number,
     public readonly ambiguous = false,
-    options?: { cause?: unknown },
+    options?: { cause?: unknown; authContext?: number },
   ) {
     super(message, options);
     this.name = 'AttemptApiFailure';
+    this.authContext = options?.authContext;
   }
+
+  public readonly authContext?: number;
 }
 
-export type AttemptTokenProvider = () => string | Promise<string>;
+export type AttemptTokenProvider = ApiTokenProvider;
 
 export interface AttemptApiClientOptions {
   readonly fetch?: typeof globalThis.fetch;
@@ -882,8 +886,11 @@ export class AttemptApiClient implements AttemptApi {
     signal?: AbortSignal,
   ): Promise<T> {
     let token: string;
+    let authContext: number | undefined;
     try {
-      token = await this.tokenProvider();
+      const resolved = resolveApiToken(await this.tokenProvider());
+      token = resolved.token;
+      authContext = resolved.authContext;
     } catch (error) {
       throw new AttemptApiFailure(
         'authentication',
@@ -895,8 +902,15 @@ export class AttemptApiClient implements AttemptApi {
         },
       );
     }
-    if (!token)
-      throw new AttemptApiFailure('authentication', 'La sesión no tiene un token de acceso.');
+    if (!token) {
+      throw new AttemptApiFailure(
+        'authentication',
+        'La sesión no tiene un token de acceso.',
+        undefined,
+        false,
+        { authContext },
+      );
+    }
     const init: RequestInit = {
       method,
       headers: {
@@ -948,8 +962,10 @@ export class AttemptApiClient implements AttemptApi {
       if (response.status === 401 || response.status === 403) {
         throw new AttemptApiFailure(
           'authentication',
-          errorMessage(parsed, 'Tu sesión ya no está autorizada.'),
+          API_ACCESS_REJECTED_MESSAGE,
           response.status,
+          false,
+          { authContext },
         );
       }
       if (response.status === 404) {

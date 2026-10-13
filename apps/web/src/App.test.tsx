@@ -6,7 +6,7 @@ import { User } from 'oidc-client-ts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
 import { AuthFailure, type AuthClient, type AuthConfig, type AuthSession } from './auth.js';
-import { DraftApiClient, type DraftApi } from './draft-api.js';
+import { DraftApiClient, DraftApiFailure, type DraftApi } from './draft-api.js';
 import type { SavedRobotApi } from './saved-robot-api.js';
 import { AttemptApiFailure, type AttemptApi, type AttemptSummary } from './attempt-api.js';
 import {
@@ -594,7 +594,13 @@ describe('access screen', () => {
       .fn()
       .mockRejectedValueOnce(new Error('No se pudo cargar el borrador.'))
       .mockResolvedValueOnce({ version: 0, draft: createDefaultDraft() });
-    const draftApi: DraftApi = { getDraft, putDraft: vi.fn() };
+    const draftApi: DraftApi = {
+      getDraft,
+      putDraft: vi.fn().mockImplementation(async (version, draft) => ({
+        version: version + 1,
+        draft,
+      })),
+    };
     const attemptApi: AttemptApi = {
       ...emptyAttemptApi(),
       listAttempts: vi.fn().mockResolvedValue({ attempts: [sourceSummary] }),
@@ -649,6 +655,90 @@ describe('access screen', () => {
       ),
     ).toBeTruthy();
     expect(getDraft).toHaveBeenCalledTimes(2);
+    expect(attemptApi.createAttempt).not.toHaveBeenCalled();
+  });
+
+  it('keeps the previous editor content when a historical configuration replacement conflicts', async () => {
+    const previous = { ...createDefaultDraft(), instructions: 'Mi configuración anterior' };
+    const recovered = {
+      ...createDefaultDraft(),
+      instructions: 'Configuración del intento anterior',
+    };
+    const remote = { ...createDefaultDraft(), instructions: 'Tercera edición de otra pestaña' };
+    const sourceSummary: AttemptSummary = {
+      id: 'attempt-replacement-conflict',
+      createdAt: '2026-09-21T12:00:00.000Z',
+      updatedAt: '2026-09-21T12:00:01.000Z',
+      status: 'cancelled',
+      cancelRequested: true,
+      levelId: LEVEL.id,
+      modelKey: 'claude-sonnet-4.6',
+      modelLabel: 'Claude Sonnet 4.6',
+      modelId: 'global.anthropic.claude-sonnet-4-6',
+      turnsUsed: 0,
+      maxTurns: LEVEL.maxTurns,
+      calls: 0,
+      inputTokens: null,
+      outputTokens: null,
+      reasoningTokens: null,
+      gameTokens: null,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+      score: null,
+      collectedObjectIds: [],
+      objectPoints: 0,
+      progress: 0,
+      finalSupport: LEVEL.exit.support,
+      animationEnabled: false,
+      presentationComplete: true,
+      recordComplete: true,
+    };
+    const putDraft = vi.fn().mockRejectedValue(
+      new DraftApiFailure('conflict', 'La configuración cambió en otra pestaña.', 409, {
+        version: 2,
+        draft: remote,
+      }),
+    );
+    const draftApi: DraftApi = {
+      getDraft: vi.fn().mockResolvedValue({ version: 1, draft: previous }),
+      putDraft,
+    };
+    const attemptApi: AttemptApi = {
+      ...emptyAttemptApi(),
+      listAttempts: vi.fn().mockResolvedValue({ attempts: [sourceSummary] }),
+      getConfiguration: vi.fn().mockResolvedValue({
+        attemptId: sourceSummary.id,
+        draft: recovered,
+      }),
+    };
+    render(
+      <App
+        authClient={client({ initialize: vi.fn().mockResolvedValue(session()) })}
+        draftApi={draftApi}
+        attemptApi={attemptApi}
+        configLoader={async () => config}
+      />,
+    );
+
+    await screen.findByRole('heading', { name: 'Historial' });
+    const history = screen
+      .getByRole('heading', { name: 'Historial' })
+      .closest('section') as HTMLElement;
+    fireEvent.click(within(history).getByRole('button', { name: 'Ver configuración' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Usar esta configuración' }));
+
+    expect(
+      await screen.findByText(
+        'No se pudo aplicar la configuración. Revisá el estado del editor y volvé a intentarlo.',
+      ),
+    ).toBeTruthy();
+    expect(screen.getByDisplayValue(previous.instructions)).toBeTruthy();
+    expect(screen.queryByDisplayValue(recovered.instructions)).toBeNull();
+    expect(screen.getByText(remote.instructions)).toBeTruthy();
+    expect(putDraft).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({ instructions: recovered.instructions }),
+    );
     expect(attemptApi.createAttempt).not.toHaveBeenCalled();
   });
 
@@ -1748,11 +1838,11 @@ describe('access screen', () => {
     const attemptApi: AttemptApi = {
       ...emptyAttemptApi(),
       listAttempts: vi.fn().mockResolvedValue({ attempts: [historicalAttempt] }),
-      getAttempt: vi
-        .fn()
-        .mockRejectedValue(
-          new AttemptApiFailure('authentication', 'La sesión ya no está autorizada.', 401),
-        ),
+      getAttempt: vi.fn().mockRejectedValue(
+        new AttemptApiFailure('authentication', 'La sesión ya no está autorizada.', 401, false, {
+          authContext: 1,
+        }),
+      ),
     };
     render(
       <App
@@ -1787,6 +1877,302 @@ describe('access screen', () => {
       screen.getByText('La sesión necesita volver a validarse antes de continuar.'),
     ).toBeTruthy();
     expect(screen.queryByText('Tu cuenta está confirmada y la sesión es válida.')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Volver a ingresar' })).toBeTruthy();
+  });
+
+  it('keeps an old real-client rejection local after same-account renewal and retries with the new token', async () => {
+    window.sessionStorage.clear();
+    let releaseOldResponse!: (response: Response) => void;
+    const oldResponse = new Promise<Response>((resolve) => {
+      releaseOldResponse = resolve;
+    });
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockReturnValueOnce(oldResponse)
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ version: 0, draft: createDefaultDraft() }), { status: 200 }),
+      );
+    const firstSession = session('a@example.com', Math.floor(Date.now() / 1000), 'old-token');
+    const renewedSession = session(
+      'a@example.com',
+      Math.floor(Date.now() / 1000) + 600,
+      'new-token',
+    );
+    const initialize = vi
+      .fn()
+      .mockResolvedValueOnce(firstSession)
+      .mockResolvedValueOnce(renewedSession);
+
+    render(
+      <App
+        configLoader={async () => config}
+        clientFactory={() => client({ initialize })}
+        draftApiFactory={(apiConfig, tokenProvider) =>
+          new DraftApiClient(apiConfig, { tokenProvider, fetch: fetchImpl })
+        }
+        savedRobotApiFactory={() => ({
+          listRobots: vi.fn().mockResolvedValue({ robots: [] }),
+          getRobot: vi.fn(),
+          saveRobot: vi.fn(),
+          deleteRobot: vi.fn(),
+        })}
+        attemptApiFactory={() => emptyAttemptApi()}
+      />,
+    );
+
+    await screen.findByText('a@example.com');
+    await waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce());
+    await waitFor(() => expect(initialize).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      releaseOldResponse(
+        new Response(JSON.stringify({ message: 'Volvé a ingresar para continuar.' }), {
+          status: 401,
+        }),
+      );
+      await flushAuthMicrotasks();
+    });
+
+    expect(
+      await screen.findByText('El acceso fue rechazado para esta operación. Podés reintentar.'),
+    ).toBeTruthy();
+    expect(screen.queryByText(/La sesión dejó de tener acceso/)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Volver a ingresar' })).toBeNull();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Reintentar carga' }));
+    await waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(2));
+    expect(fetchImpl.mock.calls[1]?.[1]).toMatchObject({
+      headers: expect.objectContaining({ Authorization: 'Bearer new-token' }),
+    });
+    expect(
+      screen.queryByText('El acceso fue rechazado para esta operación. Podés reintentar.'),
+    ).toBeNull();
+  });
+
+  it('accepts an old real-client rejection during pending renewal, then clears only its global gate', async () => {
+    window.sessionStorage.clear();
+    let releaseOldResponse!: (response: Response) => void;
+    const oldResponse = new Promise<Response>((resolve) => {
+      releaseOldResponse = resolve;
+    });
+    let releaseRenewal!: (nextSession: AuthSession) => void;
+    const renewal = new Promise<AuthSession>((resolve) => {
+      releaseRenewal = resolve;
+    });
+    const fetchImpl = vi.fn<typeof fetch>().mockReturnValueOnce(oldResponse);
+    const firstSession = session('a@example.com', Math.floor(Date.now() / 1000), 'old-token');
+    const renewedSession = session(
+      'a@example.com',
+      Math.floor(Date.now() / 1000) + 600,
+      'new-token',
+    );
+    const initialize = vi
+      .fn<() => Promise<AuthSession | null>>()
+      .mockResolvedValueOnce(firstSession)
+      .mockReturnValueOnce(renewal);
+
+    render(
+      <App
+        configLoader={async () => config}
+        clientFactory={() => client({ initialize })}
+        draftApiFactory={(apiConfig, tokenProvider) =>
+          new DraftApiClient(apiConfig, { tokenProvider, fetch: fetchImpl })
+        }
+        savedRobotApiFactory={() => ({
+          listRobots: vi.fn().mockResolvedValue({ robots: [] }),
+          getRobot: vi.fn(),
+          saveRobot: vi.fn(),
+          deleteRobot: vi.fn(),
+        })}
+        attemptApiFactory={() => emptyAttemptApi()}
+      />,
+    );
+
+    await screen.findByText('a@example.com');
+    await waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce());
+    await waitFor(() => expect(initialize).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      releaseOldResponse(new Response('{}', { status: 403 }));
+      await flushAuthMicrotasks();
+    });
+
+    expect(
+      await screen.findByText('El acceso fue rechazado para esta operación. Podés reintentar.'),
+    ).toBeTruthy();
+    expect(screen.getByText(/La sesión dejó de tener acceso/)).toBeTruthy();
+
+    await act(async () => {
+      releaseRenewal(renewedSession);
+      await flushAuthMicrotasks();
+    });
+    await waitFor(() => expect(screen.queryByText(/La sesión dejó de tener acceso/)).toBeNull());
+    expect(
+      screen.getByText('El acceso fue rechazado para esta operación. Podés reintentar.'),
+    ).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Volver a ingresar' })).toBeNull();
+  });
+
+  it('blocks a current real-client rejection after renewal with the new token', async () => {
+    vi.useFakeTimers();
+    window.sessionStorage.clear();
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ version: 0, draft: createDefaultDraft() }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(new Response('{}', { status: 401 }));
+    const firstSession = session('a@example.com', (Date.now() + 5_000) / 1000, 'old-token');
+    const renewedSession = session('a@example.com', (Date.now() + 600_000) / 1000, 'new-token');
+    const initialize = vi
+      .fn()
+      .mockResolvedValueOnce(firstSession)
+      .mockResolvedValueOnce(renewedSession);
+
+    render(
+      <App
+        configLoader={async () => config}
+        clientFactory={() => client({ initialize })}
+        draftApiFactory={(apiConfig, tokenProvider) =>
+          new DraftApiClient(apiConfig, { tokenProvider, fetch: fetchImpl })
+        }
+        savedRobotApiFactory={() => ({
+          listRobots: vi.fn().mockResolvedValue({ robots: [] }),
+          getRobot: vi.fn(),
+          saveRobot: vi.fn(),
+          deleteRobot: vi.fn(),
+        })}
+        attemptApiFactory={() => emptyAttemptApi()}
+      />,
+    );
+
+    await act(flushAuthMicrotasks);
+    expect(initialize).toHaveBeenCalledOnce();
+    const instructions = screen.getByLabelText('Qué debe tener en cuenta el robot');
+    expect((instructions.closest('fieldset') as HTMLFieldSetElement).disabled).toBe(false);
+    await act(async () => {
+      vi.advanceTimersByTime(5_000);
+      await flushAuthMicrotasks();
+    });
+    expect(initialize).toHaveBeenCalledTimes(2);
+    expect((instructions.closest('fieldset') as HTMLFieldSetElement).disabled).toBe(false);
+    fireEvent.change(instructions, { target: { value: 'Rechazo de la credencial actual.' } });
+    await act(async () => {
+      vi.advanceTimersByTime(600);
+      await flushAuthMicrotasks();
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls[1]?.[1]).toMatchObject({
+      headers: expect.objectContaining({ Authorization: 'Bearer new-token' }),
+    });
+    expect(
+      screen.getByText('El acceso fue rechazado para esta operación. Podés reintentar.'),
+    ).toBeTruthy();
+    expect(screen.getByText(/La sesión dejó de tener acceso/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Volver a ingresar' })).toBeTruthy();
+
+    expect(initialize).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps a current rejection when same-token renewal resolves after the rejection', async () => {
+    vi.useFakeTimers();
+    window.sessionStorage.clear();
+    const firstSession = session('a@example.com', (Date.now() + 1_000) / 1000, 'same-token');
+    const renewedSession = session('a@example.com', (Date.now() + 600_000) / 1000, 'same-token');
+    const initialize = vi
+      .fn()
+      .mockResolvedValueOnce(firstSession)
+      .mockResolvedValueOnce(renewedSession);
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ version: 0, draft: createDefaultDraft() }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(new Response('{}', { status: 401 }));
+
+    render(
+      <App
+        configLoader={async () => config}
+        clientFactory={() => client({ initialize })}
+        draftApiFactory={(apiConfig, tokenProvider) =>
+          new DraftApiClient(apiConfig, { tokenProvider, fetch: fetchImpl })
+        }
+        savedRobotApiFactory={() => ({
+          listRobots: vi.fn().mockResolvedValue({ robots: [] }),
+          getRobot: vi.fn(),
+          saveRobot: vi.fn(),
+          deleteRobot: vi.fn(),
+        })}
+        attemptApiFactory={() => emptyAttemptApi()}
+      />,
+    );
+
+    await act(flushAuthMicrotasks);
+    const instructions = screen.getByLabelText('Qué debe tener en cuenta el robot');
+    fireEvent.change(instructions, { target: { value: 'Rechazo antes de renovar.' } });
+    await act(async () => {
+      vi.advanceTimersByTime(600);
+      await flushAuthMicrotasks();
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(screen.getByText(/La sesión dejó de tener acceso/)).toBeTruthy();
+
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+      await flushAuthMicrotasks();
+    });
+    expect(initialize).toHaveBeenCalledTimes(2);
+    expect(screen.getByText(/La sesión dejó de tener acceso/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Volver a ingresar' })).toBeTruthy();
+  });
+
+  it('blocks an untagged authentication rejection after renewal', async () => {
+    vi.useFakeTimers();
+    window.sessionStorage.clear();
+    const firstSession = session('a@example.com', (Date.now() + 5_000) / 1000, 'old-token');
+    const renewedSession = session('a@example.com', (Date.now() + 600_000) / 1000, 'new-token');
+    const initialize = vi
+      .fn()
+      .mockResolvedValueOnce(firstSession)
+      .mockResolvedValueOnce(renewedSession);
+    const authError = new DraftApiFailure(
+      'authentication',
+      'El acceso fue rechazado para esta operación. Podés reintentar.',
+      401,
+    );
+    const putDraft = vi.fn().mockRejectedValue(authError);
+    const draftApi: DraftApi = {
+      getDraft: vi.fn().mockResolvedValue({ version: 0, draft: createDefaultDraft() }),
+      putDraft,
+    };
+
+    render(
+      <App
+        authClient={client({ initialize })}
+        draftApi={draftApi}
+        attemptApi={emptyAttemptApi()}
+        configLoader={async () => config}
+      />,
+    );
+
+    await act(flushAuthMicrotasks);
+    expect(initialize).toHaveBeenCalledOnce();
+    const instructions = screen.getByLabelText('Qué debe tener en cuenta el robot');
+    expect((instructions.closest('fieldset') as HTMLFieldSetElement).disabled).toBe(false);
+    await act(async () => {
+      vi.advanceTimersByTime(5_000);
+      await flushAuthMicrotasks();
+    });
+    expect(initialize).toHaveBeenCalledTimes(2);
+    expect((instructions.closest('fieldset') as HTMLFieldSetElement).disabled).toBe(false);
+    fireEvent.change(instructions, {
+      target: { value: 'Rechazo sin contexto.' },
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(600);
+      await flushAuthMicrotasks();
+    });
+    expect(putDraft).toHaveBeenCalledOnce();
+    expect(screen.getByText(/La sesión dejó de tener acceso/)).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Volver a ingresar' })).toBeTruthy();
   });
 
