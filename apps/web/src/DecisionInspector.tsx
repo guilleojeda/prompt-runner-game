@@ -13,13 +13,14 @@ import {
   type DecisionObservationSide,
   type DecisionResult,
 } from './attempt-api.js';
+import type { ApiAuthRequired } from './api-auth.js';
 
 interface DecisionInspectorProps {
   readonly api: AttemptApi;
   readonly attemptId: string;
   readonly targetLabel?: string;
   readonly initialSelection?: 'first' | 'last-action-or-decision' | 'last-decision';
-  readonly onAuthRequired?: () => void;
+  readonly onAuthRequired?: ApiAuthRequired;
   readonly onClose: () => void;
 }
 
@@ -479,7 +480,7 @@ export function DecisionInspector({
       } catch (loadError) {
         if (requestSignal?.aborted || indexRequestRef.current !== requestId) return;
         if (loadError instanceof AttemptApiFailure && loadError.code === 'authentication') {
-          onAuthRequired?.();
+          onAuthRequired?.(loadError.authContext);
         }
         setError(errorText(loadError));
       } finally {
@@ -514,7 +515,7 @@ export function DecisionInspector({
       } catch (loadError: unknown) {
         if (signal.aborted) return;
         if (loadError instanceof AttemptApiFailure && loadError.code === 'authentication') {
-          onAuthRequired?.();
+          onAuthRequired?.(loadError.authContext);
         }
         setDetailError(errorText(loadError));
         setDetail(null);

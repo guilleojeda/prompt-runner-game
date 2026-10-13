@@ -23,6 +23,7 @@ import {
 } from '../../../shared/robot.js';
 import { MODEL_CATALOG } from '../../../shared/models.js';
 import type { AuthSession } from './auth.js';
+import type { ApiAuthRequired } from './api-auth.js';
 import { DraftApiFailure, type DraftApi } from './draft-api.js';
 
 type EditorStatus = 'loading' | 'clean' | 'dirty' | 'saving' | 'conflict' | 'error';
@@ -45,7 +46,7 @@ export interface RobotEditorProps {
   locked?: boolean;
   tryLocked?: boolean;
   onTry?: () => void;
-  onAuthRequired?: () => void;
+  onAuthRequired?: ApiAuthRequired;
   onConfigurationAvailabilityChange?: (available: boolean) => void;
   onAttemptControlsHostChange?: (node: HTMLDivElement | null) => void;
 }
@@ -287,7 +288,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
         if (error instanceof DraftApiFailure && error.code === 'authentication') {
           setStatus('error');
           setMessage(error.message);
-          onAuthRequiredRef.current?.();
+          onAuthRequiredRef.current?.(error.authContext);
         } else {
           setStatus('error');
           setMessage('No se pudo comprobar el guardado. Podés reintentar.');
@@ -382,7 +383,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
           setStatus('error');
           setMessage(error.message);
           setRetryMode('save');
-          onAuthRequiredRef.current?.();
+          onAuthRequiredRef.current?.(error.authContext);
           return false;
         }
         if (error instanceof DraftApiFailure && error.ambiguous) {
@@ -540,6 +541,19 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
       return false;
     }
     const copy = cloneDraft(nextDraft);
+    if (!(await sendSave({ draft: copy }))) {
+      return false;
+    }
+    if (
+      !isCurrent(generationRef, generation, sessionRef.current) ||
+      pausedRef.current ||
+      lockedRef.current ||
+      conflictRef.current !== null ||
+      !draftRef.current ||
+      !draftsEqual(draftRef.current, frozenVisible)
+    ) {
+      return false;
+    }
     draftRef.current = copy;
     setDraft(copy);
     setConflictState(null);
@@ -562,6 +576,20 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     }
     if (!confirmedRef.current && retryMode === 'reconcile') {
       setLoadAttempt((attempt) => attempt + 1);
+      return;
+    }
+    const current = draftRef.current;
+    const currentConfirmed = confirmedRef.current;
+    if (
+      current &&
+      currentConfirmed &&
+      reconciliationRef.current === null &&
+      conflictRef.current === null &&
+      draftsEqual(current, currentConfirmed.draft)
+    ) {
+      setStatus('clean');
+      setMessage(null);
+      setRetryMode(null);
       return;
     }
     void sendSave();
@@ -642,7 +670,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
           error instanceof DraftApiFailure ? error.message : 'No se pudo cargar la configuración.',
         );
         if (error instanceof DraftApiFailure && error.code === 'authentication') {
-          onAuthRequiredRef.current?.();
+          onAuthRequiredRef.current?.(error.authContext);
         }
       });
     return () => {

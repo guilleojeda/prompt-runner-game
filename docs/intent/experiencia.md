@@ -27,7 +27,11 @@ Las instrucciones generales admiten hasta 1.000 caracteres visibles y la descrip
 
 Un conflicto conserva el texto local y permite revisar la versión guardada antes de elegir cuál conservar. La resolución vuelve a comprobar la versión para no pisar una tercera edición. La renovación de la misma sesión pausa las escrituras y bloquea los controles del editor sin descartar cambios pendientes; otra identidad nunca hereda esos cambios. Al cerrar sesión con cambios sin confirmar se ofrece esperar/reintentar o descartar explícitamente los cambios locales pendientes. Pulsar **Probar** deja sin efecto una solicitud de salida anterior, incluidas las esperas de guardado que iban a cerrar la sesión. Una escritura ya enviada puede haber quedado guardada; salir no promete revertirla y no espera indefinidamente a la red. La cola local se detiene. La advertencia nativa al salir no garantiza guardar después de un cierre abrupto.
 
+Cargar una copia o usar una configuración histórica confirma su guardado antes de reemplazar el contenido visible y anunciar éxito. Si el guardado falla o entra en conflicto, conserva el contenido anterior y permite resolverlo. Si la persona sigue escribiendo durante la carga o el guardado, conserva esa edición posterior y no la reemplaza cuando llega la respuesta.
+
 La pantalla está en español y se opera con teclado. Probar congela lo visible, confirma su guardado y admite un intento con control de versión. Se bloquean los controles, incluido cerrar sesión, hasta presentar el resultado; durante cálculo sólo Cancelar es operativo. Los errores de acceso o red permiten recuperar la sesión o consulta sin crear otro intento. El historial propio es paginado y abre resultados conservados. Si hay varios intentos activos desde otras sesiones, se elige cuál retomar antes de entrar en su cálculo; no se impone una exclusión global por usuario.
+
+Al refrescar el historial, las páginas pendientes del listado anterior dejan de modificar sus filas y cursor. La paginación sigue desde el listado vigente para no omitir intentos ni anunciar que está completo antes de tiempo.
 
 ## Configuraciones de robot guardadas
 

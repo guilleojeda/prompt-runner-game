@@ -8,6 +8,7 @@ import {
 } from '../../../shared/robot.js';
 import { isModelKey } from '../../../shared/models.js';
 import type { AuthConfig } from './auth.js';
+import { API_ACCESS_REJECTED_MESSAGE, resolveApiToken, type ApiTokenProvider } from './api-auth.js';
 
 export interface SavedRobotsPage {
   readonly robots: readonly SavedRobotSummary[];
@@ -35,11 +36,14 @@ export class SavedRobotApiFailure extends Error {
     public readonly status?: number,
     public readonly current?: SavedRobot,
     public readonly ambiguous = false,
-    options?: { cause?: unknown },
+    options?: { cause?: unknown; authContext?: number },
   ) {
     super(message, options);
     this.name = 'SavedRobotApiFailure';
+    this.authContext = options?.authContext;
   }
+
+  public readonly authContext?: number;
 }
 
 export interface SavedRobotApi {
@@ -59,7 +63,7 @@ export interface SavedRobotApi {
   ): Promise<SavedRobotDeleteResult>;
 }
 
-export type SavedRobotTokenProvider = () => string | Promise<string>;
+export type SavedRobotTokenProvider = ApiTokenProvider;
 
 export interface SavedRobotApiClientOptions {
   readonly fetch?: typeof globalThis.fetch;
@@ -249,8 +253,11 @@ export class SavedRobotApiClient implements SavedRobotApi {
     signal?: AbortSignal,
   ): Promise<T> {
     let token: string;
+    let authContext: number | undefined;
     try {
-      token = await this.tokenProvider();
+      const resolved = resolveApiToken(await this.tokenProvider());
+      token = resolved.token;
+      authContext = resolved.authContext;
     } catch (error) {
       throw new SavedRobotApiFailure(
         'authentication',
@@ -262,7 +269,14 @@ export class SavedRobotApiClient implements SavedRobotApi {
       );
     }
     if (!token) {
-      throw new SavedRobotApiFailure('authentication', 'La sesión no tiene un token de acceso.');
+      throw new SavedRobotApiFailure(
+        'authentication',
+        'La sesión no tiene un token de acceso.',
+        undefined,
+        undefined,
+        false,
+        { authContext },
+      );
     }
     const write = method !== 'GET';
     const init: RequestInit = {
@@ -306,8 +320,11 @@ export class SavedRobotApiClient implements SavedRobotApi {
       if (response.status === 401 || response.status === 403) {
         throw new SavedRobotApiFailure(
           'authentication',
-          errorMessage(parsed, 'Tu sesión ya no tiene acceso a los robots guardados.'),
+          API_ACCESS_REJECTED_MESSAGE,
           response.status,
+          undefined,
+          false,
+          { authContext },
         );
       }
       if (response.status === 404) {

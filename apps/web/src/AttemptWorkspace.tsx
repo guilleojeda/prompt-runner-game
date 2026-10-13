@@ -10,6 +10,7 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import type { AuthSession } from './auth.js';
+import type { ApiAuthRequired } from './api-auth.js';
 import {
   AttemptApiFailure,
   type AttemptAdmission,
@@ -107,7 +108,7 @@ interface AttemptWorkspaceProps {
   readonly onBusyChange?: (busy: boolean) => void;
   readonly onConfigurationBusyChange?: (busy: boolean) => void;
   readonly onPreferenceReadyChange?: (ready: boolean) => void;
-  readonly onAuthRequired?: () => void;
+  readonly onAuthRequired?: ApiAuthRequired;
   readonly onReturnToEditor?: () => void;
   readonly historySlot?: ReactNode;
   readonly attemptControlsHost?: HTMLElement | null;
@@ -270,7 +271,7 @@ function attemptErrorMessage(error: unknown): string {
   return 'No se pudo consultar el intento. Podés reintentar.';
 }
 
-function isAuthenticationFailure(error: unknown): boolean {
+function isAuthenticationFailure(error: unknown): error is AttemptApiFailure {
   return error instanceof AttemptApiFailure && error.code === 'authentication';
 }
 
@@ -936,6 +937,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     const [completionBusy, setCompletionBusy] = useState(false);
     const presentationRef = useRef<HTMLDivElement>(null);
     const generationRef = useRef(0);
+    const historyGenerationRef = useRef(0);
     const frozenRef = useRef<FrozenAdmission | null>(null);
     const attemptRef = useRef<AttemptSummary | null>(null);
     const modeRef = useRef(mode);
@@ -1130,7 +1132,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             preferenceReadyRef.current = false;
             setPreferenceReady(false);
           }
-          if (isAuthenticationFailure(preferenceFailure)) onAuthRequired?.();
+          if (isAuthenticationFailure(preferenceFailure)) {
+            onAuthRequired?.(preferenceFailure.authContext);
+          }
           setPreferenceError(attemptErrorMessage(preferenceFailure));
         } finally {
           if (
@@ -1208,7 +1212,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
               ) {
                 return;
               }
-              if (isAuthenticationFailure(saveFailure)) onAuthRequired?.();
+              if (isAuthenticationFailure(saveFailure)) {
+                onAuthRequired?.(saveFailure.authContext);
+              }
               try {
                 const current = await api.getAnimationPreference(requestSignal);
                 if (
@@ -1243,7 +1249,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
                 ) {
                   return;
                 }
-                if (isAuthenticationFailure(readbackFailure)) onAuthRequired?.();
+                if (isAuthenticationFailure(readbackFailure)) {
+                  onAuthRequired?.(readbackFailure.authContext);
+                }
                 setPreferenceError(attemptErrorMessage(saveFailure));
               }
             } finally {
@@ -1335,7 +1343,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           setReplayRecord(record);
         } catch (replayFailure) {
           if (generationRef.current !== generation || replayEpochRef.current !== epoch) return;
-          if (isAuthenticationFailure(replayFailure)) onAuthRequired?.();
+          if (isAuthenticationFailure(replayFailure)) {
+            onAuthRequired?.(replayFailure.authContext);
+          }
           setError(
             workspaceError(
               replayFailure instanceof AttemptApiFailure
@@ -1471,21 +1481,39 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     const refreshHistory = useCallback(
       async (signal?: AbortSignal): Promise<void> => {
         const operationGeneration = generationRef.current;
+        const historyGeneration = historyGenerationRef.current + 1;
+        historyGenerationRef.current = historyGeneration;
         setLoadingHistory(true);
         try {
           const page: AttemptsPage = await api.listAttempts(undefined, signal);
-          if (signal?.aborted || generationRef.current !== operationGeneration) return;
+          if (
+            signal?.aborted ||
+            generationRef.current !== operationGeneration ||
+            historyGenerationRef.current !== historyGeneration
+          ) {
+            return;
+          }
           setHistory((current) =>
             mergeHistoryPage(current, page.attempts, attemptRef.current, false),
           );
           setHistoryCursor(page.nextCursor);
         } catch (historyError) {
-          if (!signal?.aborted && generationRef.current === operationGeneration) {
-            if (isAuthenticationFailure(historyError)) onAuthRequired?.();
+          if (
+            !signal?.aborted &&
+            generationRef.current === operationGeneration &&
+            historyGenerationRef.current === historyGeneration
+          ) {
+            if (isAuthenticationFailure(historyError)) {
+              onAuthRequired?.(historyError.authContext);
+            }
             setError(workspaceError(attemptErrorMessage(historyError), 'queries'));
           }
         } finally {
-          if (!signal?.aborted && generationRef.current === operationGeneration) {
+          if (
+            !signal?.aborted &&
+            generationRef.current === operationGeneration &&
+            historyGenerationRef.current === historyGeneration
+          ) {
             setLoadingHistory(false);
           }
         }
@@ -1503,7 +1531,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           }
         } catch (quotaError) {
           if (!signal?.aborted && generationRef.current === operationGeneration) {
-            if (isAuthenticationFailure(quotaError)) onAuthRequired?.();
+            if (isAuthenticationFailure(quotaError)) {
+              onAuthRequired?.(quotaError.authContext);
+            }
             setError(workspaceError(attemptErrorMessage(quotaError), 'queries'));
           }
         }
@@ -1563,7 +1593,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
               ),
             );
             setMode('unknown');
-            if (isAuthenticationFailure(retryError)) onAuthRequired?.();
+            if (isAuthenticationFailure(retryError)) {
+              onAuthRequired?.(retryError.authContext);
+            }
             return true;
           }
           clearAttemptRecovery(sessionSub);
@@ -1594,7 +1626,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           ) {
             return false;
           }
-          if (isAuthenticationFailure(discoveryError)) onAuthRequired?.();
+          if (isAuthenticationFailure(discoveryError)) {
+            onAuthRequired?.(discoveryError.authContext);
+          }
           setError(workspaceError(attemptErrorMessage(discoveryError), 'check-status'));
           setMode('unknown');
           return true;
@@ -1621,7 +1655,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           return true;
         } catch (recoveryError) {
           if (signal?.aborted) return false;
-          if (isAuthenticationFailure(recoveryError)) onAuthRequired?.();
+          if (isAuthenticationFailure(recoveryError)) {
+            onAuthRequired?.(recoveryError.authContext);
+          }
           if (recoveryError instanceof AttemptApiFailure && recoveryError.code === 'not_found') {
             const frozen = frozenRef.current;
             if (reference.requestKey && !reference.attemptId && frozen) {
@@ -1679,7 +1715,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           await discoverActiveAttempts(controller.signal);
         } catch (initialError) {
           if (controller.signal.aborted || generationRef.current !== generation) return;
-          if (isAuthenticationFailure(initialError)) onAuthRequired?.();
+          if (isAuthenticationFailure(initialError)) {
+            onAuthRequired?.(initialError.authContext);
+          }
           setError(workspaceError(attemptErrorMessage(initialError)));
           setMode('unknown');
         }
@@ -1732,7 +1770,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             ) {
               return;
             }
-            if (isAuthenticationFailure(startError)) onAuthRequired?.();
+            if (isAuthenticationFailure(startError)) {
+              onAuthRequired?.(startError.authContext);
+            }
             setError(workspaceError(attemptErrorMessage(startError), 'check-status'));
             setMode('unknown');
             return;
@@ -1861,7 +1901,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         ) {
           setError(workspaceError(admissionError.message, 'check-status'));
           setMode('unknown');
-          onAuthRequired?.();
+          onAuthRequired?.(admissionError.authContext);
           return;
         }
         const currentRecovery = readAttemptRecovery(sessionSub);
@@ -1880,7 +1920,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             admissionErrorGuidance(admissionError),
           ),
         );
-        if (isAuthenticationFailure(admissionError)) onAuthRequired?.();
+        if (isAuthenticationFailure(admissionError)) {
+          onAuthRequired?.(admissionError.authContext);
+        }
       }
     }, [
       api,
@@ -1953,7 +1995,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         }
         if (!(lookupError instanceof AttemptApiFailure && lookupError.code === 'not_found')) {
           setError(workspaceError(attemptErrorMessage(lookupError), 'check-status'));
-          if (isAuthenticationFailure(lookupError)) onAuthRequired?.();
+          if (isAuthenticationFailure(lookupError)) {
+            onAuthRequired?.(lookupError.authContext);
+          }
           return;
         }
       }
@@ -2007,7 +2051,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         ) {
           return;
         }
-        if (isAuthenticationFailure(cancelError)) onAuthRequired?.();
+        if (isAuthenticationFailure(cancelError)) {
+          onAuthRequired?.(cancelError.authContext);
+        }
         setMode('unknown');
         setError(workspaceError(attemptErrorMessage(cancelError), 'check-status'));
       } finally {
@@ -2048,7 +2094,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             return;
           }
           setMode(previousMode);
-          if (isAuthenticationFailure(openError)) onAuthRequired?.();
+          if (isAuthenticationFailure(openError)) {
+            onAuthRequired?.(openError.authContext);
+          }
           setError(workspaceError(attemptErrorMessage(openError)));
         }
       },
@@ -2092,7 +2140,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           ) {
             return;
           }
-          if (isAuthenticationFailure(configurationError)) onAuthRequired?.();
+          if (isAuthenticationFailure(configurationError)) {
+            onAuthRequired?.(configurationError.authContext);
+          }
           setConfigurationState({
             targetId: id,
             status: 'error',
@@ -2275,7 +2325,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           ) {
             return;
           }
-          if (isAuthenticationFailure(replayOpenError)) onAuthRequired?.();
+          if (isAuthenticationFailure(replayOpenError)) {
+            onAuthRequired?.(replayOpenError.authContext);
+          }
           setError(workspaceError(attemptErrorMessage(replayOpenError)));
           setMode('result');
         }
@@ -2346,7 +2398,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             ) {
               return;
             }
-            if (isAuthenticationFailure(completionError)) onAuthRequired?.();
+            if (isAuthenticationFailure(completionError)) {
+              onAuthRequired?.(completionError.authContext);
+            }
             setError(
               workspaceError(
                 `No se pudo guardar el cierre de la presentación: ${attemptErrorMessage(completionError)}`,
@@ -2433,7 +2487,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             ) {
               return;
             }
-            if (isAuthenticationFailure(refreshError)) onAuthRequired?.();
+            if (isAuthenticationFailure(refreshError)) {
+              onAuthRequired?.(refreshError.authContext);
+            }
             setError(workspaceError(attemptErrorMessage(refreshError), 'replay'));
             setMode('replay-error');
           });
@@ -2508,18 +2564,36 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     const loadMore = useCallback(async (): Promise<void> => {
       if (!historyCursor || loadingHistory || busy) return;
       const operationGeneration = generationRef.current;
+      const historyGeneration = historyGenerationRef.current;
       setLoadingHistory(true);
       try {
         const page = await api.listAttempts(historyCursor);
-        if (generationRef.current !== operationGeneration) return;
+        if (
+          generationRef.current !== operationGeneration ||
+          historyGenerationRef.current !== historyGeneration
+        ) {
+          return;
+        }
         setHistory((current) => mergeHistoryPage(current, page.attempts, attemptRef.current, true));
         setHistoryCursor(page.nextCursor);
       } catch (historyError) {
-        if (generationRef.current !== operationGeneration) return;
-        if (isAuthenticationFailure(historyError)) onAuthRequired?.();
+        if (
+          generationRef.current !== operationGeneration ||
+          historyGenerationRef.current !== historyGeneration
+        ) {
+          return;
+        }
+        if (isAuthenticationFailure(historyError)) {
+          onAuthRequired?.(historyError.authContext);
+        }
         setError(workspaceError(attemptErrorMessage(historyError), 'queries'));
       } finally {
-        if (generationRef.current === operationGeneration) setLoadingHistory(false);
+        if (
+          generationRef.current === operationGeneration &&
+          historyGenerationRef.current === historyGeneration
+        ) {
+          setLoadingHistory(false);
+        }
       }
     }, [api, busy, historyCursor, loadingHistory, onAuthRequired]);
 
@@ -2548,7 +2622,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           if (controller.signal.aborted || operationEpochRef.current !== operationEpoch) return;
           setMode('unknown');
           setError(workspaceError(attemptErrorMessage(pollError), 'check-status'));
-          if (isAuthenticationFailure(pollError)) onAuthRequired?.();
+          if (isAuthenticationFailure(pollError)) {
+            onAuthRequired?.(pollError.authContext);
+          }
         }
       };
       timer = window.setTimeout(() => void poll(), 2_000);
@@ -2563,10 +2639,15 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       setActiveCandidates([]);
     };
 
-    const handleDecisionInspectorAuthRequired = useCallback((): void => {
-      clearDecisionInspector();
-      onAuthRequired?.();
-    }, [clearDecisionInspector, onAuthRequired]);
+    const handleDecisionInspectorAuthRequired = useCallback(
+      (authContext?: number): boolean => {
+        const accepted = onAuthRequired?.(authContext);
+        if (accepted === false) return false;
+        clearDecisionInspector();
+        return true;
+      },
+      [clearDecisionInspector, onAuthRequired],
+    );
 
     const attemptControls = (
       <div className="attempt-controls" aria-label="Controles del intento">
