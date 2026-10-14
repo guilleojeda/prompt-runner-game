@@ -438,6 +438,100 @@ describe('Runtime attempt coordinator', () => {
     expect(replay?.actions).toHaveLength(17);
   });
 
+  it('retries an explicit throttle after a partial body while keeping its receipt unknown', async () => {
+    const draft = createDefaultDraft();
+    const store = new MemoryAttemptStore({
+      draft: { version: 1, draft },
+      now: () => new Date('2026-09-21T15:00:00.000Z'),
+    });
+    const bodies = new MemoryBodyStore();
+    const admitted = await store.admit({
+      owner: 'a',
+      requestKey: 'partial-throttle',
+      expectedVersion: 1,
+      draft,
+      animationEnabled: false,
+    });
+    const partialBytes = new TextEncoder().encode('{"message":"temporarily thrott');
+    const delays: number[] = [];
+    let attempts = 0;
+    const infer: InferenceAdapter = async ({ audit }) => {
+      attempts += 1;
+      await audit.beforeSend(new TextEncoder().encode(`request-${attempts}`));
+      if (attempts === 1) {
+        await audit.afterReceive({
+          bytes: partialBytes,
+          statusCode: 429,
+          requestId: 'partial-throttle-request',
+          complete: false,
+          error: { name: 'Error', message: 'response stream closed early' },
+        });
+        throw Object.assign(new Error('throttled'), {
+          code: 'throttled',
+          usage: { normalized: { inputTokens: null, outputTokens: null, gameTokens: null } },
+        });
+      }
+      await audit.afterReceive({
+        bytes: new TextEncoder().encode('{"response":"complete"}'),
+        statusCode: 200,
+        requestId: `complete-${attempts}`,
+        complete: true,
+      });
+      return {
+        action: { name: 'tool_1', input: {} },
+        usage: { inputTokens: 10, outputTokens: 2, gameTokens: 12 },
+      };
+    };
+
+    await executeAttempt(
+      { owner: 'a', attemptId: admitted.attempt.id, executorId: 'executor' },
+      {
+        store,
+        bodies,
+        infer,
+        engine: createGameEngine(),
+        now: () => new Date('2026-09-21T15:00:00.000Z'),
+        sleep: async (milliseconds) => {
+          if (milliseconds > 0) delays.push(milliseconds);
+        },
+      },
+    );
+
+    const record = await store.get('a', admitted.attempt.id);
+    const calls = await store.getCalls('a', admitted.attempt.id);
+    expect(attempts).toBe(3);
+    expect(delays).toHaveLength(12);
+    expect(delays.every((milliseconds) => milliseconds === 5_000)).toBe(true);
+    expect(calls.map((call) => call.status)).toEqual(['unknown', 'received', 'received']);
+    expect(calls[0]).toMatchObject({
+      errorCode: 'throttled',
+      responseStatus: 429,
+      requestId: 'partial-throttle-request',
+      responseBytes: partialBytes.byteLength,
+      responseSha256: expect.any(String),
+      usage: {
+        inputTokens: null,
+        outputTokens: null,
+        reasoningTokens: null,
+        gameTokens: null,
+        cacheReadTokens: null,
+        cacheWriteTokens: null,
+      },
+    });
+    expect(await bodies.get(calls[0]!.responseKey)).toEqual(partialBytes);
+    expect(record).toMatchObject({
+      status: 'defeat',
+      reason: 'walk_into_pit',
+      turnsUsed: 2,
+      sequence: 2,
+      calls: 3,
+      recordComplete: false,
+      inputTokens: null,
+      outputTokens: null,
+      gameTokens: null,
+    });
+  });
+
   it('does not retry an ambiguous bodyless transport failure', async () => {
     const draft = createDefaultDraft();
     const store = new MemoryAttemptStore({
@@ -506,7 +600,7 @@ describe('Runtime attempt coordinator', () => {
     ).toEqual(new Uint8Array());
   });
 
-  it('does not publish an action when an adapter returns after an incomplete response audit', async () => {
+  it('does not publish an action when an adapter returns after a partial response audit', async () => {
     const draft = createDefaultDraft();
     const store = new MemoryAttemptStore({
       draft: { version: 1, draft },
@@ -515,21 +609,22 @@ describe('Runtime attempt coordinator', () => {
     const bodies = new MemoryBodyStore();
     const admitted = await store.admit({
       owner: 'a',
-      requestKey: 'bodyless-success',
+      requestKey: 'partial-response-success',
       expectedVersion: 1,
       draft,
       animationEnabled: false,
     });
     let attempts = 0;
+    const partialBytes = new TextEncoder().encode('{"output":{"message":');
     const infer: InferenceAdapter = async ({ audit }) => {
       attempts += 1;
       await audit.beforeSend(new TextEncoder().encode('request-1'));
       await audit.afterReceive({
-        bytes: null,
-        statusCode: null,
-        requestId: null,
+        bytes: partialBytes,
+        statusCode: 200,
+        requestId: 'partial-success',
         complete: false,
-        error: { name: 'ModelThrottledError', message: 'capacity unavailable' },
+        error: { name: 'Error', message: 'response stream closed early' },
       });
       return {
         action: { name: 'tool_1', input: {} },
@@ -561,7 +656,10 @@ describe('Runtime attempt coordinator', () => {
     expect(call).toMatchObject({
       status: 'unknown',
       errorCode: 'incomplete_response',
-      responseBytes: 0,
+      responseStatus: 200,
+      requestId: 'partial-success',
+      responseBytes: partialBytes.byteLength,
+      responseSha256: expect.any(String),
       usage: {
         inputTokens: null,
         outputTokens: null,
@@ -571,6 +669,7 @@ describe('Runtime attempt coordinator', () => {
         cacheWriteTokens: null,
       },
     });
+    expect(await bodies.get(call.responseKey)).toEqual(partialBytes);
   });
 
   it('closes as throttled after two delayed retries for the same decision', async () => {
@@ -759,79 +858,153 @@ describe('Runtime attempt coordinator', () => {
     });
   });
 
-  it('keeps provider usage when response validation fails after an audited body', async () => {
+  it('preserves an actual response-audit failure instead of reporting a provider failure', async () => {
     const draft = createDefaultDraft();
     const store = new MemoryAttemptStore({
       draft: { version: 1, draft },
       now: () => new Date('2026-09-21T15:00:00.000Z'),
     });
+    const bodies = new MemoryBodyStore();
+    const put = bodies.put.bind(bodies);
+    vi.spyOn(bodies, 'put').mockImplementation(async (key, bytes) => {
+      if (key.endsWith('/response.json')) throw new Error('response audit storage unavailable');
+      return put(key, bytes);
+    });
     const admitted = await store.admit({
       owner: 'a',
-      requestKey: 'invalid',
+      requestKey: 'response-audit-failure',
       expectedVersion: 1,
       draft,
       animationEnabled: false,
     });
+    let attempts = 0;
     const infer: InferenceAdapter = async ({ audit }) => {
+      attempts += 1;
       await audit.beforeSend(new TextEncoder().encode('request'));
-      await audit.afterReceive({
-        bytes: new TextEncoder().encode('{}'),
-        statusCode: 200,
-        requestId: 'invalid',
-        complete: true,
-      });
-      throw Object.assign(new Error('invalid'), {
-        code: 'invalid_response',
-        usage: {
-          normalized: {
-            inputTokens: 7,
-            outputTokens: 3,
-            gameTokens: 10,
-            reasoningTokens: 2,
-            cacheReadTokens: 1,
-            cacheWriteTokens: 2,
-          },
-        },
-      });
+      try {
+        await audit.afterReceive({
+          bytes: new TextEncoder().encode('{"usage":{"inputTokens":7}}'),
+          statusCode: 200,
+          requestId: 'audit-failure',
+          complete: true,
+        });
+      } catch (cause) {
+        throw Object.assign(new Error('Response audit failed', { cause }), {
+          code: 'audit_failed',
+        });
+      }
+      throw new Error('Inference should stop after a failed response audit');
     };
+
     await executeAttempt(
       { owner: 'a', attemptId: admitted.attempt.id, executorId: 'executor' },
       {
         store,
-        bodies: new MemoryBodyStore(),
+        bodies,
         infer,
         engine: createGameEngine(),
         now: () => new Date('2026-09-21T15:00:00.000Z'),
       },
     );
+
     const record = await store.get('a', admitted.attempt.id);
     const [call] = await store.getCalls('a', admitted.attempt.id);
-    const initialSnapshot = await store.getSnapshot('a', admitted.attempt.id);
-    const replay = await store.getReplayRecord('a', admitted.attempt.id);
-    expect(record?.status).toBe('error');
-    expect(initialSnapshot).toMatchObject({
-      id: 'state-0',
-      status: 'running',
-      support: 0,
+    expect(attempts).toBe(1);
+    expect(record).toMatchObject({
+      status: 'error',
+      reason: 'audit_failed',
+      calls: 1,
       turnsUsed: 0,
+      sequence: 0,
+      recordComplete: false,
     });
-    expect(record).toMatchObject({ turnsUsed: 0, sequence: 0 });
-    expect(record?.currentSnapshot).toEqual(initialSnapshot);
-    expect(record?.initialSnapshot).toEqual(initialSnapshot);
-    expect(replay).toMatchObject({
-      actions: [],
-      snapshots: [{ id: 'state-0', support: 0, turnsUsed: 0 }],
-      closure: { status: 'error', actionCount: 0, finalStateId: 'state-0' },
+    expect(call).toMatchObject({ status: 'unknown', errorCode: 'audit_failed' });
+    expect(call.responseSha256).toBeUndefined();
+    expect(call.usage).toMatchObject({
+      inputTokens: null,
+      outputTokens: null,
+      gameTokens: null,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
     });
-    expect(record?.inputTokens).toBe(7);
-    expect(record?.outputTokens).toBe(3);
-    expect(record?.reasoningTokens).toBe(2);
-    expect(record?.gameTokens).toBe(10);
-    expect(record?.recordComplete).toBe(true);
-    expect(call.status).toBe('invalid');
-    expect(call.usage.reasoningTokens).toBe(2);
-    expect(call.usage.gameTokens).toBe(10);
   });
+
+  it.each(['invalid_response', 'truncated'] as const)(
+    'keeps a complete audited body invalid when response processing fails with %s',
+    async (failureCode) => {
+      const draft = createDefaultDraft();
+      const store = new MemoryAttemptStore({
+        draft: { version: 1, draft },
+        now: () => new Date('2026-09-21T15:00:00.000Z'),
+      });
+      const admitted = await store.admit({
+        owner: 'a',
+        requestKey: failureCode,
+        expectedVersion: 1,
+        draft,
+        animationEnabled: false,
+      });
+      const infer: InferenceAdapter = async ({ audit }) => {
+        await audit.beforeSend(new TextEncoder().encode('request'));
+        await audit.afterReceive({
+          bytes: new TextEncoder().encode('{}'),
+          statusCode: 200,
+          requestId: 'invalid',
+          complete: true,
+        });
+        throw Object.assign(new Error(failureCode), {
+          code: failureCode,
+          usage: {
+            normalized: {
+              inputTokens: 7,
+              outputTokens: 3,
+              gameTokens: 10,
+              reasoningTokens: 2,
+              cacheReadTokens: 1,
+              cacheWriteTokens: 2,
+            },
+          },
+        });
+      };
+      await executeAttempt(
+        { owner: 'a', attemptId: admitted.attempt.id, executorId: 'executor' },
+        {
+          store,
+          bodies: new MemoryBodyStore(),
+          infer,
+          engine: createGameEngine(),
+          now: () => new Date('2026-09-21T15:00:00.000Z'),
+        },
+      );
+      const record = await store.get('a', admitted.attempt.id);
+      const [call] = await store.getCalls('a', admitted.attempt.id);
+      const initialSnapshot = await store.getSnapshot('a', admitted.attempt.id);
+      const replay = await store.getReplayRecord('a', admitted.attempt.id);
+      expect(record?.status).toBe('error');
+      expect(initialSnapshot).toMatchObject({
+        id: 'state-0',
+        status: 'running',
+        support: 0,
+        turnsUsed: 0,
+      });
+      expect(record).toMatchObject({ turnsUsed: 0, sequence: 0 });
+      expect(record?.currentSnapshot).toEqual(initialSnapshot);
+      expect(record?.initialSnapshot).toEqual(initialSnapshot);
+      expect(replay).toMatchObject({
+        actions: [],
+        snapshots: [{ id: 'state-0', support: 0, turnsUsed: 0 }],
+        closure: { status: 'error', actionCount: 0, finalStateId: 'state-0' },
+      });
+      expect(record?.inputTokens).toBe(7);
+      expect(record?.outputTokens).toBe(3);
+      expect(record?.reasoningTokens).toBe(2);
+      expect(record?.gameTokens).toBe(10);
+      expect(record?.recordComplete).toBe(true);
+      expect(call.status).toBe('invalid');
+      expect(call.usage.reasoningTokens).toBe(2);
+      expect(call.usage.gameTokens).toBe(10);
+    },
+  );
 });
 
 describe('Runtime inference margin and cancellation', () => {

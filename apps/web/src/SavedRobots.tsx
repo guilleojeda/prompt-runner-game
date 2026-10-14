@@ -104,7 +104,10 @@ function isAuthError(error: unknown): error is SavedRobotApiFailure {
 
 function isDefinitiveWriteRejection(error: SavedRobotApiFailure): boolean {
   return (
-    error.code === 'authentication' || error.code === 'invalid' || error.code === 'rate_limited'
+    error.code === 'authentication' ||
+    error.code === 'invalid' ||
+    error.code === 'limit' ||
+    error.code === 'rate_limited'
   );
 }
 
@@ -420,6 +423,15 @@ export function SavedRobots({
       if (!isCurrent(generation)) throw new StaleSavedOperation();
       return saved;
     } catch (saveError) {
+      if (
+        saveError instanceof SavedRobotApiFailure &&
+        saveError.code === 'conflict' &&
+        saveError.current &&
+        sameSavedContent(saveError.current, id, desiredName, desiredDraft)
+      ) {
+        if (!isCurrent(generation)) throw new StaleSavedOperation();
+        return saveError.current;
+      }
       if (
         !(saveError instanceof SavedRobotApiFailure) ||
         !saveError.ambiguous ||

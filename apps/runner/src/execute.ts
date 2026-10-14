@@ -317,10 +317,9 @@ export const executeAttempt = async (
           if (call) {
             // Persist a zero-byte marker for a missing provider body. The marker is not
             // presented as provider response content; it gives the durable record an
-            // immutable response hash and byte count. Keep the call started until
-            // inference classifies the rejection so an unequivocal throttle can become
-            // a terminal error while an ambiguous transport failure remains unknown and
-            // blocks a retry.
+            // immutable response hash and byte count. Keep a bodyless call started until
+            // inference classifies it: a confirmed throttle can enter the existing retry
+            // path, while an ambiguous transport failure stays unknown and stops inference.
             const response = await dependencies.bodies.put(
               responseKey,
               receipt.bytes ?? new Uint8Array(),
@@ -368,16 +367,20 @@ export const executeAttempt = async (
         const failure = error as { readonly code?: string; readonly usage?: unknown };
         const failureCode = failure.code;
         if (call) {
+          // A partial body is already durably unknown. Preserve that uncertainty;
+          // the provider failure code still decides whether an explicit throttle retries.
           const completed: CallRecord = {
             ...call,
             status:
-              call.status === 'started'
-                ? failureCode === 'throttled'
-                  ? 'error'
-                  : 'unknown'
-                : failureCode === 'invalid_response' || failureCode === 'truncated'
-                  ? 'invalid'
-                  : 'error',
+              call.status === 'unknown'
+                ? 'unknown'
+                : call.status === 'started'
+                  ? failureCode === 'throttled'
+                    ? 'error'
+                    : 'unknown'
+                  : failureCode === 'invalid_response' || failureCode === 'truncated'
+                    ? 'invalid'
+                    : 'error',
             usage: failure.usage ? usageFrom(failure.usage as DecisionResult['usage']) : call.usage,
             errorCode: failureCode ?? (error instanceof Error ? error.name : 'inference_error'),
             updatedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
