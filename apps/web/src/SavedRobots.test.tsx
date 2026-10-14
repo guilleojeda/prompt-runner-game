@@ -325,6 +325,295 @@ describe('SavedRobots', () => {
     expect(editorRef.current?.captureSnapshot).toHaveBeenCalledTimes(1);
   });
 
+  it.each([401, 403])(
+    'retains a first pending create after an auth readback failure (%s) and reports its context',
+    async (status) => {
+      const draft = { ...createDefaultDraft(), instructions: 'Copia con acceso renovado.' };
+      const onAuthRequired = vi.fn();
+      const saveRobot = vi
+        .fn()
+        .mockRejectedValueOnce(
+          new SavedRobotApiFailure('network', 'No se confirmó.', undefined, undefined, true),
+        );
+      const getRobot = vi
+        .fn()
+        .mockRejectedValueOnce(
+          new SavedRobotApiFailure(
+            'authentication',
+            'El acceso anterior fue rechazado.',
+            status,
+            undefined,
+            false,
+            { authContext: 17 },
+          ),
+        );
+      const savedApi = api({
+        listRobots: vi.fn().mockResolvedValue({ robots: [] }),
+        saveRobot,
+        getRobot,
+      });
+      const editorRef = editor(draft);
+      render(
+        <SavedRobots
+          api={savedApi}
+          editor={editorRef}
+          session={session()}
+          onAuthRequired={onAuthRequired}
+        />,
+      );
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Guardar como nueva' }));
+      fireEvent.change(screen.getByLabelText('Nombre para la nueva copia'), {
+        target: { value: 'Acceso renovado' },
+      });
+      const form = screen.getByLabelText('Nombre para la nueva copia').closest('form')!;
+      fireEvent.submit(form);
+
+      await waitFor(() => expect(onAuthRequired).toHaveBeenCalledWith(17));
+      expect(screen.getByText('El acceso anterior fue rechazado.')).toBeTruthy();
+      expect(screen.getByText(/misma copia/)).toBeTruthy();
+      expect(saveRobot).toHaveBeenCalledOnce();
+      const id = saveRobot.mock.calls[0]?.[0];
+      getRobot.mockResolvedValueOnce(savedRobot({ id, name: 'Acceso renovado', draft }));
+
+      fireEvent.submit(form);
+      await waitFor(() =>
+        expect(screen.getByText('Guardaste «Acceso renovado» como robot nuevo.')).toBeTruthy(),
+      );
+      expect(getRobot).toHaveBeenLastCalledWith(id);
+      expect(saveRobot).toHaveBeenCalledOnce();
+      expect(onAuthRequired).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([401, 403])(
+    'retains a pending create when a later auth readback fails (%s) and retries the same UUID',
+    async (status) => {
+      const draft = { ...createDefaultDraft(), instructions: 'Esperando renovación.' };
+      const onAuthRequired = vi.fn();
+      const saveRobot = vi
+        .fn()
+        .mockRejectedValueOnce(
+          new SavedRobotApiFailure('network', 'No se confirmó.', undefined, undefined, true),
+        );
+      const getRobot = vi
+        .fn()
+        .mockRejectedValueOnce(new SavedRobotApiFailure('network', 'Todavía no se puede leer.'))
+        .mockRejectedValueOnce(
+          new SavedRobotApiFailure(
+            'authentication',
+            'La lectura anterior perdió acceso.',
+            status,
+            undefined,
+            false,
+            { authContext: 29 },
+          ),
+        )
+        .mockImplementationOnce(async (id: string) =>
+          savedRobot({ id, name: 'Esperando renovación', draft }),
+        );
+      const savedApi = api({
+        listRobots: vi.fn().mockResolvedValue({ robots: [] }),
+        saveRobot,
+        getRobot,
+      });
+      const editorRef = editor(draft);
+      render(
+        <SavedRobots
+          api={savedApi}
+          editor={editorRef}
+          session={session()}
+          onAuthRequired={onAuthRequired}
+        />,
+      );
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Guardar como nueva' }));
+      fireEvent.change(screen.getByLabelText('Nombre para la nueva copia'), {
+        target: { value: 'Esperando renovación' },
+      });
+      const form = screen.getByLabelText('Nombre para la nueva copia').closest('form')!;
+      fireEvent.submit(form);
+      await waitFor(() => expect(screen.getByText(/misma copia/)).toBeTruthy());
+      const id = saveRobot.mock.calls[0]?.[0];
+
+      fireEvent.submit(form);
+      await waitFor(() => expect(onAuthRequired).toHaveBeenCalledWith(29));
+      expect(screen.getByText('La lectura anterior perdió acceso.')).toBeTruthy();
+      expect(screen.getByText(/misma copia/)).toBeTruthy();
+      expect(saveRobot).toHaveBeenCalledOnce();
+      expect(getRobot).toHaveBeenNthCalledWith(2, id);
+
+      fireEvent.submit(form);
+      await waitFor(() =>
+        expect(screen.getByText('Guardaste «Esperando renovación» como robot nuevo.')).toBeTruthy(),
+      );
+      expect(getRobot).toHaveBeenNthCalledWith(3, id);
+      expect(saveRobot).toHaveBeenCalledOnce();
+      expect(onAuthRequired).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    {
+      code: 'authentication' as const,
+      status: 401,
+      message: 'El acceso fue rechazado para esta operación.',
+      authContext: 41,
+    },
+    {
+      code: 'invalid' as const,
+      status: 400,
+      message: 'La configuración no es válida.',
+      authContext: undefined,
+    },
+    {
+      code: 'rate_limited' as const,
+      status: 429,
+      message: 'Esperá un momento antes de volver a intentar.',
+      authContext: undefined,
+    },
+  ])(
+    'does not retain a pending create after a definite initial $code rejection',
+    async ({ code, status, message, authContext }) => {
+      const saveRobot = vi
+        .fn()
+        .mockRejectedValueOnce(
+          new SavedRobotApiFailure(
+            code,
+            message,
+            status,
+            undefined,
+            code === 'invalid',
+            authContext === undefined ? undefined : { authContext },
+          ),
+        )
+        .mockImplementationOnce(
+          async (id: string, _version: number, name: string, draft: RobotDraft) =>
+            savedRobot({ id, name, draft }),
+        );
+      const savedApi = api({
+        listRobots: vi.fn().mockResolvedValue({ robots: [] }),
+        saveRobot,
+      });
+      const onAuthRequired = vi.fn();
+      render(
+        <SavedRobots
+          api={savedApi}
+          editor={editor()}
+          session={session()}
+          onAuthRequired={onAuthRequired}
+        />,
+      );
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Guardar como nueva' }));
+      fireEvent.change(screen.getByLabelText('Nombre para la nueva copia'), {
+        target: { value: 'Rechazo definitivo' },
+      });
+      const form = screen.getByLabelText('Nombre para la nueva copia').closest('form')!;
+      fireEvent.submit(form);
+      await waitFor(() => expect(screen.getByText(message)).toBeTruthy());
+      const firstId = saveRobot.mock.calls[0]?.[0];
+      expect(screen.queryByText(/misma copia/)).toBeNull();
+      if (authContext === undefined) {
+        expect(onAuthRequired).not.toHaveBeenCalled();
+      } else {
+        expect(onAuthRequired).toHaveBeenCalledWith(authContext);
+      }
+
+      fireEvent.submit(form);
+      await waitFor(() =>
+        expect(screen.getByText('Guardaste «Rechazo definitivo» como robot nuevo.')).toBeTruthy(),
+      );
+      expect(saveRobot).toHaveBeenCalledTimes(2);
+      expect(saveRobot.mock.calls[1]?.[0]).not.toBe(firstId);
+    },
+  );
+
+  it('retries the same UUID after a same-ID 404 confirms the ambiguous create was absent', async () => {
+    const draft = { ...createDefaultDraft(), instructions: 'Reintento sin copia remota.' };
+    const saveRobot = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new SavedRobotApiFailure('network', 'No se confirmó.', undefined, undefined, true),
+      )
+      .mockImplementationOnce(
+        async (id: string, _version: number, name: string, nextDraft: RobotDraft) =>
+          savedRobot({ id, name, draft: nextDraft }),
+      );
+    const getRobot = vi
+      .fn()
+      .mockRejectedValueOnce(new SavedRobotApiFailure('not_found', 'No existe.', 404))
+      .mockRejectedValueOnce(new SavedRobotApiFailure('not_found', 'No existe.', 404));
+    const savedApi = api({
+      listRobots: vi.fn().mockResolvedValue({ robots: [] }),
+      saveRobot,
+      getRobot,
+    });
+    render(<SavedRobots api={savedApi} editor={editor(draft)} session={session()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Guardar como nueva' }));
+    fireEvent.change(screen.getByLabelText('Nombre para la nueva copia'), {
+      target: { value: 'Sin copia remota' },
+    });
+    const form = screen.getByLabelText('Nombre para la nueva copia').closest('form')!;
+    fireEvent.submit(form);
+    await waitFor(() => expect(screen.getByText(/misma copia/)).toBeTruthy());
+    const id = saveRobot.mock.calls[0]?.[0];
+
+    fireEvent.submit(form);
+    await waitFor(() =>
+      expect(screen.getByText('Guardaste «Sin copia remota» como robot nuevo.')).toBeTruthy(),
+    );
+    expect(getRobot).toHaveBeenCalledWith(id);
+    expect(saveRobot).toHaveBeenNthCalledWith(2, id, 0, 'Sin copia remota', draft);
+  });
+
+  it.each([
+    {
+      label: 'different content',
+      remote: (id: string, draft: RobotDraft) =>
+        savedRobot({
+          id,
+          name: 'Otra copia',
+          draft: { ...draft, instructions: 'Contenido remoto.' },
+        }),
+    },
+    {
+      label: 'different identity',
+      remote: (id: string, draft: RobotDraft) =>
+        savedRobot({ id: `${id}-other`, name: 'Guardada', draft }),
+    },
+  ])('keeps the pending create behind the same-ID $label guard', async ({ remote }) => {
+    const draft = { ...createDefaultDraft(), instructions: 'Contenido local.' };
+    const saveRobot = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new SavedRobotApiFailure('network', 'No se confirmó.', undefined, undefined, true),
+      );
+    const getRobot = vi.fn().mockImplementation(async (id: string) => remote(id, draft));
+    const savedApi = api({
+      listRobots: vi.fn().mockResolvedValue({ robots: [] }),
+      saveRobot,
+      getRobot,
+    });
+    render(<SavedRobots api={savedApi} editor={editor(draft)} session={session()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Guardar como nueva' }));
+    fireEvent.change(screen.getByLabelText('Nombre para la nueva copia'), {
+      target: { value: 'Guardada' },
+    });
+    const form = screen.getByLabelText('Nombre para la nueva copia').closest('form')!;
+    fireEvent.submit(form);
+    await waitFor(() => expect(screen.getByText(/misma copia/)).toBeTruthy());
+    expect(saveRobot).toHaveBeenCalledOnce();
+
+    fireEvent.submit(form);
+    await waitFor(() => expect(screen.getByText(/Hay una versión más nueva/)).toBeTruthy());
+    expect(screen.queryByText(/misma copia/)).toBeNull();
+    expect(saveRobot).toHaveBeenCalledOnce();
+    expect(getRobot).toHaveBeenCalledTimes(2);
+  });
+
   it('does not save a snapshot captured before an account switch', async () => {
     let resolveSnapshot!: (snapshot: { version: number; draft: RobotDraft }) => void;
     const editorRef = editor();
