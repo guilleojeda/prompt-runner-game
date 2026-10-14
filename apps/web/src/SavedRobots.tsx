@@ -33,9 +33,12 @@ class StaleSavedOperation extends Error {
 
 class PendingCreateReadbackFailure extends Error {
   public constructor(cause: unknown) {
-    super('No se pudo comprobar la copia pendiente. Reintentá para volver a consultarla.', {
-      cause,
-    });
+    super(
+      cause instanceof Error && cause.message.trim() !== ''
+        ? cause.message
+        : 'No se pudo comprobar la copia pendiente. Reintentá para volver a consultarla.',
+      { cause },
+    );
     this.name = 'PendingCreateReadbackFailure';
   }
 }
@@ -82,6 +85,17 @@ function apiErrorMessage(error: unknown, fallback: string): string {
 
 function isAuthError(error: unknown): error is SavedRobotApiFailure {
   return error instanceof SavedRobotApiFailure && error.code === 'authentication';
+}
+
+function isDefinitiveWriteRejection(error: SavedRobotApiFailure): boolean {
+  return (
+    error.code === 'authentication' || error.code === 'invalid' || error.code === 'rate_limited'
+  );
+}
+
+function reportedAuthError(error: unknown): SavedRobotApiFailure | null {
+  const reportedError = error instanceof PendingCreateReadbackFailure ? error.cause : error;
+  return isAuthError(reportedError) ? reportedError : null;
 }
 
 function isMissingError(error: unknown): boolean {
@@ -267,7 +281,13 @@ export function SavedRobots({
       if (!isCurrent(generation)) throw new StaleSavedOperation();
       return saved;
     } catch (saveError) {
-      if (!(saveError instanceof SavedRobotApiFailure) || !saveError.ambiguous) throw saveError;
+      if (
+        !(saveError instanceof SavedRobotApiFailure) ||
+        !saveError.ambiguous ||
+        isDefinitiveWriteRejection(saveError)
+      ) {
+        throw saveError;
+      }
       if (!isCurrent(generation)) throw new StaleSavedOperation();
       try {
         const remote = await api.getRobot(id);
@@ -277,7 +297,12 @@ export function SavedRobots({
         }
       } catch (readError) {
         if (readError instanceof StaleSavedOperation) throw readError;
-        if (isAuthError(readError)) throw readError;
+        if (isAuthError(readError)) {
+          if (expectedVersion === 0) {
+            throw new PendingCreateReadbackFailure(readError);
+          }
+          throw readError;
+        }
         if (isMissingError(readError)) throw saveError;
       }
       throw saveError;
@@ -304,7 +329,6 @@ export function SavedRobots({
       if (readError instanceof SavedRobotApiFailure && readError.code === 'conflict') {
         throw readError;
       }
-      if (isAuthError(readError)) throw readError;
       if (!isMissingError(readError)) {
         throw new PendingCreateReadbackFailure(readError);
       }
@@ -432,7 +456,9 @@ export function SavedRobots({
       if (!isCurrent(generation)) return;
       const preservePending =
         saveError instanceof PendingCreateReadbackFailure ||
-        (saveError instanceof SavedRobotApiFailure && saveError.ambiguous);
+        (saveError instanceof SavedRobotApiFailure &&
+          saveError.ambiguous &&
+          !isDefinitiveWriteRejection(saveError));
       if (!preservePending) {
         pendingCreateRef.current = null;
         setPendingCreate(null);
@@ -443,7 +469,8 @@ export function SavedRobots({
         setConflict(saveError.current ?? null);
         setConflictKind('save');
       }
-      if (isAuthError(saveError)) onAuthRequired?.(saveError.authContext);
+      const authError = reportedAuthError(saveError);
+      if (authError) onAuthRequired?.(authError.authContext);
     } finally {
       if (isCurrent(generation)) setOperation(null);
     }
