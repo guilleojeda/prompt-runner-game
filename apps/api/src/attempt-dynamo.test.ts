@@ -34,6 +34,7 @@ import {
   AttemptNotTerminalError,
   AttemptStoreError,
   createDynamoAttemptStore,
+  MemoryBodyStore,
   ReplayRecordError,
   S3BodyStore,
 } from './attempt-store.js';
@@ -86,6 +87,7 @@ const keyFromInput = (input: Record<string, unknown>): { PK: string; SK: string 
 };
 
 const itemKey = (pk: string, sk: string): string => `${pk}\u0000${sk}`;
+const hashBytes = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
 
 /** Command-level DynamoDB double; production code still uses DynamoAttemptStore. */
 class DynamoHarness {
@@ -2521,6 +2523,329 @@ describe('Dynamo call finalization and recovery', () => {
     expect(header.outputTokens).toBeNull();
     expect(header.gameTokens).toBeNull();
     expect(header.recordComplete).toBe(true);
+  });
+
+  it.each(['error', 'invalid'] as const)(
+    'preserves a known %s result when the exact stored body is non-JSON',
+    async (status) => {
+      const harness = new DynamoHarness();
+      harness.enforceConditions = true;
+      const { attemptId } = seedAttempt(harness, {
+        status: 'error',
+        reason: 'provider_rejection',
+        calls: 1,
+        nextCall: 2,
+      });
+      const bytes = new TextEncoder().encode(status === 'error' ? '' : 'invalid response');
+      const call = seedCall(harness, attemptId, {
+        status,
+        errorCode: status === 'error' ? 'throttled' : 'invalid_response',
+        responseSha256: hashBytes(bytes),
+        responseBytes: bytes.byteLength,
+      });
+      const bodyStore: BodyStore = {
+        put: vi.fn(),
+        get: vi.fn(async (key) => (key === call.responseKey ? bytes : undefined)),
+      };
+      const store = storeFor(harness, bodyStore);
+
+      await store.recoverBodies('owner', attemptId);
+
+      const recovered = (await store.getCalls('owner', attemptId))[0];
+      const header = await store.get('owner', attemptId);
+      expect(recovered).toMatchObject({
+        status,
+        errorCode: call.errorCode,
+        responseSha256: hashBytes(bytes),
+        responseBytes: bytes.byteLength,
+        usage: {
+          inputTokens: null,
+          outputTokens: null,
+          gameTokens: null,
+          cacheReadTokens: null,
+          cacheWriteTokens: null,
+        },
+      });
+      expect(header).toMatchObject({ calls: 1, recordComplete: true });
+      expect(await store.getDecisionIndex('owner', attemptId)).toMatchObject({
+        decisions: [{ number: 1 }],
+      });
+    },
+  );
+
+  it.each(['missing', 'same-size hash mismatch', 'byte-count mismatch'] as const)(
+    'keeps a known result incomplete when its body is %s',
+    async (bodyState) => {
+      const harness = new DynamoHarness();
+      harness.enforceConditions = true;
+      const { attemptId } = seedAttempt(harness, {
+        status: 'error',
+        reason: 'provider_rejection',
+        calls: 1,
+        nextCall: 2,
+      });
+      const expectedBytes = new TextEncoder().encode('known response');
+      const call = seedCall(harness, attemptId, {
+        status: 'error',
+        errorCode: 'provider_error',
+        responseSha256: hashBytes(expectedBytes),
+        responseBytes: expectedBytes.byteLength,
+      });
+      const bodyStore: BodyStore = {
+        put: vi.fn(),
+        get: vi.fn(async (key) =>
+          key !== call.responseKey || bodyState === 'missing'
+            ? undefined
+            : new TextEncoder().encode(
+                bodyState === 'same-size hash mismatch' ? 'wrong response' : 'wrong response bytes',
+              ),
+        ),
+      };
+      const store = storeFor(harness, bodyStore);
+
+      await store.recoverBodies('owner', attemptId);
+
+      if (bodyState === 'same-size hash mismatch') {
+        const mismatchedBytes = new TextEncoder().encode('wrong response');
+        expect(mismatchedBytes.byteLength).toBe(call.responseBytes);
+        expect(hashBytes(mismatchedBytes)).not.toBe(call.responseSha256);
+      }
+      const recovered = (await store.getCalls('owner', attemptId))[0];
+      const header = await store.get('owner', attemptId);
+      expect(recovered).toMatchObject({
+        status: 'unknown',
+        responseSha256: hashBytes(expectedBytes),
+        responseBytes: expectedBytes.byteLength,
+        usage: {
+          inputTokens: null,
+          outputTokens: null,
+          gameTokens: null,
+        },
+      });
+      expect(header).toMatchObject({ recordComplete: false });
+    },
+  );
+
+  it.each(['started', 'unknown'] as const)(
+    'leaves a missing %s call unresolved and incomplete',
+    async (status) => {
+      const harness = new DynamoHarness();
+      harness.enforceConditions = true;
+      const { attemptId } = seedAttempt(harness, {
+        status: 'error',
+        reason: 'provider_rejection',
+        calls: 1,
+        nextCall: 2,
+        recordComplete: false,
+      });
+      const expectedBytes = new TextEncoder().encode('response');
+      const call = seedCall(harness, attemptId, {
+        status,
+        responseSha256: hashBytes(expectedBytes),
+        responseBytes: expectedBytes.byteLength,
+      });
+      const bodyStore: BodyStore = { put: vi.fn(), get: vi.fn(async () => undefined) };
+      const store = storeFor(harness, bodyStore);
+
+      await store.recoverBodies('owner', attemptId);
+
+      expect((await store.getCalls('owner', attemptId))[0]).toMatchObject({
+        status,
+        responseSha256: hashBytes(expectedBytes),
+        responseBytes: expectedBytes.byteLength,
+      });
+      expect((await store.get('owner', attemptId))?.recordComplete).toBe(false);
+      expect(call.responseKey).toContain('/response.json');
+    },
+  );
+
+  it('recovers exhausted bodyless throttles through Runtime and keeps them inspectable', async () => {
+    const { executeAttempt, createGameEngine } = await import('../../runner/src/execute.js');
+    const harness = new DynamoHarness();
+    harness.enforceConditions = true;
+    const { attemptId } = seedAttempt(harness);
+    const bodies = new MemoryBodyStore();
+    const store = storeFor(harness, bodies);
+    let callsStarted = 0;
+
+    await executeAttempt(
+      { owner: 'owner', attemptId, executorId: 'executor' },
+      {
+        store,
+        bodies,
+        engine: createGameEngine(),
+        now: () => new Date('2026-09-21T15:00:00.000Z'),
+        sleep: async () => undefined,
+        infer: async ({ audit }) => {
+          callsStarted += 1;
+          await audit.beforeSend(new TextEncoder().encode(`request-${callsStarted}`));
+          await audit.afterReceive({
+            bytes: null,
+            statusCode: 429,
+            requestId: `throttle-${callsStarted}`,
+            complete: false,
+            error: { name: 'ModelThrottledError', message: 'fixture throttle' },
+          });
+          throw Object.assign(new Error('fixture throttle'), { code: 'throttled' });
+        },
+      },
+    );
+
+    const beforeRead = await store.get('owner', attemptId);
+    const originalCalls = await store.getCalls('owner', attemptId);
+    expect(callsStarted).toBe(3);
+    expect(beforeRead).toMatchObject({
+      status: 'error',
+      reason: 'throttled',
+      calls: 3,
+      inputTokens: null,
+      outputTokens: null,
+      gameTokens: null,
+      score: null,
+      recordComplete: true,
+    });
+    expect(originalCalls.map((call) => call.status)).toEqual(['error', 'error', 'error']);
+    expect(originalCalls.map((call) => call.usage.inputTokens)).toEqual([null, null, null]);
+    expect(await bodies.get(originalCalls[0]!.responseKey)).toEqual(new Uint8Array());
+    expect(await store.getDecisionIndex('owner', attemptId)).toMatchObject({
+      decisions: [{ number: 1 }],
+    });
+
+    const afterRead = await store.closeExpired('owner', attemptId);
+    const recoveredCalls = await store.getCalls('owner', attemptId);
+    expect(afterRead).toMatchObject({ status: 'error', calls: 3, recordComplete: true });
+    expect(recoveredCalls.map((call) => call.status)).toEqual(['error', 'error', 'error']);
+    expect(recoveredCalls.map((call) => call.responseBytes)).toEqual([0, 0, 0]);
+    expect(recoveredCalls.map((call) => call.usage.inputTokens)).toEqual([null, null, null]);
+    expect(await store.getDecisionIndex('owner', attemptId)).toMatchObject({
+      decisions: [{ number: 1 }],
+    });
+    expect(await store.getReplayRecord('owner', attemptId)).toMatchObject({
+      closure: { status: 'error' },
+      actions: [],
+    });
+    expect(
+      [...harness.items.values()]
+        .map((item) => unmarshall(item))
+        .filter(
+          (item) => item.PK === `ATTEMPT#${attemptId}` && String(item.SK).startsWith('ACTION#'),
+        ),
+    ).toHaveLength(0);
+  });
+
+  it('keeps a victory with prior throttles replayable and inspectable after terminal recovery', async () => {
+    const { executeAttempt, createGameEngine } = await import('../../runner/src/execute.js');
+    const harness = new DynamoHarness();
+    harness.enforceConditions = true;
+    const baseDraft = createDefaultDraft();
+    const draft = {
+      ...baseDraft,
+      skills: baseDraft.skills.map((skill) => ({ ...skill, enabled: true })),
+    };
+    harness.put({ PK: 'USER#owner', SK: 'DRAFT', version: 1, draft });
+    const bodies = new MemoryBodyStore();
+    const store = storeFor(harness, bodies);
+    const { attempt } = await store.admit({
+      owner: 'owner',
+      requestKey: 'throttle-then-victory',
+      expectedVersion: 1,
+      draft,
+      animationEnabled: false,
+      now: '2026-09-21T15:00:00.000Z',
+    });
+    const actions = [
+      { name: 'tool_1', input: {} },
+      { name: 'tool_3', input: { direction: 'derecha' } },
+      { name: 'tool_7', input: {} },
+      { name: 'tool_1', input: {} },
+      { name: 'tool_4', input: { direction: 'derecha' } },
+      { name: 'tool_4', input: { direction: 'derecha' } },
+      { name: 'tool_3', input: { direction: 'derecha' } },
+      { name: 'tool_1', input: {} },
+      { name: 'tool_1', input: {} },
+      { name: 'tool_1', input: {} },
+      { name: 'tool_2', input: {} },
+      { name: 'tool_2', input: {} },
+      { name: 'tool_7', input: {} },
+      { name: 'tool_1', input: {} },
+      { name: 'tool_1', input: {} },
+      { name: 'tool_1', input: {} },
+      { name: 'tool_1', input: {} },
+    ];
+    let inferenceCalls = 0;
+    let actionIndex = 0;
+
+    await executeAttempt(
+      { owner: 'owner', attemptId: attempt.id, executorId: 'executor' },
+      {
+        store,
+        bodies,
+        engine: createGameEngine(),
+        now: () => new Date('2026-09-21T15:00:00.000Z'),
+        sleep: async () => undefined,
+        infer: async ({ audit }) => {
+          inferenceCalls += 1;
+          await audit.beforeSend(new TextEncoder().encode(`request-${inferenceCalls}`));
+          if (inferenceCalls < 3) {
+            await audit.afterReceive({
+              bytes: null,
+              statusCode: 429,
+              requestId: `throttle-${inferenceCalls}`,
+              complete: false,
+              error: { name: 'ModelThrottledError', message: 'fixture throttle' },
+            });
+            throw Object.assign(new Error('fixture throttle'), { code: 'throttled' });
+          }
+          await audit.afterReceive({
+            bytes: new TextEncoder().encode('{}'),
+            statusCode: 200,
+            requestId: `response-${inferenceCalls}`,
+            complete: true,
+          });
+          const action = actions[actionIndex++];
+          if (!action) throw new Error('The victory route ended before the game did.');
+          return {
+            action,
+            usage: {
+              inputTokens: 1,
+              outputTokens: 1,
+              gameTokens: 2,
+              cacheReadTokens: 0,
+              cacheWriteTokens: 0,
+            },
+          };
+        },
+      },
+    );
+
+    const beforeRead = await store.get('owner', attempt.id);
+    expect(inferenceCalls).toBe(19);
+    expect(beforeRead).toMatchObject({
+      status: 'victory',
+      calls: 19,
+      sequence: 17,
+      inputTokens: null,
+      outputTokens: null,
+      gameTokens: null,
+      score: null,
+      recordComplete: true,
+    });
+    const afterRead = await store.closeExpired('owner', attempt.id);
+    const recoveredCalls = await store.getCalls('owner', attempt.id);
+    expect(afterRead).toMatchObject({ status: 'victory', calls: 19, recordComplete: true });
+    expect(recoveredCalls.slice(0, 2).map((call) => call.status)).toEqual(['error', 'error']);
+    expect(recoveredCalls.slice(0, 2).map((call) => call.usage.inputTokens)).toEqual([null, null]);
+    const replay = await store.getReplayRecord('owner', attempt.id);
+    expect(replay?.closure.status).toBe('victory');
+    expect(replay?.actions).toHaveLength(17);
+    expect(await store.getDecisionIndex('owner', attempt.id)).toMatchObject({
+      decisions: Array.from({ length: 17 }, (_, index) => ({ number: index + 1 })),
+    });
+    expect((await store.getDecision('owner', attempt.id, 1))?.choice).toMatchObject({
+      state: 'selected',
+      opaqueId: 'tool_1',
+      action: { kind: 'advance' },
+    });
   });
 
   it('aggregates known main usage and keeps partially reported cache categories unknown', async () => {

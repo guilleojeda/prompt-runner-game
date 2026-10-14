@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type RefObject } from 'react';
 import {
   draftsEqual,
+  draftLimitMessage,
   validateSavedRobotName,
   type DraftSnapshot,
   type RobotDraft,
@@ -8,6 +9,7 @@ import {
   type SavedRobotSummary,
 } from '../../../shared/robot.js';
 import { MODEL_CATALOG } from '../../../shared/models.js';
+import { ROBOT_CATALOG } from '../../../shared/robot.js';
 import type { AuthSession } from './auth.js';
 import type { ApiAuthRequired } from './api-auth.js';
 import { type RobotEditorHandle } from './RobotEditor.js';
@@ -16,7 +18,11 @@ import { SavedRobotApiFailure, type SavedRobotApi } from './saved-robot-api.js';
 type NameFormMode = 'new' | null;
 type SavedOperation = 'load' | 'save' | 'delete' | null;
 type ErrorKind = 'list' | 'load' | 'save' | 'new' | 'delete' | null;
-type ConflictKind = 'save' | 'delete' | null;
+
+interface DeleteConflict {
+  readonly summary: SavedRobotSummary;
+  readonly robot?: SavedRobot;
+}
 
 interface PendingCreate {
   readonly id: string;
@@ -40,6 +46,16 @@ class PendingCreateReadbackFailure extends Error {
       { cause },
     );
     this.name = 'PendingCreateReadbackFailure';
+  }
+}
+
+class OversizedSavedDraft extends Error {
+  public constructor(
+    public readonly robot: SavedRobot,
+    public readonly limitMessage: string,
+  ) {
+    super(limitMessage);
+    this.name = 'OversizedSavedDraft';
   }
 }
 
@@ -122,6 +138,15 @@ function mergeSummaries(
   return [...byId.values()];
 }
 
+function mergeSummary(
+  current: readonly SavedRobotSummary[],
+  incoming: SavedRobotSummary,
+): SavedRobotSummary[] {
+  return current.some((robot) => robot.id === incoming.id)
+    ? current.map((robot) => (robot.id === incoming.id ? incoming : robot))
+    : [incoming, ...current];
+}
+
 function sameSavedContent(robot: SavedRobot, id: string, name: string, draft: RobotDraft): boolean {
   return robot.id === id && robot.name === name && draftsEqual(robot.draft, draft);
 }
@@ -147,9 +172,17 @@ export function SavedRobots({
   const [error, setError] = useState<string | null>(null);
   const [errorKind, setErrorKind] = useState<ErrorKind>(null);
   const [conflict, setConflict] = useState<SavedRobot | null>(null);
-  const [conflictKind, setConflictKind] = useState<ConflictKind>(null);
+  const [deleteConflict, setDeleteConflict] = useState<DeleteConflict | null>(null);
+  const [inspection, setInspection] = useState<SavedRobot | null>(null);
+  const [inspectionLoadingId, setInspectionLoadingId] = useState<string | null>(null);
+  const [inspectionError, setInspectionError] = useState<string | null>(null);
+  const [inspectionNotice, setInspectionNotice] = useState<string | null>(null);
   const [listAttempt, setListAttempt] = useState(0);
   const generationRef = useRef(0);
+  const inspectionRequestRef = useRef(0);
+  const inspectionHeadingRef = useRef<HTMLHeadingElement | null>(null);
+  const inspectionTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const inspectionOpeningRef = useRef(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const selectedNameInputRef = useRef<HTMLInputElement | null>(null);
   const pendingCreateRef = useRef<PendingCreate | null>(null);
@@ -158,6 +191,16 @@ export function SavedRobots({
     (generation: number): boolean => generationRef.current === generation,
     [],
   );
+
+  useEffect(() => {
+    if (
+      inspectionOpeningRef.current &&
+      (inspectionLoadingId !== null || inspectionError !== null || inspection !== null)
+    ) {
+      inspectionHeadingRef.current?.focus();
+      inspectionOpeningRef.current = false;
+    }
+  }, [inspection, inspectionError, inspectionLoadingId]);
 
   useEffect(() => {
     const generation = generationRef.current + 1;
@@ -222,21 +265,72 @@ export function SavedRobots({
     }
   };
 
-  const handleSelect = async (summary: SavedRobotSummary): Promise<void> => {
+  const clearInspection = (returnFocus: boolean): void => {
+    inspectionRequestRef.current += 1;
+    const trigger = inspectionTriggerRef.current;
+    inspectionTriggerRef.current = null;
+    inspectionOpeningRef.current = false;
+    setInspection(null);
+    setInspectionLoadingId(null);
+    setInspectionError(null);
+    setInspectionNotice(null);
+    if (returnFocus && trigger?.isConnected) trigger.focus();
+  };
+
+  const handleInspect = async (
+    summary: SavedRobotSummary,
+    trigger: HTMLButtonElement,
+  ): Promise<void> => {
+    if (busy) return;
+    const requestId = inspectionRequestRef.current + 1;
+    inspectionRequestRef.current = requestId;
+    inspectionTriggerRef.current = trigger;
+    inspectionOpeningRef.current = true;
+    setOperation('load');
+    setInspection(null);
+    setInspectionLoadingId(summary.id);
+    setInspectionError(null);
+    setInspectionNotice(null);
+    setError(null);
+    setErrorKind(null);
+    const generation = generationRef.current;
+    try {
+      const robot = await api.getRobot(summary.id);
+      if (!isCurrent(generation) || inspectionRequestRef.current !== requestId) return;
+      setInspection(robot);
+    } catch (loadError) {
+      if (!isCurrent(generation) || inspectionRequestRef.current !== requestId) return;
+      setInspectionError(apiErrorMessage(loadError, 'No se pudo consultar esta copia.'));
+      if (isAuthError(loadError)) onAuthRequired?.(loadError.authContext);
+    } finally {
+      if (isCurrent(generation)) {
+        if (inspectionRequestRef.current === requestId) setInspectionLoadingId(null);
+        setOperation(null);
+      }
+    }
+  };
+
+  const handleSelect = async (
+    summary: SavedRobotSummary,
+    trigger: HTMLButtonElement,
+  ): Promise<void> => {
     if (busy || !configurationAvailable) return;
+    clearInspection(false);
     setOperation('load');
     setError(null);
     setErrorKind(null);
     setMessage(null);
     setConflict(null);
-    setConflictKind(null);
     const generation = generationRef.current;
     try {
       if (!isCurrent(generation)) return;
       const loadedRobotRef = { current: null as SavedRobot | null };
       const applied = await editor.current?.applyDraft(async () => {
-        loadedRobotRef.current = await api.getRobot(summary.id);
+        const robot = await api.getRobot(summary.id);
         if (!isCurrent(generation)) throw new StaleSavedOperation();
+        loadedRobotRef.current = robot;
+        const limitMessage = draftLimitMessage(robot.draft);
+        if (limitMessage) throw new OversizedSavedDraft(robot, limitMessage);
         return loadedRobotRef.current.draft;
       });
       if (!isCurrent(generation)) return;
@@ -256,12 +350,26 @@ export function SavedRobots({
       setMessage(`Cargaste «${robot.name}».`);
     } catch (loadError) {
       if (!isCurrent(generation)) return;
+      if (loadError instanceof OversizedSavedDraft) {
+        inspectionTriggerRef.current = trigger;
+        inspectionOpeningRef.current = true;
+        setInspection(loadError.robot);
+        setInspectionNotice(
+          `Esta copia supera los límites actuales para cargarla al editor: ${loadError.limitMessage} Podés consultar su contenido completo aquí; no se aplicó al editor.`,
+        );
+        setError(null);
+        setErrorKind(null);
+        return;
+      }
       setError(apiErrorMessage(loadError, 'No se pudo cargar el robot guardado.'));
       setErrorKind('load');
       if (isAuthError(loadError)) onAuthRequired?.(loadError.authContext);
       if (isMissingError(loadError)) {
         setRobots((current) => current.filter((robot) => robot.id !== summary.id));
-        if (selected?.id === summary.id) setSelected(null);
+        if (selected?.id === summary.id) {
+          setSelected(null);
+          setName('');
+        }
       }
     } finally {
       if (isCurrent(generation)) setOperation(null);
@@ -338,13 +446,22 @@ export function SavedRobots({
   };
 
   const updateListWith = (robot: SavedRobot): void => {
-    const summary = summaryFromRobot(robot);
-    setRobots((current) => {
-      const found = current.some((candidate) => candidate.id === robot.id);
-      return found
-        ? current.map((candidate) => (candidate.id === robot.id ? summary : candidate))
-        : [summary, ...current];
-    });
+    updateListWithSummary(summaryFromRobot(robot));
+  };
+
+  const updateListWithSummary = (summary: SavedRobotSummary): void => {
+    setRobots((current) => mergeSummary(current, summary));
+  };
+
+  const removeListedRobot = (id: string): void => {
+    setRobots((items) => items.filter((item) => item.id !== id));
+    if (selected?.id === id) {
+      setSelected(null);
+      setName('');
+    }
+    if (inspection?.id === id || inspectionLoadingId === id) clearInspection(false);
+    setDeleteConflict((current) => (current?.summary.id === id ? null : current));
+    setConflict((current) => (current?.id === id ? null : current));
   };
 
   const saveSelected = async (desiredName: string, draft: RobotDraft): Promise<void> => {
@@ -356,6 +473,7 @@ export function SavedRobots({
     setError(null);
     setErrorKind(null);
     setMessage(null);
+    setDeleteConflict(null);
     try {
       const saved = await reconcileSave(
         current.id,
@@ -369,14 +487,12 @@ export function SavedRobots({
       setName(saved.name);
       updateListWith(saved);
       setConflict(null);
-      setConflictKind(null);
       setNameMode(null);
       setMessage(`Guardaste «${saved.name}».`);
     } catch (saveError) {
       if (!isCurrent(generation)) return;
       if (saveError instanceof SavedRobotApiFailure && saveError.code === 'conflict') {
         setConflict(saveError.current ?? null);
-        setConflictKind('save');
         setError(
           saveError.current
             ? 'El robot guardado cambió en otra pestaña. Cargá la versión remota o usá «Guardar como nueva» para conservar el borrador visible. «Guardar» está bloqueado hasta resolver el conflicto.'
@@ -422,6 +538,7 @@ export function SavedRobots({
     setError(null);
     setErrorKind(null);
     setMessage(null);
+    setDeleteConflict(null);
     try {
       if (!pendingCreateRef.current) {
         const snapshot: DraftSnapshot | null = (await editor.current?.captureSnapshot()) ?? null;
@@ -450,7 +567,6 @@ export function SavedRobots({
       setNameMode(null);
       updateListWith(saved);
       setConflict(null);
-      setConflictKind(null);
       setMessage(`Guardaste «${saved.name}» como robot nuevo.`);
     } catch (saveError) {
       if (!isCurrent(generation)) return;
@@ -467,7 +583,6 @@ export function SavedRobots({
       setErrorKind('new');
       if (saveError instanceof SavedRobotApiFailure && saveError.code === 'conflict') {
         setConflict(saveError.current ?? null);
-        setConflictKind('save');
       }
       const authError = reportedAuthError(saveError);
       if (authError) onAuthRequired?.(authError.authContext);
@@ -516,10 +631,9 @@ export function SavedRobots({
     await saveSelected(desiredName, snapshot.draft);
   };
 
-  const handleDelete = async (): Promise<void> => {
-    const current = selected;
-    if (!current || busy) return;
-    if (!window.confirm(`¿Eliminar «${current.name}»? Esta acción no se puede deshacer.`)) return;
+  const handleDelete = async (target: SavedRobotSummary): Promise<void> => {
+    if (busy) return;
+    if (!window.confirm(`¿Eliminar «${target.name}»? Esta acción no se puede deshacer.`)) return;
     const generation = generationRef.current;
     setOperation('delete');
     setError(null);
@@ -527,20 +641,18 @@ export function SavedRobots({
     setMessage(null);
     try {
       if (!isCurrent(generation)) return;
-      await api.deleteRobot(current.id, current.version);
+      await api.deleteRobot(target.id, target.version);
       if (!isCurrent(generation)) return;
-      setSelected(null);
-      setName('');
-      setRobots((items) => items.filter((item) => item.id !== current.id));
+      removeListedRobot(target.id);
       setMessage(
-        `Eliminaste «${current.name}». Tu configuración actual y tus intentos siguen intactos.`,
+        `Eliminaste «${target.name}». Tu configuración actual y tus intentos siguen intactos.`,
       );
     } catch (deleteError) {
       if (!isCurrent(generation)) return;
       if (deleteError instanceof SavedRobotApiFailure && deleteError.ambiguous) {
         if (!isCurrent(generation)) return;
         try {
-          await api.getRobot(current.id);
+          await api.getRobot(target.id);
           if (!isCurrent(generation)) return;
           setError('No se pudo confirmar la eliminación. Revisá la lista y reintentá.');
           setErrorKind('delete');
@@ -555,10 +667,8 @@ export function SavedRobots({
             return;
           }
           if (isMissingError(readError)) {
-            setSelected(null);
-            setName('');
-            setRobots((items) => items.filter((item) => item.id !== current.id));
-            setMessage(`Eliminaste «${current.name}».`);
+            removeListedRobot(target.id);
+            setMessage(`Eliminaste «${target.name}».`);
           } else {
             setError(apiErrorMessage(deleteError, 'No se pudo confirmar la eliminación.'));
             setErrorKind('delete');
@@ -568,21 +678,18 @@ export function SavedRobots({
         if (
           deleteError instanceof SavedRobotApiFailure &&
           deleteError.code === 'conflict' &&
-          deleteError.current
+          (deleteError.currentSummary || deleteError.current)
         ) {
-          setConflict(deleteError.current ?? null);
-          setConflictKind('delete');
+          const robot = deleteError.current;
+          const summary = deleteError.currentSummary ?? (robot ? summaryFromRobot(robot) : null);
+          if (summary) setDeleteConflict({ summary, ...(robot ? { robot } : {}) });
           setError(null);
           setErrorKind(null);
         } else {
-          setConflict(null);
-          setConflictKind(null);
           setError(apiErrorMessage(deleteError, 'No se pudo eliminar el robot guardado.'));
           setErrorKind('delete');
           if (isMissingError(deleteError)) {
-            setSelected(null);
-            setName('');
-            setRobots((items) => items.filter((item) => item.id !== current.id));
+            removeListedRobot(target.id);
           }
         }
       }
@@ -592,26 +699,28 @@ export function SavedRobots({
     }
   };
 
+  const handleUseDeleteConflict = (): void => {
+    if (!deleteConflict || busy) return;
+    const { summary, robot } = deleteConflict;
+    updateListWithSummary(summary);
+    if (robot && selected?.id === summary.id) {
+      setSelected(robot);
+      setName(robot.name);
+    }
+    setDeleteConflict(null);
+    setMessage(
+      `La copia «${summary.name}» cambió. Confirmá «Eliminar» nuevamente para borrarla. Tu configuración actual sigue intacta.`,
+    );
+  };
+
   const handleUseConflict = async (): Promise<void> => {
     if (!conflict || busy) return;
     const generation = generationRef.current;
-    const conflictResolutionKind = conflictKind;
     setOperation('load');
     setError(null);
     setErrorKind(null);
     try {
       if (!isCurrent(generation)) return;
-      if (conflictResolutionKind === 'delete') {
-        setSelected(conflict);
-        setName(conflict.name);
-        updateListWith(conflict);
-        setConflict(null);
-        setConflictKind(null);
-        setMessage(
-          `La copia «${conflict.name}» cambió. Confirmá «Eliminar» nuevamente para borrarla. Tu configuración actual sigue intacta.`,
-        );
-        return;
-      }
       const applied = await editor.current?.applyDraft(conflict.draft);
       if (!isCurrent(generation)) return;
       if (!applied) {
@@ -623,7 +732,6 @@ export function SavedRobots({
       setName(conflict.name);
       updateListWith(conflict);
       setConflict(null);
-      setConflictKind(null);
       setMessage(`Cargaste la versión remota de «${conflict.name}».`);
     } catch (loadError) {
       if (isCurrent(generation)) {
@@ -666,7 +774,8 @@ export function SavedRobots({
       {error &&
         (errorKind === 'list' ||
           errorKind === 'load' ||
-          ((errorKind === 'save' || errorKind === 'delete' || errorKind === 'new') &&
+          errorKind === 'delete' ||
+          ((errorKind === 'save' || errorKind === 'new') &&
             selected === null &&
             nameMode !== 'new')) && (
           <div className="saved-robots-error" role="alert" aria-live="assertive">
@@ -701,31 +810,73 @@ export function SavedRobots({
       {robots.length > 0 && (
         <div className="saved-robots-list-wrap">
           <ul className="saved-robots-list" aria-label="Robots guardados">
-            {robots.map((robot) => (
-              <li key={robot.id}>
-                <button
-                  className={`saved-robot-item${selected?.id === robot.id ? ' is-selected' : ''}`}
-                  type="button"
-                  onClick={() => void handleSelect(robot)}
-                  disabled={busy || !configurationAvailable}
-                  aria-pressed={selected?.id === robot.id}
-                >
-                  <span className="saved-robot-item-main">
-                    <strong>{robot.name}</strong>
-                    {(copiesByName.get(robot.name) ?? 0) > 1 && (
-                      <span>Copia {copyNumbers.get(robot.id)}</span>
+            {robots.map((robot) => {
+              const duplicate = (copiesByName.get(robot.name) ?? 0) > 1;
+              const copyLabel = `${robot.name}${duplicate ? ` Copia ${copyNumbers.get(robot.id)}` : ''}`;
+              const hasDeleteConflict = deleteConflict?.summary.id === robot.id;
+              return (
+                <li key={robot.id}>
+                  <div className="saved-robot-row">
+                    <button
+                      className={`saved-robot-item${selected?.id === robot.id ? ' is-selected' : ''}`}
+                      type="button"
+                      onClick={(event) => void handleSelect(robot, event.currentTarget)}
+                      disabled={busy || !configurationAvailable}
+                      aria-pressed={selected?.id === robot.id}
+                    >
+                      <span className="saved-robot-item-main">
+                        <strong>{robot.name}</strong>
+                        {duplicate && <span>Copia {copyNumbers.get(robot.id)}</span>}
+                        <span>
+                          {modelLabel(robot.modelKey)}, actualizado {formatDate(robot.updatedAt)}
+                        </span>
+                      </span>
+                      <span className="saved-robot-item-date">
+                        Creado {formatDate(robot.createdAt)}
+                      </span>
+                      <span className="saved-robot-item-load">Cargar</span>
+                    </button>
+                    <div className="saved-robot-row-actions">
+                      <button
+                        className="text-button"
+                        type="button"
+                        onClick={(event) => void handleInspect(robot, event.currentTarget)}
+                        disabled={busy}
+                        aria-label={`Ver configuración de ${copyLabel}`}
+                      >
+                        Ver configuración
+                      </button>
+                      <button
+                        className="text-button danger-button"
+                        type="button"
+                        onClick={() => void handleDelete(robot)}
+                        disabled={busy}
+                        aria-label={`Eliminar ${copyLabel}`}
+                      >
+                        Eliminar
+                      </button>
+                    </div>
+                    {hasDeleteConflict && (
+                      <div className="saved-robots-conflict" role="alert">
+                        <p>
+                          La copia «{deleteConflict.summary.name}» cambió en otra pestaña. Actualizá
+                          su versión y confirmá «Eliminar» nuevamente; tu configuración actual sigue
+                          intacta.
+                        </p>
+                        <button
+                          className="secondary-button"
+                          type="button"
+                          onClick={handleUseDeleteConflict}
+                          disabled={busy}
+                        >
+                          Actualizar versión para Eliminar
+                        </button>
+                      </div>
                     )}
-                    <span>
-                      {modelLabel(robot.modelKey)}, actualizado {formatDate(robot.updatedAt)}
-                    </span>
-                  </span>
-                  <span className="saved-robot-item-date">
-                    Creado {formatDate(robot.createdAt)}
-                  </span>
-                  <span className="saved-robot-item-load">Cargar</span>
-                </button>
-              </li>
-            ))}
+                  </div>
+                </li>
+              );
+            })}
           </ul>
           {nextCursor && (
             <button
@@ -738,6 +889,68 @@ export function SavedRobots({
             </button>
           )}
         </div>
+      )}
+
+      {(inspectionLoadingId || inspectionError || inspection) && (
+        <section className="saved-robot-inspection" aria-labelledby="saved-robot-inspection-title">
+          <div className="saved-robot-inspection-heading">
+            <h3 id="saved-robot-inspection-title" ref={inspectionHeadingRef} tabIndex={-1}>
+              {inspection ? `Configuración de ${inspection.name}` : 'Consultar configuración'}
+            </h3>
+            <button className="text-button" type="button" onClick={() => clearInspection(true)}>
+              Cerrar
+            </button>
+          </div>
+          {inspectionLoadingId && <p role="status">Consultando la copia…</p>}
+          {inspectionError && <p role="alert">{inspectionError}</p>}
+          {inspection && (
+            <>
+              {inspectionNotice && (
+                <p className="saved-robot-inspection-notice" role="status">
+                  {inspectionNotice}
+                </p>
+              )}
+              <dl className="saved-robot-inspection-facts">
+                <div>
+                  <dt>Modelo</dt>
+                  <dd>{modelLabel(inspection.modelKey)}</dd>
+                </div>
+                <div>
+                  <dt>Actualizado</dt>
+                  <dd>{formatDate(inspection.updatedAt)}</dd>
+                </div>
+              </dl>
+              <div className="configuration-preview-copy">
+                <h4>Instrucciones</h4>
+                <p>{inspection.draft.instructions}</p>
+                <h4>Habilidades</h4>
+                <ul>
+                  {inspection.draft.skills.map((skill) => {
+                    const hasDescription = Object.prototype.hasOwnProperty.call(
+                      skill,
+                      'description',
+                    );
+                    const description = hasDescription
+                      ? skill.description === ''
+                        ? '(descripción vacía)'
+                        : skill.description
+                      : '(sin descripción)';
+                    return (
+                      <li key={skill.id}>
+                        <strong>
+                          {ROBOT_CATALOG.find((entry) => entry.id === skill.id)?.name ??
+                            'Habilidad'}
+                        </strong>
+                        : {skill.enabled ? 'habilitada' : 'deshabilitada'}; descripción:{' '}
+                        <span className="configuration-preview-literal">{description}</span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            </>
+          )}
+        </section>
       )}
 
       {nameMode !== 'new' && (
@@ -777,7 +990,7 @@ export function SavedRobots({
             required
             disabled={!canEdit}
           />
-          {error && (errorKind === 'save' || errorKind === 'delete') && (
+          {error && errorKind === 'save' && (
             <p className="saved-robots-control-error" role="alert" aria-live="assertive">
               {error}
             </p>
@@ -800,7 +1013,7 @@ export function SavedRobots({
             <button
               className="text-button danger-button"
               type="button"
-              onClick={() => void handleDelete()}
+              onClick={() => void handleDelete(selectedSummary!)}
               disabled={!canEdit}
             >
               Eliminar
@@ -861,9 +1074,9 @@ export function SavedRobots({
       {conflict && (
         <div className="saved-robots-conflict" role="alert">
           <p>
-            {conflictKind === 'delete'
-              ? `La copia «${conflict.name}» cambió en otra pestaña. Actualizá su versión y confirmá «Eliminar» nuevamente; tu configuración actual sigue intacta.`
-              : `Hay una versión más nueva de «${conflict.name}» guardada en otra pestaña. «Guardar» está bloqueado hasta que cargues esa versión o guardes el borrador visible como una copia nueva.`}
+            Hay una versión más nueva de «{conflict.name}» guardada en otra pestaña. «Guardar» está
+            bloqueado hasta que cargues esa versión o guardes el borrador visible como una copia
+            nueva.
           </p>
           <div className="editor-actions">
             <button
@@ -872,9 +1085,7 @@ export function SavedRobots({
               onClick={() => void handleUseConflict()}
               disabled={busy}
             >
-              {conflictKind === 'delete'
-                ? 'Actualizar versión para Eliminar'
-                : 'Cargar versión remota'}
+              Cargar versión remota
             </button>
           </div>
         </div>

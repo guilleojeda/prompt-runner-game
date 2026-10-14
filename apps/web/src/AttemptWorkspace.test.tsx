@@ -324,6 +324,105 @@ describe('AttemptWorkspace', () => {
     expect(attemptApi.createAttempt).not.toHaveBeenCalled();
   });
 
+  it('ignores a deferred quota read after the account changes', async () => {
+    const oldQuota = {
+      day: '2026-09-21',
+      used: 0,
+      limit: 100,
+      remaining: 100,
+      resetsAt: '2026-09-22T03:00:00.000Z',
+    };
+    const newAccountQuota = { ...oldQuota, used: 93, remaining: 7 };
+    let finishOldRead!: (value: typeof oldQuota) => void;
+    const oldRead = new Promise<typeof oldQuota>((resolve) => {
+      finishOldRead = resolve;
+    });
+    const getQuota = vi
+      .fn()
+      .mockRejectedValueOnce(new AttemptApiFailure('network', 'Error inicial de cuota.'))
+      .mockReturnValueOnce(oldRead)
+      .mockResolvedValueOnce(newAccountQuota);
+    const attemptApi = api({ getQuota });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    const view = render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Reintentar consultas' }));
+    await waitFor(() => expect(getQuota).toHaveBeenCalledTimes(2));
+    const otherSession = session(
+      'b@example.com',
+      Math.floor(Date.now() / 1000) + 600,
+      'token-b',
+      'subject-b',
+    );
+    view.rerender(<AttemptWorkspace api={attemptApi} editor={editor} session={otherSession} />);
+
+    expect(await screen.findByLabelText('Cuota: 7 de 100 intentos disponibles')).toBeTruthy();
+    await act(async () => {
+      finishOldRead(oldQuota);
+      await oldRead;
+    });
+    expect(screen.getByLabelText('Cuota: 7 de 100 intentos disponibles')).toBeTruthy();
+  });
+
+  it('forwards a current auth rejection from a superseded quota read with its auth context', async () => {
+    let rejectOldRead!: (error: AttemptApiFailure) => void;
+    const oldRead = new Promise<never>((_resolve, reject) => {
+      rejectOldRead = reject;
+    });
+    const getQuota = vi
+      .fn()
+      .mockRejectedValueOnce(new AttemptApiFailure('network', 'Error inicial de cuota.'))
+      .mockReturnValueOnce(oldRead)
+      .mockResolvedValueOnce({
+        day: '2026-09-21',
+        used: 1,
+        limit: 100,
+        remaining: 99,
+        resetsAt: '2026-09-22T03:00:00.000Z',
+      });
+    const attemptApi = api({ getQuota });
+    const editor = {
+      current: {
+        captureSnapshot: vi.fn().mockResolvedValue({ version: 9, draft: createDefaultDraft() }),
+      },
+    } as unknown as { current: RobotEditorHandle | null };
+    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
+    const onAuthRequired = vi.fn();
+    render(
+      <AttemptWorkspace
+        ref={ref}
+        api={attemptApi}
+        editor={editor}
+        session={session()}
+        onAuthRequired={onAuthRequired}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Reintentar consultas' }));
+    await waitFor(() => expect(getQuota).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      ref.current!.start();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(await screen.findByLabelText('Cuota: 99 de 100 intentos disponibles')).toBeTruthy();
+    await waitFor(() => expect(getQuota).toHaveBeenCalledTimes(3));
+
+    await act(async () => {
+      rejectOldRead(
+        new AttemptApiFailure('authentication', 'La sesión venció.', 401, false, {
+          authContext: 73,
+        }),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(onAuthRequired).toHaveBeenCalledOnce());
+    expect(onAuthRequired).toHaveBeenCalledWith(73);
+    expect(screen.getByLabelText('Cuota: 99 de 100 intentos disponibles')).toBeTruthy();
+    expect(screen.queryByText('La sesión venció.')).toBeNull();
+  });
+
   it.each(['quota', 'history'] as const)(
     'keeps a new %s failure visible when the other retry query succeeds later',
     async (failedQuery) => {

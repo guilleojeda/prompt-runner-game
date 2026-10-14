@@ -47,6 +47,27 @@ function savedRobot(overrides: Partial<SavedRobot> = {}): SavedRobot {
   };
 }
 
+function robotSummary(robot: SavedRobot): SavedRobotSummary {
+  return {
+    id: robot.id,
+    name: robot.name,
+    version: robot.version,
+    createdAt: robot.createdAt,
+    updatedAt: robot.updatedAt,
+    modelKey: robot.modelKey,
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 function editor(
   snapshot: RobotDraft = createDefaultDraft(),
 ): React.RefObject<RobotEditorHandle | null> {
@@ -96,9 +117,9 @@ describe('SavedRobots', () => {
     const savedApi = api();
     render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
 
-    expect(await screen.findByRole('button', { name: /Explorador/ })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: /Explorador.*Cargar/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: /Explorador.*Cargar/ })).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: /Explorador/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Explorador.*Cargar/ }));
     await waitFor(() =>
       expect(editorRef.current?.applyDraft).toHaveBeenCalledWith(expect.any(Function)),
     );
@@ -234,13 +255,13 @@ describe('SavedRobots', () => {
     render(<SavedRobots api={savedApi} editor={editor()} session={session()} />);
 
     expect(await screen.findAllByRole('button', { name: /Mismo nombre.*Cargar/ })).toHaveLength(2);
-    expect(screen.getByRole('button', { name: /Mismo nombre Copia 1/ })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /Mismo nombre Copia 2/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Mismo nombre Copia 1.*Cargar$/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Mismo nombre Copia 2.*Cargar$/ })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Cargar más' }));
     await waitFor(() =>
       expect(screen.getAllByRole('button', { name: /Mismo nombre.*Cargar/ })).toHaveLength(3),
     );
-    expect(screen.getByRole('button', { name: /Mismo nombre Copia 3/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Mismo nombre Copia 3.*Cargar$/ })).toBeTruthy();
     for (const [index, expectedId] of ['robot-a', 'robot-b', 'robot-c'].entries()) {
       fireEvent.click(screen.getAllByRole('button', { name: /Mismo nombre.*Cargar/ })[index]!);
       await waitFor(() => expect(getRobot).toHaveBeenCalledTimes(index + 1));
@@ -257,7 +278,7 @@ describe('SavedRobots', () => {
       .mockResolvedValue(savedRobot({ version: 2, name: 'Explorador mejorado', draft: changed }));
     const savedApi = api({ saveRobot });
     render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
-    fireEvent.click(await screen.findByRole('button', { name: /Explorador/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /Explorador.*Cargar/ }));
     await waitFor(() => expect(editorRef.current?.applyDraft).toHaveBeenCalled());
     expect(saveRobot).not.toHaveBeenCalled();
 
@@ -626,7 +647,7 @@ describe('SavedRobots', () => {
     const robot = savedRobot();
     const savedApi = api({ saveRobot });
     const view = render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
-    fireEvent.click(await screen.findByRole('button', { name: /Explorador/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /Explorador.*Cargar/ }));
     await waitFor(() => expect(editorRef.current?.applyDraft).toHaveBeenCalled());
     fireEvent.click(screen.getByRole('button', { name: /^Guardar$/ }));
 
@@ -649,7 +670,7 @@ describe('SavedRobots', () => {
     const editorRef = editor();
     const savedApi = api({ saveRobot, getRobot });
     render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
-    fireEvent.click(await screen.findByRole('button', { name: /Explorador/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /Explorador.*Cargar/ }));
     await waitFor(() => expect(editorRef.current?.applyDraft).toHaveBeenCalled());
     const changed = { ...createDefaultDraft(), instructions: 'Nueva ruta.' };
     (editorRef.current?.captureSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue({
@@ -733,7 +754,7 @@ describe('SavedRobots', () => {
     const editorRef = editor(changedDraft);
     const savedApi = api({ saveRobot });
     render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
-    fireEvent.click(await screen.findByRole('button', { name: /Explorador/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /Explorador.*Cargar/ }));
     await waitFor(() => expect(editorRef.current?.applyDraft).toHaveBeenCalled());
     fireEvent.click(screen.getByRole('button', { name: /^Guardar$/ }));
     await waitFor(() =>
@@ -762,7 +783,7 @@ describe('SavedRobots', () => {
     const savedApi = api();
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
-    fireEvent.click(await screen.findByRole('button', { name: /Explorador/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /Explorador.*Cargar/ }));
     await waitFor(() => expect(editorRef.current?.applyDraft).toHaveBeenCalled());
     fireEvent.click(screen.getByRole('button', { name: 'Eliminar' }));
     await waitFor(() => expect(savedApi.deleteRobot).toHaveBeenCalledWith('robot-a', 1));
@@ -892,5 +913,296 @@ describe('SavedRobots', () => {
     expect(screen.queryByRole('button', { name: 'Actualizar versión para Eliminar' })).toBeNull();
     expect(editorRef.current?.applyDraft).toHaveBeenCalledTimes(1);
     confirm.mockRestore();
+  });
+
+  it('consults a readable historical copy without requiring an available editor', async () => {
+    const base = createDefaultDraft();
+    const instructions = 'Instrucción histórica completa. '.repeat(45);
+    const disabledDescription = 'Descripción histórica deshabilitada. '.repeat(17);
+    const historical = savedRobot({
+      draft: {
+        ...base,
+        instructions,
+        skills: base.skills.map((skill) =>
+          skill.id === 'wait'
+            ? { ...skill, enabled: false, description: disabledDescription }
+            : skill,
+        ),
+      },
+    });
+    const editorRef = editor();
+    const savedApi = api({
+      listRobots: vi.fn().mockResolvedValue({ robots: [robotSummary(historical)] }),
+      getRobot: vi.fn().mockResolvedValue(historical),
+    });
+    render(
+      <SavedRobots
+        api={savedApi}
+        editor={editorRef}
+        session={session()}
+        configurationAvailable={false}
+      />,
+    );
+
+    const load = await screen.findByRole('button', { name: /Explorador.*Cargar/ });
+    expect((load as HTMLButtonElement).disabled).toBe(true);
+    const trigger = screen.getByRole('button', { name: 'Ver configuración de Explorador' });
+    fireEvent.click(trigger);
+
+    await waitFor(() =>
+      expect(
+        [...document.querySelectorAll('.configuration-preview-copy p')].some(
+          (paragraph) => paragraph.textContent === instructions,
+        ),
+      ).toBe(true),
+    );
+    const description = [...document.querySelectorAll('.configuration-preview-literal')].find(
+      (element) => element.textContent === disabledDescription,
+    );
+    expect(description).toBeTruthy();
+    expect(description?.closest('li')?.textContent).toContain('deshabilitada');
+    expect(description?.closest('li')?.textContent).toContain('Esperar');
+    expect(document.activeElement).toBe(
+      screen.getByRole('heading', { name: 'Configuración de Explorador' }),
+    );
+    expect(editorRef.current?.applyDraft).not.toHaveBeenCalled();
+    expect(editorRef.current?.captureSnapshot).not.toHaveBeenCalled();
+    expect(savedApi.saveRobot).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Seleccionado:/)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Cerrar' }));
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it('shows an oversized readable copy after Cargar without writing or showing an editor error', async () => {
+    const historical = savedRobot({
+      draft: { ...createDefaultDraft(), instructions: 'x'.repeat(1_190) },
+    });
+    const editorRef = editor();
+    const savedApi = api({
+      listRobots: vi.fn().mockResolvedValue({ robots: [robotSummary(historical)] }),
+      getRobot: vi.fn().mockResolvedValue(historical),
+    });
+    render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /Explorador.*Cargar/ }));
+
+    await waitFor(() =>
+      expect(
+        [...document.querySelectorAll('.configuration-preview-copy p')].some(
+          (paragraph) => paragraph.textContent === historical.draft.instructions,
+        ),
+      ).toBe(true),
+    );
+    expect(screen.getByRole('status').textContent).toContain('supera los límites actuales');
+    expect(screen.getByRole('status').textContent).toMatch(/1.?000 caracteres/u);
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByText(/Seleccionado:/)).toBeNull();
+    expect(editorRef.current?.applyDraft).toHaveBeenCalledOnce();
+    expect(editorRef.current?.captureSnapshot).not.toHaveBeenCalled();
+    expect(savedApi.saveRobot).not.toHaveBeenCalled();
+  });
+
+  it('keeps incompatible rows deletable by listed ID/version and preserves a neighboring selection', async () => {
+    const active = savedRobot({ id: 'active-copy', name: 'Activa' });
+    const incompatible = savedRobot({
+      id: 'incompatible-copy',
+      name: 'Histórica incompatible',
+      version: 7,
+    });
+    const getRobot = vi.fn().mockImplementation(async (id: string) => {
+      if (id === active.id) return active;
+      throw new SavedRobotApiFailure('server', 'La configuración guardada no es compatible.', 500);
+    });
+    const deleteRobot = vi.fn().mockResolvedValue({ deleted: true });
+    const savedApi = api({
+      listRobots: vi
+        .fn()
+        .mockResolvedValue({ robots: [robotSummary(active), robotSummary(incompatible)] }),
+      getRobot,
+      deleteRobot,
+    });
+    const editorRef = editor();
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValue(true);
+    render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /Activa.*Cargar/ }));
+    await waitFor(() =>
+      expect(document.querySelector('.saved-robots-selected')?.textContent).toContain('Activa'),
+    );
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Ver configuración de Histórica incompatible' }),
+    );
+    expect(await screen.findByText('La configuración guardada no es compatible.')).toBeTruthy();
+    expect(getRobot).toHaveBeenCalledTimes(2);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Eliminar Histórica incompatible' }));
+    expect(deleteRobot).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Eliminar Histórica incompatible' }));
+    await waitFor(() =>
+      expect(deleteRobot).toHaveBeenCalledWith(incompatible.id, incompatible.version),
+    );
+    expect(confirm).toHaveBeenCalledTimes(2);
+    expect(editorRef.current?.applyDraft).toHaveBeenCalledOnce();
+    expect(editorRef.current?.captureSnapshot).not.toHaveBeenCalled();
+    expect(document.querySelector('.saved-robots-selected')?.textContent).toContain('Activa');
+    confirm.mockRestore();
+  });
+
+  it('reconfirms a refreshed row version without applying remote content or changing another selection', async () => {
+    const active = savedRobot({ id: 'active-copy', name: 'Activa' });
+    const target = savedRobot({ id: 'delete-copy', name: 'Para borrar', version: 1 });
+    const remoteSummary = {
+      ...robotSummary(target),
+      version: 2,
+      updatedAt: '2026-10-14T12:00:00.000Z',
+    };
+    const deleteRobot = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new SavedRobotApiFailure('conflict', 'stale', 409, undefined, false, {
+          currentSummary: remoteSummary,
+        }),
+      )
+      .mockResolvedValueOnce({ deleted: true });
+    const savedApi = api({
+      listRobots: vi
+        .fn()
+        .mockResolvedValue({ robots: [robotSummary(active), robotSummary(target)] }),
+      getRobot: vi.fn().mockResolvedValue(active),
+      deleteRobot,
+    });
+    const editorRef = editor();
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /Activa.*Cargar/ }));
+    await waitFor(() =>
+      expect(document.querySelector('.saved-robots-selected')?.textContent).toContain('Activa'),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Eliminar Para borrar' }));
+    await screen.findByRole('button', { name: 'Actualizar versión para Eliminar' });
+    expect(deleteRobot).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Actualizar versión para Eliminar' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Actualizar versión para Eliminar' })).toBeNull(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Eliminar Para borrar' }));
+    await waitFor(() => expect(deleteRobot).toHaveBeenCalledTimes(2));
+    expect(deleteRobot.mock.calls).toEqual([
+      [target.id, 1],
+      [target.id, 2],
+    ]);
+    expect(confirm).toHaveBeenCalledTimes(2);
+    expect(editorRef.current?.applyDraft).toHaveBeenCalledOnce();
+    expect(document.querySelector('.saved-robots-selected')?.textContent).toContain('Activa');
+    confirm.mockRestore();
+  });
+
+  it('does not pair a summary-only delete conflict version with the selected draft for Guardar', async () => {
+    const selected = savedRobot({ version: 1 });
+    const remoteSummary = { ...robotSummary(selected), version: 2 };
+    const deleteRobot = vi.fn().mockRejectedValue(
+      new SavedRobotApiFailure('conflict', 'stale', 409, undefined, false, {
+        currentSummary: remoteSummary,
+      }),
+    );
+    const saveRobot = vi.fn().mockRejectedValue(new SavedRobotApiFailure('conflict', 'stale', 409));
+    const editorRef = editor({ ...createDefaultDraft(), instructions: 'Edición local posterior.' });
+    const savedApi = api({ deleteRobot, saveRobot });
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /Explorador.*Cargar/ }));
+    await waitFor(() =>
+      expect(document.querySelector('.saved-robots-selected')?.textContent).toContain('Explorador'),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Eliminar' }));
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Actualizar versión para Eliminar' }),
+    );
+    expect(editorRef.current?.applyDraft).toHaveBeenCalledOnce();
+
+    fireEvent.click(screen.getByRole('button', { name: /^Guardar$/ }));
+    await waitFor(() => expect(saveRobot).toHaveBeenCalledOnce());
+    expect(saveRobot.mock.calls[0]?.[1]).toBe(1);
+    expect(editorRef.current?.applyDraft).toHaveBeenCalledOnce();
+    confirm.mockRestore();
+  });
+
+  it('discards an inspection response after the user closes its pending preview', async () => {
+    const pending = deferred<SavedRobot>();
+    const savedApi = api({ getRobot: vi.fn().mockReturnValue(pending.promise) });
+    render(<SavedRobots api={savedApi} editor={editor()} session={session()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Ver configuración de Explorador' }));
+    await screen.findByText('Consultando la copia…');
+    fireEvent.click(screen.getByRole('button', { name: 'Cerrar' }));
+    await act(async () =>
+      pending.resolve(
+        savedRobot({ draft: { ...createDefaultDraft(), instructions: 'Respuesta tardía.' } }),
+      ),
+    );
+
+    await waitFor(() => expect(screen.queryByText('Consultando la copia…')).toBeNull());
+    expect(screen.queryByText('Respuesta tardía.')).toBeNull();
+  });
+
+  it('clears an inspection response when the signed-in identity changes', async () => {
+    const pending = deferred<SavedRobot>();
+    const savedApi = api({ getRobot: vi.fn().mockReturnValue(pending.promise) });
+    const editorRef = editor();
+    const renderIdentity = (currentSession: AuthSession) => (
+      <SavedRobots
+        key={currentSession.identity.sub}
+        api={savedApi}
+        editor={editorRef}
+        session={currentSession}
+      />
+    );
+    const view = render(renderIdentity(session('subject-a')));
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Ver configuración de Explorador' }));
+    await screen.findByText('Consultando la copia…');
+    view.rerender(renderIdentity(session('subject-b')));
+    await act(async () =>
+      pending.resolve(
+        savedRobot({ draft: { ...createDefaultDraft(), instructions: 'Otra identidad.' } }),
+      ),
+    );
+
+    expect(screen.queryByText('Otra identidad.')).toBeNull();
+  });
+
+  it('keeps row actions disabled while paused or locked and forwards preview auth context', async () => {
+    const onAuthRequired = vi.fn();
+    const failedApi = api({
+      getRobot: vi.fn().mockRejectedValue(
+        new SavedRobotApiFailure('authentication', 'Volvé a ingresar.', 401, undefined, false, {
+          authContext: 42,
+        }),
+      ),
+    });
+    const lockedView = render(
+      <SavedRobots api={failedApi} editor={editor()} session={session()} locked />,
+    );
+    const inspect = await screen.findByRole('button', { name: 'Ver configuración de Explorador' });
+    const remove = screen.getByRole('button', { name: 'Eliminar Explorador' });
+    expect((inspect as HTMLButtonElement).disabled).toBe(true);
+    expect((remove as HTMLButtonElement).disabled).toBe(true);
+    lockedView.unmount();
+
+    render(
+      <SavedRobots
+        api={failedApi}
+        editor={editor()}
+        session={session()}
+        configurationAvailable={false}
+        onAuthRequired={onAuthRequired}
+      />,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Ver configuración de Explorador' }));
+    await waitFor(() => expect(onAuthRequired).toHaveBeenCalledWith(42));
+    expect(screen.getByText('Volvé a ingresar.')).toBeTruthy();
   });
 });

@@ -37,9 +37,9 @@ export interface SavedRobotStore {
 }
 
 export class SavedRobotConflictError extends Error {
-  public readonly current?: SavedRobot;
+  public readonly current?: SavedRobotSummary;
 
-  public constructor(current?: SavedRobot) {
+  public constructor(current?: SavedRobotSummary) {
     super('La configuración guardada cambió en otra pestaña.');
     this.name = 'SavedRobotConflictError';
     this.current = current;
@@ -289,6 +289,33 @@ export class DynamoSavedRobotStore implements SavedRobotStore {
     }
   }
 
+  private async getSummary(owner: string, id: string): Promise<SavedRobotSummary | undefined> {
+    let response;
+    try {
+      response = await this.client.send(
+        new GetItemCommand({
+          TableName: this.tableName,
+          Key: keyFor(owner, id),
+          ConsistentRead: true,
+          ...summaryProjection,
+        }),
+      );
+    } catch (error) {
+      throw new SavedRobotStorageError('No se pudo leer la configuración guardada.', {
+        cause: error,
+      });
+    }
+    if (!response.Item) return undefined;
+    try {
+      return readSummary(unmarshall(response.Item));
+    } catch (error) {
+      if (error instanceof SavedRobotIncompatibleError) throw error;
+      throw new SavedRobotStorageError('No se pudo leer la configuración guardada.', {
+        cause: error,
+      });
+    }
+  }
+
   public async put(
     owner: string,
     id: string,
@@ -384,7 +411,7 @@ export class DynamoSavedRobotStore implements SavedRobotStore {
       );
     } catch (error) {
       if (isConditionalFailure(error) || isTransactionCancellation(error))
-        throw new SavedRobotConflictError(await this.get(owner, robotId));
+        throw new SavedRobotConflictError(await this.getSummary(owner, robotId));
       throw new SavedRobotStorageError('No se pudo eliminar la configuración guardada.', {
         cause: error,
       });

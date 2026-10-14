@@ -345,6 +345,13 @@ h1 {
   list-style: none;
 }
 
+.saved-robot-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.45rem 0.8rem;
+}
+
 .saved-robot-item {
   display: flex;
   flex-wrap: wrap;
@@ -359,6 +366,18 @@ h1 {
   background: rgba(20, 19, 15, 0.3);
   text-align: left;
   cursor: pointer;
+}
+
+.saved-robot-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.25rem 0.65rem;
+}
+
+.saved-robot-row-actions .text-button {
+  padding: 0.35rem 0.2rem;
 }
 
 .saved-robot-item:hover:not(:disabled),
@@ -395,6 +414,43 @@ h1 {
   color: #f2c879;
   font-size: 0.8rem;
   font-weight: 700;
+}
+
+.saved-robot-inspection {
+  margin-top: 1rem;
+  padding: 1rem;
+  border: 1px solid rgba(216, 179, 106, 0.45);
+  border-radius: 0.65rem;
+  background: rgba(20, 19, 15, 0.36);
+}
+
+.saved-robot-inspection-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  margin-bottom: 0.8rem;
+}
+
+.saved-robot-inspection-heading h3 {
+  margin: 0;
+  color: #f7f1e1;
+  font-size: 1rem;
+}
+
+.saved-robot-inspection-facts {
+  margin-bottom: 1rem;
+}
+
+.saved-robot-inspection-notice {
+  color: #f2c879;
+  line-height: 1.45;
+}
+
+.configuration-preview-literal {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .saved-robots-actions {
@@ -2001,6 +2057,14 @@ button:disabled {
 }
 
 @media (max-width: 40rem) {
+  .saved-robot-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .saved-robot-row-actions {
+    justify-content: flex-start;
+  }
+
   .shell {
     width: min(100% - 2rem, 62rem);
     padding: 4rem 0;

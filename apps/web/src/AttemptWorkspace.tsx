@@ -938,6 +938,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     const presentationRef = useRef<HTMLDivElement>(null);
     const generationRef = useRef(0);
     const historyGenerationRef = useRef(0);
+    const quotaGenerationRef = useRef(0);
     const frozenRef = useRef<FrozenAdmission | null>(null);
     const attemptRef = useRef<AttemptSummary | null>(null);
     const modeRef = useRef(mode);
@@ -1524,9 +1525,14 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     const refreshQuota = useCallback(
       async (signal?: AbortSignal): Promise<void> => {
         const operationGeneration = generationRef.current;
+        const quotaGeneration = ++quotaGenerationRef.current;
         try {
           const nextQuota = await api.getQuota(signal);
-          if (!signal?.aborted && generationRef.current === operationGeneration) {
+          if (
+            !signal?.aborted &&
+            generationRef.current === operationGeneration &&
+            quotaGenerationRef.current === quotaGeneration
+          ) {
             setQuota(nextQuota);
           }
         } catch (quotaError) {
@@ -1534,7 +1540,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             if (isAuthenticationFailure(quotaError)) {
               onAuthRequired?.(quotaError.authContext);
             }
-            setError(workspaceError(attemptErrorMessage(quotaError), 'queries'));
+            if (quotaGenerationRef.current === quotaGeneration) {
+              setError(workspaceError(attemptErrorMessage(quotaError), 'queries'));
+            }
           }
         }
       },

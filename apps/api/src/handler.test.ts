@@ -22,7 +22,11 @@ import {
   MemoryAttemptStore,
   type AttemptStore,
 } from './attempt-store';
-import { SavedRobotLimitError, type SavedRobotStore } from './saved-robots';
+import {
+  SavedRobotConflictError,
+  SavedRobotLimitError,
+  type SavedRobotStore,
+} from './saved-robots';
 
 const identity = {
   sub: 'user-a',
@@ -32,7 +36,7 @@ const identity = {
 };
 
 const eventFor = (
-  method: 'GET' | 'PUT' | 'POST',
+  method: 'GET' | 'PUT' | 'POST' | 'DELETE',
   options: {
     body?: string;
     claims?: Record<string, unknown>;
@@ -395,6 +399,39 @@ describe('draft API handler', () => {
       message: 'Eliminá una configuración guardada para crear otra.',
     });
     expect(responseBody(response).message).not.toMatch(/\d/u);
+  });
+
+  it('returns a current summary on stale saved-robot DELETE without requiring its draft', async () => {
+    const current = {
+      id: '123e4567-e89b-12d3-a456-426614174000',
+      name: 'Copia histórica',
+      version: 3,
+      createdAt: '2026-09-29T12:00:00.000Z',
+      updatedAt: '2026-10-14T12:00:00.000Z',
+      modelKey: 'claude-sonnet-4.6' as const,
+    };
+    const deleteRobot = vi.fn().mockRejectedValue(new SavedRobotConflictError(current));
+    const savedRobotStore = {
+      list: vi.fn(),
+      get: vi.fn(),
+      put: vi.fn(),
+      delete: deleteRobot,
+    } as unknown as SavedRobotStore;
+    const response = await handleRequest(
+      eventFor('DELETE', {
+        path: `/robots/${current.id}`,
+        body: JSON.stringify({ expectedVersion: 1 }),
+      }),
+      { ...dependencies({ get: vi.fn(), put: vi.fn() }), savedRobotStore },
+    );
+
+    expect(response.statusCode).toBe(409);
+    expect(responseBody(response)).toEqual({
+      code: 'conflict',
+      message: 'La configuración guardada cambió en otra pestaña.',
+      current,
+    });
+    expect(deleteRobot).toHaveBeenCalledWith('user-a', current.id, 1);
   });
 
   it('keeps an oversized historical attempt configuration readable', async () => {

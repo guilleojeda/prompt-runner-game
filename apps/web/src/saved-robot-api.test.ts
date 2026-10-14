@@ -101,6 +101,81 @@ describe('SavedRobotApiClient', () => {
     });
   });
 
+  it('parses DELETE summary conflicts without making an incompatible draft loadable', async () => {
+    const full = robot('robot-a', 3);
+    const summary = {
+      id: full.id,
+      name: full.name,
+      version: full.version,
+      createdAt: full.createdAt,
+      updatedAt: full.updatedAt,
+      modelKey: full.modelKey,
+    };
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ code: 'conflict', message: 'stale', current: summary }), {
+          status: 409,
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            code: 'conflict',
+            message: 'stale full copy',
+            current: robot('robot-a', 4),
+          }),
+          { status: 409 },
+        ),
+      );
+    const client = new SavedRobotApiClient(config, {
+      tokenProvider: () => 'access-token',
+      fetch: fetchImpl,
+    });
+
+    await expect(client.deleteRobot('robot-a', 1)).rejects.toMatchObject({
+      code: 'conflict',
+      current: undefined,
+      currentSummary: summary,
+    });
+    await expect(client.deleteRobot('robot-a', 3)).rejects.toMatchObject({
+      code: 'conflict',
+      current: robot('robot-a', 4),
+      currentSummary: expect.objectContaining({ id: 'robot-a', version: 4 }),
+    });
+  });
+
+  it('reads over-limit historical text completely while still rejecting it for writes', async () => {
+    const base = robot();
+    const instructions = 'Texto histórico. '.repeat(70);
+    const disabledDescription = 'Descripción histórica. '.repeat(25);
+    const historical = {
+      ...base,
+      draft: {
+        ...base.draft,
+        instructions,
+        skills: base.draft.skills.map((skill) =>
+          skill.id === 'wait'
+            ? { ...skill, enabled: false, description: disabledDescription }
+            : skill,
+        ),
+      },
+    };
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify(historical), { status: 200 }));
+    const client = new SavedRobotApiClient(config, {
+      tokenProvider: () => 'access-token',
+      fetch: fetchImpl,
+    });
+
+    await expect(client.getRobot(historical.id)).resolves.toEqual(historical);
+    await expect(
+      client.saveRobot(historical.id, historical.version, historical.name, historical.draft),
+    ).rejects.toMatchObject({ code: 'invalid' });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
   it('rejects invalid names locally before making a write request', async () => {
     const fetchImpl = vi.fn<typeof fetch>();
     const client = new SavedRobotApiClient(config, {
