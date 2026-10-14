@@ -36,14 +36,16 @@ export class SavedRobotApiFailure extends Error {
     public readonly status?: number,
     public readonly current?: SavedRobot,
     public readonly ambiguous = false,
-    options?: { cause?: unknown; authContext?: number },
+    options?: { cause?: unknown; authContext?: number; currentSummary?: SavedRobotSummary },
   ) {
     super(message, options);
     this.name = 'SavedRobotApiFailure';
     this.authContext = options?.authContext;
+    this.currentSummary = options?.currentSummary;
   }
 
   public readonly authContext?: number;
+  public readonly currentSummary?: SavedRobotSummary;
 }
 
 export interface SavedRobotApi {
@@ -335,14 +337,17 @@ export class SavedRobotApiClient implements SavedRobotApi {
         );
       }
       if (response.status === 409) {
-        const current = isRecord(parsed)
-          ? (parseSavedRobot(parsed.current) ?? undefined)
-          : undefined;
+        const currentValue = isRecord(parsed) ? parsed.current : undefined;
+        const current = parseSavedRobot(currentValue) ?? undefined;
+        const currentSummary =
+          method === 'DELETE' ? (parseSummary(currentValue) ?? undefined) : undefined;
         throw new SavedRobotApiFailure(
           'conflict',
           errorMessage(parsed, 'El robot guardado cambió en otra pestaña.'),
           response.status,
           current,
+          false,
+          { currentSummary },
         );
       }
       throw new SavedRobotApiFailure(

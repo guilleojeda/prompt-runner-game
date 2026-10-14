@@ -457,29 +457,17 @@ describe('auth configuration and Cognito boundaries', () => {
   });
 
   it('single-flights a callback under StrictMode-style duplicate effects', async () => {
-    const manager = userManagerForTest();
-    window.sessionStorage.setItem('prompt-runner.auth.nonce', 'nonce-once');
-    const callback = vi
-      .spyOn(manager, 'signinRedirectCallback')
-      .mockResolvedValue(
-        user({ profile: { sub: 'subject-a', email: 'a@example.com', nonce: 'nonce-once' } }),
-      );
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(
-        JSON.stringify({ sub: 'subject-a', email: 'a@example.com', email_verified: true }),
-        {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        },
-      ),
-    );
-    const client = new CognitoAuthClient(config, { userManager: manager, fetch: fetchImpl });
-    const url = `${config.redirectUri}?code=code-once&state=state-once`;
+    const { client, providerFetch, getAuthorizationUrl } = productionClientHarness();
+    await client.beginLogin();
+    const state = new URL(getAuthorizationUrl()).searchParams.get('state');
+    const url = `${config.redirectUri}?code=code-once&state=${state}`;
 
     await expect(
       Promise.all([client.initialize(url), client.initialize(url)]),
     ).resolves.toHaveLength(2);
-    expect(callback).toHaveBeenCalledOnce();
+    expect(
+      providerFetch.mock.calls.filter(([url]) => String(url).endsWith('/oauth2/token')),
+    ).toHaveLength(1);
   });
 
   it('binds a native fetch transport before validating userInfo', async () => {
@@ -578,9 +566,17 @@ describe('auth configuration and Cognito boundaries', () => {
   it('refreshes an expired access token and validates the new userInfo', async () => {
     const manager = userManagerForTest();
     await manager.storeUser(user({ expires_at: Math.floor(Date.now() / 1000) - 1 }));
-    const refresh = vi
-      .spyOn(manager, 'signinSilent')
-      .mockResolvedValue(user({ expires_at: Math.floor(Date.now() / 1000) + 300 }));
+    const refresh = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          access_token: 'renewed-token',
+          refresh_token: 'refresh-token',
+          token_type: 'Bearer',
+          expires_in: 300,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(
         JSON.stringify({ sub: 'subject-a', email: 'a@example.com', email_verified: true }),
@@ -655,13 +651,20 @@ describe('auth configuration and Cognito boundaries', () => {
   it('keeps the user signed out when refresh is rejected and surfaces remote logout failure for retry', async () => {
     const manager = userManagerForTest();
     await manager.storeUser(user({ expires_at: Math.floor(Date.now() / 1000) - 1 }));
-    vi.spyOn(manager, 'signinSilent').mockRejectedValue(new Error('invalid_grant'));
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ error: 'invalid_grant' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
     const client = new CognitoAuthClient(config, { userManager: manager, fetch: vi.fn() });
     await expect(client.initialize()).resolves.toBeNull();
 
     const logoutManager = userManagerForTest();
     await logoutManager.storeUser(user());
-    vi.spyOn(logoutManager, 'revokeTokens').mockRejectedValueOnce(new Error('offline'));
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(
+      new Response('{}', { status: 503, headers: { 'Content-Type': 'application/json' } }),
+    );
     const location = testLocation();
     const logoutClient = new CognitoAuthClient(config, {
       userManager: logoutManager,

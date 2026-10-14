@@ -281,7 +281,14 @@ describe('DynamoSavedRobotStore', () => {
       current: updated,
     });
     await expect(store.delete('user-a', firstId, 1)).rejects.toMatchObject({
-      current: updated,
+      current: {
+        id: updated.id,
+        name: updated.name,
+        version: updated.version,
+        createdAt: updated.createdAt,
+        updatedAt: updated.updatedAt,
+        modelKey: updated.modelKey,
+      },
     });
     await expect(store.delete('user-b', firstId, 1)).rejects.toMatchObject({ current: undefined });
     await expect(store.delete('user-a', firstId, 2)).resolves.toEqual({ deleted: true });
@@ -332,6 +339,46 @@ describe('DynamoSavedRobotStore', () => {
     await expect(store.get('user-a', firstId)).rejects.toMatchObject({
       name: 'SavedRobotIncompatibleError',
     });
+  });
+
+  it('returns a projected current summary when a stale delete targets an incompatible copy', async () => {
+    const harness = new DynamoHarness();
+    const store = storeFor(harness, undefined, 1);
+    const created = await store.put('user-a', firstId, 0, 'Copia histórica', createDefaultDraft());
+    const itemKey = `USER#user-a\u0000ROBOT#${firstId}`;
+    const item = harness.items.get(itemKey)!;
+    item.draft = { M: marshall({ malformed: true }) };
+
+    let deleteError: unknown;
+    try {
+      await store.delete('user-a', firstId, 0);
+    } catch (error) {
+      deleteError = error;
+    }
+    expect(deleteError).toMatchObject({
+      name: 'SavedRobotConflictError',
+      current: {
+        id: firstId,
+        name: 'Copia histórica',
+        version: created.version,
+      },
+    });
+    expect(deleteError).not.toHaveProperty('current.draft');
+    const summaryRead = harness.inputs.find(
+      (input) => input.ConsistentRead === true && typeof input.ProjectionExpression === 'string',
+    );
+    expect(summaryRead?.ProjectionExpression).toContain('#version');
+    expect(summaryRead?.ProjectionExpression).not.toContain('draft');
+    await expect(
+      store.put('user-a', secondId, 0, 'Otra copia', createDefaultDraft()),
+    ).rejects.toBeInstanceOf(SavedRobotLimitError);
+
+    await expect(store.delete('user-a', firstId, created.version)).resolves.toEqual({
+      deleted: true,
+    });
+    await expect(
+      store.put('user-a', secondId, 0, 'Otra copia', createDefaultDraft()),
+    ).resolves.toMatchObject({ id: secondId, version: 1 });
   });
 
   it('counts copies transactionally, leaves edits count-neutral, and frees a slot on delete', async () => {

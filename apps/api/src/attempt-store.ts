@@ -2402,6 +2402,51 @@ export class DynamoAttemptStore implements AttemptStore {
     const initial = await this.get(owner, attemptId);
     if (!initial || initial.status === 'pending' || initial.status === 'running') return;
     const calls = await this.getCalls(owner, attemptId);
+    const responseMetadataGuard = (
+      call: CallRecord,
+    ): { readonly condition: string; readonly values: Record<string, unknown> } => ({
+      condition: [
+        call.responseSha256 === undefined
+          ? 'attribute_not_exists(#responseSha256)'
+          : '#responseSha256 = :shaBefore',
+        call.responseBytes === undefined
+          ? 'attribute_not_exists(#responseBytes)'
+          : '#responseBytes = :bytesBefore',
+      ].join(' AND '),
+      values: {
+        ...(call.responseSha256 === undefined ? {} : { ':shaBefore': call.responseSha256 }),
+        ...(call.responseBytes === undefined ? {} : { ':bytesBefore': call.responseBytes }),
+      },
+    });
+    const markUnconfirmed = async (call: CallRecord): Promise<void> => {
+      if (call.status === 'started' || call.status === 'unknown') return;
+      const metadataGuard = responseMetadataGuard(call);
+      const values = {
+        ':status': 'unknown',
+        ':statusBefore': call.status,
+        ':updatedAt': this.now().toISOString(),
+        ...metadataGuard.values,
+      };
+      await this.client
+        .send(
+          new UpdateItemCommand({
+            TableName: this.tableName,
+            Key: key(`ATTEMPT#${attemptId}`, `CALL#${String(call.seq).padStart(8, '0')}`),
+            UpdateExpression: 'SET #status = :status, #updatedAt = :updatedAt',
+            ConditionExpression: `#status = :statusBefore AND ${metadataGuard.condition}`,
+            ExpressionAttributeNames: {
+              '#status': 'status',
+              '#responseSha256': 'responseSha256',
+              '#responseBytes': 'responseBytes',
+              '#updatedAt': 'updatedAt',
+            },
+            ExpressionAttributeValues: marshall(values),
+          }),
+        )
+        .catch((error: unknown) => {
+          if (!isConditional(error) && !isTransactionConflict(error)) throw error;
+        });
+    };
     for (const call of calls) {
       if (
         call.responseSha256 &&
@@ -2410,10 +2455,24 @@ export class DynamoAttemptStore implements AttemptStore {
         call.usage.gameTokens !== null
       )
         continue;
-      if (!call.responseKey) continue;
+      if (!call.responseKey) {
+        await markUnconfirmed(call);
+        continue;
+      }
       const body = await bodyStore.get(call.responseKey);
-      if (!body) continue;
+      if (!body) {
+        await markUnconfirmed(call);
+        continue;
+      }
       const digest = sha256(body);
+      const hasStoredResponse =
+        call.responseSha256 !== undefined || call.responseBytes !== undefined;
+      const storedResponseMatches =
+        call.responseSha256 === digest && call.responseBytes === body.byteLength;
+      if (hasStoredResponse && !storedResponseMatches) {
+        await markUnconfirmed(call);
+        continue;
+      }
       let status = call.status;
       let usage = call.usage;
       try {
@@ -2429,8 +2488,12 @@ export class DynamoAttemptStore implements AttemptStore {
         };
         status = call.status === 'started' ? 'received' : call.status;
       } catch {
-        status = 'unknown';
+        status =
+          storedResponseMatches && (call.status === 'error' || call.status === 'invalid')
+            ? call.status
+            : 'unknown';
       }
+      const metadataGuard = responseMetadataGuard(call);
       await this.client
         .send(
           new UpdateItemCommand({
@@ -2438,8 +2501,7 @@ export class DynamoAttemptStore implements AttemptStore {
             Key: key(`ATTEMPT#${attemptId}`, `CALL#${String(call.seq).padStart(8, '0')}`),
             UpdateExpression:
               'SET #status = :status, #responseSha256 = :sha, #responseBytes = :bytes, #usage = :usage, #updatedAt = :updatedAt',
-            ConditionExpression:
-              '#status = :statusBefore AND (attribute_not_exists(#responseSha256) OR #responseSha256 = :sha)',
+            ConditionExpression: `#status = :statusBefore AND ${metadataGuard.condition}`,
             ExpressionAttributeNames: {
               '#status': 'status',
               '#responseSha256': 'responseSha256',
@@ -2454,6 +2516,7 @@ export class DynamoAttemptStore implements AttemptStore {
               ':bytes': body.byteLength,
               ':usage': usage,
               ':updatedAt': this.now().toISOString(),
+              ...metadataGuard.values,
             }),
           }),
         )

@@ -1,5 +1,7 @@
 import {
   UserManager,
+  InMemoryWebStorage,
+  OidcClient,
   WebStorageStateStore,
   type INavigator,
   type User,
@@ -63,6 +65,7 @@ export interface AuthClientOptions {
 
 const NONCE_STORAGE_KEY = 'prompt-runner.auth.nonce';
 const LOGOUT_WARNING_STORAGE_KEY = 'prompt-runner.auth.logout-warning';
+const SESSION_GENERATION_STORAGE_KEY = 'prompt-runner.auth.session-generation';
 
 const CONFIG_KEYS: readonly (keyof AuthConfig)[] = [
   'issuer',
@@ -320,9 +323,13 @@ export class CognitoAuthClient implements AuthClient {
   private readonly fetchImpl: typeof globalThis.fetch;
   private readonly location: Location | undefined;
   private readonly manager: UserManager;
-  private readonly callbackResults = new Map<string, Promise<AuthSession>>();
+  private readonly callbackResults = new Map<
+    string,
+    { generation: string | null; result: Promise<AuthSession | null> }
+  >();
   private readonly config: AuthConfig;
   private readonly storage: Storage | undefined;
+  private localGeneration: string | null = null;
 
   public constructor(config: AuthConfig, options: AuthClientOptions = {}) {
     this.config = validateAuthConfig(config);
@@ -341,17 +348,20 @@ export class CognitoAuthClient implements AuthClient {
   public async initialize(
     url = this.location?.href ?? this.config.redirectUri,
   ): Promise<AuthSession | null> {
+    const generation = this.sessionGeneration();
     const key = callbackKey(url);
     if (key) {
       const existing = this.callbackResults.get(key);
       if (existing) {
-        return existing;
+        if (existing.generation !== generation) return null;
+        const session = await existing.result;
+        return this.isCurrentGeneration(generation) ? session : null;
       }
-      const result = this.consumeCallback(url);
-      this.callbackResults.set(key, result);
+      const result = this.consumeCallback(url, generation);
+      this.callbackResults.set(key, { generation, result });
       return result;
     }
-    return this.restoreSession();
+    return this.restoreSession(generation);
   }
 
   public async beginLogin(): Promise<void> {
@@ -360,27 +370,36 @@ export class CognitoAuthClient implements AuthClient {
       throw new AuthFailure('configuration', BLOCKED_STORAGE_MESSAGE);
     }
     const nonce = createNonce();
+    const generation = this.startSessionGeneration();
     this.storage.setItem(NONCE_STORAGE_KEY, nonce);
     try {
-      await this.manager.signinRedirect({ nonce });
+      await this.manager.signinRedirect({ nonce, state: generation });
     } catch (error) {
+      if (!this.isCurrentGeneration(generation)) return;
       this.storage.removeItem(NONCE_STORAGE_KEY);
       throw authFailure(error, 'No se pudo iniciar el acceso. Intentá de nuevo.', 'network');
     }
   }
 
   public async logout(): Promise<void> {
+    const generation = this.startSessionGeneration();
+    this.storage?.removeItem(NONCE_STORAGE_KEY);
     const user = await this.manager.getUser();
+    if (!this.isCurrentGeneration(generation)) return;
+    await this.manager.removeUser();
     let remoteRevocationFailed = false;
     if (user?.refresh_token) {
       try {
-        await this.manager.revokeTokens(['refresh_token']);
+        await this.withAcquisitionManager(
+          (manager) => manager.revokeTokens(['refresh_token']),
+          user,
+        );
       } catch {
         remoteRevocationFailed = true;
       }
     }
 
-    await this.manager.removeUser();
+    if (!this.isCurrentGeneration(generation)) return;
     if (remoteRevocationFailed) {
       this.storage?.setItem(LOGOUT_WARNING_STORAGE_KEY, '1');
       this.navigateToCognitoLogout();
@@ -393,29 +412,47 @@ export class CognitoAuthClient implements AuthClient {
     this.navigateToCognitoLogout();
   }
 
-  private async consumeCallback(url: string): Promise<AuthSession> {
+  private async consumeCallback(
+    url: string,
+    generation: string | null,
+  ): Promise<AuthSession | null> {
     let callbackUser: User | null = null;
+    let ownsTransaction = false;
     try {
-      callbackUser = await this.manager.signinRedirectCallback(url);
+      // Read the SDK's own transaction data before consuming a callback: an
+      // older request must not clear a newer login's nonce or stored user.
+      const { state } = await new OidcClient(this.manager.settings).readSigninResponseState(url);
+      if (!this.isCurrentGeneration(generation) || (state.data ?? null) !== generation) return null;
+      ownsTransaction = true;
+      callbackUser = await this.withAcquisitionManager((manager) =>
+        manager.signinRedirectCallback(url),
+      );
+      if (!this.isCurrentGeneration(generation)) return null;
       const nonce = this.storage?.getItem(NONCE_STORAGE_KEY);
       if (!nonce || callbackUser.profile.nonce !== nonce) {
         throw new AuthFailure('callback', 'La respuesta de acceso no pudo validarse.');
       }
       const session = await this.validateSession(callbackUser);
+      if (!this.isCurrentGeneration(generation)) return null;
+      await this.manager.storeUser(callbackUser);
       this.storage?.removeItem(NONCE_STORAGE_KEY);
       this.clearCallbackUrl();
       return session;
     } catch (error) {
+      if (!this.isCurrentGeneration(generation)) return null;
+      if (callbackUser && error instanceof AuthFailure && error.code === 'network') {
+        await this.manager.storeUser(callbackUser);
+      }
       if (callbackUser && !(error instanceof AuthFailure && error.code === 'network')) {
         await this.manager.removeUser();
       }
-      this.storage?.removeItem(NONCE_STORAGE_KEY);
+      if (ownsTransaction) this.storage?.removeItem(NONCE_STORAGE_KEY);
       this.clearCallbackUrl();
       throw authFailure(error, 'No se pudo completar el acceso. Volvé a intentarlo.', 'callback');
     }
   }
 
-  private async restoreSession(): Promise<AuthSession | null> {
+  private async restoreSession(generation: string | null): Promise<AuthSession | null> {
     if (this.storage?.getItem(LOGOUT_WARNING_STORAGE_KEY)) {
       this.storage.removeItem(LOGOUT_WARNING_STORAGE_KEY);
       throw new AuthFailure(
@@ -424,16 +461,18 @@ export class CognitoAuthClient implements AuthClient {
       );
     }
     let user: User | null;
+    let refreshed = false;
     try {
       user = await this.manager.getUser();
     } catch (error) {
+      if (!this.isCurrentGeneration(generation)) return null;
       throw authFailure(
         error,
         'No se pudo recuperar la sesión. Volvé a ingresar para continuar.',
         'session',
       );
     }
-    if (!user) {
+    if (!this.isCurrentGeneration(generation) || !user) {
       return null;
     }
 
@@ -443,8 +482,10 @@ export class CognitoAuthClient implements AuthClient {
         return null;
       }
       try {
-        user = await this.manager.signinSilent();
+        user = await this.withAcquisitionManager((manager) => manager.signinSilent(), user);
+        refreshed = true;
       } catch (error) {
+        if (!this.isCurrentGeneration(generation)) return null;
         if (isTransientFailure(error)) {
           throw new AuthFailure(
             'network',
@@ -459,19 +500,66 @@ export class CognitoAuthClient implements AuthClient {
       }
     }
 
+    if (!this.isCurrentGeneration(generation)) return null;
+
     if (!user) {
       await this.manager.removeUser();
       return null;
     }
 
     try {
-      return await this.validateSession(user);
+      const session = await this.validateSession(user);
+      if (!this.isCurrentGeneration(generation)) return null;
+      if (refreshed) await this.manager.storeUser(user);
+      return session;
     } catch (error) {
+      if (!this.isCurrentGeneration(generation)) return null;
       if (isTransientFailure(error)) {
+        if (refreshed) await this.manager.storeUser(user);
         throw authFailure(error, 'No se pudo validar la sesión. Intentá de nuevo.', 'network');
       }
       await this.manager.removeUser();
       return null;
+    }
+  }
+
+  private sessionGeneration(): string | null {
+    return this.storage
+      ? this.storage.getItem(SESSION_GENERATION_STORAGE_KEY)
+      : this.localGeneration;
+  }
+
+  private startSessionGeneration(): string {
+    const generation = createNonce();
+    this.localGeneration = generation;
+    // This one opaque marker also invalidates work in another client instance
+    // in the same tab, including a callback handled after a page navigation.
+    this.storage?.setItem(SESSION_GENERATION_STORAGE_KEY, generation);
+    return generation;
+  }
+
+  private isCurrentGeneration(generation: string | null): boolean {
+    return this.sessionGeneration() === generation;
+  }
+
+  private async withAcquisitionManager<T>(
+    operation: (manager: UserManager) => Promise<T>,
+    user?: User,
+  ): Promise<T> {
+    // UserManager persists refresh/callback/revocation results before returning.
+    // Keep those writes private until this client can validate their generation.
+    const manager = new UserManager({
+      ...this.manager.settings,
+      metadata: await this.manager.metadataService.getMetadata(),
+      userStore: new WebStorageStateStore({ store: new InMemoryWebStorage() }),
+      automaticSilentRenew: false,
+      monitorSession: false,
+    });
+    try {
+      if (user) await manager.storeUser(user);
+      return await operation(manager);
+    } finally {
+      await manager.events.unload();
     }
   }
 
