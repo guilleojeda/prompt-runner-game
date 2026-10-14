@@ -963,6 +963,8 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     const modeRef = useRef(mode);
     const startLockRef = useRef(false);
     const operationEpochRef = useRef(0);
+    const cancelOperationRef = useRef(0);
+    const cancelBusyRef = useRef(false);
     const replayEpochRef = useRef(0);
     const completionBusyRef = useRef(false);
     const completionAttemptRef = useRef<string | null>(null);
@@ -999,6 +1001,18 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     >(async () => undefined);
     const sessionSub = session.identity.sub;
     const sessionSubRef = useRef(sessionSub);
+    const resetCancelBusy = useCallback((): void => {
+      cancelOperationRef.current += 1;
+      cancelBusyRef.current = false;
+      setCancelBusy(false);
+    }, []);
+    useEffect(
+      () => () => {
+        cancelOperationRef.current += 1;
+        cancelBusyRef.current = false;
+      },
+      [],
+    );
     useEffect(() => {
       if (mode === 'admitting' || mode === 'replaying') {
         presentationRef.current?.scrollIntoView?.({
@@ -1040,6 +1054,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         preferenceQueueRef.current = Promise.resolve();
         frozenRef.current = null;
         attemptRef.current = null;
+        resetCancelBusy();
         clearAttemptRecovery(previousSub);
         replayEpochRef.current += 1;
         clearConfiguration();
@@ -1066,7 +1081,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         setCompletionBusy(false);
         sessionSubRef.current = sessionSub;
       }
-    }, [clearConfiguration, clearDecisionInspector, sessionSub]);
+    }, [clearConfiguration, clearDecisionInspector, resetCancelBusy, sessionSub]);
 
     useEffect(() => {
       if (authPaused) queueMicrotask(clearDecisionInspector);
@@ -1399,6 +1414,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       (next: AttemptSummary, options: { clearRequest?: boolean } = {}): void => {
         const sameAttempt = attemptRef.current?.id === next.id;
         if (attemptRef.current && !sameAttempt) {
+          resetCancelBusy();
           completionOperationRef.current += 1;
           completionBusyRef.current = false;
           completionAttemptRef.current = null;
@@ -1451,7 +1467,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           );
         }
       },
-      [beginReplay, clearConfiguration, clearDecisionInspector, sessionSub],
+      [beginReplay, clearConfiguration, clearDecisionInspector, resetCancelBusy, sessionSub],
     );
 
     const retryPendingStart = useCallback(
@@ -1562,6 +1578,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           return false;
         }
         const active = all.filter((item) => isActive(item.status));
+        if (attemptRef.current) resetCancelBusy();
         attemptRef.current = null;
         setAttempt(null);
         setActiveCandidates([]);
@@ -1584,7 +1601,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         }
         return true;
       },
-      [applyAttempt, listAllAttempts, retryPendingStart],
+      [applyAttempt, listAllAttempts, resetCancelBusy, retryPendingStart],
     );
 
     const refreshHistory = useCallback(
@@ -2169,11 +2186,18 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     ]);
 
     const cancel = useCallback(async (): Promise<void> => {
-      const operationGeneration = generationRef.current;
-      operationEpochRef.current += 1;
-      const operationEpoch = operationEpochRef.current;
       const current = attemptRef.current;
-      if (!current || (!isActive(current.status) && !current.cancelRequested) || cancelBusy) return;
+      if (
+        !current ||
+        (!isActive(current.status) && !current.cancelRequested) ||
+        cancelBusyRef.current
+      ) {
+        return;
+      }
+      const operationGeneration = generationRef.current;
+      const operationEpoch = ++operationEpochRef.current;
+      const cancelOperation = ++cancelOperationRef.current;
+      cancelBusyRef.current = true;
       setCancelBusy(true);
       setMode('canceling');
       try {
@@ -2198,14 +2222,12 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         setMode('unknown');
         setError(workspaceError(attemptErrorMessage(cancelError), 'check-status'));
       } finally {
-        if (
-          generationRef.current === operationGeneration &&
-          operationEpochRef.current === operationEpoch
-        ) {
+        if (cancelOperationRef.current === cancelOperation) {
+          cancelBusyRef.current = false;
           setCancelBusy(false);
         }
       }
-    }, [api, applyAttempt, cancelBusy, onAuthRequired]);
+    }, [api, applyAttempt, onAuthRequired]);
 
     const openAttempt = useCallback(
       async (id: string): Promise<void> => {
@@ -2439,6 +2461,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             return;
           }
           if (attemptRef.current && attemptRef.current.id !== next.id) {
+            resetCancelBusy();
             completionOperationRef.current += 1;
             completionBusyRef.current = false;
             completionAttemptRef.current = null;
@@ -2493,6 +2516,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         clearConfiguration,
         clearDecisionInspector,
         onAuthRequired,
+        resetCancelBusy,
       ],
     );
 
