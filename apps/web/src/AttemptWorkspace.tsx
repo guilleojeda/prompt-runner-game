@@ -25,6 +25,7 @@ import {
   clearAttemptRecovery,
   readAttemptRecovery,
   writeAttemptRecovery,
+  type AttemptRecoveryReference,
 } from './attempt-recovery.js';
 import type { RobotEditorHandle } from './RobotEditor.js';
 import { ROBOT_CATALOG, type RobotDraft } from '../../../shared/robot.js';
@@ -97,6 +98,28 @@ function frozenAdmissionFromRecovery(
     draft: reference.draft,
     animationEnabled: reference.animationEnabled,
   };
+}
+
+function selectRecoveryReference(
+  sub: string,
+  stored: ReturnType<typeof readAttemptRecovery>,
+  currentFrozen: FrozenAdmission | null,
+  currentAttempt: AttemptSummary | null,
+): {
+  readonly reference: AttemptRecoveryReference;
+  readonly frozen: FrozenAdmission | null;
+} | null {
+  if (currentFrozen) {
+    return { reference: { sub, requestKey: currentFrozen.requestKey }, frozen: currentFrozen };
+  }
+  if (currentAttempt && isActive(currentAttempt.status)) {
+    return { reference: { sub, attemptId: currentAttempt.id }, frozen: null };
+  }
+  const storedFrozen = frozenAdmissionFromRecovery(stored);
+  if (storedFrozen) {
+    return { reference: { sub, requestKey: storedFrozen.requestKey }, frozen: storedFrozen };
+  }
+  return stored ? { reference: stored, frozen: null } : null;
 }
 
 interface AttemptWorkspaceProps {
@@ -273,10 +296,6 @@ function attemptErrorMessage(error: unknown): string {
 
 function isAuthenticationFailure(error: unknown): error is AttemptApiFailure {
   return error instanceof AttemptApiFailure && error.code === 'authentication';
-}
-
-function isTransientAdmissionFailure(error: unknown): boolean {
-  return error instanceof AttemptApiFailure && (error.ambiguous || error.code === 'authentication');
 }
 
 function objectCollectionStatus(attempt: AttemptSummary): string {
@@ -1020,6 +1039,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         preferenceChoiceRevisionRef.current += 1;
         preferenceQueueRef.current = Promise.resolve();
         frozenRef.current = null;
+        attemptRef.current = null;
         clearAttemptRecovery(previousSub);
         replayEpochRef.current += 1;
         clearConfiguration();
@@ -1434,6 +1454,85 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       [beginReplay, clearConfiguration, clearDecisionInspector, sessionSub],
     );
 
+    const retryPendingStart = useCallback(
+      async (
+        pending: AttemptSummary,
+        options: {
+          readonly signal?: AbortSignal;
+          readonly operationGeneration: number;
+          readonly operationEpoch: number;
+        },
+      ): Promise<AttemptAdmission | null> => {
+        if (
+          options.signal?.aborted ||
+          generationRef.current !== options.operationGeneration ||
+          operationEpochRef.current !== options.operationEpoch
+        ) {
+          return null;
+        }
+        if (authPausedRef.current) {
+          frozenRef.current = null;
+          applyAttempt(pending, { clearRequest: false });
+          setError(
+            workspaceError(
+              'El inicio quedó pendiente mientras se recupera la sesión. Pulsá Comprobar estado cuando vuelva a estar disponible.',
+              'check-status',
+            ),
+          );
+          setMode('unknown');
+          return null;
+        }
+        if (pending.status !== 'pending' || pending.cancelRequested) {
+          frozenRef.current = null;
+          applyAttempt(pending, { clearRequest: false });
+          return null;
+        }
+        frozenRef.current = null;
+        applyAttempt(pending, { clearRequest: false });
+        setMode('admitting');
+        try {
+          const started = await api.startAttempt(pending.id, options.signal);
+          if (
+            options.signal?.aborted ||
+            generationRef.current !== options.operationGeneration ||
+            operationEpochRef.current !== options.operationEpoch
+          ) {
+            return null;
+          }
+          const stillNeedsStart =
+            !started.dispatchConfirmed &&
+            started.attempt.status === 'pending' &&
+            !started.attempt.cancelRequested;
+          applyAttempt(started.attempt, { clearRequest: false });
+          if (stillNeedsStart) {
+            setError(
+              workspaceError(
+                'No pudimos confirmar el inicio del intento. Pulsá Comprobar estado para volver a intentar el mismo inicio.',
+                'check-status',
+              ),
+            );
+            setMode('unknown');
+          }
+          return started;
+        } catch (startError) {
+          if (
+            options.signal?.aborted ||
+            generationRef.current !== options.operationGeneration ||
+            operationEpochRef.current !== options.operationEpoch
+          ) {
+            return null;
+          }
+          setError(workspaceError(attemptErrorMessage(startError), 'check-status'));
+          setMode('unknown');
+          if (isAuthenticationFailure(startError)) {
+            onAuthRequired?.(startError.authContext);
+          }
+          return null;
+        }
+      },
+      [api, applyAttempt, onAuthRequired],
+    );
+
     const listAllAttempts = useCallback(
       async (signal?: AbortSignal): Promise<readonly AttemptSummary[]> => {
         const all: AttemptSummary[] = [];
@@ -1467,7 +1566,16 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         setAttempt(null);
         setActiveCandidates([]);
         if (active.length === 1) {
-          applyAttempt(active[0], { clearRequest: false });
+          const candidate = active[0];
+          if (candidate.status === 'pending' && !candidate.cancelRequested) {
+            await retryPendingStart(candidate, {
+              signal,
+              operationGeneration,
+              operationEpoch: operationEpoch ?? operationEpochRef.current,
+            });
+          } else {
+            applyAttempt(candidate, { clearRequest: false });
+          }
         } else if (active.length > 1) {
           setActiveCandidates(active);
           setMode('selecting');
@@ -1476,7 +1584,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         }
         return true;
       },
-      [applyAttempt, listAllAttempts],
+      [applyAttempt, listAllAttempts, retryPendingStart],
     );
 
     const refreshHistory = useCallback(
@@ -1558,6 +1666,31 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           readonly operationEpoch: number;
         },
       ): Promise<boolean> => {
+        if (
+          options.signal?.aborted ||
+          generationRef.current !== options.operationGeneration ||
+          operationEpochRef.current !== options.operationEpoch
+        ) {
+          return false;
+        }
+        if (authPausedRef.current) {
+          frozenRef.current = frozen;
+          writeAttemptRecovery({
+            sub: sessionSub,
+            requestKey: frozen.requestKey,
+            expectedVersion: frozen.expectedVersion,
+            draft: frozen.draft,
+            animationEnabled: frozen.animationEnabled,
+          });
+          setError(
+            workspaceError(
+              'La recuperación quedó pendiente mientras se recupera la sesión. Pulsá Comprobar estado cuando vuelva a estar disponible.',
+              'check-status',
+            ),
+          );
+          setMode('unknown');
+          return true;
+        }
         setMode('admitting');
         try {
           const admission = await api.createAttempt(
@@ -1589,30 +1722,29 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           ) {
             return false;
           }
-          if (isTransientAdmissionFailure(retryError)) {
-            setError(
-              workspaceError(
-                retryError instanceof AttemptApiFailure && retryError.ambiguous
-                  ? 'No pudimos confirmar si comenzó el intento. Pulsá Comprobar estado para consultar el mismo intento.'
-                  : attemptErrorMessage(retryError),
-                retryError instanceof AttemptApiFailure && retryError.ambiguous
-                  ? 'check-status'
-                  : admissionErrorGuidance(retryError),
-              ),
-            );
-            setMode('unknown');
-            if (isAuthenticationFailure(retryError)) {
-              onAuthRequired?.(retryError.authContext);
-            }
-            return true;
-          }
-          clearAttemptRecovery(sessionSub);
-          frozenRef.current = null;
-          startLockRef.current = false;
-          setMode('idle');
+          // A retry result only describes this retry. The original request can
+          // still commit after a gateway or quota rejection, so keep its exact
+          // key and snapshot available for the next same-key check.
+          frozenRef.current = frozen;
+          writeAttemptRecovery({
+            sub: sessionSub,
+            requestKey: frozen.requestKey,
+            expectedVersion: frozen.expectedVersion,
+            draft: frozen.draft,
+            animationEnabled: frozen.animationEnabled,
+          });
           setError(
-            workspaceError(attemptErrorMessage(retryError), admissionErrorGuidance(retryError)),
+            workspaceError(
+              retryError instanceof AttemptApiFailure && retryError.ambiguous
+                ? 'No pudimos confirmar si comenzó el intento. Pulsá Comprobar estado para consultar el mismo intento.'
+                : attemptErrorMessage(retryError),
+              'check-status',
+            ),
           );
+          setMode('unknown');
+          if (isAuthenticationFailure(retryError)) {
+            onAuthRequired?.(retryError.authContext);
+          }
           return true;
         }
       },
@@ -1647,10 +1779,16 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
 
     const recoverKnownAttempt = useCallback(
       async (signal?: AbortSignal): Promise<boolean> => {
-        const reference = readAttemptRecovery(sessionSub);
-        if (!reference) return false;
-        const storedFrozen = frozenAdmissionFromRecovery(reference);
-        if (storedFrozen) frozenRef.current = storedFrozen;
+        const storedReference = readAttemptRecovery(sessionSub);
+        const selected = selectRecoveryReference(
+          sessionSub,
+          storedReference,
+          frozenRef.current,
+          attemptRef.current,
+        );
+        if (!selected) return false;
+        const { reference, frozen } = selected;
+        if (frozen && !frozenRef.current) frozenRef.current = frozen;
         try {
           const next = reference.attemptId
             ? await api.getAttempt(reference.attemptId, signal)
@@ -1658,6 +1796,14 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
               ? await api.getAttemptRequest(reference.requestKey, signal)
               : null;
           if (!next || signal?.aborted) return false;
+          if (next.status === 'pending' && !next.cancelRequested) {
+            await retryPendingStart(next, {
+              signal,
+              operationGeneration: generationRef.current,
+              operationEpoch: operationEpochRef.current,
+            });
+            return !signal?.aborted;
+          }
           frozenRef.current = null;
           applyAttempt(next, { clearRequest: isTerminal(next.status) });
           return true;
@@ -1667,7 +1813,6 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             onAuthRequired?.(recoveryError.authContext);
           }
           if (recoveryError instanceof AttemptApiFailure && recoveryError.code === 'not_found') {
-            const frozen = frozenRef.current;
             if (reference.requestKey && !reference.attemptId && frozen) {
               return retryFrozenAdmission(frozen, {
                 signal,
@@ -1698,6 +1843,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         applyAttempt,
         onAuthRequired,
         rediscoverAfterMissingRecovery,
+        retryPendingStart,
         retryFrozenAdmission,
         sessionSub,
       ],
@@ -1758,33 +1904,16 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           return;
         }
         let next = admission.attempt;
-        frozenRef.current = null;
-        applyAttempt(next, { clearRequest: false });
-        if (!admission.dispatchConfirmed && next.status === 'pending') {
-          try {
-            const started = await api.startAttempt(next.id);
-            if (
-              generationRef.current !== operationGeneration ||
-              operationEpochRef.current !== operationEpoch
-            ) {
-              return;
-            }
-            next = started.attempt;
-            applyAttempt(next, { clearRequest: false });
-          } catch (startError) {
-            if (
-              generationRef.current !== operationGeneration ||
-              operationEpochRef.current !== operationEpoch
-            ) {
-              return;
-            }
-            if (isAuthenticationFailure(startError)) {
-              onAuthRequired?.(startError.authContext);
-            }
-            setError(workspaceError(attemptErrorMessage(startError), 'check-status'));
-            setMode('unknown');
-            return;
-          }
+        if (!admission.dispatchConfirmed && next.status === 'pending' && !next.cancelRequested) {
+          const started = await retryPendingStart(next, {
+            operationGeneration,
+            operationEpoch,
+          });
+          if (!started) return;
+          next = started.attempt;
+        } else {
+          frozenRef.current = null;
+          applyAttempt(next, { clearRequest: false });
         }
         if (
           generationRef.current !== operationGeneration ||
@@ -1798,7 +1927,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         await refreshQuota();
         await refreshHistory();
       },
-      [api, applyAttempt, onAuthRequired, refreshHistory, refreshQuota, sessionSub],
+      [applyAttempt, refreshHistory, refreshQuota, retryPendingStart, sessionSub],
     );
     useEffect(() => {
       startServerAttemptRef.current = startServerAttempt;
@@ -1961,22 +2090,18 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       const operationEpoch = operationEpochRef.current;
       setError(null);
       const storedReference = readAttemptRecovery(sessionSub);
-      const storedFrozen = frozenAdmissionFromRecovery(storedReference);
-      if (storedFrozen) frozenRef.current = storedFrozen;
-      const frozen = frozenRef.current;
-      const reference = {
-        sub: sessionSub,
-        ...(storedReference?.attemptId || !storedReference
-          ? { attemptId: storedReference?.attemptId ?? attemptRef.current?.id }
-          : {}),
-        ...(storedReference?.requestKey || !storedReference
-          ? { requestKey: storedReference?.requestKey ?? frozen?.requestKey }
-          : {}),
-      };
-      if (!reference.attemptId && !reference.requestKey) {
+      const selected = selectRecoveryReference(
+        sessionSub,
+        storedReference,
+        frozenRef.current,
+        attemptRef.current,
+      );
+      if (!selected) {
         await rediscoverAfterMissingRecovery(undefined, operationEpoch);
         return;
       }
+      const { reference, frozen } = selected;
+      if (frozen && !frozenRef.current) frozenRef.current = frozen;
       try {
         const found = reference.attemptId
           ? await api.getAttempt(reference.attemptId)
@@ -1988,6 +2113,13 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             generationRef.current !== operationGeneration ||
             operationEpochRef.current !== operationEpoch
           ) {
+            return;
+          }
+          if (found.status === 'pending' && !found.cancelRequested) {
+            await retryPendingStart(found, {
+              operationGeneration,
+              operationEpoch,
+            });
             return;
           }
           frozenRef.current = null;
@@ -2032,6 +2164,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       onAuthRequired,
       rediscoverAfterMissingRecovery,
       retryFrozenAdmission,
+      retryPendingStart,
       sessionSub,
     ]);
 
@@ -2093,7 +2226,11 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           ) {
             return;
           }
-          applyAttempt(next, { clearRequest: false });
+          if (next.status === 'pending' && !next.cancelRequested) {
+            await retryPendingStart(next, { operationGeneration, operationEpoch });
+          } else {
+            applyAttempt(next, { clearRequest: false });
+          }
         } catch (openError) {
           if (
             generationRef.current !== operationGeneration ||
@@ -2108,7 +2245,15 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           setError(workspaceError(attemptErrorMessage(openError)));
         }
       },
-      [api, applyAttempt, busy, clearConfiguration, clearDecisionInspector, onAuthRequired],
+      [
+        api,
+        applyAttempt,
+        busy,
+        clearConfiguration,
+        clearDecisionInspector,
+        onAuthRequired,
+        retryPendingStart,
+      ],
     );
 
     const openConfiguration = useCallback(
@@ -2643,8 +2788,14 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     }, [api, applyAttempt, attempt, authPaused, mode, onAuthRequired]);
 
     const chooseActive = (next: AttemptSummary): void => {
-      applyAttempt(next, { clearRequest: false });
       setActiveCandidates([]);
+      const operationGeneration = generationRef.current;
+      const operationEpoch = ++operationEpochRef.current;
+      if (next.status === 'pending' && !next.cancelRequested) {
+        void retryPendingStart(next, { operationGeneration, operationEpoch });
+      } else {
+        applyAttempt(next, { clearRequest: false });
+      }
     };
 
     const handleDecisionInspectorAuthRequired = useCallback(
@@ -2851,38 +3002,42 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
               Consultando el resultado guardado…
             </p>
           )}
-          {(mode === 'pending' || mode === 'running' || mode === 'canceling') && attempt && (
-            <section className="attempt-running" aria-live="polite">
-              <div className="attempt-running-copy">
-                <span className="spinner" aria-hidden="true" />
-                <div>
-                  <h3>{statusLabel(attempt.status)}</h3>
-                  <p>
-                    {attempt.cancelRequested
-                      ? 'Confirmando la cancelación…'
-                      : statusDescription(attempt.status)}
-                  </p>
+          {(mode === 'pending' ||
+            mode === 'running' ||
+            mode === 'canceling' ||
+            (mode === 'unknown' && attempt && isActive(attempt.status))) &&
+            attempt && (
+              <section className="attempt-running" aria-live="polite">
+                <div className="attempt-running-copy">
+                  <span className="spinner" aria-hidden="true" />
+                  <div>
+                    <h3>{statusLabel(attempt.status)}</h3>
+                    <p>
+                      {attempt.cancelRequested
+                        ? 'Confirmando la cancelación…'
+                        : statusDescription(attempt.status)}
+                    </p>
+                  </div>
                 </div>
-              </div>
-              <button
-                className="secondary-button"
-                type="button"
-                onClick={() => void cancel()}
-                disabled={cancelBusy || mode === 'canceling' || authPaused}
-              >
-                {mode === 'canceling' || attempt.cancelRequested
-                  ? 'Cancelando…'
-                  : authPaused
-                    ? 'Esperando sesión…'
-                    : 'Cancelar'}
-              </button>
-            </section>
-          )}
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={() => void cancel()}
+                  disabled={cancelBusy || mode === 'canceling' || authPaused}
+                >
+                  {mode === 'canceling' || attempt.cancelRequested
+                    ? 'Cancelando…'
+                    : authPaused
+                      ? 'Esperando sesión…'
+                      : 'Cancelar'}
+                </button>
+              </section>
+            )}
 
           {mode === 'unknown' && (
             <p className="attempt-message" role="status">
-              El estado del servidor todavía no está confirmado. La recuperación no inicia otro
-              intento.
+              El estado del servidor todavía no está confirmado. La recuperación usa la misma
+              admisión y no crea otro intento.
             </p>
           )}
 

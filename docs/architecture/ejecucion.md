@@ -103,7 +103,7 @@ La frontera de una llamada en vuelo es su registro previo condicionado a que no 
 
 La carrera entre cancelar y publicar una acción se resuelve con condiciones en DynamoDB: si la acción se publicó primero, cuenta; si la cancelación se aceptó primero, esa acción no se publica. Una victoria ya cerrada no cambia a cancelación. Un proceso perdido durante cancelación conserva el resultado técnico real y la solicitud, sin inventar una confirmación del ejecutor.
 
-Cada intento tiene un único ejecutor, pero no se impone un nuevo límite de un intento activo por usuario. Dos inicios distintos consumen dos lugares de la cuota; dos envíos del mismo inicio consumen uno. Borradores usan control de versión para que una segunda pestaña no sobrescriba silenciosamente una edición más reciente.
+Cada intento tiene un único ejecutor. La admisión reclama un único espacio por usuario para intentos pendientes o activos, además de la capacidad global descrita en [datos](datos.md#límites-de-beta-y-contabilidad-operativa). Dos inicios distintos admitidos consumen dos lugares de la cuota; dos envíos del mismo inicio consumen uno. Borradores usan control de versión para que una segunda pestaña no sobrescriba silenciosamente una edición más reciente.
 
 ## Costo y comprobación necesaria
 

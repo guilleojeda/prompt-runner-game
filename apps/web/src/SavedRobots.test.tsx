@@ -550,6 +550,61 @@ describe('SavedRobots', () => {
     },
   );
 
+  it('retains an older uncertain create when its retry is definitively rejected', async () => {
+    const draft = { ...createDefaultDraft(), instructions: 'Contenido incierto.' };
+    const saveRobot = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new SavedRobotApiFailure('network', 'No se confirmó.', undefined, undefined, true),
+      )
+      .mockRejectedValueOnce(
+        new SavedRobotApiFailure(
+          'rate_limited',
+          'Esperá un momento antes de volver a intentar.',
+          429,
+        ),
+      )
+      .mockImplementationOnce(
+        async (id: string, _version: number, name: string, nextDraft: RobotDraft) =>
+          savedRobot({ id, name, draft: nextDraft }),
+      );
+    const getRobot = vi
+      .fn()
+      .mockRejectedValue(new SavedRobotApiFailure('not_found', 'No existe.', 404));
+    const savedApi = api({
+      listRobots: vi.fn().mockResolvedValue({ robots: [] }),
+      saveRobot,
+      getRobot,
+    });
+    render(<SavedRobots api={savedApi} editor={editor(draft)} session={session()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Guardar como nueva' }));
+    fireEvent.change(screen.getByLabelText('Nombre para la nueva copia'), {
+      target: { value: 'Copia incierta' },
+    });
+    const form = screen.getByLabelText('Nombre para la nueva copia').closest('form')!;
+    fireEvent.submit(form);
+    await waitFor(() => expect(screen.getByText(/misma copia/)).toBeTruthy());
+    const pendingId = saveRobot.mock.calls[0]?.[0];
+
+    fireEvent.submit(form);
+    await waitFor(() =>
+      expect(screen.getByText('Esperá un momento antes de volver a intentar.')).toBeTruthy(),
+    );
+    expect(screen.getByText(/misma copia/)).toBeTruthy();
+    expect((screen.getByLabelText('Nombre para la nueva copia') as HTMLInputElement).disabled).toBe(
+      true,
+    );
+
+    fireEvent.submit(form);
+    await waitFor(() =>
+      expect(screen.getByText('Guardaste «Copia incierta» como robot nuevo.')).toBeTruthy(),
+    );
+    expect(saveRobot.mock.calls[1]?.slice(0, 4)).toEqual([pendingId, 0, 'Copia incierta', draft]);
+    expect(saveRobot.mock.calls[2]?.slice(0, 4)).toEqual([pendingId, 0, 'Copia incierta', draft]);
+    expect(getRobot).toHaveBeenCalledTimes(3);
+  });
+
   it('retries the same UUID after a same-ID 404 confirms the ambiguous create was absent', async () => {
     const draft = { ...createDefaultDraft(), instructions: 'Reintento sin copia remota.' };
     const saveRobot = vi
@@ -776,6 +831,84 @@ describe('SavedRobots', () => {
     await waitFor(() => expect(saveRobot).toHaveBeenCalledTimes(2));
     expect(saveRobot.mock.calls[1]?.[0]).toBe('robot-a');
     expect(saveRobot.mock.calls[1]?.[1]).toBe(2);
+  });
+
+  it('retires a pending create when its listed copy is deleted before a fresh capture', async () => {
+    const initialDraft = { ...createDefaultDraft(), instructions: 'Captura incierta.' };
+    const currentDraft = { ...createDefaultDraft(), instructions: 'Captura vigente.' };
+    const editorRef = editor(initialDraft);
+    const captureSnapshot = editorRef.current?.captureSnapshot as ReturnType<typeof vi.fn>;
+    captureSnapshot.mockResolvedValueOnce({ version: 1, draft: initialDraft });
+    captureSnapshot.mockResolvedValueOnce({ version: 1, draft: currentDraft });
+    let pendingId: string | undefined;
+    const listRobots = vi.fn().mockImplementation(async (cursor?: string) => {
+      if (!cursor) {
+        return {
+          robots: [robotSummary(savedRobot({ id: 'existing-copy', name: 'Existente' }))],
+          nextCursor: 'next',
+        };
+      }
+      return {
+        robots: [
+          robotSummary(
+            savedRobot({
+              id: pendingId ?? 'pending-copy',
+              name: 'Copia incierta',
+              draft: initialDraft,
+            }),
+          ),
+        ],
+      };
+    });
+    const saveRobot = vi
+      .fn()
+      .mockImplementationOnce(async (id: string) => {
+        pendingId = id;
+        throw new SavedRobotApiFailure('network', 'No se confirmó.', undefined, undefined, true);
+      })
+      .mockImplementationOnce(
+        async (id: string, _version: number, name: string, draft: RobotDraft) =>
+          savedRobot({ id, name, draft }),
+      );
+    const getRobot = vi
+      .fn()
+      .mockRejectedValueOnce(new SavedRobotApiFailure('not_found', 'No existe.', 404));
+    const deleteRobot = vi.fn().mockResolvedValue({ deleted: true });
+    const savedApi = api({ listRobots, saveRobot, getRobot, deleteRobot });
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Guardar como nueva' }));
+    fireEvent.change(screen.getByLabelText('Nombre para la nueva copia'), {
+      target: { value: 'Copia incierta' },
+    });
+    const form = screen.getByLabelText('Nombre para la nueva copia').closest('form')!;
+    fireEvent.submit(form);
+    await waitFor(() => expect(screen.getByText(/misma copia/)).toBeTruthy());
+    expect(pendingId).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cargar más' }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Eliminar Copia incierta' })).toBeTruthy(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Eliminar Copia incierta' }));
+    await waitFor(() => expect(deleteRobot).toHaveBeenCalledWith(pendingId, 1));
+    expect(screen.queryByText(/misma copia/)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar como nueva' }));
+    const freshName = screen.getByLabelText('Nombre para la nueva copia');
+    expect((freshName as HTMLInputElement).disabled).toBe(false);
+    fireEvent.change(freshName, { target: { value: 'Copia vigente' } });
+    fireEvent.submit(freshName.closest('form')!);
+    await waitFor(() =>
+      expect(screen.getByText('Guardaste «Copia vigente» como robot nuevo.')).toBeTruthy(),
+    );
+
+    expect(saveRobot).toHaveBeenCalledTimes(2);
+    expect(saveRobot.mock.calls[1]?.[0]).not.toBe(pendingId);
+    expect(saveRobot.mock.calls[1]?.slice(2, 4)).toEqual(['Copia vigente', currentDraft]);
+    confirm.mockRestore();
   });
 
   it('deletes a selected copy without changing the editor draft', async () => {
@@ -1130,6 +1263,42 @@ describe('SavedRobots', () => {
     confirm.mockRestore();
   });
 
+  it('uses the refreshed management version for a selected delete', async () => {
+    const target = savedRobot({ version: 1 });
+    const remoteSummary = { ...robotSummary(target), version: 2 };
+    const deleteRobot = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new SavedRobotApiFailure('conflict', 'stale', 409, undefined, false, {
+          currentSummary: remoteSummary,
+        }),
+      )
+      .mockResolvedValueOnce({ deleted: true });
+    const savedApi = api({
+      listRobots: vi.fn().mockResolvedValue({ robots: [robotSummary(target)] }),
+      getRobot: vi.fn().mockResolvedValue(target),
+      deleteRobot,
+    });
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(<SavedRobots api={savedApi} editor={editor()} session={session()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /Explorador.*Cargar/ }));
+    await waitFor(() => expect(screen.getByText('Seleccionado:')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Eliminar' }));
+    await screen.findByRole('button', { name: 'Actualizar versión para Eliminar' });
+    fireEvent.click(screen.getByRole('button', { name: 'Actualizar versión para Eliminar' }));
+
+    await waitFor(() => expect(screen.getByText(/Confirmá «Eliminar» nuevamente/)).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Eliminar' }));
+    await waitFor(() => expect(screen.getByText(/Eliminaste «Explorador»/)).toBeTruthy());
+    expect(deleteRobot.mock.calls).toEqual([
+      [target.id, 1],
+      [target.id, 2],
+    ]);
+    expect(confirm).toHaveBeenCalledTimes(2);
+    confirm.mockRestore();
+  });
+
   it('discards an inspection response after the user closes its pending preview', async () => {
     const pending = deferred<SavedRobot>();
     const savedApi = api({ getRobot: vi.fn().mockReturnValue(pending.promise) });
@@ -1146,6 +1315,49 @@ describe('SavedRobots', () => {
 
     await waitFor(() => expect(screen.queryByText('Consultando la copia…')).toBeNull());
     expect(screen.queryByText('Respuesta tardía.')).toBeNull();
+  });
+
+  it('releases only a closed inspection and keeps a newer load busy after its late finalizer', async () => {
+    const inspection = deferred<SavedRobot>();
+    const selection = deferred<SavedRobot>();
+    const getRobot = vi
+      .fn()
+      .mockReturnValueOnce(inspection.promise)
+      .mockReturnValueOnce(selection.promise);
+    const savedApi = api({ getRobot });
+    render(<SavedRobots api={savedApi} editor={editor()} session={session()} />);
+
+    const inspect = await screen.findByRole('button', { name: 'Ver configuración de Explorador' });
+    fireEvent.click(inspect);
+    await screen.findByText('Consultando la copia…');
+    fireEvent.click(screen.getByRole('button', { name: 'Cerrar' }));
+    await waitFor(() =>
+      expect(screen.getByRole('region', { name: 'Tus robots' }).getAttribute('aria-busy')).toBe(
+        'false',
+      ),
+    );
+    expect(document.activeElement).toBe(inspect);
+
+    fireEvent.click(screen.getByRole('button', { name: /Explorador.*Cargar/ }));
+    await waitFor(() => expect(getRobot).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole('region', { name: 'Tus robots' }).getAttribute('aria-busy')).toBe(
+      'true',
+    );
+
+    await act(async () => {
+      inspection.resolve(
+        savedRobot({ draft: { ...createDefaultDraft(), instructions: 'Respuesta tardía.' } }),
+      );
+    });
+    expect(screen.queryByText('Respuesta tardía.')).toBeNull();
+    expect(screen.getByRole('region', { name: 'Tus robots' }).getAttribute('aria-busy')).toBe(
+      'true',
+    );
+
+    await act(async () => {
+      selection.resolve(savedRobot());
+    });
+    await waitFor(() => expect(screen.getByText('Seleccionado:')).toBeTruthy());
   });
 
   it('clears an inspection response when the signed-in identity changes', async () => {

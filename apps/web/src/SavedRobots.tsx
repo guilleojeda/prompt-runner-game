@@ -21,7 +21,6 @@ type ErrorKind = 'list' | 'load' | 'save' | 'new' | 'delete' | null;
 
 interface DeleteConflict {
   readonly summary: SavedRobotSummary;
-  readonly robot?: SavedRobot;
 }
 
 interface PendingCreate {
@@ -180,6 +179,9 @@ export function SavedRobots({
   const [listAttempt, setListAttempt] = useState(0);
   const generationRef = useRef(0);
   const inspectionRequestRef = useRef(0);
+  const operationTokenRef = useRef(0);
+  const operationOwnerRef = useRef<number | null>(null);
+  const inspectionOperationRef = useRef<number | null>(null);
   const inspectionHeadingRef = useRef<HTMLHeadingElement | null>(null);
   const inspectionTriggerRef = useRef<HTMLButtonElement | null>(null);
   const inspectionOpeningRef = useRef(false);
@@ -191,6 +193,20 @@ export function SavedRobots({
     (generation: number): boolean => generationRef.current === generation,
     [],
   );
+
+  const beginOperation = (kind: Exclude<SavedOperation, null>): number => {
+    const token = operationTokenRef.current + 1;
+    operationTokenRef.current = token;
+    operationOwnerRef.current = token;
+    setOperation(kind);
+    return token;
+  };
+
+  const finishOperation = (token: number): void => {
+    if (operationOwnerRef.current !== token) return;
+    operationOwnerRef.current = null;
+    setOperation(null);
+  };
 
   useEffect(() => {
     if (
@@ -235,6 +251,9 @@ export function SavedRobots({
 
   const busy = paused || locked || listBusy || operation !== null;
   const selectedSummary = selected ? summaryFromRobot(selected) : null;
+  const selectedManagementSummary = selected
+    ? (robots.find((robot) => robot.id === selected.id) ?? selectedSummary)
+    : null;
   const copiesByName = new Map<string, number>();
   const copyNumbers = new Map<string, number>();
   for (const robot of robots) {
@@ -245,7 +264,7 @@ export function SavedRobots({
 
   const handleLoadMore = async (): Promise<void> => {
     if (!nextCursor || busy) return;
-    setOperation('load');
+    const operationToken = beginOperation('load');
     setError(null);
     setErrorKind(null);
     const generation = generationRef.current;
@@ -261,12 +280,15 @@ export function SavedRobots({
       setErrorKind('list');
       if (isAuthError(loadError)) onAuthRequired?.(loadError.authContext);
     } finally {
-      if (isCurrent(generation)) setOperation(null);
+      if (isCurrent(generation)) finishOperation(operationToken);
     }
   };
 
   const clearInspection = (returnFocus: boolean): void => {
     inspectionRequestRef.current += 1;
+    const inspectionOperation = inspectionOperationRef.current;
+    inspectionOperationRef.current = null;
+    if (inspectionOperation !== null) finishOperation(inspectionOperation);
     const trigger = inspectionTriggerRef.current;
     inspectionTriggerRef.current = null;
     inspectionOpeningRef.current = false;
@@ -274,7 +296,12 @@ export function SavedRobots({
     setInspectionLoadingId(null);
     setInspectionError(null);
     setInspectionNotice(null);
-    if (returnFocus && trigger?.isConnected) trigger.focus();
+    if (returnFocus && trigger) {
+      if (trigger.isConnected) trigger.focus();
+      queueMicrotask(() => {
+        if (trigger.isConnected) trigger.focus();
+      });
+    }
   };
 
   const handleInspect = async (
@@ -286,7 +313,8 @@ export function SavedRobots({
     inspectionRequestRef.current = requestId;
     inspectionTriggerRef.current = trigger;
     inspectionOpeningRef.current = true;
-    setOperation('load');
+    const operationToken = beginOperation('load');
+    inspectionOperationRef.current = operationToken;
     setInspection(null);
     setInspectionLoadingId(summary.id);
     setInspectionError(null);
@@ -305,7 +333,10 @@ export function SavedRobots({
     } finally {
       if (isCurrent(generation)) {
         if (inspectionRequestRef.current === requestId) setInspectionLoadingId(null);
-        setOperation(null);
+        if (inspectionOperationRef.current === operationToken) {
+          inspectionOperationRef.current = null;
+        }
+        finishOperation(operationToken);
       }
     }
   };
@@ -316,7 +347,7 @@ export function SavedRobots({
   ): Promise<void> => {
     if (busy || !configurationAvailable) return;
     clearInspection(false);
-    setOperation('load');
+    const operationToken = beginOperation('load');
     setError(null);
     setErrorKind(null);
     setMessage(null);
@@ -372,7 +403,7 @@ export function SavedRobots({
         }
       }
     } finally {
-      if (isCurrent(generation)) setOperation(null);
+      if (isCurrent(generation)) finishOperation(operationToken);
     }
   };
 
@@ -455,6 +486,11 @@ export function SavedRobots({
 
   const removeListedRobot = (id: string): void => {
     setRobots((items) => items.filter((item) => item.id !== id));
+    if (pendingCreateRef.current?.id === id) {
+      pendingCreateRef.current = null;
+      setPendingCreate(null);
+      setNewName('');
+    }
     if (selected?.id === id) {
       setSelected(null);
       setName('');
@@ -464,12 +500,15 @@ export function SavedRobots({
     setConflict((current) => (current?.id === id ? null : current));
   };
 
-  const saveSelected = async (desiredName: string, draft: RobotDraft): Promise<void> => {
+  const saveSelected = async (
+    desiredName: string,
+    draft: RobotDraft,
+    operationToken: number,
+  ): Promise<void> => {
     const current = selected;
     if (!current) return;
     const generation = generationRef.current;
     if (!isCurrent(generation)) return;
-    setOperation('save');
     setError(null);
     setErrorKind(null);
     setMessage(null);
@@ -510,7 +549,7 @@ export function SavedRobots({
       }
       if (isAuthError(saveError)) onAuthRequired?.(saveError.authContext);
     } finally {
-      if (isCurrent(generation)) setOperation(null);
+      if (isCurrent(generation)) finishOperation(operationToken);
     }
   };
 
@@ -534,7 +573,7 @@ export function SavedRobots({
       setNewName(intent.name);
     }
     const generation = generationRef.current;
-    setOperation('save');
+    const operationToken = beginOperation('save');
     setError(null);
     setErrorKind(null);
     setMessage(null);
@@ -572,6 +611,10 @@ export function SavedRobots({
       if (!isCurrent(generation)) return;
       const preservePending =
         saveError instanceof PendingCreateReadbackFailure ||
+        (retryingPendingCreate &&
+          intent !== null &&
+          saveError instanceof SavedRobotApiFailure &&
+          isDefinitiveWriteRejection(saveError)) ||
         (saveError instanceof SavedRobotApiFailure &&
           saveError.ambiguous &&
           !isDefinitiveWriteRejection(saveError));
@@ -587,14 +630,14 @@ export function SavedRobots({
       const authError = reportedAuthError(saveError);
       if (authError) onAuthRequired?.(authError.authContext);
     } finally {
-      if (isCurrent(generation)) setOperation(null);
+      if (isCurrent(generation)) finishOperation(operationToken);
     }
   };
 
   const handleSave = async (): Promise<void> => {
     if (!selected) return;
     const generation = generationRef.current;
-    setOperation('save');
+    const operationToken = beginOperation('save');
     setError(null);
     let desiredName: string;
     try {
@@ -602,7 +645,7 @@ export function SavedRobots({
     } catch (validationError) {
       setError(apiErrorMessage(validationError, 'Ingresá un nombre válido para el robot.'));
       setErrorKind('save');
-      setOperation(null);
+      finishOperation(operationToken);
       return;
     }
     let snapshot: DraftSnapshot | null;
@@ -611,7 +654,7 @@ export function SavedRobots({
     } catch (captureError) {
       setError(apiErrorMessage(captureError, 'No se pudo capturar la configuración actual.'));
       setErrorKind('save');
-      setOperation(null);
+      finishOperation(operationToken);
       return;
     }
     if (!snapshot) {
@@ -619,23 +662,26 @@ export function SavedRobots({
         'No se pudo capturar la configuración actual. Reintentá cuando termine el guardado.',
       );
       setErrorKind('save');
-      setOperation(null);
+      finishOperation(operationToken);
       return;
     }
-    if (!isCurrent(generation)) return;
+    if (!isCurrent(generation)) {
+      finishOperation(operationToken);
+      return;
+    }
     if (selected.name === desiredName && draftsEqual(selected.draft, snapshot.draft)) {
       setMessage('No hay cambios para guardar en este robot.');
-      setOperation(null);
+      finishOperation(operationToken);
       return;
     }
-    await saveSelected(desiredName, snapshot.draft);
+    await saveSelected(desiredName, snapshot.draft, operationToken);
   };
 
   const handleDelete = async (target: SavedRobotSummary): Promise<void> => {
     if (busy) return;
     if (!window.confirm(`¿Eliminar «${target.name}»? Esta acción no se puede deshacer.`)) return;
     const generation = generationRef.current;
-    setOperation('delete');
+    const operationToken = beginOperation('delete');
     setError(null);
     setErrorKind(null);
     setMessage(null);
@@ -682,7 +728,7 @@ export function SavedRobots({
         ) {
           const robot = deleteError.current;
           const summary = deleteError.currentSummary ?? (robot ? summaryFromRobot(robot) : null);
-          if (summary) setDeleteConflict({ summary, ...(robot ? { robot } : {}) });
+          if (summary) setDeleteConflict({ summary });
           setError(null);
           setErrorKind(null);
         } else {
@@ -695,18 +741,14 @@ export function SavedRobots({
       }
       if (isAuthError(deleteError)) onAuthRequired?.(deleteError.authContext);
     } finally {
-      if (isCurrent(generation)) setOperation(null);
+      if (isCurrent(generation)) finishOperation(operationToken);
     }
   };
 
   const handleUseDeleteConflict = (): void => {
     if (!deleteConflict || busy) return;
-    const { summary, robot } = deleteConflict;
+    const { summary } = deleteConflict;
     updateListWithSummary(summary);
-    if (robot && selected?.id === summary.id) {
-      setSelected(robot);
-      setName(robot.name);
-    }
     setDeleteConflict(null);
     setMessage(
       `La copia «${summary.name}» cambió. Confirmá «Eliminar» nuevamente para borrarla. Tu configuración actual sigue intacta.`,
@@ -716,7 +758,7 @@ export function SavedRobots({
   const handleUseConflict = async (): Promise<void> => {
     if (!conflict || busy) return;
     const generation = generationRef.current;
-    setOperation('load');
+    const operationToken = beginOperation('load');
     setError(null);
     setErrorKind(null);
     try {
@@ -739,7 +781,7 @@ export function SavedRobots({
         setErrorKind('load');
       }
     } finally {
-      if (isCurrent(generation)) setOperation(null);
+      if (isCurrent(generation)) finishOperation(operationToken);
     }
   };
 
@@ -1013,7 +1055,7 @@ export function SavedRobots({
             <button
               className="text-button danger-button"
               type="button"
-              onClick={() => void handleDelete(selectedSummary!)}
+              onClick={() => void handleDelete(selectedManagementSummary!)}
               disabled={!canEdit}
             >
               Eliminar
