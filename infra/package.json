@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "deploy": "cdk deploy PromptRunnerHosting --app ../cdk.out --require-approval never",
+    "deploy": "cdk deploy PromptRunnerHosting PromptRunnerMonitoring --app ../cdk.out --require-approval never",
     "synth": "cdk synth --output ../cdk.out"
   }
 }

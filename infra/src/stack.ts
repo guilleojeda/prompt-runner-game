@@ -5,6 +5,7 @@ import {
   aws_cloudfront as cloudfront,
   aws_cloudfront_origins as origins,
   aws_certificatemanager as acm,
+  aws_cognito as cognito,
   aws_iam as iam,
   aws_logs as logs,
   aws_s3 as s3,
@@ -48,6 +49,8 @@ export interface PromptRunnerHostingStackProps extends cdk.StackProps {
 export class PromptRunnerHostingStack extends cdk.Stack {
   public readonly distribution: cloudfront.Distribution;
   public readonly websiteBucket: s3.Bucket;
+  /** Existing Cognito user pool, exposed as a reference for the monitor stack. */
+  public readonly userPool: cognito.IUserPool;
 
   public constructor(scope: Construct, id: string, props: PromptRunnerHostingStackProps = {}) {
     super(scope, id, props);
@@ -139,6 +142,11 @@ export class PromptRunnerHostingStack extends cdk.Stack {
       region: props.env?.region ?? APPLICATION_REGION,
       productionWebOrigin: PUBLIC_ORIGIN,
     });
+    this.userPool = cognito.UserPool.fromUserPoolId(
+      this,
+      'MonitoringSourceUserPool',
+      authentication.userPool.ref,
+    );
     const robot = createRobotResources(this, {
       limits,
       authentication,

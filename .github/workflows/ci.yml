@@ -20,6 +20,7 @@ jobs:
     env:
       BUILD_REVISION: ${{ github.sha }}
       VITE_BUILD_REVISION: ${{ github.sha }}
+      MONITORING_BASIC_AUTH_SHA256: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.MONITORING_BASIC_AUTH_SHA256 || '' }}
     steps:
       - name: Check out source
         uses: actions/checkout@v7.0.1
@@ -31,7 +32,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
       - name: Run repository checks
-        run: npm run check
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            export MONITORING_BASIC_AUTH_SHA256=a8b72980f5f7bd9fa1ac542c5608252885ff846c0bfdda2e07750608c55ac64f
+            echo "MONITORING_BASIC_AUTH_SHA256=a8b72980f5f7bd9fa1ac542c5608252885ff846c0bfdda2e07750608c55ac64f" >> "$GITHUB_ENV"
+          elif [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main" ]]; then
+            if [[ ! "$MONITORING_BASIC_AUTH_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "The main-branch check requires the MONITORING_BASIC_AUTH_SHA256 repository secret." >&2
+              exit 1
+            fi
+          fi
+          npm run check
       - name: Save checked Cloud Assembly
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v7.0.1

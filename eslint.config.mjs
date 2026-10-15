@@ -17,7 +17,7 @@ export default tseslint.config(
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    files: ['apps/web/**/*.{ts,tsx}'],
+    files: ['apps/web/**/*.{ts,tsx}', 'apps/monitoring-web/**/*.{ts,tsx}'],
     languageOptions: {
       globals: { ...globals.browser },
     },
@@ -33,6 +33,7 @@ export default tseslint.config(
   {
     files: [
       'apps/api/**/*.ts',
+      'apps/monitoring-api/**/*.ts',
       'apps/runner/**/*.{ts,mjs}',
       'shared/**/*.ts',
       'infra/**/*.ts',
