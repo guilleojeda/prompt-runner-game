@@ -23,19 +23,25 @@ Vite sirve la portada en `http://localhost:5173/` y el juego en `http://localhos
 VITE_AUTH_CONFIG_URL=https://robotrunner.guilleojeda.com/auth-config.json npm run dev
 ```
 
-El servidor de desarrollo obtiene la configuración pública y adapta los retornos a localhost; usa la misma API y los mismos datos del ambiente publicado. Sin esa configuración, la web informa que no puede iniciar el acceso. Para ejecutar los mismos controles que GitHub Actions, sin credenciales AWS:
+El servidor de desarrollo obtiene la configuración pública y adapta los retornos a localhost; usa la misma API y los mismos datos del ambiente publicado. Sin esa configuración, la web informa que no puede iniciar el acceso. Para ejecutar los mismos controles que GitHub Actions, sin credenciales AWS, configurar un verificador ficticio para la síntesis local del monitor:
 
 ```sh
-npm run check
+MONITORING_BASIC_AUTH_SHA256="$(node -e "process.stdout.write(require('node:crypto').createHash('sha256').update('monitor:fixture-only-password').digest('hex'))")" npm run check
 ```
 
-El comando verifica formato, lint, tipos, pruebas del motor, agente, persistencia, API, interfaz e infraestructura, los builds y la síntesis CDK. Usa un transporte de prueba explícito para el modelo: no llama a Bedrock ni necesita credenciales AWS o enviar correo. `apps/web/` contiene la web, `apps/api/` la API y el arranque, `apps/runner/` el ejecutor en Runtime, `shared/` los contratos y el motor, e `infra/` la infraestructura. El lockfile fija las versiones instaladas; `.work/` conserva evidencia local y está excluido de Git.
+El comando verifica formato, lint, tipos, pruebas del motor, agente, persistencia, API, interfaz e infraestructura, los builds y la síntesis CDK. Usa un transporte de prueba explícito para el modelo: no llama a Bedrock ni necesita credenciales AWS o enviar correo. `apps/monitoring-web/` y `apps/monitoring-api/` contienen el monitor privado; el verificador anterior es sólo de pruebas locales y nunca debe configurarse como acceso real. `apps/web/` contiene la web, `apps/api/` la API y el arranque, `apps/runner/` el ejecutor en Runtime, `shared/` los contratos y el motor, e `infra/` la infraestructura. El lockfile fija las versiones instaladas; `.work/` conserva evidencia local y está excluido de Git.
 
 ## Acceso
 
 El registro y la recuperación se realizan en las páginas de Cognito en español, con email y contraseña. La cuenta se habilita después de confirmar el código recibido. Si abandonaste la confirmación, podés retomarla desde la opción de cuenta pendiente en la web: usá el código recibido o solicitá otro, y después iniciá sesión. El User Pool está configurado para enviar los códigos mediante SES desde `hello@dondeaprendoaws.com`, con el asunto **Tu código de verificación para el juego** y una instrucción en español para usarlo en la pantalla donde lo solicitaste. Entrar con contraseña no envía otro correo. La disponibilidad y el ritmo de entrega dependen del estado y las cuotas efectivos de SES.
 
 Una recarga conserva la sesión en la misma pestaña. Si ya no hay una sesión válida, se vuelve a ingresar a la misma cuenta. Cerrar sesión elimina el estado local, revoca la renovación y cierra la sesión administrada de Cognito. Los detalles y límites están en [acceso y entrega](docs/architecture/acceso-y-entrega.md).
+
+## Monitor administrativo
+
+El [dashboard privado](docs/intent/monitoreo.md) usa un stack propio `PromptRunnerMonitoring`. Muestra registrados y nuevos con email confirmado, más una tabla ordenable de cuentas y fechas. Actividad y gasto de Bedrock muestran `N/A` porque las fuentes disponibles no sostienen esos datos. Se consulta al entrar, recargar y pulsar Actualizar, sin actualización automática.
+
+La URL se obtiene del output `MonitoringUrl` de ese stack. El acceso usa el usuario `monitor` y la contraseña configurada por el operador; su preparación y rotación están en [acceso y entrega](docs/architecture/acceso-y-entrega.md#monitor-administrativo). Los secretos no forman parte del build web.
 
 ## Preparar el robot
 
@@ -82,6 +88,7 @@ La especificación vigente se organiza por responsabilidad. Incluye las decision
 | [Contrato del agente](docs/intent/agente.md) | Información permitida, herramientas, instrucciones y configuración. |
 | [Intentos y reproducción](docs/intent/intentos.md) | Ejecución, registro, persistencia y animación fiel. |
 | [Consumo y puntuación](docs/intent/consumo-y-puntaje.md) | Tokens reales, costo, fórmula de puntos y comparación de resultados. |
+| [Monitoreo administrativo](docs/intent/monitoreo.md) | Inventario confirmado, ventanas móviles, datos ausentes y actualización manual. |
 | [Plataforma y operación](docs/intent/plataforma.md) | Cuentas, cuota, capacidad, tecnologías, AWS y entrega automática. |
 
 Cada documento describe el comportamiento vigente y señala por separado las capacidades de fases posteriores. Los detalles técnicos pendientes no son decisiones aprobadas por aparecer enumerados.

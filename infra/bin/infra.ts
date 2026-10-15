@@ -1,5 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { PromptRunnerAccessStack } from '../src/access-stack.js';
+import { requireMonitoringAuthVerifier } from '../src/monitoring-auth.js';
+import { PromptRunnerMonitoringStack } from '../src/monitoring-stack.js';
 import { APPLICATION_ACCOUNT, APPLICATION_REGION, PromptRunnerHostingStack } from '../src/stack.js';
 
 const app = new cdk.App();
@@ -27,10 +29,21 @@ new PromptRunnerAccessStack(app, 'PromptRunnerAccess', {
     process.env.GITHUB_OIDC_PROVIDER_ARN ?? app.node.tryGetContext('githubOidcProviderArn'),
 });
 
-new PromptRunnerHostingStack(app, 'PromptRunnerHosting', {
+const hosting = new PromptRunnerHostingStack(app, 'PromptRunnerHosting', {
   env: sharedEnvironment,
   assetDeploymentRoleArn:
     process.env.ASSET_DEPLOYMENT_ROLE_ARN ?? app.node.tryGetContext('assetDeploymentRoleArn'),
   buildRevision:
     process.env.BUILD_REVISION ?? process.env.GITHUB_SHA ?? app.node.tryGetContext('buildRevision'),
+});
+
+new PromptRunnerMonitoringStack(app, 'PromptRunnerMonitoring', {
+  env: sharedEnvironment,
+  userPool: hosting.userPool,
+  authVerifier: requireMonitoringAuthVerifier(),
+  buildRevision:
+    process.env.BUILD_REVISION ??
+    process.env.GITHUB_SHA ??
+    app.node.tryGetContext('buildRevision') ??
+    'local',
 });

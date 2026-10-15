@@ -159,7 +159,7 @@ gh variable set AWS_DEPLOY_ROLE_ARN \
   --body arn:aws:iam::387483252302:role/prompt-runner-game-github-actions-deploy-us-east-1
 ```
 
-`PromptRunnerAccess` se sintetiza sin assets y se actualiza directamente con CloudFormation, no con `cdk deploy`. El stack existente tiene asociado el rol de servicio `cdk-hnb659fds-cfn-exec-role-387483252302-us-east-1`; CloudFormation conserva esa asociación incluso si la operación la inicia un operador. Para modificar las políticas de Access, el operador habilita temporalmente sólo las acciones IAM y los ARN que requiere el change set revisado, con vencimiento explícito, y retira esa habilitación tras verificar el estado terminal. Las lecturas de los roles existentes necesarias para resolver outputs también deben estar autorizadas. No se agrega administración permanente de Access al pipeline. La variable de GitHub contiene solo un ARN público, y su rol continúa limitado al stack de hosting. `PromptRunnerHosting` se publica desde `main`, nunca mediante este procedimiento manual. Una ampliación de servicios requiere preparar sus permisos declarativos antes de usarlos desde CI.
+`PromptRunnerAccess` se sintetiza sin assets y se actualiza directamente con CloudFormation, no con `cdk deploy`. El stack existente tiene asociado el rol de servicio `cdk-hnb659fds-cfn-exec-role-387483252302-us-east-1`; CloudFormation conserva esa asociación incluso si la operación la inicia un operador. Para modificar las políticas de Access, el operador habilita temporalmente sólo las acciones IAM y los ARN que requiere el change set revisado, con vencimiento explícito, y retira esa habilitación tras verificar el estado terminal. Las lecturas de los roles existentes necesarias para resolver outputs también deben estar autorizadas. No se agrega administración permanente de Access al pipeline. La variable de GitHub contiene solo un ARN público. El rol de GitHub sólo asume los roles bootstrap preparados; no administra Access. `PromptRunnerHosting` se publica desde `main`, nunca mediante este procedimiento manual. Una ampliación de servicios requiere preparar sus permisos declarativos antes de usarlos desde CI.
 
 ## Verificación y diagnóstico de publicación
 
@@ -195,3 +195,37 @@ API Gateway aplica throttling de etapa y tasas específicas para escrituras, adm
 AWS Budgets envía alertas internas de gasto efectivo para el total mensual de la cuenta y el gasto diario de Bedrock. Los avisos mensuales se reparten entre dos presupuestos de igual alcance para respetar el máximo de cinco avisos por presupuesto. El filtro diario incluye las dimensiones de servicio efectivas de Marketplace del proveedor, además de Bedrock. No hay Budget Actions ni apagado de otros servicios. Los períodos de facturación de AWS y su retraso se distinguen del calendario de Argentina y de la reserva estimada del juego.
 
 Antes de publicar, el operador prepara los parámetros privados y actualiza `PromptRunnerAccess` para habilitar los permisos acotados de SSM, Budgets, WAF y retención. El stage espera a la nueva Lambda antes de actualizar sus tasas, de modo que un cierre temporal de admisión no se levanta antes de publicar la validación nueva. Si Access conserva el rol de ejecución del bootstrap, el operador prepara sólo los permisos IAM acotados para crear y adjuntar la política revisada y leer los atributos necesarios; los elimina al terminar esa preparación. No se amplían de forma permanente sus permisos de creación de políticas. Se comprueba que no queden ejecuciones de la versión anterior sin los nuevos espacios y reservas; si hay alguna, se deja terminar dentro de su vida máxima antes del cambio. La entrega de aplicación sigue el PR, checks y despliegue de main. La verificación publicada lee los valores efectivos privados, las notificaciones y suscriptores, la ACL y la retención de logs, y prueba CountTokens e inferencia desde el Runtime. La plantilla sintetizada sola no acredita estos resultados.
+
+## Monitor administrativo
+
+`PromptRunnerMonitoring` publica una aplicación propia desde `apps/monitoring-web` y `apps/monitoring-api`, con bucket, distribución, gate y Lambda separados. Usa la referencia CDK del User Pool del juego y sólo lo lee; no crea otra identidad ni modifica las rutas públicas/JWT del jugador. Separar el stack permite actualizar y revertir el monitor por separado, aunque la entrega normal publique ambos stacks y no sea una transacción entre ellos. El [contrato de monitoreo](../intent/monitoreo.md) define las métricas, desconocidos y actualización.
+
+La distribución inicial usa su hostname de CloudFront. Su output `MonitoringUrl` permite abrirla. Una CloudFront Function JS 2.0 valida Basic Auth en viewer-request para página, assets y `/api/*`. El usuario fijo es `monitor`; el verificador es SHA-256 de los bytes UTF-8 de `monitor:<contraseña>`. Se guarda sólo en el código de edge y configuración privada de síntesis, sin contraseña/Base64/verificador en S3 o bundle. El navegador presenta el diálogo nativo y administra la credencial. El gate elimina Authorization y los OAC firman ante S3 y la Function URL; ésta exige IAM y ambos permisos de invocación sólo a la distribución propia. El rol de métricas sólo tiene ListUsers en el pool y logs propios.
+
+El secret de Actions `MONITORING_BASIC_AUTH_SHA256` debe existir **antes de integrar** un cambio que publique el monitor. Se consume en el job check, que produce el assembly del mismo SHA; el deploy no reconstruye. Los checks de PR y locales usan un verificador ficticio explícito. Main falla si no recibe el verificador real válido y nunca usa ese fixture como fallback.
+
+Para configurar o cambiar el acceso, usar una terminal autorizada y suministrar la contraseña sin guardarla en el historial o argumentos:
+
+```sh
+python3 - <<'PYTHON'
+import getpass
+import hashlib
+import subprocess
+
+password = getpass.getpass('Contraseña del monitor: ')
+verifier = hashlib.sha256(('monitor:' + password).encode('utf-8')).hexdigest()
+subprocess.run(
+    ['gh', 'secret', 'set', 'MONITORING_BASIC_AUTH_SHA256',
+     '--repo', 'guilleojeda/prompt-runner-game'],
+    input=verifier, text=True, check=True,
+)
+PYTHON
+```
+
+Cambiar el secret no actualiza por sí solo la Function publicada: requiere una entrega normal desde main. No hay KVS, servicio de sesión ni rotación dinámica. El navegador puede conservar Basic Auth hasta cerrar su contexto; no existe logout propio del monitor.
+
+Antes del primer deploy, Access prepara una policy complementaria del monitor para el cfn-exec existente y su publicador fijo `prompt-runner-game-monitoring-asset-deployment-us-east-1`. El publicador del juego conserva sus permisos anteriores. El operador revisa el change set de Access y habilita temporalmente sólo las acciones IAM/ARN necesarios al rol de servicio conservado, con vencimiento; confirma UPDATE_COMPLETE, adjunción/documentos efectivos y retira la habilitación temporal. No se repite bootstrap ni se agrega Access al deploy automático.
+
+El circuito de aplicación conserva PR, checks y assembly comprobado. El deploy de main selecciona Hosting y Monitoring, y se siguen ambos hasta estado terminal. El monitor informa BuildRevision en su stack y metadata HTML. Su API responde `Cache-Control: no-store` y usa un behavior sin caché; los estáticos mantienen la publicación ordenada de assets antes de la entrada, caché normal para nombres con hash e invalidación de entrada. Todos los behaviors ejecutan el gate antes de consultar caché. Una falla se corrige por el mismo circuito, sin publicar manualmente otra copia.
+
+La verificación publicada contrasta SHA, entrada/recarga/Actualizar, JSON actual de Cognito, orden por columna y estados de carga/error/reintento. Además prueba rechazos anónimos de página, assets y API, S3 directo y Function URL directa, así como el diálogo Basic real. El estado Deployed de CloudFront y una plantilla correcta no sustituyen esas comprobaciones.

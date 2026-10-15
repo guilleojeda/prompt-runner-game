@@ -20,6 +20,10 @@
     "infra/src",
     "apps/api/src",
     "shared",
-    "apps/runner/src"
+    "apps/runner/src",
+    "apps/monitoring-web/src",
+    "apps/monitoring-web/vite.config.ts",
+    "apps/monitoring-api/src",
+    "vitest.config.ts"
   ]
 }

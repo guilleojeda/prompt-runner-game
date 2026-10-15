@@ -32,6 +32,17 @@ import {
   PUBLIC_ROUTING_FUNCTION_NAME,
   publicHostedZoneId,
 } from './domain.js';
+import {
+  MONITORING_ASSET_DEPLOYMENT_FUNCTION_NAME,
+  MONITORING_ASSET_DEPLOYMENT_LOG_GROUP_NAME,
+  MONITORING_ASSET_DEPLOYMENT_ROLE_NAME,
+  MONITORING_AUTH_FUNCTION_NAME,
+  MONITORING_DEPLOYMENT_CFN_POLICY_NAME,
+  MONITORING_METRICS_FUNCTION_NAME,
+  MONITORING_METRICS_LOG_GROUP_NAME,
+  MONITORING_METRICS_ROLE_NAME,
+  monitoringBucketNameFor,
+} from './monitoring-constants.js';
 
 export const GITHUB_OIDC_URL = 'https://token.actions.githubusercontent.com';
 export const GITHUB_OIDC_AUDIENCE = 'sts.amazonaws.com';
@@ -78,6 +89,7 @@ export class PromptRunnerAccessStack extends cdk.Stack {
       description: 'Fixed phase 0 role for the CDK frontend asset deployment helper.',
     });
     const websiteBucketArn = `arn:${cdk.Aws.PARTITION}:s3:::${websiteBucketNameFor(account)}`;
+    const monitoringBucketArn = `arn:${cdk.Aws.PARTITION}:s3:::${monitoringBucketNameFor(account, region)}`;
     const bootstrapAssetsBucketArn = `arn:${cdk.Aws.PARTITION}:s3:::cdk-hnb659fds-assets-${account}-${region}`;
     const cognitoUserPoolArn = `arn:${cdk.Aws.PARTITION}:cognito-idp:${region}:${account}:userpool/*`;
     const identityProtectionPoolArn = `arn:${cdk.Aws.PARTITION}:cognito-idp:${region}:${account}:userpool/${APPLICATION_USER_POOL_ID}`;
@@ -87,6 +99,50 @@ export class PromptRunnerAccessStack extends cdk.Stack {
         sid: 'ReadCdkAssets',
         actions: ['s3:GetObject'],
         resources: [`${bootstrapAssetsBucketArn}/*`],
+      }),
+    );
+
+    const monitoringAssetDeploymentRole = new iam.Role(this, 'MonitoringAssetDeploymentRole', {
+      roleName: MONITORING_ASSET_DEPLOYMENT_ROLE_NAME,
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+      description: 'Fixed role for publishing private monitoring dashboard assets.',
+    });
+    monitoringAssetDeploymentRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: 'ReadCdkAssets',
+        actions: ['s3:GetObject'],
+        resources: [`${bootstrapAssetsBucketArn}/*`],
+      }),
+    );
+    monitoringAssetDeploymentRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: 'PublishMonitoringBucket',
+        actions: ['s3:GetBucketLocation', 's3:ListBucket'],
+        resources: [monitoringBucketArn],
+      }),
+    );
+    monitoringAssetDeploymentRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: 'PublishMonitoringObjects',
+        actions: ['s3:DeleteObject', 's3:GetObject', 's3:PutObject'],
+        resources: [`${monitoringBucketArn}/*`],
+      }),
+    );
+    monitoringAssetDeploymentRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: 'InvalidateMonitoringDistribution',
+        actions: ['cloudfront:CreateInvalidation', 'cloudfront:GetInvalidation'],
+        resources: [`arn:${cdk.Aws.PARTITION}:cloudfront::${account}:distribution/*`],
+        conditions: { StringEquals: { 'aws:ResourceTag/Application': 'prompt-runner-game' } },
+      }),
+    );
+    monitoringAssetDeploymentRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: 'WriteMonitoringDeploymentLogs',
+        actions: ['logs:CreateLogStream', 'logs:PutLogEvents'],
+        resources: [
+          `arn:${cdk.Aws.PARTITION}:logs:${region}:${account}:log-group:${MONITORING_ASSET_DEPLOYMENT_LOG_GROUP_NAME}:*`,
+        ],
       }),
     );
     assetDeploymentRole.addToPolicy(
@@ -354,6 +410,195 @@ export class PromptRunnerAccessStack extends cdk.Stack {
       `${BOOTSTRAP_CFN_EXECUTION_ROLE_NAME}-${account}-${region}`,
       { mutable: false },
     );
+    const monitoringAuthFunctionArn = `arn:${cdk.Aws.PARTITION}:cloudfront::${account}:function/${MONITORING_AUTH_FUNCTION_NAME}`;
+    const monitoringMetricsFunctionArn = `arn:${cdk.Aws.PARTITION}:lambda:${region}:${account}:function:${MONITORING_METRICS_FUNCTION_NAME}`;
+    const monitoringMetricsRoleArn = `arn:${cdk.Aws.PARTITION}:iam::${account}:role/${MONITORING_METRICS_ROLE_NAME}`;
+    const monitoringAssetRoleArn = `arn:${cdk.Aws.PARTITION}:iam::${account}:role/${MONITORING_ASSET_DEPLOYMENT_ROLE_NAME}`;
+    const monitoringAssetFunctionArn = `arn:${cdk.Aws.PARTITION}:lambda:${region}:${account}:function:${MONITORING_ASSET_DEPLOYMENT_FUNCTION_NAME}`;
+    const monitoringMetricsLogGroupArn = `arn:${cdk.Aws.PARTITION}:logs:${region}:${account}:log-group:${MONITORING_METRICS_LOG_GROUP_NAME}`;
+    const monitoringAssetLogGroupArn = `arn:${cdk.Aws.PARTITION}:logs:${region}:${account}:log-group:${MONITORING_ASSET_DEPLOYMENT_LOG_GROUP_NAME}`;
+
+    new iam.ManagedPolicy(this, 'MonitoringCfnExecutionPolicy', {
+      managedPolicyName: MONITORING_DEPLOYMENT_CFN_POLICY_NAME,
+      description: 'Bounded CloudFormation permissions for the private monitoring dashboard.',
+      roles: [bootstrapExecutionRole],
+      statements: [
+        new iam.PolicyStatement({
+          sid: 'MonitoringBucketLifecycle',
+          actions: [
+            's3:CreateBucket',
+            's3:DeleteBucket',
+            // CloudFormation reads optional bucket settings even when the template leaves them unset.
+            's3:GetBucketAcl',
+            's3:GetAccelerateConfiguration',
+            's3:GetAnalyticsConfiguration',
+            's3:GetBucketAbac',
+            's3:GetBucketCORS',
+            's3:GetBucketLocation',
+            's3:GetBucketLogging',
+            's3:GetBucketMetadataTableConfiguration',
+            's3:GetBucketNotification',
+            's3:GetBucketObjectLockConfiguration',
+            's3:GetBucketOwnershipControls',
+            's3:GetBucketPolicy',
+            's3:GetBucketPolicyStatus',
+            's3:GetBucketPublicAccessBlock',
+            's3:GetBucketRequestPayment',
+            's3:GetBucketTagging',
+            's3:GetBucketVersioning',
+            's3:GetBucketWebsite',
+            's3:GetEncryptionConfiguration',
+            's3:GetIntelligentTieringConfiguration',
+            's3:GetInventoryConfiguration',
+            's3:GetLifecycleConfiguration',
+            's3:GetMetricsConfiguration',
+            's3:GetReplicationConfiguration',
+            's3:ListBucket',
+            's3:ListTagsForResource',
+            's3:PutBucketOwnershipControls',
+            's3:PutBucketPolicy',
+            's3:PutBucketPublicAccessBlock',
+            's3:PutBucketTagging',
+            's3:PutBucketVersioning',
+            's3:PutEncryptionConfiguration',
+            's3:DeleteBucketPolicy',
+          ],
+          resources: [monitoringBucketArn],
+        }),
+        new iam.PolicyStatement({
+          sid: 'MonitoringAuthenticationFunction',
+          actions: [
+            'cloudfront:CreateFunction',
+            'cloudfront:DeleteFunction',
+            'cloudfront:DescribeFunction',
+            'cloudfront:GetFunction',
+            'cloudfront:ListTagsForResource',
+            'cloudfront:PublishFunction',
+            'cloudfront:TagResource',
+            'cloudfront:UntagResource',
+            'cloudfront:UpdateFunction',
+          ],
+          resources: [monitoringAuthFunctionArn],
+        }),
+        new iam.PolicyStatement({
+          sid: 'MonitoringMetricsFunctionLifecycle',
+          actions: [
+            'lambda:AddPermission',
+            'lambda:CreateFunction',
+            'lambda:DeleteFunction',
+            // CloudFormation also reads optional recursion and signing configuration.
+            'lambda:GetFunction',
+            'lambda:GetFunctionCodeSigningConfig',
+            'lambda:GetFunctionConcurrency',
+            'lambda:GetFunctionConfiguration',
+            'lambda:GetPolicy',
+            'lambda:GetFunctionRecursionConfig',
+            'lambda:GetRuntimeManagementConfig',
+            'lambda:ListTags',
+            'lambda:RemovePermission',
+            'lambda:TagResource',
+            'lambda:UntagResource',
+            'lambda:UpdateFunctionCode',
+            'lambda:UpdateFunctionConfiguration',
+          ],
+          resources: [monitoringMetricsFunctionArn],
+        }),
+        new iam.PolicyStatement({
+          sid: 'MonitoringFunctionUrlLifecycle',
+          actions: [
+            'lambda:CreateFunctionUrlConfig',
+            'lambda:DeleteFunctionUrlConfig',
+            'lambda:GetFunctionUrlConfig',
+            'lambda:UpdateFunctionUrlConfig',
+          ],
+          resources: [monitoringMetricsFunctionArn],
+        }),
+        new iam.PolicyStatement({
+          sid: 'MonitoringMetricsRoleLifecycle',
+          actions: [
+            'iam:CreateRole',
+            'iam:DeleteRole',
+            'iam:DeleteRolePolicy',
+            'iam:GetRole',
+            'iam:GetRolePolicy',
+            'iam:ListRolePolicies',
+            'iam:PutRolePolicy',
+            'iam:TagRole',
+            'iam:UntagRole',
+            'iam:UpdateAssumeRolePolicy',
+          ],
+          resources: [monitoringMetricsRoleArn],
+        }),
+        new iam.PolicyStatement({
+          sid: 'PassMonitoringMetricsRole',
+          actions: ['iam:PassRole'],
+          resources: [monitoringMetricsRoleArn],
+          conditions: { StringEquals: { 'iam:PassedToService': 'lambda.amazonaws.com' } },
+        }),
+        new iam.PolicyStatement({
+          sid: 'ReadMonitoringAssetPublisherRole',
+          actions: ['iam:GetRole'],
+          resources: [monitoringAssetRoleArn],
+        }),
+        new iam.PolicyStatement({
+          sid: 'PassMonitoringAssetPublisherRole',
+          actions: ['iam:PassRole'],
+          resources: [monitoringAssetRoleArn],
+          conditions: { StringEquals: { 'iam:PassedToService': 'lambda.amazonaws.com' } },
+        }),
+        new iam.PolicyStatement({
+          sid: 'MonitoringMetricsLogGroupLifecycle',
+          actions: [
+            'logs:CreateLogGroup',
+            'logs:DeleteLogGroup',
+            'logs:DeleteRetentionPolicy',
+            'logs:GetDataProtectionPolicy',
+            'logs:ListTagsForResource',
+            'logs:PutRetentionPolicy',
+            'logs:TagResource',
+            'logs:UntagResource',
+          ],
+          resources: [monitoringMetricsLogGroupArn],
+        }),
+        new iam.PolicyStatement({
+          sid: 'MonitoringAssetDeploymentFunction',
+          actions: [
+            'lambda:CreateFunction',
+            'lambda:DeleteFunction',
+            // CloudFormation also reads optional recursion and signing configuration.
+            'lambda:GetFunction',
+            'lambda:GetFunctionCodeSigningConfig',
+            'lambda:GetFunctionConcurrency',
+            'lambda:GetFunctionConfiguration',
+            'lambda:GetFunctionRecursionConfig',
+            'lambda:GetRuntimeManagementConfig',
+            'lambda:InvokeFunction',
+            'lambda:ListTags',
+            'lambda:PublishVersion',
+            'lambda:TagResource',
+            'lambda:UntagResource',
+            'lambda:UpdateFunctionCode',
+            'lambda:UpdateFunctionConfiguration',
+          ],
+          resources: [monitoringAssetFunctionArn],
+        }),
+        new iam.PolicyStatement({
+          sid: 'MonitoringAssetDeploymentLogGroupLifecycle',
+          actions: [
+            'logs:CreateLogGroup',
+            'logs:DeleteLogGroup',
+            'logs:DeleteRetentionPolicy',
+            'logs:GetDataProtectionPolicy',
+            'logs:ListTagsForResource',
+            'logs:PutRetentionPolicy',
+            'logs:TagResource',
+            'logs:UntagResource',
+          ],
+          resources: [monitoringAssetLogGroupArn],
+        }),
+      ],
+    });
+
     const apiGatewayArn = `arn:${cdk.Aws.PARTITION}:apigateway:${region}::/apis`;
     const apiGatewayApiArn = `${apiGatewayArn}/*`;
     const apiGatewayStagesCollectionArn = `${apiGatewayArn}/*/stages`;
