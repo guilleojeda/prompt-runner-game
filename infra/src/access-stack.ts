@@ -455,6 +455,9 @@ export class PromptRunnerAccessStack extends cdk.Stack {
             's3:GetReplicationConfiguration',
             's3:ListBucket',
             's3:ListTagsForResource',
+            // CloudFormation's current S3 bucket tag provider uses these APIs by default.
+            's3:TagResource',
+            's3:UntagResource',
             's3:PutBucketOwnershipControls',
             's3:PutBucketPolicy',
             's3:PutBucketPublicAccessBlock',
