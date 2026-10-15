@@ -549,6 +549,7 @@ export class PromptRunnerAccessStack extends cdk.Stack {
           resources: [monitoringAssetRoleArn],
           conditions: { StringEquals: { 'iam:PassedToService': 'lambda.amazonaws.com' } },
         }),
+        // CloudWatch Logs lifecycle APIs use the suffixed log-group ARN.
         new iam.PolicyStatement({
           sid: 'MonitoringMetricsLogGroupLifecycle',
           actions: [
@@ -556,11 +557,14 @@ export class PromptRunnerAccessStack extends cdk.Stack {
             'logs:DeleteLogGroup',
             'logs:DeleteRetentionPolicy',
             'logs:GetDataProtectionPolicy',
-            'logs:ListTagsForResource',
             'logs:PutRetentionPolicy',
-            'logs:TagResource',
-            'logs:UntagResource',
           ],
+          resources: [`${monitoringMetricsLogGroupArn}:*`],
+        }),
+        // CloudWatch Logs tagging APIs require the exact ARN without :*.
+        new iam.PolicyStatement({
+          sid: 'MonitoringMetricsLogGroupTags',
+          actions: ['logs:ListTagsForResource', 'logs:TagResource', 'logs:UntagResource'],
           resources: [monitoringMetricsLogGroupArn],
         }),
         new iam.PolicyStatement({
@@ -585,6 +589,7 @@ export class PromptRunnerAccessStack extends cdk.Stack {
           ],
           resources: [monitoringAssetFunctionArn],
         }),
+        // CloudWatch Logs lifecycle APIs use the suffixed log-group ARN.
         new iam.PolicyStatement({
           sid: 'MonitoringAssetDeploymentLogGroupLifecycle',
           actions: [
@@ -592,11 +597,14 @@ export class PromptRunnerAccessStack extends cdk.Stack {
             'logs:DeleteLogGroup',
             'logs:DeleteRetentionPolicy',
             'logs:GetDataProtectionPolicy',
-            'logs:ListTagsForResource',
             'logs:PutRetentionPolicy',
-            'logs:TagResource',
-            'logs:UntagResource',
           ],
+          resources: [`${monitoringAssetLogGroupArn}:*`],
+        }),
+        // CloudWatch Logs tagging APIs require the exact ARN without :*.
+        new iam.PolicyStatement({
+          sid: 'MonitoringAssetDeploymentLogGroupTags',
+          actions: ['logs:ListTagsForResource', 'logs:TagResource', 'logs:UntagResource'],
           resources: [monitoringAssetLogGroupArn],
         }),
       ],
