@@ -166,7 +166,7 @@ describe('protected monitoring publication', { timeout: 15_000 }, () => {
     });
   });
 
-  it('grants only Cognito reads, exact attempt-header queries and its own log writes', () => {
+  it('grants only Cognito reads, an exact table scan and its own log writes', () => {
     const roles = template.findResources('AWS::IAM::Role');
     const metricsRole = Object.entries(roles).find(
       ([, resource]) =>
@@ -185,7 +185,7 @@ describe('protected monitoring publication', { timeout: 15_000 }, () => {
           Resource: 'arn:aws:cognito-idp:us-east-1:387483252302:userpool/us-east-1_existing',
         }),
         expect.objectContaining({
-          Action: 'dynamodb:Query',
+          Action: 'dynamodb:Scan',
           Resource: `arn:aws:dynamodb:us-east-1:387483252302:table/${DRAFT_TABLE_NAME}`,
         }),
       ]),
@@ -195,21 +195,21 @@ describe('protected monitoring publication', { timeout: 15_000 }, () => {
     );
     expect(actions.filter((action: string) => !action.startsWith('logs:')).sort()).toEqual([
       'cognito-idp:ListUsers',
-      'dynamodb:Query',
+      'dynamodb:Scan',
     ]);
     expect(actions.filter((action: string) => action.startsWith('dynamodb:'))).toEqual([
-      'dynamodb:Query',
+      'dynamodb:Scan',
     ]);
-    const queryStatement = statements.find((statement: { Action: string | string[] }) =>
-      [statement.Action].flat().includes('dynamodb:Query'),
+    const scanStatement = statements.find((statement: { Action: string | string[] }) =>
+      [statement.Action].flat().includes('dynamodb:Scan'),
     );
-    expect(queryStatement?.Resource).toBe(
+    expect(scanStatement?.Resource).toBe(
       `arn:aws:dynamodb:us-east-1:387483252302:table/${DRAFT_TABLE_NAME}`,
     );
     expect(JSON.stringify(statements)).not.toContain('prompt-runner-game-draft-api');
-    expect(JSON.stringify(queryStatement)).not.toContain(':index/');
+    expect(JSON.stringify(scanStatement)).not.toContain(':index/');
     expect(JSON.stringify(statements)).not.toMatch(
-      /bedrock|GetItem|Scan|PutItem|UpdateItem|DeleteItem/,
+      /bedrock|Query|GetItem|PutItem|UpdateItem|DeleteItem/,
     );
   });
 });

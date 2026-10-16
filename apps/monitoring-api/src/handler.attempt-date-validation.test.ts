@@ -5,10 +5,7 @@ import { handleRequest } from './handler.js';
 const cutoff = new Date('2026-10-15T12:00:00.000Z');
 type AttributeValue = { S?: string; N?: string; [key: string]: unknown };
 type Item = Record<string, AttributeValue>;
-type QueryPage = { Items?: Item[] };
-type QueryCommandLike = {
-  input: { ExpressionAttributeValues?: Record<string, AttributeValue> };
-};
+type ScanPage = { Items?: Item[] };
 
 const user = (sub: string, email: string) => ({
   Username: sub,
@@ -26,14 +23,6 @@ const attempt = (owner: string, id: string, createdAt: string, score: number): I
   createdAt: { S: createdAt },
   score: { N: String(score) },
 });
-
-const ownerFrom = (command: QueryCommandLike): string => {
-  const partition = Object.values(command.input.ExpressionAttributeValues ?? {}).find((value) =>
-    value.S?.startsWith('USER#'),
-  )?.S;
-  if (!partition) throw new Error('La consulta no incluye el propietario.');
-  return partition.slice('USER#'.length);
-};
 
 const event: APIGatewayProxyEventV2 = {
   version: '2.0',
@@ -70,14 +59,12 @@ describe('attempt date validation', () => {
         user('offset-date', 'offset@example.com'),
       ],
     }));
-    const dynamoSend = vi.fn(async (command: QueryCommandLike): Promise<QueryPage> => {
-      if (ownerFrom(command) === 'impossible-date') {
-        return {
-          Items: [attempt('impossible-date', 'invalid', '2026-02-30T12:00:00.000Z', 17)],
-        };
-      }
+    const dynamoSend = vi.fn(async (): Promise<ScanPage> => {
       return {
-        Items: [attempt('offset-date', 'valid-offset', '2026-10-15T07:00:00.000-04:00', 0)],
+        Items: [
+          attempt('impossible-date', 'invalid', '2026-02-30T12:00:00.000Z', 17),
+          attempt('offset-date', 'valid-offset', '2026-10-15T07:00:00.000-04:00', 0),
+        ],
       };
     });
     const dependencies = {
