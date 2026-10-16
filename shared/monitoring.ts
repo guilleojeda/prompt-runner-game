@@ -12,7 +12,9 @@ export interface MonitoringUser {
   /** ISO UTC timestamp, or the literal N/A when the source has no date. */
   registeredAt: string;
   lastActiveAt: string;
+  attempts: MetricPeriods;
   bedrockCostUsd: MetricPeriods;
+  maxScore: MetricValue;
 }
 
 export interface MonitoringSnapshot {
