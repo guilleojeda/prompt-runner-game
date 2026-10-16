@@ -1,11 +1,14 @@
 import { ListUsersCommand } from '@aws-sdk/client-cognito-identity-provider';
-import { QueryCommand } from '@aws-sdk/client-dynamodb';
+import { ScanCommand } from '@aws-sdk/client-dynamodb';
 import type {
   CognitoIdentityProviderClient,
   UserType,
 } from '@aws-sdk/client-cognito-identity-provider';
 import type { AttributeValue, DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import type { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-lambda';
+import { measuredCallCost } from '../../../shared/server/execution-limits.js';
+import type { TokenRates } from '../../../shared/server/execution-limits.js';
+import type { Usage } from '../../../shared/server/attempt.js';
 import type {
   MetricPeriods,
   MetricValue,
@@ -46,10 +49,10 @@ class IncompleteInventoryError extends Error {
   }
 }
 
-class IncompleteAttemptsError extends Error {
+class IncompleteScanError extends Error {
   public constructor() {
-    super('La consulta del historial de intentos quedó incompleta.');
-    this.name = 'IncompleteAttemptsError';
+    super('El recorrido de metadatos quedó incompleto.');
+    this.name = 'IncompleteScanError';
   }
 }
 
@@ -58,7 +61,21 @@ interface AttemptMetrics {
   readonly maxScore: MetricValue;
 }
 
-const MAX_CONCURRENT_OWNER_QUERIES = 4;
+interface ScannedHeader {
+  readonly ownerId: string;
+  readonly attemptId: string;
+  readonly createdAt: unknown;
+  readonly score: unknown;
+}
+
+interface ScannedCall {
+  readonly attemptId: string;
+  readonly createdAt: unknown;
+  readonly usage: unknown;
+  readonly budget: unknown;
+}
+
+type CostMicrosByPeriod = Record<keyof MetricPeriods, bigint>;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -66,10 +83,73 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const readStringValue = (value: unknown): string | undefined =>
   isRecord(value) && typeof value.S === 'string' ? value.S : undefined;
 
-const readFiniteNumberValue = (value: unknown): number | undefined => {
+const readDynamoNumberValue = (value: unknown): number | undefined => {
   if (!isRecord(value) || typeof value.N !== 'string' || value.N.trim() === '') return undefined;
   const number = Number(value.N);
   return Number.isFinite(number) ? number : undefined;
+};
+
+const readFiniteNumberValue = (value: unknown): number | undefined => readDynamoNumberValue(value);
+
+const readNonnegativeSafeIntegerValue = (value: unknown): number | undefined => {
+  const number = readDynamoNumberValue(value);
+  return number !== undefined && Number.isSafeInteger(number) && number >= 0 ? number : undefined;
+};
+
+const readFiniteNonnegativeNumberValue = (value: unknown): number | undefined => {
+  const number = readDynamoNumberValue(value);
+  return number !== undefined && number >= 0 ? number : undefined;
+};
+
+const readMapValue = (value: unknown): Record<string, unknown> | undefined =>
+  isRecord(value) && isRecord(value.M) ? value.M : undefined;
+
+const readUsageValue = (value: unknown): Usage | undefined => {
+  const usage = readMapValue(value);
+  if (usage === undefined) return undefined;
+
+  const inputTokens = readNonnegativeSafeIntegerValue(usage.inputTokens);
+  const outputTokens = readNonnegativeSafeIntegerValue(usage.outputTokens);
+  const cacheReadTokens = readNonnegativeSafeIntegerValue(usage.cacheReadTokens);
+  const cacheWriteTokens = readNonnegativeSafeIntegerValue(usage.cacheWriteTokens);
+  if (
+    inputTokens === undefined ||
+    outputTokens === undefined ||
+    cacheReadTokens === undefined ||
+    cacheWriteTokens === undefined
+  ) {
+    return undefined;
+  }
+
+  return {
+    inputTokens,
+    outputTokens,
+    reasoningTokens: null,
+    gameTokens: null,
+    cacheReadTokens,
+    cacheWriteTokens,
+  };
+};
+
+const readRatesValue = (value: unknown): TokenRates | undefined => {
+  const budget = readMapValue(value);
+  const rates = readMapValue(budget?.rates);
+  if (rates === undefined) return undefined;
+
+  const input = readFiniteNonnegativeNumberValue(rates.input);
+  const output = readFiniteNonnegativeNumberValue(rates.output);
+  const cacheRead = readFiniteNonnegativeNumberValue(rates.cacheRead);
+  const cacheWrite = readFiniteNonnegativeNumberValue(rates.cacheWrite);
+  if (
+    input === undefined ||
+    output === undefined ||
+    cacheRead === undefined ||
+    cacheWrite === undefined
+  ) {
+    return undefined;
+  }
+
+  return { input, output, cacheRead, cacheWrite };
 };
 
 const ISO_TIMESTAMP_PATTERN =
@@ -111,17 +191,17 @@ const timestampFromIso = (value: string): number | undefined => {
 
 const readPaginationKey = (value: unknown): Record<string, AttributeValue> | undefined => {
   if (value === undefined) return undefined;
-  if (!isRecord(value)) throw new IncompleteAttemptsError();
+  if (!isRecord(value)) throw new IncompleteScanError();
 
   const keys = Object.keys(value);
   if (keys.length === 0) return undefined;
   if (keys.length !== 2 || !keys.includes('PK') || !keys.includes('SK')) {
-    throw new IncompleteAttemptsError();
+    throw new IncompleteScanError();
   }
 
   const partition = readStringValue(value.PK);
   const sort = readStringValue(value.SK);
-  if (partition === undefined || sort === undefined) throw new IncompleteAttemptsError();
+  if (partition === undefined || sort === undefined) throw new IncompleteScanError();
 
   return { PK: { S: partition }, SK: { S: sort } };
 };
@@ -216,67 +296,115 @@ const confirmedUsers = async (
   return [...usersBySub.values()];
 };
 
-const attemptMetricsForUser = async (
-  userId: string,
+const physicalKeyFor = (partition: string, sort: string): string =>
+  JSON.stringify([partition, sort]);
+
+const scanMetadata = async (
   dependencies: MonitoringHandlerDependencies,
-  asOfMs: number,
-): Promise<AttemptMetrics> => {
-  const counts = { hours24: 0, days3: 0, days7: 0 };
+): Promise<{ headers: ScannedHeader[]; calls: ScannedCall[] }> => {
+  const headers = new Map<string, ScannedHeader>();
+  const calls = new Map<string, ScannedCall>();
   const visitedTokens = new Set<string>();
   let exclusiveStartKey: Record<string, AttributeValue> | undefined;
-  let hasUnknownDate = false;
-  let maxScore: number | undefined;
 
   while (true) {
     const page = await dependencies.dynamo.send(
-      new QueryCommand({
+      new ScanCommand({
         TableName: dependencies.tableName,
-        KeyConditionExpression: '#pk = :pk AND begins_with(#sk, :prefix)',
+        ConsistentRead: true,
+        FilterExpression:
+          '(begins_with(#pk, :userPrefix) AND begins_with(#sk, :attemptPrefix)) OR (begins_with(#pk, :attemptPrefix) AND begins_with(#sk, :callPrefix))',
+        ProjectionExpression:
+          '#pk, #sk, #createdAt, #score, #usage.#inputTokens, #usage.#outputTokens, #usage.#cacheReadTokens, #usage.#cacheWriteTokens, #budget.#rates',
         ExpressionAttributeNames: {
           '#pk': 'PK',
           '#sk': 'SK',
           '#createdAt': 'createdAt',
           '#score': 'score',
+          '#usage': 'usage',
+          '#inputTokens': 'inputTokens',
+          '#outputTokens': 'outputTokens',
+          '#cacheReadTokens': 'cacheReadTokens',
+          '#cacheWriteTokens': 'cacheWriteTokens',
+          '#budget': 'budget',
+          '#rates': 'rates',
         },
         ExpressionAttributeValues: {
-          ':pk': { S: `USER#${userId}` },
-          ':prefix': { S: 'ATTEMPT#' },
+          ':userPrefix': { S: 'USER#' },
+          ':attemptPrefix': { S: 'ATTEMPT#' },
+          ':callPrefix': { S: 'CALL#' },
         },
-        ConsistentRead: true,
-        ProjectionExpression: '#pk, #sk, #createdAt, #score',
         ...(exclusiveStartKey === undefined ? {} : { ExclusiveStartKey: exclusiveStartKey }),
       }),
     );
 
     if (page.Items !== undefined && !Array.isArray(page.Items)) {
-      throw new IncompleteAttemptsError();
+      throw new IncompleteScanError();
     }
 
     for (const item of page.Items ?? []) {
-      if (!isRecord(item)) throw new IncompleteAttemptsError();
+      if (!isRecord(item)) throw new IncompleteScanError();
 
-      const createdAt = readStringValue(item.createdAt);
-      const createdAtMs = createdAt === undefined ? undefined : timestampFromIso(createdAt);
-      if (createdAtMs === undefined) {
-        hasUnknownDate = true;
-      } else if (createdAtMs <= asOfMs) {
-        if (createdAtMs >= asOfMs - WINDOWS.hours24) counts.hours24 += 1;
-        if (createdAtMs >= asOfMs - WINDOWS.days3) counts.days3 += 1;
-        if (createdAtMs >= asOfMs - WINDOWS.days7) counts.days7 += 1;
+      const partition = readStringValue(item.PK);
+      const sort = readStringValue(item.SK);
+      if (partition === undefined || sort === undefined) throw new IncompleteScanError();
+
+      if (partition.startsWith('USER#') && sort.startsWith('ATTEMPT#')) {
+        const ownerId = partition.slice('USER#'.length);
+        const attemptId = sort.slice('ATTEMPT#'.length);
+        if (!ownerId || !attemptId) throw new IncompleteScanError();
+        headers.set(physicalKeyFor(partition, sort), {
+          ownerId,
+          attemptId,
+          createdAt: item.createdAt,
+          score: item.score,
+        });
+      } else if (partition.startsWith('ATTEMPT#') && sort.startsWith('CALL#')) {
+        const attemptId = partition.slice('ATTEMPT#'.length);
+        const sequence = sort.slice('CALL#'.length);
+        if (!attemptId || !sequence) throw new IncompleteScanError();
+        calls.set(physicalKeyFor(partition, sort), {
+          attemptId,
+          createdAt: item.createdAt,
+          usage: item.usage,
+          budget: item.budget,
+        });
       }
-
-      const score = readFiniteNumberValue(item.score);
-      if (score !== undefined)
-        maxScore = maxScore === undefined ? score : Math.max(maxScore, score);
     }
 
     const nextKey = readPaginationKey(page.LastEvaluatedKey);
     if (nextKey === undefined) break;
 
     const token = paginationTokenFor(nextKey);
-    if (visitedTokens.has(token)) throw new IncompleteAttemptsError();
+    if (visitedTokens.has(token)) throw new IncompleteScanError();
     visitedTokens.add(token);
     exclusiveStartKey = nextKey;
+  }
+
+  return { headers: [...headers.values()], calls: [...calls.values()] };
+};
+
+const attemptMetricsForHeaders = (
+  headers: readonly ScannedHeader[],
+  asOfMs: number,
+): AttemptMetrics => {
+  const counts = { hours24: 0, days3: 0, days7: 0 };
+  let hasUnknownDate = false;
+  let maxScore: number | undefined;
+
+  for (const header of headers) {
+    const createdAt = readStringValue(header.createdAt);
+    const createdAtMs = createdAt === undefined ? undefined : timestampFromIso(createdAt);
+    if (createdAtMs === undefined) {
+      hasUnknownDate = true;
+    } else if (createdAtMs <= asOfMs) {
+      if (createdAtMs >= asOfMs - WINDOWS.hours24) counts.hours24 += 1;
+      if (createdAtMs >= asOfMs - WINDOWS.days3) counts.days3 += 1;
+      if (createdAtMs >= asOfMs - WINDOWS.days7) counts.days7 += 1;
+    }
+
+    const score = readFiniteNumberValue(header.score);
+    if (score !== undefined) maxScore = maxScore === undefined ? score : Math.max(maxScore, score);
   }
 
   return {
@@ -285,37 +413,61 @@ const attemptMetricsForUser = async (
   };
 };
 
-const attemptMetricsForUsers = async (
-  users: readonly ConfirmedUser[],
-  dependencies: MonitoringHandlerDependencies,
+const emptyCostMicros = (): CostMicrosByPeriod => ({ hours24: 0n, days3: 0n, days7: 0n });
+
+const addCallCost = (
+  totals: CostMicrosByPeriod,
+  createdAtMs: number,
   asOfMs: number,
-): Promise<Map<string, AttemptMetrics>> => {
-  const metrics = new Map<string, AttemptMetrics>();
-  let nextIndex = 0;
-  let hasFailed = false;
-  let failure: unknown;
+  costMicros: number,
+): void => {
+  if (createdAtMs >= asOfMs - WINDOWS.hours24) totals.hours24 += BigInt(costMicros);
+  if (createdAtMs >= asOfMs - WINDOWS.days3) totals.days3 += BigInt(costMicros);
+  if (createdAtMs >= asOfMs - WINDOWS.days7) totals.days7 += BigInt(costMicros);
+};
 
-  const worker = async (): Promise<void> => {
-    while (!hasFailed) {
-      const index = nextIndex;
-      nextIndex += 1;
-      const user = users[index];
-      if (user === undefined) return;
+const usdPeriodsFromMicros = (totals: CostMicrosByPeriod): MetricPeriods => ({
+  hours24: Number(totals.hours24) / 1_000_000,
+  days3: Number(totals.days3) / 1_000_000,
+  days7: Number(totals.days7) / 1_000_000,
+});
 
-      try {
-        metrics.set(user.id, await attemptMetricsForUser(user.id, dependencies, asOfMs));
-      } catch (error) {
-        if (!hasFailed) failure = error;
-        hasFailed = true;
-      }
+const costPeriodsForCalls = (
+  users: readonly ConfirmedUser[],
+  headers: readonly ScannedHeader[],
+  calls: readonly ScannedCall[],
+  asOfMs: number,
+): { total: MetricPeriods; byUser: Map<string, MetricPeriods> } => {
+  const totalMicros = emptyCostMicros();
+  const userMicros = new Map(users.map((user) => [user.id, emptyCostMicros()]));
+  const ownerByAttemptId = new Map(headers.map((header) => [header.attemptId, header.ownerId]));
+
+  for (const call of calls) {
+    const createdAt = readStringValue(call.createdAt);
+    const createdAtMs = createdAt === undefined ? undefined : timestampFromIso(createdAt);
+    if (createdAtMs === undefined || createdAtMs > asOfMs || createdAtMs < asOfMs - WINDOWS.days7) {
+      continue;
     }
-  };
 
-  await Promise.all(
-    Array.from({ length: Math.min(MAX_CONCURRENT_OWNER_QUERIES, users.length) }, () => worker()),
-  );
-  if (hasFailed) throw failure ?? new IncompleteAttemptsError();
-  return metrics;
+    const usage = readUsageValue(call.usage);
+    const rates = readRatesValue(call.budget);
+    if (usage === undefined || rates === undefined) continue;
+
+    const costMicros = measuredCallCost(usage, rates);
+    if (costMicros === undefined) continue;
+
+    addCallCost(totalMicros, createdAtMs, asOfMs, costMicros);
+    const ownerId = ownerByAttemptId.get(call.attemptId);
+    const ownerMicros = ownerId === undefined ? undefined : userMicros.get(ownerId);
+    if (ownerMicros !== undefined) addCallCost(ownerMicros, createdAtMs, asOfMs, costMicros);
+  }
+
+  return {
+    total: usdPeriodsFromMicros(totalMicros),
+    byUser: new Map(
+      [...userMicros].map(([userId, totals]) => [userId, usdPeriodsFromMicros(totals)]),
+    ),
+  };
 };
 
 const newUserCount = (
@@ -342,9 +494,23 @@ const snapshotFor = async (
   if (!Number.isFinite(asOfMs)) throw new IncompleteInventoryError();
 
   const users = await confirmedUsers(dependencies.cognito, dependencies.userPoolId);
-  const attemptsByUser = await attemptMetricsForUsers(users, dependencies, asOfMs);
+  const { headers, calls } = await scanMetadata(dependencies);
   const completedAt = clock().getTime();
   if (!Number.isFinite(completedAt)) throw new IncompleteInventoryError();
+
+  const headersByOwner = new Map<string, ScannedHeader[]>();
+  for (const header of headers) {
+    const ownerHeaders = headersByOwner.get(header.ownerId) ?? [];
+    ownerHeaders.push(header);
+    headersByOwner.set(header.ownerId, ownerHeaders);
+  }
+  const attemptsByUser = new Map(
+    users.map((user) => [
+      user.id,
+      attemptMetricsForHeaders(headersByOwner.get(user.id) ?? [], asOfMs),
+    ]),
+  );
+  const costs = costPeriodsForCalls(users, headers, calls, asOfMs);
 
   const newUsers: MetricPeriods = {
     hours24: newUserCount(users, asOfMs, WINDOWS.hours24),
@@ -353,7 +519,9 @@ const snapshotFor = async (
   };
   const rows: MonitoringUser[] = users.map((user) => {
     const attempts = attemptsByUser.get(user.id);
-    if (attempts === undefined) throw new IncompleteAttemptsError();
+    if (attempts === undefined) throw new IncompleteScanError();
+    const bedrockCostUsd = costs.byUser.get(user.id);
+    if (bedrockCostUsd === undefined) throw new IncompleteScanError();
 
     return {
       id: user.id,
@@ -362,7 +530,7 @@ const snapshotFor = async (
         user.createdAtMs === undefined ? 'N/A' : new Date(user.createdAtMs).toISOString(),
       lastActiveAt: 'N/A',
       attempts: attempts.attempts,
-      bedrockCostUsd: UNKNOWN_PERIODS(),
+      bedrockCostUsd,
       maxScore: attempts.maxScore,
     };
   });
@@ -373,7 +541,7 @@ const snapshotFor = async (
     registeredUsers: users.length,
     newUsers,
     activeUsers: UNKNOWN_PERIODS(),
-    bedrockCostUsd: UNKNOWN_PERIODS(),
+    bedrockCostUsd: costs.total,
     users: rows,
   };
 };

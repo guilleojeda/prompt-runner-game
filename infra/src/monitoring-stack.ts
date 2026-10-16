@@ -32,7 +32,7 @@ const __dirname = path.dirname(__filename);
 export interface PromptRunnerMonitoringStackProps extends cdk.StackProps {
   /** Existing Cognito pool used by the game; the monitor never creates its own pool. */
   readonly userPool: cognito.IUserPool;
-  /** Existing attempt table queried by the monitor; the stack never creates a table. */
+  /** Existing game metadata table scanned by the monitor; the stack never creates a table. */
   readonly draftTable: dynamodb.ITable;
   /** SHA-256 of the UTF-8 bytes for `monitor:<password>`. */
   readonly authVerifier: string;
@@ -96,8 +96,8 @@ export class PromptRunnerMonitoringStack extends cdk.Stack {
     );
     metricsRole.addToPolicy(
       new iam.PolicyStatement({
-        sid: 'QueryAttemptHeaders',
-        actions: ['dynamodb:Query'],
+        sid: 'ScanMonitoringMetadata',
+        actions: ['dynamodb:Scan'],
         resources: [props.draftTable.tableArn],
       }),
     );
