@@ -2,9 +2,13 @@ import type {
   APIGatewayProxyEventV2,
   APIGatewayProxyHandlerV2,
   APIGatewayProxyStructuredResultV2,
+  Context,
 } from 'aws-lambda';
 import { authTimeToIsoTimestamp, recordLoginActivity } from './activity.js';
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
+import { S3Client } from '@aws-sdk/client-s3';
+import { context as otelContext, SpanKind, SpanStatusCode, trace } from '@opentelemetry/api';
 import {
   DraftConflictError,
   DraftIncompatibleError,
@@ -46,6 +50,8 @@ import {
   type SavedRobotStore,
 } from './saved-robots.js';
 import { summaryOf, type PersistedAttempt } from '../../../shared/server/attempt.js';
+import { instrumentAwsClient } from '../../../shared/aws-client-telemetry.js';
+import { logLambdaRecord, withLambdaTelemetry } from '../../../shared/lambda-telemetry.js';
 
 const APPLICATION_SCOPE = 'prompt-runner/robot';
 const STORED_DRAFT_INCOMPATIBLE_MESSAGE =
@@ -66,6 +72,9 @@ interface HandlerDependencies {
   readonly attemptStore?: AttemptStore;
   readonly savedRobotStore?: SavedRobotStore;
   readonly dispatch?: (attemptId: string, owner: string) => Promise<void>;
+  readonly dynamoClient?: DynamoDBClient;
+  readonly s3Client?: S3Client;
+  readonly lambdaClient?: LambdaClient;
 }
 
 class ApiError extends Error {
@@ -90,15 +99,13 @@ const respond = (
   body: unknown,
 ): APIGatewayProxyStructuredResultV2 => {
   const attemptId = (body as { attempt?: { id?: unknown } } | null)?.attempt?.id;
-  console.log(
-    JSON.stringify({
-      requestId: event.requestContext?.requestId ?? 'unknown',
-      method: requestMethod(event),
-      status: statusCode,
-      code,
-      ...(typeof attemptId === 'string' ? { attemptId } : {}),
-    }),
-  );
+  logLambdaRecord('log', {
+    requestId: event.requestContext?.requestId ?? 'unknown',
+    method: requestMethod(event),
+    status: statusCode,
+    code,
+    ...(typeof attemptId === 'string' ? { attemptId } : {}),
+  });
   return jsonResponse(statusCode, body);
 };
 
@@ -164,14 +171,42 @@ const verifyIdentity = async (
   const token = bearerToken(event);
   let response: Response;
   try {
-    response = await (dependencies.fetch ?? fetch)(dependencies.userInfoUrl, {
-      method: 'GET',
-      headers: {
-        accept: 'application/json',
-        authorization: `Bearer ${token}`,
-      },
-      signal: AbortSignal.timeout(5_000),
-    });
+    const request = (): Promise<Response> =>
+      (dependencies.fetch ?? fetch)(dependencies.userInfoUrl, {
+        method: 'GET',
+        headers: {
+          accept: 'application/json',
+          authorization: `Bearer ${token}`,
+        },
+        signal: AbortSignal.timeout(5_000),
+      });
+    const parent = trace.getActiveSpan();
+    if (!parent) {
+      response = await request();
+    } else {
+      const span = trace.getTracer('prompt-runner-game-api').startSpan('Cognito.UserInfo', {
+        kind: SpanKind.CLIENT,
+        attributes: {
+          'rpc.service': 'Cognito',
+          'rpc.method': 'UserInfo',
+          'http.request.method': 'GET',
+        },
+      });
+      try {
+        response = await otelContext.with(trace.setSpan(otelContext.active(), span), request);
+        span.setAttribute('http.response.status_code', response.status);
+        if (response.status >= 500) {
+          span.setAttribute('error.type', 'dependency_error');
+          span.setStatus({ code: SpanStatusCode.ERROR, message: 'UserInfo request failed' });
+        }
+      } catch (error) {
+        span.setAttribute('error.type', 'dependency_error');
+        span.setStatus({ code: SpanStatusCode.ERROR, message: 'UserInfo request failed' });
+        throw error;
+      } finally {
+        span.end();
+      }
+    }
   } catch (error) {
     throw new ApiError(503, 'dependency_unavailable', 'No se pudo comprobar la identidad.', {
       cause: error,
@@ -324,11 +359,14 @@ const decisionNumberInput = (event: APIGatewayProxyEventV2): number | undefined 
   return number;
 };
 
-const dispatchDefault = async (attemptId: string, owner: string): Promise<void> => {
+const dispatchDefault = async (
+  attemptId: string,
+  owner: string,
+  client?: LambdaClient,
+): Promise<void> => {
   const functionName = process.env.STARTER_FUNCTION_NAME;
   if (!functionName) throw new Error('Falta STARTER_FUNCTION_NAME.');
-  const client = new LambdaClient({});
-  await client.send(
+  await (client ?? new LambdaClient({})).send(
     new InvokeCommand({
       FunctionName: functionName,
       InvocationType: 'Event',
@@ -343,17 +381,19 @@ const dispatchAttempt = async (
   owner: string,
 ): Promise<boolean> => {
   try {
-    await (dependencies.dispatch ?? dispatchDefault)(attemptId, owner);
+    if (dependencies.dispatch) {
+      await dependencies.dispatch(attemptId, owner);
+    } else {
+      await dispatchDefault(attemptId, owner, dependencies.lambdaClient);
+    }
     return true;
-  } catch (error) {
-    console.error(
-      JSON.stringify({
-        component: 'starter-dispatch',
-        attemptId,
-        owner,
-        code: error instanceof Error ? error.name : 'unknown',
-      }),
-    );
+  } catch {
+    logLambdaRecord('error', {
+      component: 'starter-dispatch',
+      attemptId,
+      owner,
+      code: 'dependency_error',
+    });
     return false;
   }
 };
@@ -587,7 +627,11 @@ export const handleRequest = async (
     const config = configFrom(dependencies);
     const identity = await verifyIdentity(event, { ...config, fetch: dependencies.fetch });
     if (isSavedRobotCollection || isSavedRobotItem) {
-      const savedRobotStore = dependencies.savedRobotStore ?? createDynamoSavedRobotStore();
+      const savedRobotStore =
+        dependencies.savedRobotStore ??
+        createDynamoSavedRobotStore(
+          dependencies.dynamoClient === undefined ? {} : { client: dependencies.dynamoClient },
+        );
       if (isSavedRobotCollection) {
         return respond(
           event,
@@ -625,20 +669,22 @@ export const handleRequest = async (
         await savedRobotStore.delete(identity.sub, id, input.expectedVersion),
       );
     }
-    const draftStore = dependencies.store ?? createDynamoDraftStore();
+    const draftStore =
+      dependencies.store ??
+      createDynamoDraftStore(
+        dependencies.dynamoClient === undefined ? {} : { client: dependencies.dynamoClient },
+      );
     if (isDraft && method === 'GET') {
       const lastLoginAt = authTimeToIsoTimestamp(identity.authTime);
       if (lastLoginAt !== undefined) {
         try {
-          await recordLoginActivity(identity.sub, lastLoginAt);
-        } catch (error) {
-          console.error(
-            JSON.stringify({
-              component: 'login-activity',
-              requestId: event.requestContext.requestId ?? 'unknown',
-              code: error instanceof Error ? error.name : 'unknown',
-            }),
-          );
+          await recordLoginActivity(identity.sub, lastLoginAt, dependencies.dynamoClient);
+        } catch {
+          logLambdaRecord('error', {
+            component: 'login-activity',
+            requestId: event.requestContext.requestId ?? 'unknown',
+            code: 'dependency_error',
+          });
         }
       }
       return respond(event, 200, 'ok', await draftStore.get(identity.sub));
@@ -654,7 +700,13 @@ export const handleRequest = async (
     }
 
     const attemptStore =
-      dependencies.attemptStore ?? createDynamoAttemptStore({ bodyStore: new S3BodyStore() });
+      dependencies.attemptStore ??
+      createDynamoAttemptStore({
+        ...(dependencies.dynamoClient === undefined ? {} : { client: dependencies.dynamoClient }),
+        bodyStore: new S3BodyStore(
+          dependencies.s3Client === undefined ? {} : { client: dependencies.s3Client },
+        ),
+      });
     if (isAttemptCollection && method === 'POST') {
       const input = attemptInput(requestBody(event));
       const admitted = await attemptStore.admit({ owner: identity.sub, ...input });
@@ -893,4 +945,11 @@ export const handleRequest = async (
   }
 };
 
-export const handler: APIGatewayProxyHandlerV2 = (event) => handleRequest(event);
+const dynamoClient = instrumentAwsClient(new DynamoDBClient({}));
+const s3Client = instrumentAwsClient(new S3Client({}));
+const lambdaClient = instrumentAwsClient(new LambdaClient({}));
+
+export const handler: APIGatewayProxyHandlerV2 = (event, context: Context) =>
+  withLambdaTelemetry('game-api', context.awsRequestId, () =>
+    handleRequest(event, { dynamoClient, s3Client, lambdaClient }),
+  );

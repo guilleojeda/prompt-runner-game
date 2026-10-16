@@ -2,6 +2,10 @@ import {
   BedrockAgentCoreClient,
   InvokeAgentRuntimeCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import type { Context } from 'aws-lambda';
+import { instrumentAwsClient } from '../../../shared/aws-client-telemetry.js';
+import { logLambdaRecord, withLambdaTelemetry } from '../../../shared/lambda-telemetry.js';
 import type { AttemptStore } from '../../../shared/server/attempt.js';
 import { createDynamoAttemptStore } from './attempt-store.js';
 
@@ -14,33 +18,38 @@ export type StarterDependencies = {
     sessionId: string;
   }) => Promise<void>;
   readonly now?: () => Date;
+  readonly dynamoClient?: DynamoDBClient;
+  readonly agentCoreClient?: BedrockAgentCoreClient;
 };
 
 const starterEvent = (
   stage: string,
   fields: Record<string, string | number | boolean | undefined> = {},
 ): void => {
-  console.log(
-    JSON.stringify({
-      component: 'attempt-starter',
-      stage,
-      ...Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined)),
-    }),
-  );
+  logLambdaRecord('log', {
+    component: 'attempt-starter',
+    stage,
+    ...Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined)),
+  });
 };
 
-const runtimeInvoker = async (input: {
-  attemptId: string;
-  owner: string;
-  sessionId: string;
-}): Promise<void> => {
+const runtimeInvoker = async (
+  input: {
+    attemptId: string;
+    owner: string;
+    sessionId: string;
+  },
+  client?: BedrockAgentCoreClient,
+): Promise<void> => {
   const runtimeArn = process.env.AGENT_RUNTIME_ARN;
   if (!runtimeArn) throw new Error('Falta AGENT_RUNTIME_ARN.');
-  const client = new BedrockAgentCoreClient({
-    region: process.env.AWS_REGION ?? 'us-east-1',
-    maxAttempts: 1,
-  });
-  const response = await client.send(
+  const runtimeClient =
+    client ??
+    new BedrockAgentCoreClient({
+      region: process.env.AWS_REGION ?? 'us-east-1',
+      maxAttempts: 1,
+    });
+  const response = await runtimeClient.send(
     new InvokeAgentRuntimeCommand({
       agentRuntimeArn: runtimeArn,
       runtimeSessionId: input.sessionId,
@@ -75,7 +84,11 @@ export const starterHandler = async (
   ) {
     throw new Error('La tarea de arranque no contiene una referencia válida.');
   }
-  const store = dependencies.store ?? createDynamoAttemptStore();
+  const store =
+    dependencies.store ??
+    createDynamoAttemptStore(
+      dependencies.dynamoClient === undefined ? {} : { client: dependencies.dynamoClient },
+    );
   const attempt = await store.closeExpired(
     event.owner,
     event.attemptId,
@@ -89,11 +102,16 @@ export const starterHandler = async (
     });
     return;
   }
-  await (dependencies.invokeRuntime ?? runtimeInvoker)({
+  const runtimeInput = {
     attemptId: event.attemptId,
     owner: event.owner,
     sessionId: attempt.sessionId,
-  });
+  };
+  if (dependencies.invokeRuntime) {
+    await dependencies.invokeRuntime(runtimeInput);
+  } else {
+    await runtimeInvoker(runtimeInput, dependencies.agentCoreClient);
+  }
   starterEvent('runtime_invoked', {
     attemptId: attempt.id,
     sessionId: attempt.sessionId,
@@ -101,4 +119,24 @@ export const starterHandler = async (
   });
 };
 
-export const handler = (event: StarterEvent): Promise<void> => starterHandler(event);
+const dynamoClient = instrumentAwsClient(new DynamoDBClient({}));
+const agentCoreClient = instrumentAwsClient(
+  new BedrockAgentCoreClient({
+    region: process.env.AWS_REGION ?? 'us-east-1',
+    maxAttempts: 1,
+  }),
+);
+
+export const handler = (event: StarterEvent, lambdaContext: Context): Promise<void> =>
+  withLambdaTelemetry('attempt-starter', lambdaContext.awsRequestId, async () => {
+    try {
+      await starterHandler(event, { dynamoClient, agentCoreClient });
+    } catch (error) {
+      logLambdaRecord('error', {
+        component: 'attempt-starter',
+        stage: 'invocation_failed',
+        status: 'failed',
+      });
+      throw error;
+    }
+  });

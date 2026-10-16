@@ -5,7 +5,7 @@ import {
 } from '@aws-sdk/client-dynamodb';
 import { marshall } from '@aws-sdk/util-dynamodb';
 
-const client = new DynamoDBClient({});
+const defaultClient = new DynamoDBClient({});
 const WRITE_TIMEOUT_MS = 1_000;
 
 export const authTimeToIsoTimestamp = (value: unknown, now = Date.now()): string | undefined => {
@@ -24,7 +24,11 @@ export const authTimeToIsoTimestamp = (value: unknown, now = Date.now()): string
   return new Date(seconds * 1_000).toISOString();
 };
 
-export const recordLoginActivity = async (sub: string, lastLoginAt: string): Promise<void> => {
+export const recordLoginActivity = async (
+  sub: string,
+  lastLoginAt: string,
+  client: DynamoDBClient = defaultClient,
+): Promise<void> => {
   const tableName = process.env.DRAFT_TABLE_NAME;
   if (!tableName) throw new Error('Falta DRAFT_TABLE_NAME.');
 

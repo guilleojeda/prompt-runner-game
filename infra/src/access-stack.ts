@@ -26,6 +26,7 @@ import {
   LOG_RETENTION_GROUP_NAME,
 } from './execution.js';
 import { LIMIT_PARAMETER_PREFIX } from './private-limits.js';
+import { AWS_OTEL_LAYER_ARN } from './lambda-telemetry.js';
 import {
   PUBLIC_DOMAIN,
   PUBLIC_HOSTED_ZONE_ID_PARAMETER,
@@ -634,6 +635,11 @@ export class PromptRunnerAccessStack extends cdk.Stack {
       description: 'CloudFormation permissions for the prompt-runner-game robot API.',
       roles: [bootstrapExecutionRole],
       statements: [
+        new iam.PolicyStatement({
+          sid: 'ReadPinnedLambdaTelemetryLayer',
+          actions: ['lambda:GetLayerVersion'],
+          resources: [AWS_OTEL_LAYER_ARN],
+        }),
         new iam.PolicyStatement({
           sid: 'DraftTableLifecycle',
           actions: [

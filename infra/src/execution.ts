@@ -13,6 +13,7 @@ import {
 } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import { MODEL_CATALOG, type ModelProfile } from '../../shared/models.js';
+import { lambdaTelemetryOptions } from './lambda-telemetry.js';
 import { STARTER_LAMBDA_NAME } from './robot.js';
 import { executionLimitEnvironment, type PrivateLimits } from './private-limits.js';
 
@@ -159,10 +160,10 @@ export function createExecutionResources(
     handler: 'index.handler',
     code: lambda.Code.fromAsset(path.resolve(__dirname, '../../apps/api/dist-start')),
     role: starterExecutionRole,
-    environment: {
+    ...lambdaTelemetryOptions(scope, 'AttemptStarterTelemetryLayer', {
       AGENT_RUNTIME_ARN: cdk.Lazy.string({ produce: () => runnerRuntime.attrAgentRuntimeArn }),
       DRAFT_TABLE_NAME: props.draftTable.tableName,
-    },
+    }),
     timeout: cdk.Duration.seconds(120),
     logGroup: starterLogGroup,
   });

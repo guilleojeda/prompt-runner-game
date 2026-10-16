@@ -166,7 +166,7 @@ describe('protected monitoring publication', { timeout: 15_000 }, () => {
     });
   });
 
-  it('grants only Cognito reads, an exact table scan and its own log writes', () => {
+  it('grants only telemetry, Cognito reads, an exact table scan and its own log writes', () => {
     const roles = template.findResources('AWS::IAM::Role');
     const metricsRole = Object.entries(roles).find(
       ([, resource]) =>
@@ -196,7 +196,17 @@ describe('protected monitoring publication', { timeout: 15_000 }, () => {
     expect(actions.filter((action: string) => !action.startsWith('logs:')).sort()).toEqual([
       'cognito-idp:ListUsers',
       'dynamodb:Scan',
+      'xray:PutTelemetryRecords',
+      'xray:PutTraceSegments',
     ]);
+    const xrayStatements = statements.filter((statement: { Action: string | string[] }) =>
+      [statement.Action].flat().some((action) => action.startsWith('xray:')),
+    );
+    expect(xrayStatements).toHaveLength(1);
+    expect(xrayStatements[0]).toMatchObject({
+      Action: ['xray:PutTraceSegments', 'xray:PutTelemetryRecords'],
+      Resource: '*',
+    });
     expect(actions.filter((action: string) => action.startsWith('dynamodb:'))).toEqual([
       'dynamodb:Scan',
     ]);
