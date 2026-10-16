@@ -549,7 +549,7 @@ export class PromptRunnerAccessStack extends cdk.Stack {
           resources: [monitoringAssetRoleArn],
           conditions: { StringEquals: { 'iam:PassedToService': 'lambda.amazonaws.com' } },
         }),
-        // CloudWatch Logs lifecycle APIs use the suffixed log-group ARN.
+        // CloudFormation CreateLogGroup-with-Tags also checks TagResource on the suffixed ARN.
         new iam.PolicyStatement({
           sid: 'MonitoringMetricsLogGroupLifecycle',
           actions: [
@@ -558,10 +558,11 @@ export class PromptRunnerAccessStack extends cdk.Stack {
             'logs:DeleteRetentionPolicy',
             'logs:GetDataProtectionPolicy',
             'logs:PutRetentionPolicy',
+            'logs:TagResource',
           ],
           resources: [`${monitoringMetricsLogGroupArn}:*`],
         }),
-        // CloudWatch Logs tagging APIs require the exact ARN without :*.
+        // Direct CloudWatch Logs tagging APIs require the exact ARN without :*.
         new iam.PolicyStatement({
           sid: 'MonitoringMetricsLogGroupTags',
           actions: ['logs:ListTagsForResource', 'logs:TagResource', 'logs:UntagResource'],
@@ -589,7 +590,7 @@ export class PromptRunnerAccessStack extends cdk.Stack {
           ],
           resources: [monitoringAssetFunctionArn],
         }),
-        // CloudWatch Logs lifecycle APIs use the suffixed log-group ARN.
+        // CloudFormation CreateLogGroup-with-Tags also checks TagResource on the suffixed ARN.
         new iam.PolicyStatement({
           sid: 'MonitoringAssetDeploymentLogGroupLifecycle',
           actions: [
@@ -598,10 +599,11 @@ export class PromptRunnerAccessStack extends cdk.Stack {
             'logs:DeleteRetentionPolicy',
             'logs:GetDataProtectionPolicy',
             'logs:PutRetentionPolicy',
+            'logs:TagResource',
           ],
           resources: [`${monitoringAssetLogGroupArn}:*`],
         }),
-        // CloudWatch Logs tagging APIs require the exact ARN without :*.
+        // Direct CloudWatch Logs tagging APIs require the exact ARN without :*.
         new iam.PolicyStatement({
           sid: 'MonitoringAssetDeploymentLogGroupTags',
           actions: ['logs:ListTagsForResource', 'logs:TagResource', 'logs:UntagResource'],

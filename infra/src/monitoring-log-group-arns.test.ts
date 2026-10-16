@@ -61,12 +61,10 @@ describe('monitoring log group IAM ARN forms', { timeout: 15_000 }, () => {
 
       expect(lifecycle).toBeDefined();
       expect([lifecycle!.Action].flat()).toEqual(
-        expect.arrayContaining(['logs:CreateLogGroup', 'logs:DeleteLogGroup']),
+        expect.arrayContaining(['logs:CreateLogGroup', 'logs:DeleteLogGroup', 'logs:TagResource']),
       );
       expect(lifecycle!.Resource).toBe(`${arn}:*`);
-      expect([lifecycle!.Action].flat()).not.toEqual(
-        expect.arrayContaining(['logs:TagResource', 'logs:UntagResource']),
-      );
+      expect([lifecycle!.Action].flat()).not.toContain('logs:UntagResource');
 
       expect(tags).toBeDefined();
       expect([tags!.Action].flat()).toEqual(
