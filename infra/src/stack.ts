@@ -6,6 +6,7 @@ import {
   aws_cloudfront_origins as origins,
   aws_certificatemanager as acm,
   aws_cognito as cognito,
+  aws_dynamodb as dynamodb,
   aws_iam as iam,
   aws_logs as logs,
   aws_s3 as s3,
@@ -51,6 +52,8 @@ export class PromptRunnerHostingStack extends cdk.Stack {
   public readonly websiteBucket: s3.Bucket;
   /** Existing Cognito user pool, exposed as a reference for the monitor stack. */
   public readonly userPool: cognito.IUserPool;
+  /** Existing attempt table, exposed as a reference for the monitor stack. */
+  public readonly draftTable: dynamodb.ITable;
 
   public constructor(scope: Construct, id: string, props: PromptRunnerHostingStackProps = {}) {
     super(scope, id, props);
@@ -152,6 +155,7 @@ export class PromptRunnerHostingStack extends cdk.Stack {
       authentication,
       productionWebOrigin: PUBLIC_ORIGIN,
     });
+    this.draftTable = robot.draftTable;
     const execution = createExecutionResources(this, {
       limits,
       account,

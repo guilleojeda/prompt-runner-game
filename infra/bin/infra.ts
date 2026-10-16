@@ -40,6 +40,7 @@ const hosting = new PromptRunnerHostingStack(app, 'PromptRunnerHosting', {
 new PromptRunnerMonitoringStack(app, 'PromptRunnerMonitoring', {
   env: sharedEnvironment,
   userPool: hosting.userPool,
+  draftTable: hosting.draftTable,
   authVerifier: requireMonitoringAuthVerifier(),
   buildRevision:
     process.env.BUILD_REVISION ??

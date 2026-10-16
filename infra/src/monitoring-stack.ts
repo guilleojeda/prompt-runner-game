@@ -5,6 +5,7 @@ import {
   aws_cloudfront as cloudfront,
   aws_cloudfront_origins as origins,
   aws_cognito as cognito,
+  aws_dynamodb as dynamodb,
   aws_iam as iam,
   aws_lambda as lambda,
   aws_logs as logs,
@@ -31,6 +32,8 @@ const __dirname = path.dirname(__filename);
 export interface PromptRunnerMonitoringStackProps extends cdk.StackProps {
   /** Existing Cognito pool used by the game; the monitor never creates its own pool. */
   readonly userPool: cognito.IUserPool;
+  /** Existing attempt table queried by the monitor; the stack never creates a table. */
+  readonly draftTable: dynamodb.ITable;
   /** SHA-256 of the UTF-8 bytes for `monitor:<password>`. */
   readonly authVerifier: string;
   /** Revision recorded with the published entry and in the stack outputs. */
@@ -91,6 +94,13 @@ export class PromptRunnerMonitoringStack extends cdk.Stack {
         ],
       }),
     );
+    metricsRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: 'QueryAttemptHeaders',
+        actions: ['dynamodb:Query'],
+        resources: [props.draftTable.tableArn],
+      }),
+    );
 
     const metricsLogGroup = new logs.LogGroup(this, 'MetricsLogGroup', {
       logGroupName: MONITORING_METRICS_LOG_GROUP_NAME,
@@ -111,7 +121,10 @@ export class PromptRunnerMonitoringStack extends cdk.Stack {
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.resolve(__dirname, '../../apps/monitoring-api/dist')),
       role: metricsRole,
-      environment: { COGNITO_USER_POOL_ID: props.userPool.userPoolId },
+      environment: {
+        COGNITO_USER_POOL_ID: props.userPool.userPoolId,
+        DRAFT_TABLE_NAME: props.draftTable.tableName,
+      },
       timeout: cdk.Duration.seconds(15),
       logGroup: metricsLogGroup,
     });

@@ -9,7 +9,17 @@ import type {
 type LoadState =
   { status: 'loading' } | { status: 'error' } | { status: 'success'; snapshot: MonitoringSnapshot };
 
-type SortKey = 'email' | 'registeredAt' | 'lastActiveAt' | 'hours24' | 'days3' | 'days7';
+type SortKey =
+  | 'email'
+  | 'registeredAt'
+  | 'lastActiveAt'
+  | 'attempts.hours24'
+  | 'attempts.days3'
+  | 'attempts.days7'
+  | 'bedrockCostUsd.hours24'
+  | 'bedrockCostUsd.days3'
+  | 'bedrockCostUsd.days7'
+  | 'maxScore';
 type SortState = { key: SortKey; direction: 'ascending' | 'descending' } | null;
 
 const windows = [
@@ -19,6 +29,7 @@ const windows = [
 ] as const;
 
 const countFormat = new Intl.NumberFormat('es-AR', { maximumFractionDigits: 0 });
+const scoreFormat = new Intl.NumberFormat('es-AR', { maximumFractionDigits: 20 });
 const usdFormat = new Intl.NumberFormat('es-AR', {
   style: 'currency',
   currency: 'USD',
@@ -64,7 +75,9 @@ function isMonitoringUser(value: unknown): value is MonitoringUser {
     value.email.length > 0 &&
     isDateOrUnavailable(value.registeredAt) &&
     isDateOrUnavailable(value.lastActiveAt) &&
-    isPeriods(value.bedrockCostUsd)
+    isPeriods(value.attempts) &&
+    isPeriods(value.bedrockCostUsd) &&
+    isMetricValue(value.maxScore)
   );
 }
 
@@ -108,6 +121,10 @@ function formatMetric(value: MetricValue, money = false): string {
   return money ? usdFormat.format(value) : countFormat.format(value);
 }
 
+function formatScore(value: MetricValue): string {
+  return value === 'N/A' ? value : scoreFormat.format(value);
+}
+
 function formatDate(value: string): string {
   if (value === 'N/A') {
     return value;
@@ -119,11 +136,7 @@ function compareText(left: string, right: string): number {
   return left.localeCompare(right, 'es-AR', { sensitivity: 'base' });
 }
 
-function compareMetric(
-  left: MetricValue | string,
-  right: MetricValue | string,
-  key: SortKey,
-): number {
+function compareSortValues(left: string | number, right: string | number, key: SortKey): number {
   const leftUnavailable = left === 'N/A';
   const rightUnavailable = right === 'N/A';
 
@@ -135,7 +148,7 @@ function compareMetric(
   }
 
   if (key === 'registeredAt' || key === 'lastActiveAt') {
-    return Date.parse(left as string) - Date.parse(right as string);
+    return Date.parse(String(left)) - Date.parse(String(right));
   }
   if (key === 'email') {
     return compareText(String(left), String(right));
@@ -146,6 +159,30 @@ function compareMetric(
   return compareText(String(left), String(right));
 }
 
+function sortValue(user: MonitoringUser, key: SortKey): string | number {
+  switch (key) {
+    case 'email':
+      return user.email;
+    case 'registeredAt':
+    case 'lastActiveAt':
+      return user[key];
+    case 'attempts.hours24':
+      return user.attempts.hours24;
+    case 'attempts.days3':
+      return user.attempts.days3;
+    case 'attempts.days7':
+      return user.attempts.days7;
+    case 'bedrockCostUsd.hours24':
+      return user.bedrockCostUsd.hours24;
+    case 'bedrockCostUsd.days3':
+      return user.bedrockCostUsd.days3;
+    case 'bedrockCostUsd.days7':
+      return user.bedrockCostUsd.days7;
+    case 'maxScore':
+      return user.maxScore;
+  }
+}
+
 function sortUsers(users: MonitoringUser[], sort: SortState): MonitoringUser[] {
   if (!sort) {
     return users;
@@ -153,19 +190,9 @@ function sortUsers(users: MonitoringUser[], sort: SortState): MonitoringUser[] {
 
   const direction = sort.direction === 'ascending' ? 1 : -1;
   return [...users].sort((left, right) => {
-    const leftValue =
-      sort.key === 'email'
-        ? left.email
-        : sort.key === 'registeredAt' || sort.key === 'lastActiveAt'
-          ? left[sort.key]
-          : left.bedrockCostUsd[sort.key];
-    const rightValue =
-      sort.key === 'email'
-        ? right.email
-        : sort.key === 'registeredAt' || sort.key === 'lastActiveAt'
-          ? right[sort.key]
-          : right.bedrockCostUsd[sort.key];
-    const compared = compareMetric(leftValue, rightValue, sort.key);
+    const leftValue = sortValue(left, sort.key);
+    const rightValue = sortValue(right, sort.key);
+    const compared = compareSortValues(leftValue, rightValue, sort.key);
 
     if (compared !== 0) {
       const unavailable = leftValue === 'N/A' || rightValue === 'N/A';
@@ -246,23 +273,42 @@ function UserTable({
             <SortHeader label="Registro" sortKey="registeredAt" sort={sort} onSort={onSort} />
             <SortHeader label="Última sesión" sortKey="lastActiveAt" sort={sort} onSort={onSort} />
             <SortHeader
+              label="Intentos · 24 horas"
+              sortKey="attempts.hours24"
+              sort={sort}
+              onSort={onSort}
+            />
+            <SortHeader
+              label="Intentos · 3 días"
+              sortKey="attempts.days3"
+              sort={sort}
+              onSort={onSort}
+            />
+            <SortHeader
+              label="Intentos · 7 días"
+              sortKey="attempts.days7"
+              sort={sort}
+              onSort={onSort}
+            />
+            <SortHeader
               label="Bedrock · 24 horas (USD)"
-              sortKey="hours24"
+              sortKey="bedrockCostUsd.hours24"
               sort={sort}
               onSort={onSort}
             />
             <SortHeader
               label="Bedrock · 3 días (USD)"
-              sortKey="days3"
+              sortKey="bedrockCostUsd.days3"
               sort={sort}
               onSort={onSort}
             />
             <SortHeader
               label="Bedrock · 7 días (USD)"
-              sortKey="days7"
+              sortKey="bedrockCostUsd.days7"
               sort={sort}
               onSort={onSort}
             />
+            <SortHeader label="Puntaje máximo" sortKey="maxScore" sort={sort} onSort={onSort} />
           </tr>
         </thead>
         <tbody>
@@ -273,9 +319,13 @@ function UserTable({
               </th>
               <td>{formatDate(user.registeredAt)}</td>
               <td>{formatDate(user.lastActiveAt)}</td>
+              <td>{formatMetric(user.attempts.hours24)}</td>
+              <td>{formatMetric(user.attempts.days3)}</td>
+              <td>{formatMetric(user.attempts.days7)}</td>
               <td>{formatMetric(user.bedrockCostUsd.hours24, true)}</td>
               <td>{formatMetric(user.bedrockCostUsd.days3, true)}</td>
               <td>{formatMetric(user.bedrockCostUsd.days7, true)}</td>
+              <td>{formatScore(user.maxScore)}</td>
             </tr>
           ))}
         </tbody>

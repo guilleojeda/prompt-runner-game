@@ -10,18 +10,22 @@ type User = {
   email: string;
   registeredAt: string;
   lastActiveAt: string;
+  attempts: Periods;
   bedrockCostUsd: Periods;
+  maxScore: number | 'N/A';
 };
 
 const timestamp = '2026-10-15T12:00:00.000Z';
 
-function user(id: string, email: string, hours24: number): User {
+function user(id: string, email: string, attempts: Periods, maxScore: number | 'N/A'): User {
   return {
     id,
     email,
     registeredAt: timestamp,
     lastActiveAt: 'N/A',
-    bedrockCostUsd: { hours24, days3: 'N/A', days7: 'N/A' },
+    attempts,
+    bedrockCostUsd: { hours24: 'N/A', days3: 'N/A', days7: 'N/A' },
+    maxScore,
   };
 }
 
@@ -55,16 +59,20 @@ afterEach(() => {
 });
 
 describe('monitoring dashboard sort preference', () => {
-  it('keeps the selected column and direction while refreshed data replaces the previous snapshot', async () => {
+  it('keeps the selected attempt sort through a failed refresh and retry with new metrics', async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(
-        response([user('alpha', 'alpha@example.com', 2), user('zeta', 'zeta@example.com', 10)]),
+        response([
+          user('alpha', 'alpha@example.com', { hours24: 2, days3: 3, days7: 4 }, 1.25),
+          user('zeta', 'zeta@example.com', { hours24: 10, days3: 11, days7: 12 }, 2.5),
+        ]),
       )
+      .mockResolvedValueOnce(new Response('unavailable', { status: 503 }))
       .mockResolvedValueOnce(
         response([
-          user('alpha-new', 'alpha@example.com', 10),
-          user('zeta-new', 'zeta@example.com', 2),
+          user('alpha-new', 'alpha@example.com', { hours24: 9, days3: 8, days7: 7 }, 3.75),
+          user('zeta-new', 'zeta@example.com', { hours24: 1, days3: 5, days7: 6 }, -2.5),
         ]),
       );
     vi.stubGlobal('fetch', fetchMock);
@@ -72,19 +80,35 @@ describe('monitoring dashboard sort preference', () => {
     render(<App />);
     expect(await screen.findByText('alpha@example.com')).toBeTruthy();
 
-    const costHeader = screen.getByRole('columnheader', { name: /Bedrock.*24 horas/i });
-    fireEvent.click(within(costHeader).getByRole('button'));
-    expect(costHeader.getAttribute('aria-sort')).toBe('ascending');
+    const attemptsHeader = screen.getByRole('columnheader', { name: /Intentos.*24/i });
+    fireEvent.click(within(attemptsHeader).getByRole('button'));
+    expect(attemptsHeader.getAttribute('aria-sort')).toBe('ascending');
     expect(visibleEmails()).toEqual(['alpha@example.com', 'zeta@example.com']);
 
     fireEvent.click(screen.getByRole('button', { name: 'Actualizar' }));
     expect(screen.getByText('Cargando datos')).toBeTruthy();
     expect(screen.queryByText('alpha@example.com')).toBeNull();
+    expect(
+      await screen.findByText('No se pudieron traer los datos. Volvé a intentar'),
+    ).toBeTruthy();
+    expect(screen.queryByRole('table')).toBeNull();
+    const retry = screen.getByRole('button', { name: 'Actualizar' });
+    expect((retry as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(retry);
+    expect(screen.getByText('Cargando datos')).toBeTruthy();
 
     expect(await screen.findByText('zeta@example.com')).toBeTruthy();
-    const refreshedCostHeader = screen.getByRole('columnheader', { name: /Bedrock.*24 horas/i });
-    expect(refreshedCostHeader.getAttribute('aria-sort')).toBe('ascending');
+    const refreshedAttemptsHeader = screen.getByRole('columnheader', { name: /Intentos.*24/i });
+    expect(refreshedAttemptsHeader.getAttribute('aria-sort')).toBe('ascending');
     expect(visibleEmails()).toEqual(['zeta@example.com', 'alpha@example.com']);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const zetaRow = within(screen.getByRole('table')).getByRole('row', {
+      name: /zeta@example\.com/,
+    });
+    const zetaCells = within(zetaRow).getAllByRole('cell');
+    expect(zetaCells[2]?.textContent).toBe('1');
+    expect(zetaCells[3]?.textContent).toBe('5');
+    expect(zetaCells[4]?.textContent).toBe('6');
+    expect(zetaCells[8]?.textContent).toContain('-2,5');
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 });

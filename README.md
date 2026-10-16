@@ -39,7 +39,7 @@ Una recarga conserva la sesión en la misma pestaña. Si ya no hay una sesión v
 
 ## Monitor administrativo
 
-El [dashboard privado](docs/intent/monitoreo.md) usa un stack propio `PromptRunnerMonitoring`. Muestra registrados y nuevos con email confirmado, más una tabla ordenable de cuentas y fechas. Actividad y gasto de Bedrock muestran `N/A` porque las fuentes disponibles no sostienen esos datos. Se consulta al entrar, recargar y pulsar Actualizar, sin actualización automática.
+El [dashboard privado](docs/intent/monitoreo.md) usa un stack propio `PromptRunnerMonitoring`. Muestra registrados y nuevos con email confirmado, intentos usados por usuario en 24 horas/3 días/7 días y puntaje máximo, en una tabla de diez columnas ordenables. Actividad y gasto de Bedrock muestran `N/A` porque las fuentes disponibles no sostienen esos datos. Se consulta al entrar, recargar y pulsar Actualizar, sin actualización automática.
 
 La URL se obtiene del output `MonitoringUrl` de ese stack. El acceso usa el usuario `monitor` y la contraseña configurada por el operador; su preparación y rotación están en [acceso y entrega](docs/architecture/acceso-y-entrega.md#monitor-administrativo). Los secretos no forman parte del build web.
 
@@ -88,7 +88,7 @@ La especificación vigente se organiza por responsabilidad. Incluye las decision
 | [Contrato del agente](docs/intent/agente.md) | Información permitida, herramientas, instrucciones y configuración. |
 | [Intentos y reproducción](docs/intent/intentos.md) | Ejecución, registro, persistencia y animación fiel. |
 | [Consumo y puntuación](docs/intent/consumo-y-puntaje.md) | Tokens reales, costo, fórmula de puntos y comparación de resultados. |
-| [Monitoreo administrativo](docs/intent/monitoreo.md) | Inventario confirmado, ventanas móviles, datos ausentes y actualización manual. |
+| [Monitoreo administrativo](docs/intent/monitoreo.md) | Inventario confirmado, intentos usados, puntaje máximo, ventanas móviles, datos ausentes y actualización manual. |
 | [Plataforma y operación](docs/intent/plataforma.md) | Cuentas, cuota, capacidad, tecnologías, AWS y entrega automática. |
 
 Cada documento describe el comportamiento vigente y señala por separado las capacidades de fases posteriores. Los detalles técnicos pendientes no son decisiones aprobadas por aparecer enumerados.
