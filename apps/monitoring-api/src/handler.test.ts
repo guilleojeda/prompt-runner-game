@@ -133,7 +133,7 @@ describe('monitoring metrics handler', () => {
     const body = responseBody(response);
     expect(body.registeredUsers).toBe(6);
     expect(body.newUsers).toEqual({ hours24: 2, days3: 3, days7: 4 });
-    expect(body.activeUsers).toEqual(periodValues('N/A'));
+    expect(body.activeUsers).toEqual(periodValues(0));
     expect(body.bedrockCostUsd).toEqual(periodValues(0));
     expect(body.asOf).toBe(cutoff.toISOString());
     const generatedAt = Date.parse(String(body.generatedAt));
@@ -244,7 +244,7 @@ describe('monitoring metrics handler', () => {
     ).toMatchObject({ registeredAt: cutoff.toISOString() });
   });
 
-  it('returns zero costs for an empty scan while login activity remains unknown', async () => {
+  it('returns zero costs and zero login activity for an empty scan', async () => {
     const send = vi.fn(async (): Promise<UserPage> => ({ Users: [] }));
 
     const response = await handleRequest(eventFor(), dependencies(send));
@@ -253,7 +253,7 @@ describe('monitoring metrics handler', () => {
     expect(responseBody(response)).toMatchObject({
       registeredUsers: 0,
       newUsers: periodValues(0),
-      activeUsers: periodValues('N/A'),
+      activeUsers: periodValues(0),
       bedrockCostUsd: periodValues(0),
       users: [],
     });
@@ -270,6 +270,7 @@ describe('monitoring metrics handler', () => {
     const body = responseBody(response);
     expect(body.registeredUsers).toBe(1);
     expect(body.newUsers).toEqual(periodValues('N/A'));
+    expect(body.activeUsers).toEqual(periodValues(0));
     expect((body.users as Array<Record<string, unknown>>)[0]).toMatchObject({
       email: 'date-missing@example.com',
       registeredAt: 'N/A',

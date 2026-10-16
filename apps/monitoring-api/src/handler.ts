@@ -75,6 +75,11 @@ interface ScannedCall {
   readonly budget: unknown;
 }
 
+interface ActivityMetrics {
+  readonly activeUsers: MetricPeriods;
+  readonly lastActiveByUser: ReadonlyMap<string, string>;
+}
+
 type CostMicrosByPeriod = Record<keyof MetricPeriods, bigint>;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -301,9 +306,14 @@ const physicalKeyFor = (partition: string, sort: string): string =>
 
 const scanMetadata = async (
   dependencies: MonitoringHandlerDependencies,
-): Promise<{ headers: ScannedHeader[]; calls: ScannedCall[] }> => {
+): Promise<{
+  headers: ScannedHeader[];
+  calls: ScannedCall[];
+  activityByUser: Map<string, number>;
+}> => {
   const headers = new Map<string, ScannedHeader>();
   const calls = new Map<string, ScannedCall>();
+  const activityByUser = new Map<string, number>();
   const visitedTokens = new Set<string>();
   let exclusiveStartKey: Record<string, AttributeValue> | undefined;
 
@@ -313,9 +323,9 @@ const scanMetadata = async (
         TableName: dependencies.tableName,
         ConsistentRead: true,
         FilterExpression:
-          '(begins_with(#pk, :userPrefix) AND begins_with(#sk, :attemptPrefix)) OR (begins_with(#pk, :attemptPrefix) AND begins_with(#sk, :callPrefix))',
+          '(begins_with(#pk, :userPrefix) AND begins_with(#sk, :attemptPrefix)) OR (begins_with(#pk, :attemptPrefix) AND begins_with(#sk, :callPrefix)) OR (begins_with(#pk, :userPrefix) AND #sk = :activitySortKey)',
         ProjectionExpression:
-          '#pk, #sk, #createdAt, #score, #usage.#inputTokens, #usage.#outputTokens, #usage.#cacheReadTokens, #usage.#cacheWriteTokens, #budget.#rates',
+          '#pk, #sk, #createdAt, #score, #usage.#inputTokens, #usage.#outputTokens, #usage.#cacheReadTokens, #usage.#cacheWriteTokens, #budget.#rates, #lastLoginAt',
         ExpressionAttributeNames: {
           '#pk': 'PK',
           '#sk': 'SK',
@@ -328,11 +338,13 @@ const scanMetadata = async (
           '#cacheWriteTokens': 'cacheWriteTokens',
           '#budget': 'budget',
           '#rates': 'rates',
+          '#lastLoginAt': 'lastLoginAt',
         },
         ExpressionAttributeValues: {
           ':userPrefix': { S: 'USER#' },
           ':attemptPrefix': { S: 'ATTEMPT#' },
           ':callPrefix': { S: 'CALL#' },
+          ':activitySortKey': { S: 'ACTIVITY' },
         },
         ...(exclusiveStartKey === undefined ? {} : { ExclusiveStartKey: exclusiveStartKey }),
       }),
@@ -349,7 +361,17 @@ const scanMetadata = async (
       const sort = readStringValue(item.SK);
       if (partition === undefined || sort === undefined) throw new IncompleteScanError();
 
-      if (partition.startsWith('USER#') && sort.startsWith('ATTEMPT#')) {
+      if (partition.startsWith('USER#') && sort === 'ACTIVITY') {
+        const ownerId = partition.slice('USER#'.length);
+        const lastLoginAt = readStringValue(item.lastLoginAt);
+        const lastLoginAtMs = lastLoginAt === undefined ? undefined : timestampFromIso(lastLoginAt);
+        if (ownerId && lastLoginAtMs !== undefined) {
+          const knownLastLoginAtMs = activityByUser.get(ownerId);
+          if (knownLastLoginAtMs === undefined || lastLoginAtMs > knownLastLoginAtMs) {
+            activityByUser.set(ownerId, lastLoginAtMs);
+          }
+        }
+      } else if (partition.startsWith('USER#') && sort.startsWith('ATTEMPT#')) {
         const ownerId = partition.slice('USER#'.length);
         const attemptId = sort.slice('ATTEMPT#'.length);
         if (!ownerId || !attemptId) throw new IncompleteScanError();
@@ -381,7 +403,7 @@ const scanMetadata = async (
     exclusiveStartKey = nextKey;
   }
 
-  return { headers: [...headers.values()], calls: [...calls.values()] };
+  return { headers: [...headers.values()], calls: [...calls.values()], activityByUser };
 };
 
 const attemptMetricsForHeaders = (
@@ -485,6 +507,31 @@ const newUserCount = (
   }, 0);
 };
 
+const activityMetricsForUsers = (
+  users: readonly ConfirmedUser[],
+  activityByUser: ReadonlyMap<string, number>,
+  asOfMs: number,
+): ActivityMetrics => {
+  const activeUsers = { hours24: 0, days3: 0, days7: 0 };
+  const lastActiveByUser = new Map<string, string>();
+
+  for (const user of users) {
+    const lastLoginAtMs = activityByUser.get(user.id);
+    if (lastLoginAtMs === undefined) {
+      lastActiveByUser.set(user.id, 'N/A');
+      continue;
+    }
+
+    lastActiveByUser.set(user.id, new Date(lastLoginAtMs).toISOString());
+    if (lastLoginAtMs > asOfMs) continue;
+    if (lastLoginAtMs >= asOfMs - WINDOWS.hours24) activeUsers.hours24 += 1;
+    if (lastLoginAtMs >= asOfMs - WINDOWS.days3) activeUsers.days3 += 1;
+    if (lastLoginAtMs >= asOfMs - WINDOWS.days7) activeUsers.days7 += 1;
+  }
+
+  return { activeUsers, lastActiveByUser };
+};
+
 const snapshotFor = async (
   dependencies: MonitoringHandlerDependencies,
 ): Promise<MonitoringSnapshot> => {
@@ -494,7 +541,7 @@ const snapshotFor = async (
   if (!Number.isFinite(asOfMs)) throw new IncompleteInventoryError();
 
   const users = await confirmedUsers(dependencies.cognito, dependencies.userPoolId);
-  const { headers, calls } = await scanMetadata(dependencies);
+  const { headers, calls, activityByUser } = await scanMetadata(dependencies);
   const completedAt = clock().getTime();
   if (!Number.isFinite(completedAt)) throw new IncompleteInventoryError();
 
@@ -511,6 +558,7 @@ const snapshotFor = async (
     ]),
   );
   const costs = costPeriodsForCalls(users, headers, calls, asOfMs);
+  const activity = activityMetricsForUsers(users, activityByUser, asOfMs);
 
   const newUsers: MetricPeriods = {
     hours24: newUserCount(users, asOfMs, WINDOWS.hours24),
@@ -528,7 +576,7 @@ const snapshotFor = async (
       email: user.email,
       registeredAt:
         user.createdAtMs === undefined ? 'N/A' : new Date(user.createdAtMs).toISOString(),
-      lastActiveAt: 'N/A',
+      lastActiveAt: activity.lastActiveByUser.get(user.id) ?? 'N/A',
       attempts: attempts.attempts,
       bedrockCostUsd,
       maxScore: attempts.maxScore,
@@ -540,7 +588,7 @@ const snapshotFor = async (
     generatedAt: new Date(Math.max(asOfMs, completedAt)).toISOString(),
     registeredUsers: users.length,
     newUsers,
-    activeUsers: UNKNOWN_PERIODS(),
+    activeUsers: activity.activeUsers,
     bedrockCostUsd: costs.total,
     users: rows,
   };

@@ -3,6 +3,7 @@ import type {
   APIGatewayProxyHandlerV2,
   APIGatewayProxyStructuredResultV2,
 } from 'aws-lambda';
+import { authTimeToIsoTimestamp, recordLoginActivity } from './activity.js';
 import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import {
   DraftConflictError,
@@ -54,6 +55,7 @@ const ATTEMPT_UNAVAILABLE_MESSAGE =
 
 interface Identity {
   readonly sub: string;
+  readonly authTime: unknown;
 }
 
 interface HandlerDependencies {
@@ -207,7 +209,7 @@ const verifyIdentity = async (
   if (emailVerified !== true && emailVerified !== 'true') {
     throw new ApiError(403, 'forbidden', 'La cuenta todavía no está verificada.');
   }
-  return { sub };
+  return { sub, authTime: claims.auth_time };
 };
 
 const requestPath = (event: APIGatewayProxyEventV2): string =>
@@ -625,6 +627,20 @@ export const handleRequest = async (
     }
     const draftStore = dependencies.store ?? createDynamoDraftStore();
     if (isDraft && method === 'GET') {
+      const lastLoginAt = authTimeToIsoTimestamp(identity.authTime);
+      if (lastLoginAt !== undefined) {
+        try {
+          await recordLoginActivity(identity.sub, lastLoginAt);
+        } catch (error) {
+          console.error(
+            JSON.stringify({
+              component: 'login-activity',
+              requestId: event.requestContext.requestId ?? 'unknown',
+              code: error instanceof Error ? error.name : 'unknown',
+            }),
+          );
+        }
+      }
       return respond(event, 200, 'ok', await draftStore.get(identity.sub));
     }
     if (isDraft && method === 'PUT') {
