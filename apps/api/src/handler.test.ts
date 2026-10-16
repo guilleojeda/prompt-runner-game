@@ -1,7 +1,7 @@
 import { type DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { marshall } from '@aws-sdk/util-dynamodb';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   MAX_INSTRUCTIONS_CHARACTERS,
   MAX_SKILL_DESCRIPTION_CHARACTERS,
@@ -9,6 +9,10 @@ import {
   type DraftSnapshot,
 } from '../../../shared/robot';
 import type { PersistedAttempt } from '../../../shared/server/attempt.js';
+import {
+  captureLambdaStdout,
+  parseLambdaRecords,
+} from '../../../shared/testing/lambda-telemetry.js';
 import {
   DraftConflictError,
   DraftStorageError,
@@ -22,6 +26,16 @@ import {
   MemoryAttemptStore,
   type AttemptStore,
 } from './attempt-store';
+
+let lambdaStdout: ReturnType<typeof captureLambdaStdout>;
+
+beforeEach(() => {
+  lambdaStdout = captureLambdaStdout();
+});
+
+afterEach(() => {
+  if (vi.isMockFunction(process.stdout.write)) lambdaStdout.mockRestore();
+});
 import {
   SavedRobotConflictError,
   SavedRobotLimitError,
@@ -551,7 +565,6 @@ describe('draft API handler', () => {
   );
 
   it('logs only safe result metadata for success, conflict, dependency, and internal outcomes', async () => {
-    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     try {
       const success: DraftStore = {
         get: vi.fn().mockResolvedValue({ version: 0, draft: createDefaultDraft() }),
@@ -594,21 +607,31 @@ describe('draft API handler', () => {
       };
       await handleRequest(eventFor('GET'), dependencies(internal));
 
-      const records = log.mock.calls.map(
-        ([line]) => JSON.parse(String(line)) as Record<string, unknown>,
-      );
+      const records = parseLambdaRecords(lambdaStdout.mock.calls);
       expect(records.slice(-5)).toEqual([
-        { requestId: 'request', method: 'GET', status: 200, code: 'ok' },
-        { requestId: 'request', method: 'PUT', status: 409, code: 'conflict' },
-        { requestId: 'request', method: 'GET', status: 503, code: 'dependency_unavailable' },
-        { requestId: 'request', method: 'GET', status: 503, code: 'dependency_unavailable' },
-        { requestId: 'request', method: 'GET', status: 500, code: 'internal' },
+        { requestId: 'request', method: 'GET', status: 200, code: 'ok', level: 'INFO' },
+        { requestId: 'request', method: 'PUT', status: 409, code: 'conflict', level: 'INFO' },
+        {
+          requestId: 'request',
+          method: 'GET',
+          status: 503,
+          code: 'dependency_unavailable',
+          level: 'INFO',
+        },
+        {
+          requestId: 'request',
+          method: 'GET',
+          status: 503,
+          code: 'dependency_unavailable',
+          level: 'INFO',
+        },
+        { requestId: 'request', method: 'GET', status: 500, code: 'internal', level: 'INFO' },
       ]);
       expect(JSON.stringify(records)).not.toContain('access-token');
       expect(JSON.stringify(records)).not.toContain('provider secret body');
       expect(JSON.stringify(records)).not.toContain('private prompt body');
     } finally {
-      log.mockRestore();
+      if (vi.isMockFunction(process.stdout.write)) lambdaStdout.mockRestore();
     }
   });
 });

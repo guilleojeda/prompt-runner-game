@@ -12,7 +12,11 @@ import type {
 } from 'aws-lambda';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { handler } from './index.js';
-import { parseConsoleRecords, spanFor } from '../../../shared/testing/lambda-telemetry.js';
+import {
+  captureLambdaStdout,
+  parseLambdaRecords,
+  spanFor,
+} from '../../../shared/testing/lambda-telemetry.js';
 
 const lambdaHandler = handler as unknown as (
   event: APIGatewayProxyEventV2,
@@ -95,8 +99,9 @@ describe('game API Lambda telemetry context', () => {
     send
       .mockResolvedValueOnce({} as never)
       .mockRejectedValueOnce(new Error('private dependency sentinel'));
-    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
-    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const stdout = captureLambdaStdout();
+    const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     let activeSpan: ReturnType<typeof spanFor> | undefined = spanFor(
       '11111111111111111111111111111111',
       '1111111111111111',
@@ -121,7 +126,9 @@ describe('game API Lambda telemetry context', () => {
       code: 'dependency_unavailable',
     });
 
-    const records = parseConsoleRecords(log.mock.calls, error.mock.calls);
+    const records = parseLambdaRecords(stdout.mock.calls);
+    expect(consoleLog).not.toHaveBeenCalled();
+    expect(consoleError).not.toHaveBeenCalled();
     expect(records.length).toBeGreaterThanOrEqual(2);
     for (const record of records) {
       expect(record).toHaveProperty('lambdaRequestId');
@@ -171,8 +178,9 @@ describe('game API Lambda telemetry context', () => {
       ),
     );
     vi.spyOn(DynamoDBClient.prototype, 'send').mockResolvedValue({} as never);
-    vi.spyOn(console, 'log').mockImplementation(() => undefined);
-    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const stdout = captureLambdaStdout();
+    const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
     const parent = userInfoTracer.startSpan('lambda-invocation', { kind: SpanKind.SERVER });
     const parentContext = parent.spanContext();
@@ -182,6 +190,9 @@ describe('game API Lambda telemetry context', () => {
     parent.end();
 
     expect(result.statusCode).toBe(200);
+    expect(parseLambdaRecords(stdout.mock.calls)).toHaveLength(1);
+    expect(consoleLog).not.toHaveBeenCalled();
+    expect(consoleError).not.toHaveBeenCalled();
     const clientSpans = userInfoExporter
       .getFinishedSpans()
       .filter((span) => span.kind === SpanKind.CLIENT);

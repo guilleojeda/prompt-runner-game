@@ -1,6 +1,7 @@
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createDefaultDraft, type SavedRobot, type SavedRobotSummary } from '../../../shared/robot';
+import { captureLambdaStdout } from '../../../shared/testing/lambda-telemetry.js';
 import { handleRequest } from './handler';
 import {
   SavedRobotConflictError,
@@ -8,6 +9,16 @@ import {
   SavedRobotIncompatibleError,
   type SavedRobotStore,
 } from './saved-robots';
+
+let lambdaStdout: ReturnType<typeof captureLambdaStdout>;
+
+beforeEach(() => {
+  lambdaStdout = captureLambdaStdout();
+});
+
+afterEach(() => {
+  lambdaStdout.mockRestore();
+});
 
 const identity = {
   sub: 'user-a',

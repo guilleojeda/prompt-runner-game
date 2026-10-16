@@ -41,10 +41,11 @@ export const logLambdaRecord = (level: LogLevel, record: Record<string, LogValue
   const context = invocationContext.getStore();
   const value = {
     ...record,
+    level: level === 'error' ? 'ERROR' : 'INFO',
     ...(context?.lambdaRequestId === undefined ? {} : { lambdaRequestId: context.lambdaRequestId }),
     ...(context?.trace_id === undefined ? {} : { trace_id: context.trace_id }),
   };
-  console[level](JSON.stringify(value));
+  process.stdout.write(`${JSON.stringify(value)}\n`);
 };
 
 export const withLambdaTelemetry = async <Result>(

@@ -1,9 +1,20 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { createDefaultDraft, validateDraft } from '../../../shared/robot';
+import { captureLambdaStdout } from '../../../shared/testing/lambda-telemetry.js';
 import * as attemptStoreModule from './attempt-store';
 import { AttemptStoreError, MemoryAttemptStore } from './attempt-store';
 import { handleRequest } from './handler';
+
+let lambdaStdout: ReturnType<typeof captureLambdaStdout>;
+
+beforeEach(() => {
+  lambdaStdout = captureLambdaStdout();
+});
+
+afterEach(() => {
+  lambdaStdout.mockRestore();
+});
 
 const eventFor = (
   method: 'GET' | 'POST' | 'PUT',

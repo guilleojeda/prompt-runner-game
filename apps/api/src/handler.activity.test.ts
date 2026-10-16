@@ -7,6 +7,7 @@ import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createDefaultDraft } from '../../../shared/robot';
+import { captureLambdaStdout } from '../../../shared/testing/lambda-telemetry.js';
 import type { DraftStore } from './draft';
 import { handleRequest } from './handler';
 import type { SavedRobotStore } from './saved-robots';
@@ -225,6 +226,7 @@ const expectSuccessfulDraftRead = (
 let dynamo: ApiDynamoSpy;
 
 beforeEach(() => {
+  captureLambdaStdout();
   vi.stubEnv('DRAFT_TABLE_NAME', TABLE);
   vi.stubEnv('COGNITO_CLIENT_ID', 'client-1');
   vi.stubEnv('COGNITO_USERINFO_URL', 'https://cognito.example.test/userinfo');

@@ -8,7 +8,11 @@ import type {
 } from 'aws-lambda';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { handler } from './index.js';
-import { parseConsoleRecords, spanFor } from '../../../shared/testing/lambda-telemetry.js';
+import {
+  captureLambdaStdout,
+  parseLambdaRecords,
+  spanFor,
+} from '../../../shared/testing/lambda-telemetry.js';
 
 const lambdaHandler = handler as unknown as (
   event: APIGatewayProxyEventV2,
@@ -61,8 +65,9 @@ describe('monitoring API Lambda telemetry context', () => {
       .mockResolvedValueOnce({ Users: [] } as never)
       .mockRejectedValueOnce(new Error('private monitoring dependency sentinel'));
     vi.spyOn(DynamoDBClient.prototype, 'send').mockResolvedValue({ Items: [] } as never);
-    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
-    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const stdout = captureLambdaStdout();
+    const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     let activeSpan: ReturnType<typeof spanFor> | undefined = spanFor(
       '33333333333333333333333333333333',
       '3333333333333333',
@@ -92,7 +97,9 @@ describe('monitoring API Lambda telemetry context', () => {
       message: 'No se pudieron consultar las métricas.',
     });
 
-    const records = parseConsoleRecords(log.mock.calls, error.mock.calls);
+    const records = parseLambdaRecords(stdout.mock.calls);
+    expect(consoleLog).not.toHaveBeenCalled();
+    expect(consoleError).not.toHaveBeenCalled();
     expect(records.length).toBeGreaterThanOrEqual(2);
     for (const record of records) {
       expect(record).toHaveProperty('lambdaRequestId');

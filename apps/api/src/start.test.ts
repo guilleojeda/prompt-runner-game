@@ -3,7 +3,11 @@ import { trace } from '@opentelemetry/api';
 import type { Context } from 'aws-lambda';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { handler, type StarterEvent } from './start.js';
-import { parseConsoleRecords, spanFor } from '../../../shared/testing/lambda-telemetry.js';
+import {
+  captureLambdaStdout,
+  parseLambdaRecords,
+  spanFor,
+} from '../../../shared/testing/lambda-telemetry.js';
 
 const closeExpired = vi.hoisted(() => vi.fn());
 
@@ -43,8 +47,9 @@ describe('attempt starter Lambda telemetry context', () => {
       response: undefined,
       $metadata: { requestId: 'agentcore-request-1' },
     } as never);
-    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
-    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const stdout = captureLambdaStdout();
+    const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     let activeSpan: ReturnType<typeof spanFor> | undefined = spanFor(
       '55555555555555555555555555555555',
       '5555555555555555',
@@ -76,7 +81,9 @@ describe('attempt starter Lambda telemetry context', () => {
     expect((rejection as Error).stack).not.toContain('private dependency sentinel');
     expect((rejection as Error & { cause?: unknown }).cause).toBeUndefined();
 
-    const records = parseConsoleRecords(log.mock.calls, error.mock.calls);
+    const records = parseLambdaRecords(stdout.mock.calls);
+    expect(consoleLog).not.toHaveBeenCalled();
+    expect(consoleError).not.toHaveBeenCalled();
     expect(records.length).toBeGreaterThanOrEqual(4);
     for (const record of records) {
       expect(record).toHaveProperty('lambdaRequestId');
