@@ -14,6 +14,7 @@ import {
 } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import { cloudFrontBasicAuthCode, validateMonitoringAuthVerifier } from './monitoring-auth.js';
+import { lambdaTelemetryOptions } from './lambda-telemetry.js';
 import {
   MONITORING_ASSET_DEPLOYMENT_FUNCTION_NAME,
   MONITORING_ASSET_DEPLOYMENT_LOG_GROUP_NAME,
@@ -121,10 +122,10 @@ export class PromptRunnerMonitoringStack extends cdk.Stack {
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.resolve(__dirname, '../../apps/monitoring-api/dist')),
       role: metricsRole,
-      environment: {
+      ...lambdaTelemetryOptions(this, 'MetricsTelemetryLayer', {
         COGNITO_USER_POOL_ID: props.userPool.userPoolId,
         DRAFT_TABLE_NAME: props.draftTable.tableName,
-      },
+      }),
       timeout: cdk.Duration.seconds(15),
       logGroup: metricsLogGroup,
     });

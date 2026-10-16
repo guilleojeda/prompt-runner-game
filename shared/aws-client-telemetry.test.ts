@@ -105,6 +105,7 @@ describe('AWS SDK client telemetry', () => {
     });
     expect(operationMetadata).toContain('DynamoDB');
     expect(operationMetadata).toContain('GetItem');
+    expect(spans[0]?.attributes['http.response.status_code']).toBe(200);
     expect(serializedTelemetry(spans[0]!)).not.toMatch(
       /PRIVATE_TABLE_SENTINEL|PRIVATE_INPUT_SENTINEL|PRIVATE_OUTPUT_SENTINEL/u,
     );

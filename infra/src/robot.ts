@@ -12,6 +12,7 @@ import {
 } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import { AuthenticationResources, LOCAL_CALLBACK_ORIGIN, ROBOT_SCOPE } from './auth.js';
+import { lambdaTelemetryOptions } from './lambda-telemetry.js';
 import { executionLimitEnvironment, type PrivateLimits } from './private-limits.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -94,14 +95,14 @@ export function createRobotResources(scope: Construct, props: RobotResourcesProp
     handler: 'index.handler',
     code: lambda.Code.fromAsset(path.resolve(__dirname, '../../apps/api/dist')),
     role: executionRole,
-    environment: {
+    ...lambdaTelemetryOptions(scope, 'DraftApiTelemetryLayer', {
       DRAFT_TABLE_NAME: draftTable.tableName,
       COGNITO_CLIENT_ID: props.authentication.userPoolClient.ref,
       COGNITO_USERINFO_URL: `${props.authentication.config.domain}/oauth2/userInfo`,
       STARTER_FUNCTION_NAME: STARTER_LAMBDA_NAME,
       SAVED_ROBOTS_LIMIT: props.limits.savedRobots,
       ...executionLimitEnvironment(props.limits),
-    },
+    }),
     timeout: cdk.Duration.seconds(15),
     logGroup,
   });

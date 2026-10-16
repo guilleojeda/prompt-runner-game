@@ -1,11 +1,16 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { trace } from '@opentelemetry/api';
+import { context, SpanKind, trace } from '@opentelemetry/api';
+import {
+  InMemorySpanExporter,
+  NodeTracerProvider,
+  SimpleSpanProcessor,
+} from '@opentelemetry/sdk-trace-node';
 import type {
   APIGatewayProxyEventV2,
   APIGatewayProxyStructuredResultV2,
   Context,
 } from 'aws-lambda';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { handler } from './index.js';
 import { parseConsoleRecords, spanFor } from '../../../shared/testing/lambda-telemetry.js';
 
@@ -53,12 +58,23 @@ const eventFor = (requestId: string): APIGatewayProxyEventV2 =>
 const lambdaContext = (awsRequestId: string): Context =>
   ({ awsRequestId, functionName: 'prompt-runner-game-draft-api' }) as unknown as Context;
 
+const userInfoExporter = new InMemorySpanExporter();
+const userInfoProvider = new NodeTracerProvider({
+  spanProcessors: [new SimpleSpanProcessor(userInfoExporter)],
+});
+const userInfoTracer = userInfoProvider.getTracer('prompt-runner-game-userinfo-tests');
+
 describe('game API Lambda telemetry context', () => {
+  beforeAll(() => userInfoProvider.register());
+
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
+    userInfoExporter.reset();
   });
+
+  afterAll(async () => userInfoProvider.shutdown());
 
   it('correlates sampled and unsampled outcomes across sequential invocations without changing responses', async () => {
     vi.stubEnv('COGNITO_CLIENT_ID', 'client-1');
@@ -135,5 +151,60 @@ describe('game API Lambda telemetry context', () => {
     );
     expect(JSON.stringify(records)).not.toContain('private-access-token');
     expect(JSON.stringify(records)).not.toContain('private dependency sentinel');
+  });
+
+  it('exports a bounded Cognito UserInfo CLIENT span under the Lambda handler span', async () => {
+    vi.stubEnv('COGNITO_CLIENT_ID', 'client-1');
+    vi.stubEnv(
+      'COGNITO_USERINFO_URL',
+      'https://identity.example.test/oauth2/userInfo?private=query',
+    );
+    vi.stubEnv('DRAFT_TABLE_NAME', 'runner-draft-table');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ sub: 'user-a', email_verified: true }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+      ),
+    );
+    vi.spyOn(DynamoDBClient.prototype, 'send').mockResolvedValue({} as never);
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const parent = userInfoTracer.startSpan('lambda-invocation', { kind: SpanKind.SERVER });
+    const parentContext = parent.spanContext();
+    const result = await context.with(trace.setSpan(context.active(), parent), () =>
+      lambdaHandler(eventFor('gateway-userinfo-request'), lambdaContext('lambda-userinfo-request')),
+    );
+    parent.end();
+
+    expect(result.statusCode).toBe(200);
+    const clientSpans = userInfoExporter
+      .getFinishedSpans()
+      .filter((span) => span.kind === SpanKind.CLIENT);
+    expect(clientSpans).toHaveLength(1);
+    expect(clientSpans[0]).toMatchObject({
+      name: 'Cognito.UserInfo',
+      parentSpanContext: expect.objectContaining({
+        traceId: parentContext.traceId,
+        spanId: parentContext.spanId,
+      }),
+      attributes: {
+        'rpc.service': 'Cognito',
+        'rpc.method': 'UserInfo',
+        'http.request.method': 'GET',
+        'http.response.status_code': 200,
+      },
+    });
+    const telemetry = JSON.stringify({
+      attributes: clientSpans[0]?.attributes,
+      events: clientSpans[0]?.events,
+    });
+    expect(telemetry).not.toContain('private-access-token');
+    expect(telemetry).not.toContain('private=query');
+    expect(telemetry).not.toContain('url.full');
   });
 });
