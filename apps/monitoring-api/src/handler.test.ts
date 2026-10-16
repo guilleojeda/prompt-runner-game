@@ -23,8 +23,8 @@ type DynamoAttributeValue = {
   [key: string]: unknown;
 };
 type DynamoItem = Record<string, DynamoAttributeValue>;
-type QueryPage = { Items?: DynamoItem[]; LastEvaluatedKey?: DynamoItem };
-type QueryCommandLike = { input: Record<string, unknown> };
+type ScanPage = { Items?: DynamoItem[]; LastEvaluatedKey?: DynamoItem };
+type ScanCommandLike = { input: Record<string, unknown> };
 
 const user = (
   sub: string,
@@ -83,7 +83,7 @@ const periodValues = (value: number | 'N/A') => ({ hours24: value, days3: value,
 const dependencies = (
   send: (command: ListUsersCommandLike) => Promise<UserPage>,
   now = vi.fn(() => new Date(cutoff)),
-  dynamoSend: (command: QueryCommandLike) => Promise<QueryPage> = vi.fn(async () => ({
+  dynamoSend: (command: ScanCommandLike) => Promise<ScanPage> = vi.fn(async () => ({
     Items: [],
   })),
 ) =>
@@ -134,7 +134,7 @@ describe('monitoring metrics handler', () => {
     expect(body.registeredUsers).toBe(6);
     expect(body.newUsers).toEqual({ hours24: 2, days3: 3, days7: 4 });
     expect(body.activeUsers).toEqual(periodValues('N/A'));
-    expect(body.bedrockCostUsd).toEqual(periodValues('N/A'));
+    expect(body.bedrockCostUsd).toEqual(periodValues(0));
     expect(body.asOf).toBe(cutoff.toISOString());
     const generatedAt = Date.parse(String(body.generatedAt));
     expect(Number.isFinite(generatedAt)).toBe(true);
@@ -157,7 +157,7 @@ describe('monitoring metrics handler', () => {
     expect(rows).toHaveLength(6);
     for (const row of rows) {
       expect(row.lastActiveAt).toBe('N/A');
-      expect(row.bedrockCostUsd).toEqual(periodValues('N/A'));
+      expect(row.bedrockCostUsd).toEqual(periodValues(0));
     }
     expect(rows.map((row) => row.email)).toEqual(
       expect.arrayContaining([
@@ -172,7 +172,7 @@ describe('monitoring metrics handler', () => {
     expect(rows.find((row) => row.id === 'at-24h')).toMatchObject({
       id: 'at-24h',
       lastActiveAt: 'N/A',
-      bedrockCostUsd: periodValues('N/A'),
+      bedrockCostUsd: periodValues(0),
     });
     expect(rows.find((row) => row.id === 'at-24h')?.registeredAt).toBe('2026-10-14T12:00:00.000Z');
     expect(rows.find((row) => row.id === 'at-72h')?.registeredAt).toBe('2026-10-12T12:00:00.000Z');
@@ -244,7 +244,7 @@ describe('monitoring metrics handler', () => {
     ).toMatchObject({ registeredAt: cutoff.toISOString() });
   });
 
-  it('keeps valid zero counts separate from unknown login and cost metrics', async () => {
+  it('returns zero costs for an empty scan while login activity remains unknown', async () => {
     const send = vi.fn(async (): Promise<UserPage> => ({ Users: [] }));
 
     const response = await handleRequest(eventFor(), dependencies(send));
@@ -254,7 +254,7 @@ describe('monitoring metrics handler', () => {
       registeredUsers: 0,
       newUsers: periodValues(0),
       activeUsers: periodValues('N/A'),
-      bedrockCostUsd: periodValues('N/A'),
+      bedrockCostUsd: periodValues(0),
       users: [],
     });
   });

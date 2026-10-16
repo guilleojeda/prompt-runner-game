@@ -10,23 +10,22 @@ type AttributeValue = {
   S?: string;
   N?: string;
   NULL?: boolean;
-  [key: string]: unknown;
+  M?: Record<string, AttributeValue>;
 };
 type Item = Record<string, AttributeValue>;
-type QueryPage = { Items?: Item[]; LastEvaluatedKey?: Item };
-type QueryCommandLike = { constructor: { name: string }; input: Record<string, unknown> };
-type ListUsersCommandLike = {
-  input: { UserPoolId?: string; PaginationToken?: string };
+type ScanPage = { Items?: Item[]; LastEvaluatedKey?: Item };
+type ScanCommandLike = { constructor: { name: string }; input: Record<string, unknown> };
+type ListUsersCommandLike = { input: { UserPoolId?: string; PaginationToken?: string } };
+type CognitoUser = {
+  Username: string;
+  Enabled?: boolean;
+  UserCreateDate?: Date;
+  Attributes?: Array<{ Name?: string; Value?: string }>;
 };
-type UserPage = {
-  Users?: Array<{
-    Username: string;
-    Enabled?: boolean;
-    UserCreateDate?: Date;
-    Attributes?: Array<{ Name?: string; Value?: string }>;
-  }>;
-  PaginationToken?: string;
-};
+type UserPage = { Users?: CognitoUser[]; PaginationToken?: string };
+
+const attrS = (value: string): AttributeValue => ({ S: value });
+const attrN = (value: number): AttributeValue => ({ N: String(value) });
 
 const user = (
   sub: string,
@@ -34,7 +33,7 @@ const user = (
   createdAt: string,
   enabled = true,
   emailVerified = 'true',
-) => ({
+): CognitoUser => ({
   Username: sub,
   Enabled: enabled,
   UserCreateDate: new Date(createdAt),
@@ -78,10 +77,7 @@ const responseBody = (response: { body?: string }): Record<string, unknown> =>
 
 const periods = (value: number | 'N/A') => ({ hours24: value, days3: value, days7: value });
 
-const attrS = (value: string): AttributeValue => ({ S: value });
-const attrN = (value: number): AttributeValue => ({ N: String(value) });
-
-const attempt = (
+const header = (
   owner: string,
   id: string,
   options: { createdAt?: string; score?: AttributeValue; status?: string } = {},
@@ -91,19 +87,14 @@ const attempt = (
   ...(options.createdAt === undefined ? {} : { createdAt: attrS(options.createdAt) }),
   ...(options.score === undefined ? {} : { score: options.score }),
   status: attrS(options.status ?? 'admitted'),
-  version: attrN(999),
-  levelId: attrS('retired-level'),
   privateBody: attrS('private-attempt-body'),
 });
 
-const key = (owner: string, sortKey: string): Item => ({
-  PK: attrS(`USER#${owner}`),
-  SK: attrS(sortKey),
-});
+const key = (partition: string, sort: string): Item => ({ PK: attrS(partition), SK: attrS(sort) });
 
 const makeDependencies = (
   cognitoSend: (command: ListUsersCommandLike) => Promise<UserPage>,
-  dynamoSend: (command: QueryCommandLike) => Promise<QueryPage>,
+  dynamoSend: (command: ScanCommandLike) => Promise<ScanPage>,
   now = vi.fn(() => new Date(cutoff)),
 ) =>
   ({
@@ -114,38 +105,22 @@ const makeDependencies = (
     now,
   }) as unknown as Parameters<typeof handleRequest>[1];
 
-const ownerFrom = (command: QueryCommandLike): string => {
-  const values = command.input.ExpressionAttributeValues as Record<string, AttributeValue>;
-  const partition = Object.values(values ?? {}).find(
-    (value) => typeof value.S === 'string' && value.S.startsWith('USER#'),
-  )?.S;
-  if (!partition) throw new Error('La consulta no incluye un propietario USER#.');
-  return partition.slice('USER#'.length);
+const startKeyFrom = (command: ScanCommandLike): Item | undefined =>
+  command.input.ExclusiveStartKey as Item | undefined;
+
+const resolvedExpression = (command: ScanCommandLike, field: string): string => {
+  const aliases = (command.input.ExpressionAttributeNames ?? {}) as Record<string, string>;
+  return String(command.input[field] ?? '').replace(/#[\w]+/gu, (alias) => aliases[alias] ?? alias);
 };
 
-const startKeyFrom = (command: QueryCommandLike): string | undefined =>
-  (command.input.ExclusiveStartKey as Item | undefined)?.SK?.S;
-
-const resolvedProjection = (command: QueryCommandLike): string[] => {
-  const aliases = (command.input.ExpressionAttributeNames ?? {}) as Record<string, string>;
-  const projection = String(command.input.ProjectionExpression ?? '');
-  return projection
+const resolvedProjection = (command: ScanCommandLike): string[] =>
+  resolvedExpression(command, 'ProjectionExpression')
     .split(',')
     .map((part) => part.trim())
-    .filter(Boolean)
-    .map((part) => aliases[part] ?? part);
-};
-
-const resolvedKeyCondition = (command: QueryCommandLike): string => {
-  const aliases = (command.input.ExpressionAttributeNames ?? {}) as Record<string, string>;
-  return String(command.input.KeyConditionExpression ?? '').replace(
-    /#[\w]+/gu,
-    (alias) => aliases[alias] ?? alias,
-  );
-};
+    .filter(Boolean);
 
 describe('monitoring attempts metrics', () => {
-  it('queries every verified owner, paginates through empty pages, and counts all headers on UTC boundaries', async () => {
+  it('scans once across verified owners, continues after an empty page, and preserves attempt windows and scores', async () => {
     const cognitoSend = vi.fn(async ({ input }: ListUsersCommandLike): Promise<UserPage> => {
       if (input.PaginationToken === undefined) {
         return {
@@ -162,108 +137,90 @@ describe('monitoring attempts metrics', () => {
       return { Users: [user('owner-a', 'duplicate@example.com', '2026-10-01T00:00:00.000Z')] };
     });
 
-    const dynamoSend = vi.fn(async (command: QueryCommandLike): Promise<QueryPage> => {
-      const owner = ownerFrom(command);
-      const startKey = startKeyFrom(command);
-      if (owner === 'owner-a') {
-        if (startKey === undefined) {
-          return {
-            Items: [
-              attempt('owner-a', 'at-24h', {
-                createdAt: new Date(cutoff.getTime() - 24 * 60 * 60 * 1_000).toISOString(),
-                score: attrN(-3),
-                status: 'error',
-              }),
-              attempt('owner-a', 'inside-24h', {
-                createdAt: new Date(cutoff.getTime() - 24 * 60 * 60 * 1_000 + 1).toISOString(),
-                score: attrN(-5),
-              }),
-              attempt('owner-a', 'outside-24h', {
-                createdAt: new Date(cutoff.getTime() - 24 * 60 * 60 * 1_000 - 1).toISOString(),
-                score: attrN(-6),
-              }),
-            ],
-            LastEvaluatedKey: key('owner-a', 'ATTEMPT#cursor-1'),
-          };
-        }
-        if (startKey === 'ATTEMPT#cursor-1') {
-          return {
-            Items: [],
-            LastEvaluatedKey: key('owner-a', 'ATTEMPT#cursor-2'),
-          };
-        }
-        if (startKey === 'ATTEMPT#cursor-2') {
-          return {
-            Items: [
-              attempt('owner-a', 'at-72h', {
-                createdAt: new Date(cutoff.getTime() - 72 * 60 * 60 * 1_000).toISOString(),
-                score: attrN(0),
-                status: 'cancelled',
-              }),
-              attempt('owner-a', 'outside-72h', {
-                createdAt: new Date(cutoff.getTime() - 72 * 60 * 60 * 1_000 - 1).toISOString(),
-                score: attrN(-8),
-              }),
-              attempt('owner-a', 'at-168h', {
-                createdAt: new Date(cutoff.getTime() - 168 * 60 * 60 * 1_000).toISOString(),
-                score: attrN(-9),
-              }),
-              attempt('owner-a', 'outside-168h', {
-                createdAt: new Date(cutoff.getTime() - 168 * 60 * 60 * 1_000 - 1).toISOString(),
-                score: attrN(700),
-              }),
-              attempt('owner-a', 'at-cut-offset', {
-                createdAt: '2026-10-15T08:00:00.000-04:00',
-                score: attrN(-1),
-              }),
-              attempt('owner-a', 'future', {
-                createdAt: new Date(cutoff.getTime() + 1).toISOString(),
-                score: attrN(-100),
-              }),
-              attempt('owner-a', 'old-score', {
-                createdAt: '2026-09-01T00:00:00.000Z',
-                score: attrN(800),
-              }),
-            ],
-          };
-        }
-        throw new Error(`Cursor de prueba inesperado: ${startKey}`);
-      }
-      if (owner === 'owner-b') return { Items: [] };
-      if (owner === 'owner-c') {
+    const dynamoSend = vi.fn(async (command: ScanCommandLike): Promise<ScanPage> => {
+      const startKey = startKeyFrom(command)?.SK?.S;
+      if (startKey === undefined) {
         return {
           Items: [
-            attempt('owner-c', 'missing-date', { score: attrN(0) }),
-            attempt('owner-c', 'invalid-date', { createdAt: 'not-a-date', score: attrN(-5) }),
-            attempt('owner-c', 'string-score', {
+            header('owner-a', 'at-24h', {
+              createdAt: new Date(cutoff.getTime() - 24 * 60 * 60 * 1_000).toISOString(),
+              score: attrN(-3),
+              status: 'error',
+            }),
+            header('owner-a', 'inside-24h', {
+              createdAt: new Date(cutoff.getTime() - 24 * 60 * 60 * 1_000 + 1).toISOString(),
+              score: attrN(-5),
+            }),
+            header('owner-a', 'outside-24h', {
+              createdAt: new Date(cutoff.getTime() - 24 * 60 * 60 * 1_000 - 1).toISOString(),
+              score: attrN(-6),
+            }),
+          ],
+          LastEvaluatedKey: key('USER#owner-a', 'ATTEMPT#cursor-1'),
+        };
+      }
+      if (startKey === 'ATTEMPT#cursor-1') {
+        return { Items: [], LastEvaluatedKey: key('USER#owner-a', 'ATTEMPT#cursor-2') };
+      }
+      if (startKey === 'ATTEMPT#cursor-2') {
+        return {
+          Items: [
+            header('owner-a', 'at-72h', {
+              createdAt: new Date(cutoff.getTime() - 72 * 60 * 60 * 1_000).toISOString(),
+              score: attrN(0),
+              status: 'cancelled',
+            }),
+            header('owner-a', 'outside-72h', {
+              createdAt: new Date(cutoff.getTime() - 72 * 60 * 60 * 1_000 - 1).toISOString(),
+              score: attrN(-8),
+            }),
+            header('owner-a', 'at-168h', {
+              createdAt: new Date(cutoff.getTime() - 168 * 60 * 60 * 1_000).toISOString(),
+              score: attrN(-9),
+            }),
+            header('owner-a', 'outside-168h', {
+              createdAt: new Date(cutoff.getTime() - 168 * 60 * 60 * 1_000 - 1).toISOString(),
+              score: attrN(700),
+            }),
+            header('owner-a', 'at-cut-offset', {
+              createdAt: '2026-10-15T08:00:00.000-04:00',
+              score: attrN(-1),
+            }),
+            header('owner-a', 'future', {
+              createdAt: new Date(cutoff.getTime() + 1).toISOString(),
+              score: attrN(-100),
+            }),
+            header('owner-a', 'old-score', {
+              createdAt: '2026-09-01T00:00:00.000Z',
+              score: attrN(800),
+            }),
+            header('owner-c', 'missing-date', { score: attrN(0) }),
+            header('owner-c', 'invalid-date', { createdAt: 'not-a-date', score: attrN(-5) }),
+            header('owner-c', 'string-score', {
               createdAt: '2026-10-15T11:00:00.000Z',
               score: attrS('9999'),
             }),
-            attempt('owner-c', 'null-score', {
-              createdAt: '2026-10-15T10:00:00.000Z',
+            {
+              ...header('owner-c', 'null-score', { createdAt: '2026-10-15T10:00:00.000Z' }),
               score: { NULL: true },
-            }),
-            attempt('owner-c', 'absent-score', {
-              createdAt: '2026-10-15T09:00:00.000Z',
-            }),
-          ],
-        };
-      }
-      if (owner === 'owner-d') {
-        return {
-          Items: [
-            attempt('owner-d', 'negative-1', {
+            },
+            header('owner-c', 'absent-score', { createdAt: '2026-10-15T09:00:00.000Z' }),
+            header('owner-d', 'negative-1', {
               createdAt: '2026-10-15T10:00:00.000Z',
               score: attrN(-9),
             }),
-            attempt('owner-d', 'negative-2', {
+            header('owner-d', 'negative-2', {
               createdAt: '2026-10-15T11:00:00.000Z',
               score: attrN(-2),
+            }),
+            header('hidden', 'unverified-owner', {
+              createdAt: '2026-10-15T11:00:00.000Z',
+              score: attrN(1000),
             }),
           ],
         };
       }
-      throw new Error(`Se intentó consultar un propietario ajeno: ${owner}`);
+      throw new Error(`Unexpected scan cursor: ${startKey}`);
     });
 
     const response = await handleRequest(eventFor(), makeDependencies(cognitoSend, dynamoSend));
@@ -282,39 +239,42 @@ describe('monitoring attempts metrics', () => {
     expect(rowById.get('owner-d')).toMatchObject({ attempts: periods(2), maxScore: -2 });
 
     expect(cognitoSend).toHaveBeenCalledTimes(2);
-    const queries = dynamoSend.mock.calls.map(([command]) => command);
-    expect(queries).toHaveLength(6);
-    expect(queries.map(ownerFrom).sort()).toEqual([
-      'owner-a',
-      'owner-a',
-      'owner-a',
-      'owner-b',
-      'owner-c',
-      'owner-d',
-    ]);
-    for (const query of queries) {
-      expect(query.constructor.name).toBe('QueryCommand');
-      expect(query.input.TableName).toBe(tableName);
-      expect(query.input.ConsistentRead).toBe(true);
-      expect(query.input.FilterExpression).toBeUndefined();
-      expect(resolvedKeyCondition(query)).toMatch(/\bPK\s*=\s*:/u);
-      expect(resolvedKeyCondition(query)).toMatch(/begins_with\s*\(\s*SK\b/u);
-      expect(
-        Object.values(query.input.ExpressionAttributeValues as Record<string, AttributeValue>),
-      ).toContainEqual(attrS('ATTEMPT#'));
-      expect(new Set(resolvedProjection(query))).toEqual(
-        new Set(['PK', 'SK', 'createdAt', 'score']),
+    const scans = dynamoSend.mock.calls.map(([command]) => command);
+    expect(scans).toHaveLength(3);
+    expect(scans.every((command) => command.constructor.name === 'ScanCommand')).toBe(true);
+    expect(scans.map((command) => command.input.TableName)).toEqual(Array(3).fill(tableName));
+    expect(scans.every((command) => command.input.ConsistentRead === true)).toBe(true);
+    expect(scans[1]?.input.ExclusiveStartKey).toEqual(key('USER#owner-a', 'ATTEMPT#cursor-1'));
+    expect(scans[2]?.input.ExclusiveStartKey).toEqual(key('USER#owner-a', 'ATTEMPT#cursor-2'));
+    for (const scan of scans) {
+      expect(resolvedProjection(scan)).toEqual(
+        expect.arrayContaining([
+          'PK',
+          'SK',
+          'createdAt',
+          'score',
+          'usage.inputTokens',
+          'usage.outputTokens',
+          'usage.cacheReadTokens',
+          'usage.cacheWriteTokens',
+          'budget.rates',
+        ]),
+      );
+      const projection = resolvedProjection(scan);
+      expect(projection).toHaveLength(9);
+      expect(projection.join(',')).not.toMatch(
+        /body|rawAction|reservedMicros|settledMicros|ledger/iu,
+      );
+      expect(resolvedExpression(scan, 'FilterExpression')).toMatch(/PK/u);
+      expect(resolvedExpression(scan, 'FilterExpression')).toMatch(/SK/u);
+      expect(resolvedExpression(scan, 'FilterExpression')).toMatch(/begins_with/iu);
+      const filterValues = Object.values(
+        scan.input.ExpressionAttributeValues as Record<string, AttributeValue>,
+      );
+      expect(filterValues).toEqual(
+        expect.arrayContaining([attrS('USER#'), attrS('ATTEMPT#'), attrS('CALL#')]),
       );
     }
-    const pageThree = queries.find(
-      (query) => ownerFrom(query) === 'owner-a' && startKeyFrom(query) === 'ATTEMPT#cursor-2',
-    );
-    expect(pageThree).toBeDefined();
-    expect(
-      queries.some(
-        (query) => ownerFrom(query) === 'owner-a' && startKeyFrom(query) === 'ATTEMPT#cursor-1',
-      ),
-    ).toBe(true);
 
     const serialized = JSON.stringify(body);
     expect(serialized).not.toContain('hidden@example.com');
@@ -323,23 +283,21 @@ describe('monitoring attempts metrics', () => {
     expect(serialized).not.toContain('private-attempt-body');
   });
 
-  it('keeps counts numeric but maxScore N/A when no numeric score exists, and treats an empty LastEvaluatedKey as final', async () => {
+  it('keeps counts numeric but maxScore N/A when no numeric score exists and treats an empty cursor as final', async () => {
     const cognitoSend = vi.fn(async (): Promise<UserPage> => ({
       Users: [user('unscored-owner', 'unscored@example.com', '2026-10-01T00:00:00.000Z')],
     }));
-    const dynamoSend = vi.fn(async (): Promise<QueryPage> => ({
+    const dynamoSend = vi.fn(async (): Promise<ScanPage> => ({
       Items: [
-        attempt('unscored-owner', 'string-score', {
+        header('unscored-owner', 'string-score', {
           createdAt: '2026-10-15T11:00:00.000Z',
           score: attrS('9999'),
         }),
-        attempt('unscored-owner', 'null-score', {
-          createdAt: '2026-10-15T10:00:00.000Z',
+        {
+          ...header('unscored-owner', 'null-score', { createdAt: '2026-10-15T10:00:00.000Z' }),
           score: { NULL: true },
-        }),
-        attempt('unscored-owner', 'absent-score', {
-          createdAt: '2026-10-15T09:00:00.000Z',
-        }),
+        },
+        header('unscored-owner', 'absent-score', { createdAt: '2026-10-15T09:00:00.000Z' }),
       ],
       LastEvaluatedKey: {},
     }));
@@ -352,7 +310,7 @@ describe('monitoring attempts metrics', () => {
     expect(dynamoSend).toHaveBeenCalledTimes(1);
   });
 
-  it('uses one cutoff before reads and stamps generatedAt after the final query completes', async () => {
+  it('takes one cutoff before reads and stamps generatedAt after the last Scan page', async () => {
     const finishedAt = new Date(cutoff.getTime() + 2 * 60 * 60 * 1_000);
     const order: string[] = [];
     let currentTime = new Date(cutoff);
@@ -370,45 +328,31 @@ describe('monitoring attempts metrics', () => {
       };
     });
 
-    let slowQueryStarted!: () => void;
-    let finishQuery!: (page: QueryPage) => void;
-    const slowQuerySignal = new Promise<void>((resolve) => {
-      slowQueryStarted = resolve;
+    let finalPageStarted!: () => void;
+    let finishPage!: (page: ScanPage) => void;
+    const finalPageSignal = new Promise<void>((resolve) => {
+      finalPageStarted = resolve;
     });
-    const slowQueryResult = new Promise<QueryPage>((resolve) => {
-      finishQuery = resolve;
+    const finalPageResult = new Promise<ScanPage>((resolve) => {
+      finishPage = resolve;
     });
-    const dynamoSend = vi.fn((command: QueryCommandLike) => {
-      const owner = ownerFrom(command);
-      order.push(`query:${owner}`);
-      if (owner === 'slow-owner') {
-        slowQueryStarted();
-        return slowQueryResult;
+    const dynamoSend = vi.fn((command: ScanCommandLike) => {
+      const startKey = startKeyFrom(command)?.SK?.S;
+      order.push(`scan:${startKey ?? 'first'}`);
+      if (startKey === undefined) {
+        return Promise.resolve({
+          Items: [],
+          LastEvaluatedKey: key('USER#fast-owner', 'ATTEMPT#cursor'),
+        });
       }
-      return Promise.resolve({
-        Items: [
-          attempt('fast-owner', 'after-cutoff', {
-            createdAt: new Date(cutoff.getTime() + 30 * 60 * 1_000).toISOString(),
-            score: attrN(5),
-          }),
-        ],
-      });
+      finalPageStarted();
+      return finalPageResult;
     });
 
     const request = handleRequest(eventFor(), makeDependencies(cognitoSend, dynamoSend, now));
-    let queryWaitTimer: ReturnType<typeof setTimeout> | undefined;
-    const started = await Promise.race([
-      slowQuerySignal.then(() => 'query-started'),
-      request.then(() => 'request-finished-before-query'),
-      new Promise<'query-start-timeout'>((resolve) => {
-        queryWaitTimer = setTimeout(() => resolve('query-start-timeout'), 1_000);
-      }),
-    ]);
-    if (queryWaitTimer !== undefined) clearTimeout(queryWaitTimer);
-    expect(started).toBe('query-started');
-    const firstClockIndex = order.indexOf('clock');
-    expect(firstClockIndex).toBeGreaterThanOrEqual(0);
-    expect(firstClockIndex).toBeLessThan(order.indexOf('cognito'));
+    await finalPageSignal;
+    expect(order[0]).toBe('clock');
+    expect(order.indexOf('cognito')).toBeGreaterThan(order.indexOf('clock'));
     const pendingResult = await Promise.race([
       request.then(() => 'finished'),
       new Promise<'still-reading'>((resolve) => setImmediate(() => resolve('still-reading'))),
@@ -416,9 +360,9 @@ describe('monitoring attempts metrics', () => {
     expect(pendingResult).toBe('still-reading');
 
     currentTime = new Date(finishedAt);
-    finishQuery({
+    finishPage({
       Items: [
-        attempt('slow-owner', 'after-cutoff', {
+        header('slow-owner', 'after-cutoff', {
           createdAt: new Date(cutoff.getTime() + 60 * 60 * 1_000).toISOString(),
           score: attrN(5),
         }),
@@ -428,37 +372,26 @@ describe('monitoring attempts metrics', () => {
 
     expect(response.statusCode).toBe(200);
     expect(dynamoSend).toHaveBeenCalledTimes(2);
-    expect(order).toContain('query:fast-owner');
-    const lastQueryIndex = Math.max(
-      order.lastIndexOf('query:fast-owner'),
-      order.lastIndexOf('query:slow-owner'),
-    );
-    expect(order.lastIndexOf('clock')).toBeGreaterThan(lastQueryIndex);
-    const body = responseBody(response);
-    expect(body).toMatchObject({
+    expect(order[order.length - 1]).toBe('clock');
+    expect(responseBody(response)).toMatchObject({
       asOf: cutoff.toISOString(),
       generatedAt: finishedAt.toISOString(),
     });
-    const slowRow = (body.users as Array<Record<string, unknown>>).find(
-      (row) => row.id === 'slow-owner',
-    );
-    const fastRow = (body.users as Array<Record<string, unknown>>).find(
-      (row) => row.id === 'fast-owner',
-    );
-    expect(slowRow?.attempts).toEqual(periods(0));
-    expect(fastRow?.attempts).toEqual(periods(0));
+    const rows = responseBody(response).users as Array<Record<string, unknown>>;
+    expect(rows.find((row) => row.id === 'slow-owner')?.attempts).toEqual(periods(0));
+    expect(rows.find((row) => row.id === 'fast-owner')?.attempts).toEqual(periods(0));
   });
 
-  it('reads attempt rows again on the next request instead of reusing a previous result', async () => {
+  it('reads table rows again on the next request instead of reusing a previous result', async () => {
     const cognitoSend = vi.fn(async (): Promise<UserPage> => ({
       Users: [user('owner', 'owner@example.com', '2026-10-01T00:00:00.000Z')],
     }));
     const dynamoSend = vi
-      .fn<(command: QueryCommandLike) => Promise<QueryPage>>()
+      .fn<(command: ScanCommandLike) => Promise<ScanPage>>()
       .mockResolvedValueOnce({ Items: [] })
       .mockResolvedValueOnce({
         Items: [
-          attempt('owner', 'new-attempt', {
+          header('owner', 'new-attempt', {
             createdAt: '2026-10-15T11:00:00.000Z',
             score: attrN(12),
           }),
@@ -471,26 +404,26 @@ describe('monitoring attempts metrics', () => {
 
     const firstRow = (responseBody(first).users as Array<Record<string, unknown>>)[0];
     const secondRow = (responseBody(second).users as Array<Record<string, unknown>>)[0];
-    expect(firstRow.attempts).toEqual(periods(0));
-    expect(firstRow.maxScore).toBe('N/A');
-    expect(secondRow.attempts).toEqual(periods(1));
-    expect(secondRow.maxScore).toBe(12);
+    expect(firstRow?.attempts).toEqual(periods(0));
+    expect(firstRow?.maxScore).toBe('N/A');
+    expect(secondRow?.attempts).toEqual(periods(1));
+    expect(secondRow?.maxScore).toBe(12);
     expect(dynamoSend).toHaveBeenCalledTimes(2);
     expect(cognitoSend).toHaveBeenCalledTimes(2);
   });
 
-  it.each(['later-page-failure', 'repeated-key'] as const)(
-    'returns a controlled failure without partial or private data when pagination has %s',
+  it.each(['later-page-failure', 'repeated-key', 'malformed-key', 'invalid-items'] as const)(
+    'returns a controlled failure without partial or private data when Scan pagination has %s',
     async (failureMode) => {
       const cognitoSend = vi.fn(async (): Promise<UserPage> => ({
         Users: [user('private-owner', 'private@example.com', '2026-10-01T00:00:00.000Z')],
       }));
-      const repeatedKey = key('private-owner', 'ATTEMPT#same-page');
-      const dynamoSend = vi.fn(async (command: QueryCommandLike): Promise<QueryPage> => {
+      const repeatedKey = key('USER#private-owner', 'ATTEMPT#same-page');
+      const dynamoSend = vi.fn(async (command: ScanCommandLike): Promise<ScanPage> => {
         if (startKeyFrom(command) === undefined) {
           return {
             Items: [
-              attempt('private-owner', 'partial', {
+              header('private-owner', 'partial', {
                 createdAt: '2026-10-15T11:00:00.000Z',
                 score: attrN(8),
               }),
@@ -501,9 +434,10 @@ describe('monitoring attempts metrics', () => {
         if (failureMode === 'later-page-failure') {
           throw new Error('upstream error containing private@example.com');
         }
-        if (dynamoSend.mock.calls.length >= 3) {
-          throw new Error('pagination repeated without stopping');
-        }
+        if (failureMode === 'malformed-key')
+          return { Items: [], LastEvaluatedKey: { PK: attrN(3), SK: attrS('bad') } };
+        if (failureMode === 'invalid-items')
+          return { Items: { invalid: true } as unknown as Item[] };
         return { Items: [], LastEvaluatedKey: repeatedKey };
       });
 
@@ -518,7 +452,7 @@ describe('monitoring attempts metrics', () => {
       expect(serialized).not.toContain('ATTEMPT#');
       expect(serialized).not.toContain('upstream error');
       expect(serialized).not.toContain('pagination repeated');
-      if (failureMode === 'repeated-key') expect(dynamoSend).toHaveBeenCalledTimes(2);
+      if (failureMode !== 'later-page-failure') expect(dynamoSend).toHaveBeenCalledTimes(2);
     },
   );
 });

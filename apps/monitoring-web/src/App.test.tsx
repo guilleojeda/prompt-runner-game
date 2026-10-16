@@ -168,17 +168,19 @@ describe('monitoring dashboard', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
-  it('shows numeric and zero summary values while leaving unavailable activity and costs as N/A', async () => {
+  it('formats zero and available Bedrock costs as USD while leaving unavailable activity as N/A', async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(
       jsonResponse(
         metrics({
           registeredUsers: 42,
           newUsers: { hours24: 3, days3: 8, days7: 11 },
+          bedrockCostUsd: { hours24: 0, days3: 0.006, days7: 1.25 },
           users: [
             userRow({
               id: 'one',
               email: 'one@example.com',
               registeredAt: '2026-10-15T12:00:00.000Z',
+              bedrockCostUsd: { hours24: 0, days3: 0.006, days7: 1.25 },
             }),
           ],
         }),
@@ -201,13 +203,26 @@ describe('monitoring dashboard', () => {
     for (const value of ['42', '3', '8', '11']) {
       expect(within(content).getByText(value, { exact: true })).toBeTruthy();
     }
-    expect(within(content).getAllByText('N/A', { exact: true }).length).toBeGreaterThanOrEqual(10);
+    expect(within(content).getAllByText('N/A', { exact: true })).toHaveLength(8);
+    const costCard = within(screen.getByRole('region', { name: 'Gasto Bedrock' }));
+    expect(costCard.getByText(/USD\s*0,00/)).toBeTruthy();
+    expect(costCard.getByText(/USD\s*0,01/)).toBeTruthy();
+    expect(costCard.getByText(/USD\s*1,25/)).toBeTruthy();
     const row = within(screen.getByRole('table')).getByRole('row', {
       name: /one@example\.com/,
     });
-    expect(within(row).getAllByText('N/A', { exact: true })).toHaveLength(8);
+    const rowCells = within(row).getAllByRole('cell');
+    expect(rowCells.slice(5, 8).map((cell) => cell.textContent)).toEqual([
+      expect.stringMatching(/USD\s*0,00/),
+      expect.stringMatching(/USD\s*0,01/),
+      expect.stringMatching(/USD\s*1,25/),
+    ]);
+    expect(within(row).getAllByText('N/A', { exact: true })).toHaveLength(5);
     expect(text).toContain('Intentos');
     expect(text).toContain('Puntaje máximo');
+    expect(text).not.toMatch(
+      /estimaci[oó]n|estimad[oa]s?|aproximad[oa]s?|cobertura|llamadas omitidas/i,
+    );
     expect(text).toMatch(/0?9:00/);
     expect(text).toMatch(/Argentina|ART|GMT[−-]3/);
   });
@@ -328,8 +343,10 @@ describe('monitoring dashboard', () => {
     expect(screen.queryByRole('table')).toBeNull();
   });
 
-  it('keeps an empty verified-user table distinct from zero counts and unavailable metrics', async () => {
-    const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(jsonResponse(metrics()));
+  it('shows an empty verified-user table and zero cost sums without masking unavailable activity', async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(metrics({ bedrockCostUsd: zeroPeriods() })));
     vi.stubGlobal('fetch', fetchMock);
 
     render(<App />);
@@ -337,8 +354,10 @@ describe('monitoring dashboard', () => {
     await screen.findAllByText('0', { exact: true });
     const table = screen.getByRole('table');
     expect(within(table).queryByText(/@/)).toBeNull();
-    expect(within(screen.getByRole('main')).getAllByText('0', { exact: true }).length).toBe(4);
-    expect(within(screen.getByRole('main')).getAllByText('N/A', { exact: true }).length).toBe(6);
+    const main = within(screen.getByRole('main'));
+    expect(main.getAllByText('0', { exact: true }).length).toBe(4);
+    expect(main.getAllByText('N/A', { exact: true })).toHaveLength(3);
+    expect(main.getByRole('region', { name: 'Gasto Bedrock' }).textContent).toMatch(/USD\s*0,00/);
   });
 
   it('does not poll or persist dashboard data and handles a rejected network request', async () => {
@@ -402,7 +421,7 @@ describe('monitoring dashboard', () => {
               email: 'zeta@example.com',
               registeredAt: '2026-10-15T13:00:00Z',
               attempts: { hours24: 4, days3: 2, days7: 'N/A' },
-              bedrockCostUsd: { hours24: 10, days3: 2, days7: 'N/A' },
+              bedrockCostUsd: { hours24: 0.0002, days3: 0.00005, days7: 0.00012 },
               maxScore: 2.5,
             }),
             userRow({
@@ -418,7 +437,7 @@ describe('monitoring dashboard', () => {
               email: 'beta@example.com',
               registeredAt: '2026-10-15T12:00:00Z',
               attempts: { hours24: 4, days3: 'N/A', days7: 2 },
-              bedrockCostUsd: { hours24: 'N/A', days3: 'N/A', days7: 2 },
+              bedrockCostUsd: { hours24: 0.00005, days3: 0.00012, days7: 0.0002 },
               maxScore: 0,
             }),
             userRow({
@@ -426,7 +445,7 @@ describe('monitoring dashboard', () => {
               email: 'alpha@example.com',
               registeredAt: '2026-10-15T12:00:00Z',
               attempts: { hours24: 2, days3: 10, days7: 10 },
-              bedrockCostUsd: { hours24: 2, days3: 10, days7: 10 },
+              bedrockCostUsd: { hours24: 0.00012, days3: 0.0002, days7: 0.00005 },
               maxScore: 10.25,
             }),
           ],
@@ -558,9 +577,9 @@ describe('monitoring dashboard', () => {
       {
         name: 'Bedrock.*24',
         ascending: [
+          'beta@example.com',
           'alpha@example.com',
           'zeta@example.com',
-          'beta@example.com',
           'middle@example.com',
         ],
         descending: [
@@ -574,30 +593,30 @@ describe('monitoring dashboard', () => {
         name: 'Bedrock.*3',
         ascending: [
           'zeta@example.com',
-          'alpha@example.com',
           'beta@example.com',
+          'alpha@example.com',
           'middle@example.com',
         ],
         descending: [
           'alpha@example.com',
-          'zeta@example.com',
           'beta@example.com',
+          'zeta@example.com',
           'middle@example.com',
         ],
       },
       {
         name: 'Bedrock.*7',
         ascending: [
-          'beta@example.com',
           'alpha@example.com',
-          'middle@example.com',
           'zeta@example.com',
+          'beta@example.com',
+          'middle@example.com',
         ],
         descending: [
-          'alpha@example.com',
           'beta@example.com',
-          'middle@example.com',
           'zeta@example.com',
+          'alpha@example.com',
+          'middle@example.com',
         ],
       },
       {

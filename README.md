@@ -39,7 +39,7 @@ Una recarga conserva la sesión en la misma pestaña. Si ya no hay una sesión v
 
 ## Monitor administrativo
 
-El [dashboard privado](docs/intent/monitoreo.md) usa un stack propio `PromptRunnerMonitoring`. Muestra registrados y nuevos con email confirmado, intentos usados por usuario en 24 horas/3 días/7 días y puntaje máximo, en una tabla de diez columnas ordenables. Actividad y gasto de Bedrock muestran `N/A` porque las fuentes disponibles no sostienen esos datos. Se consulta al entrar, recargar y pulsar Actualizar, sin actualización automática.
+El [dashboard privado](docs/intent/monitoreo.md) usa un stack propio `PromptRunnerMonitoring`. Muestra registrados y nuevos con email confirmado, intentos usados por usuario en 24 horas/3 días/7 días y puntaje máximo, en una tabla de diez columnas ordenables. También muestra el gasto calculado de Bedrock total y por usuario en ventanas móviles de 24 horas, 3 días y 7 días, a partir del uso registrado y las tarifas guardadas por llamada. Actividad y última sesión muestran `N/A`. Se consulta al entrar, recargar y pulsar Actualizar, sin actualización automática.
 
 La URL se obtiene del output `MonitoringUrl` de ese stack. El acceso usa el usuario `monitor` y la contraseña configurada por el operador; su preparación y rotación están en [acceso y entrega](docs/architecture/acceso-y-entrega.md#monitor-administrativo). Los secretos no forman parte del build web.
 
