@@ -258,10 +258,11 @@ describe('monitoring attempts metrics', () => {
           'usage.cacheReadTokens',
           'usage.cacheWriteTokens',
           'budget.rates',
+          'lastLoginAt',
         ]),
       );
       const projection = resolvedProjection(scan);
-      expect(projection).toHaveLength(9);
+      expect(projection).toHaveLength(10);
       expect(projection.join(',')).not.toMatch(
         /body|rawAction|reservedMicros|settledMicros|ledger/iu,
       );
@@ -366,6 +367,11 @@ describe('monitoring attempts metrics', () => {
           createdAt: new Date(cutoff.getTime() + 60 * 60 * 1_000).toISOString(),
           score: attrN(5),
         }),
+        {
+          PK: attrS('USER#slow-owner'),
+          SK: attrS('ACTIVITY'),
+          lastLoginAt: attrS(new Date(cutoff.getTime() - 23 * 60 * 60 * 1_000).toISOString()),
+        },
       ],
     });
     const response = await request;
@@ -376,9 +382,13 @@ describe('monitoring attempts metrics', () => {
     expect(responseBody(response)).toMatchObject({
       asOf: cutoff.toISOString(),
       generatedAt: finishedAt.toISOString(),
+      activeUsers: periods(1),
     });
     const rows = responseBody(response).users as Array<Record<string, unknown>>;
     expect(rows.find((row) => row.id === 'slow-owner')?.attempts).toEqual(periods(0));
+    expect(rows.find((row) => row.id === 'slow-owner')?.lastActiveAt).toBe(
+      new Date(cutoff.getTime() - 23 * 60 * 60 * 1_000).toISOString(),
+    );
     expect(rows.find((row) => row.id === 'fast-owner')?.attempts).toEqual(periods(0));
   });
 
