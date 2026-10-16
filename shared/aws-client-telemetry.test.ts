@@ -98,6 +98,11 @@ describe('AWS SDK client telemetry', () => {
         traceId: parentContext.traceId,
         spanId: parentContext.spanId,
       }),
+      attributes: {
+        'rpc.system': 'aws-api',
+        'rpc.service': 'DynamoDB',
+        'rpc.method': 'GetItem',
+      },
     });
     const operationMetadata = JSON.stringify({
       name: spans[0]?.name,

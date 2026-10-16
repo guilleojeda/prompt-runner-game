@@ -85,8 +85,9 @@ export const instrumentAwsClient = <Client extends object>(client: Client): Clie
       const span = tracer.startSpan(`${service}.${operation}`, {
         kind: SpanKind.CLIENT,
         attributes: {
-          'aws.service': service,
-          'aws.operation': operation,
+          'rpc.system': 'aws-api',
+          'rpc.service': service,
+          'rpc.method': operation,
         },
       });
 

@@ -12,17 +12,19 @@ export const spanFor = (traceId: string, spanId: string, sampled: boolean): Span
   return span;
 };
 
-export const parseConsoleRecords = (
-  logCalls: readonly (readonly unknown[])[],
-  errorCalls: readonly (readonly unknown[])[],
+export const captureLambdaStdout = () =>
+  vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+export const parseLambdaRecords = (
+  writeCalls: readonly (readonly unknown[])[],
 ): Record<string, unknown>[] =>
-  [...logCalls, ...errorCalls].map((args) => {
-    if (args.length !== 1) throw new Error('Each application log call must write one JSON line.');
+  writeCalls.map((args) => {
+    if (args.length !== 1) throw new Error('Each application log record must be one stdout write.');
     const line = args[0];
-    if (typeof line !== 'string' || /[\r\n]/u.test(line)) {
-      throw new Error('Each application log record must fit on one string line.');
+    if (typeof line !== 'string' || !line.endsWith('\n') || /[\r\n]/u.test(line.slice(0, -1))) {
+      throw new Error('Each application log record must be one newline-terminated JSON line.');
     }
-    const value: unknown = JSON.parse(line);
+    const value: unknown = JSON.parse(line.slice(0, -1));
     if (typeof value !== 'object' || value === null || Array.isArray(value)) {
       throw new Error('Each application log line must contain one JSON object.');
     }
