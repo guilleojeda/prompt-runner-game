@@ -16,6 +16,15 @@ type UserPage = { Users?: CognitoUser[]; PaginationToken?: string };
 type ListUsersCommandLike = {
   input: { UserPoolId?: string; PaginationToken?: string };
 };
+type DynamoAttributeValue = {
+  S?: string;
+  N?: string;
+  NULL?: boolean;
+  [key: string]: unknown;
+};
+type DynamoItem = Record<string, DynamoAttributeValue>;
+type QueryPage = { Items?: DynamoItem[]; LastEvaluatedKey?: DynamoItem };
+type QueryCommandLike = { input: Record<string, unknown> };
 
 const user = (
   sub: string,
@@ -74,10 +83,15 @@ const periodValues = (value: number | 'N/A') => ({ hours24: value, days3: value,
 const dependencies = (
   send: (command: ListUsersCommandLike) => Promise<UserPage>,
   now = vi.fn(() => new Date(cutoff)),
+  dynamoSend: (command: QueryCommandLike) => Promise<QueryPage> = vi.fn(async () => ({
+    Items: [],
+  })),
 ) =>
   ({
     cognito: { send },
+    dynamo: { send: dynamoSend },
     userPoolId: poolId,
+    tableName: 'runner-draft-table',
     now,
   }) as unknown as Parameters<typeof handleRequest>[1];
 

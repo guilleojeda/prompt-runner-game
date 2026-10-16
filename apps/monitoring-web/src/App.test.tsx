@@ -11,7 +11,9 @@ type UserRow = {
   email: string;
   registeredAt: string | 'N/A';
   lastActiveAt: 'N/A';
+  attempts: PeriodValues;
   bedrockCostUsd: PeriodValues;
+  maxScore: MetricValue;
 };
 type Metrics = {
   asOf: string;
@@ -41,11 +43,13 @@ const metrics = (overrides: Partial<Metrics> = {}): Metrics => ({
 const userRow = (overrides: Partial<UserRow> & Pick<UserRow, 'id' | 'email'>): UserRow => ({
   registeredAt: 'N/A',
   lastActiveAt: 'N/A',
+  attempts: unknownPeriods(),
   bedrockCostUsd: unknownPeriods(),
+  maxScore: 'N/A',
   ...overrides,
 });
 
-const jsonResponse = (body: Metrics, status = 200): Response =>
+const jsonResponse = (body: unknown, status = 200): Response =>
   new Response(JSON.stringify(body), {
     status,
     headers: { 'content-type': 'application/json' },
@@ -201,11 +205,127 @@ describe('monitoring dashboard', () => {
     const row = within(screen.getByRole('table')).getByRole('row', {
       name: /one@example\.com/,
     });
-    expect(within(row).getAllByText('N/A', { exact: true })).toHaveLength(4);
-    expect(text).not.toContain('Intentos');
-    expect(text).not.toContain('Puntaje máximo');
+    expect(within(row).getAllByText('N/A', { exact: true })).toHaveLength(8);
+    expect(text).toContain('Intentos');
+    expect(text).toContain('Puntaje máximo');
     expect(text).toMatch(/0?9:00/);
     expect(text).toMatch(/Argentina|ART|GMT[−-]3/);
+  });
+
+  it('renders zero and unavailable attempts and preserves decimal and negative maximum scores', async () => {
+    const users = [
+      userRow({
+        id: 'zero',
+        email: 'zero@example.com',
+        attempts: zeroPeriods(),
+        maxScore: 0,
+      }),
+      userRow({
+        id: 'unknown',
+        email: 'unknown@example.com',
+        attempts: unknownPeriods(),
+        maxScore: 'N/A',
+      }),
+      userRow({
+        id: 'fractional',
+        email: 'fractional@example.com',
+        attempts: { hours24: 1, days3: 2, days7: 3 },
+        maxScore: 892.83,
+      }),
+      userRow({
+        id: 'negative',
+        email: 'negative@example.com',
+        attempts: { hours24: 4, days3: 5, days7: 6 },
+        maxScore: -4.25,
+      }),
+    ];
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(metrics({ registeredUsers: users.length, users })));
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+    await screen.findByText('zero@example.com');
+
+    const table = screen.getByRole('table');
+    const headers = within(table).getAllByRole('columnheader');
+    expect(headers).toHaveLength(10);
+    const headerText = headers.map((header) => header.textContent ?? '').join(' ');
+    expect(headerText).toMatch(/Intentos/i);
+    expect(headerText).toMatch(/Puntaje máximo/i);
+
+    const zeroRow = within(table).getByRole('row', { name: /zero@example\.com/ });
+    const zeroCells = within(zeroRow).getAllByRole('cell');
+    expect(zeroCells.slice(2, 5).map((cell) => cell.textContent)).toEqual(['0', '0', '0']);
+    expect(zeroCells[8]?.textContent).toMatch(/^0(?:,0+)?$/);
+    const unknownRow = within(table).getByRole('row', { name: /unknown@example\.com/ });
+    expect(within(unknownRow).getAllByText('N/A', { exact: true })).toHaveLength(9);
+    const fractionalRow = within(table).getByRole('row', { name: /fractional@example\.com/ });
+    const negativeRow = within(table).getByRole('row', { name: /negative@example\.com/ });
+    expect(fractionalRow.textContent).toContain('892,83');
+    expect(negativeRow.textContent).toContain('-4,25');
+  });
+
+  it.each([
+    {
+      description: 'the attempts object is missing',
+      makePayload: (row: UserRow, snapshot: Metrics) => ({
+        ...snapshot,
+        users: [
+          {
+            id: row.id,
+            email: row.email,
+            registeredAt: row.registeredAt,
+            lastActiveAt: row.lastActiveAt,
+            bedrockCostUsd: row.bedrockCostUsd,
+            maxScore: row.maxScore,
+          },
+        ],
+      }),
+    },
+    {
+      description: 'an attempts period is not numeric or N/A',
+      makePayload: (row: UserRow, snapshot: Metrics) => ({
+        ...snapshot,
+        users: [{ ...row, attempts: { hours24: 0, days3: '2', days7: 'N/A' } }],
+      }),
+    },
+    {
+      description: 'the maximum score is missing',
+      makePayload: (row: UserRow, snapshot: Metrics) => {
+        const incompleteRow = {
+          id: row.id,
+          email: row.email,
+          registeredAt: row.registeredAt,
+          lastActiveAt: row.lastActiveAt,
+          attempts: row.attempts,
+          bedrockCostUsd: row.bedrockCostUsd,
+        };
+        return { ...snapshot, users: [incompleteRow] };
+      },
+    },
+    {
+      description: 'the maximum score is neither numeric nor N/A',
+      makePayload: (row: UserRow, snapshot: Metrics) => ({
+        ...snapshot,
+        users: [{ ...row, maxScore: null }],
+      }),
+    },
+  ])('rejects a response when $description', async ({ makePayload }) => {
+    const row = userRow({ id: 'bad', email: 'partial@example.com', maxScore: 9.5 });
+    const validShape = metrics({ registeredUsers: 1, users: [row] });
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(makePayload(row, validShape)));
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    expect(
+      await screen.findByText('No se pudieron traer los datos. Volvé a intentar'),
+    ).toBeTruthy();
+    expect(screen.queryByText('partial@example.com')).toBeNull();
+    expect(screen.queryByRole('table')).toBeNull();
   });
 
   it('keeps an empty verified-user table distinct from zero counts and unavailable metrics', async () => {
@@ -271,7 +391,7 @@ describe('monitoring dashboard', () => {
     expect(Object.keys(window.sessionStorage)).toEqual(sessionStorageKeys);
   });
 
-  it('supports both sort directions on every phase-one table column with aria-sort', async () => {
+  it('supports both sort directions on all ten table columns with aria-sort', async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(
       jsonResponse(
         metrics({
@@ -281,25 +401,33 @@ describe('monitoring dashboard', () => {
               id: 'late',
               email: 'zeta@example.com',
               registeredAt: '2026-10-15T13:00:00Z',
+              attempts: { hours24: 4, days3: 2, days7: 'N/A' },
               bedrockCostUsd: { hours24: 10, days3: 2, days7: 'N/A' },
+              maxScore: 2.5,
             }),
             userRow({
               id: 'unknown',
               email: 'middle@example.com',
               registeredAt: 'N/A',
+              attempts: unknownPeriods(),
               bedrockCostUsd: unknownPeriods(),
+              maxScore: 'N/A',
             }),
             userRow({
               id: 'tie',
               email: 'beta@example.com',
               registeredAt: '2026-10-15T12:00:00Z',
+              attempts: { hours24: 4, days3: 'N/A', days7: 2 },
               bedrockCostUsd: { hours24: 'N/A', days3: 'N/A', days7: 2 },
+              maxScore: 0,
             }),
             userRow({
               id: 'early',
               email: 'alpha@example.com',
               registeredAt: '2026-10-15T12:00:00Z',
+              attempts: { hours24: 2, days3: 10, days7: 10 },
               bedrockCostUsd: { hours24: 2, days3: 10, days7: 10 },
+              maxScore: 10.25,
             }),
           ],
         }),
@@ -313,15 +441,17 @@ describe('monitoring dashboard', () => {
     const table = screen.getByRole('table');
     const headers = within(table).getAllByRole('columnheader');
     const sortable = headers.filter((header) => within(header).queryByRole('button'));
-    expect(sortable).toHaveLength(6);
+    expect(sortable).toHaveLength(10);
     const headerText = sortable.map((header) => header.textContent ?? '').join(' ');
     expect(headerText).toMatch(/Usuario/i);
     expect(headerText).toMatch(/Registro/i);
     expect(headerText).toMatch(/Última sesión/i);
+    expect(headerText).toMatch(/Intentos/i);
     expect(headerText).toMatch(/Bedrock/i);
     expect(headerText).toMatch(/24\s*(h|horas)/i);
     expect(headerText).toMatch(/3\s*(días|d)/i);
     expect(headerText).toMatch(/7\s*(días|d)/i);
+    expect(headerText).toMatch(/Puntaje máximo/i);
 
     for (const header of sortable) {
       const button = within(header).getByRole('button');
@@ -381,6 +511,51 @@ describe('monitoring dashboard', () => {
         ],
       },
       {
+        name: 'Intentos.*24',
+        ascending: [
+          'alpha@example.com',
+          'beta@example.com',
+          'zeta@example.com',
+          'middle@example.com',
+        ],
+        descending: [
+          'beta@example.com',
+          'zeta@example.com',
+          'alpha@example.com',
+          'middle@example.com',
+        ],
+      },
+      {
+        name: 'Intentos.*3',
+        ascending: [
+          'zeta@example.com',
+          'alpha@example.com',
+          'beta@example.com',
+          'middle@example.com',
+        ],
+        descending: [
+          'alpha@example.com',
+          'zeta@example.com',
+          'beta@example.com',
+          'middle@example.com',
+        ],
+      },
+      {
+        name: 'Intentos.*7',
+        ascending: [
+          'beta@example.com',
+          'alpha@example.com',
+          'middle@example.com',
+          'zeta@example.com',
+        ],
+        descending: [
+          'alpha@example.com',
+          'beta@example.com',
+          'middle@example.com',
+          'zeta@example.com',
+        ],
+      },
+      {
         name: 'Bedrock.*24',
         ascending: [
           'alpha@example.com',
@@ -423,6 +598,21 @@ describe('monitoring dashboard', () => {
           'beta@example.com',
           'middle@example.com',
           'zeta@example.com',
+        ],
+      },
+      {
+        name: 'Puntaje máximo',
+        ascending: [
+          'beta@example.com',
+          'zeta@example.com',
+          'alpha@example.com',
+          'middle@example.com',
+        ],
+        descending: [
+          'alpha@example.com',
+          'zeta@example.com',
+          'beta@example.com',
+          'middle@example.com',
         ],
       },
     ];

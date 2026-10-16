@@ -1,10 +1,11 @@
 import * as cdk from 'aws-cdk-lib';
-import { aws_cognito as cognito } from 'aws-cdk-lib';
+import { aws_cognito as cognito, aws_dynamodb as dynamodb } from 'aws-cdk-lib';
 import { Template } from 'aws-cdk-lib/assertions';
 import * as crypto from 'node:crypto';
 import { runInNewContext } from 'node:vm';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { PromptRunnerMonitoringStack } from './monitoring-stack.js';
+import { DRAFT_TABLE_NAME } from './robot.js';
 import { APPLICATION_ACCOUNT, APPLICATION_REGION } from './stack.js';
 
 // Fictitious acceptance credential. Never the operator's real password/verifier.
@@ -20,13 +21,20 @@ describe('protected monitoring publication', { timeout: 15_000 }, () => {
       env: { account: APPLICATION_ACCOUNT, region: APPLICATION_REGION },
     });
     const userPool = cognito.UserPool.fromUserPoolId(sources, 'Pool', 'us-east-1_existing');
+    const draftTable = dynamodb.Table.fromTableArn(
+      sources,
+      'DraftTable',
+      `arn:aws:dynamodb:${APPLICATION_REGION}:${APPLICATION_ACCOUNT}:table/${DRAFT_TABLE_NAME}`,
+    );
+    const monitoringProps = {
+      env: { account: APPLICATION_ACCOUNT, region: APPLICATION_REGION },
+      userPool,
+      draftTable,
+      authVerifier: verifier,
+      buildRevision: 'acceptance-revision',
+    } as ConstructorParameters<typeof PromptRunnerMonitoringStack>[2];
     template = Template.fromStack(
-      new PromptRunnerMonitoringStack(app, 'PromptRunnerMonitoring', {
-        env: { account: APPLICATION_ACCOUNT, region: APPLICATION_REGION },
-        userPool,
-        authVerifier: verifier,
-        buildRevision: 'acceptance-revision',
-      }),
+      new PromptRunnerMonitoringStack(app, 'PromptRunnerMonitoring', monitoringProps),
     );
   });
 
@@ -148,7 +156,17 @@ describe('protected monitoring publication', { timeout: 15_000 }, () => {
     template.resourceCountIs('AWS::DynamoDB::Table', 0);
   });
 
-  it('grants the metrics function only confirmed-account source reads and its own log writes', () => {
+  it('passes the existing draft table name to the metrics function', () => {
+    const metricsFunction = Object.values(template.findResources('AWS::Lambda::Function')).find(
+      (resource) => resource.Properties.FunctionName === 'prompt-runner-game-monitoring-metrics',
+    );
+    expect(metricsFunction?.Properties.Environment.Variables).toMatchObject({
+      COGNITO_USER_POOL_ID: 'us-east-1_existing',
+      DRAFT_TABLE_NAME,
+    });
+  });
+
+  it('grants only Cognito reads, exact attempt-header queries and its own log writes', () => {
     const roles = template.findResources('AWS::IAM::Role');
     const metricsRole = Object.entries(roles).find(
       ([, resource]) =>
@@ -166,15 +184,32 @@ describe('protected monitoring publication', { timeout: 15_000 }, () => {
           Action: 'cognito-idp:ListUsers',
           Resource: 'arn:aws:cognito-idp:us-east-1:387483252302:userpool/us-east-1_existing',
         }),
+        expect.objectContaining({
+          Action: 'dynamodb:Query',
+          Resource: `arn:aws:dynamodb:us-east-1:387483252302:table/${DRAFT_TABLE_NAME}`,
+        }),
       ]),
     );
     const actions = statements.flatMap((statement: { Action: string | string[] }) =>
       [statement.Action].flat(),
     );
-    expect(actions.filter((action: string) => !action.startsWith('logs:'))).toEqual([
+    expect(actions.filter((action: string) => !action.startsWith('logs:')).sort()).toEqual([
       'cognito-idp:ListUsers',
+      'dynamodb:Query',
     ]);
+    expect(actions.filter((action: string) => action.startsWith('dynamodb:'))).toEqual([
+      'dynamodb:Query',
+    ]);
+    const queryStatement = statements.find((statement: { Action: string | string[] }) =>
+      [statement.Action].flat().includes('dynamodb:Query'),
+    );
+    expect(queryStatement?.Resource).toBe(
+      `arn:aws:dynamodb:us-east-1:387483252302:table/${DRAFT_TABLE_NAME}`,
+    );
     expect(JSON.stringify(statements)).not.toContain('prompt-runner-game-draft-api');
-    expect(JSON.stringify(statements)).not.toContain('prompt-runner-game-drafts');
+    expect(JSON.stringify(queryStatement)).not.toContain(':index/');
+    expect(JSON.stringify(statements)).not.toMatch(
+      /bedrock|GetItem|Scan|PutItem|UpdateItem|DeleteItem/,
+    );
   });
 });
