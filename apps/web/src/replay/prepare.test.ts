@@ -5,13 +5,7 @@ import {
   LEVEL,
   type TerrainState,
 } from '../../../../shared/game.js';
-import {
-  prepareReplay,
-  REPLAY_TIMING,
-  REPLAY_SEGMENT_WIDTH,
-  REPLAY_SUPPORT_START_X,
-  REPLAY_VIEW_WIDTH,
-} from './prepare.js';
+import { prepareReplay, REPLAY_TIMING } from './prepare.js';
 import { doorVictoryRecord, replayRecordForActions } from './replay.test-support.js';
 
 const toLowBarrier: Parameters<typeof replayRecordForActions>[0] = [
@@ -599,21 +593,21 @@ describe('prepareReplay', () => {
     expect(prepared.sample(Number.NaN)).toEqual(prepared.sample(0));
   });
 
-  it('follows the robot across the ten-segment level while keeping it in the viewport', () => {
+  it('ends at the recorded exit position with the final terrain and victory state', () => {
     const record = doorVictoryRecord();
     const prepared = prepareReplay(record);
-    const beginning = prepared.sample(0);
     const ending = prepared.sample(prepared.duration);
-    const robotWorldX = REPLAY_SUPPORT_START_X + ending.support * REPLAY_SEGMENT_WIDTH;
-    const robotScreenX = robotWorldX - ending.cameraX;
 
-    expect(beginning.cameraX).toBe(0);
-    expect(ending.cameraX).toBeGreaterThan(beginning.cameraX);
-    expect(robotScreenX).toBeGreaterThan(0);
-    expect(robotScreenX).toBeLessThan(REPLAY_VIEW_WIDTH);
     expect(ending.support).toBe(10);
     expect(ending.terrain).toEqual(record.snapshots.at(-1)?.terrain);
     expect(ending.terrainTransition).toBeNull();
+    expect(ending).toMatchObject({
+      actionIndex: null,
+      actionNumber: record.actions.length,
+      complete: true,
+      closureStatus: 'victory',
+      effect: 'victory',
+    });
   });
 
   it('rejects incomplete, stale, unsupported, or mismatched records explicitly', () => {

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { readFile } from 'node:fs/promises';
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LEVEL, PREVIOUS_LEVEL } from '../../../../shared/game.js';
 import { prepareReplay, REPLAY_TIMING } from './prepare.js';
@@ -24,6 +24,119 @@ let pendingFrames: Map<number, FrameRequestCallback>;
 let nextFrameId: number;
 let svgSource: string;
 
+class TestResizeObserver implements ResizeObserver {
+  static readonly instances: TestResizeObserver[] = [];
+  readonly observed = new Set<Element>();
+  deliveryCount = 0;
+
+  constructor(readonly callback: ResizeObserverCallback) {
+    TestResizeObserver.instances.push(this);
+  }
+
+  observe(target: Element): void {
+    this.observed.add(target);
+  }
+
+  unobserve(target: Element): void {
+    this.observed.delete(target);
+  }
+
+  disconnect(): void {
+    this.observed.clear();
+  }
+
+  takeRecords(): ResizeObserverEntry[] {
+    return [];
+  }
+
+  dispatch(entries: readonly ResizeObserverEntry[]): boolean {
+    const observedEntries = entries.filter(({ target }) => this.observed.has(target));
+    if (observedEntries.length === 0) return false;
+    this.deliveryCount += 1;
+    this.callback(observedEntries, this);
+    return true;
+  }
+}
+
+const resizeEntry = (target: Element, width: number): ResizeObserverEntry => {
+  const size = { inlineSize: width, blockSize: 330 };
+  const contentRect = {
+    x: 0,
+    y: 0,
+    top: 0,
+    right: width,
+    bottom: 330,
+    left: 0,
+    width,
+    height: 330,
+    toJSON: () => ({}),
+  };
+  return {
+    target,
+    contentRect,
+    borderBoxSize: [size],
+    contentBoxSize: [size],
+    devicePixelContentBoxSize: [size],
+  } as ResizeObserverEntry;
+};
+
+const resizeObservedScene = (container: HTMLElement, width: number): void => {
+  const scene = within(container).getByRole('img');
+  let delivered = false;
+  act(() => {
+    for (const observer of TestResizeObserver.instances) {
+      const entries = [...observer.observed]
+        .filter((target) => target === scene || target.contains(scene))
+        .map((target) => resizeEntry(target, width));
+      if (entries.length === 0) continue;
+      delivered = observer.dispatch(entries) || delivered;
+    }
+  });
+  if (!delivered) throw new Error('ReplayScene has no observed scene container to resize');
+};
+
+const readFrame = (container: HTMLElement) => {
+  const svg = within(container).getByRole('img');
+  const viewBox = svg.getAttribute('viewBox')!.split(/\s+/).map(Number);
+  const world = svg.querySelector('[data-replay-world]');
+  const robot = svg.querySelector('[data-replay-layer="robot"] > g');
+  return {
+    svg,
+    viewWidth: viewBox[2]!,
+    cameraX: Number(svg.getAttribute('data-camera-x')),
+    worldWidth: Number(world?.getAttribute('data-world-width')),
+    robotWorldX: Number(robot?.getAttribute('data-center-x')),
+    actionIndex: svg.getAttribute('data-action-index'),
+    pose: robot?.getAttribute('data-pose'),
+    transitionProgress: svg.getAttribute('data-terrain-transition-progress'),
+    complete: svg.getAttribute('data-complete'),
+    closureStatus: svg.getAttribute('data-closure-status'),
+  };
+};
+
+const expectRobotInsideView = (frame: ReturnType<typeof readFrame>): void => {
+  expect(frame.cameraX).toBeGreaterThanOrEqual(0);
+  expect(frame.cameraX + frame.viewWidth).toBeLessThanOrEqual(frame.worldWidth);
+  expect(frame.robotWorldX - frame.cameraX).toBeGreaterThanOrEqual(0);
+  expect(frame.robotWorldX - frame.cameraX).toBeLessThanOrEqual(frame.viewWidth);
+  expect(frame.svg.querySelector('[data-replay-world]')?.getAttribute('transform')).toBe(
+    `translate(${-frame.cameraX} 0)`,
+  );
+};
+
+const turnLabel = (actionNumber: number, actionCount: number): string =>
+  actionCount === 0 ? 'Sin acciones' : `Turno ${actionNumber} / ${actionCount}`;
+
+const expectTurnLabel = (container: HTMLElement, label: string): HTMLElement => {
+  const element = within(container).getByText(label);
+  expect(element.closest('svg')).toBeNull();
+  expect(element.closest('[aria-hidden="true"]')).toBeNull();
+  expect(element.closest('[aria-live], [role="status"]')).toBeNull();
+  expect(element.getAttribute('aria-live')).toBeNull();
+  expect(element.getAttribute('role')).not.toBe('status');
+  return element;
+};
+
 const nextFrame = async (timestamp: number): Promise<void> => {
   const entry = pendingFrames.entries().next().value as [number, FrameRequestCallback] | undefined;
   if (!entry) throw new Error('there is no animation frame pending');
@@ -34,6 +147,7 @@ const nextFrame = async (timestamp: number): Promise<void> => {
 beforeEach(async () => {
   pendingFrames = new Map();
   nextFrameId = 0;
+  TestResizeObserver.instances.length = 0;
   svgSource = await readFile(`${process.cwd()}/apps/web/src/replay/art/replay-symbols.svg`, 'utf8');
   vi.stubGlobal(
     'fetch',
@@ -51,6 +165,7 @@ beforeEach(async () => {
   vi.stubGlobal('cancelAnimationFrame', (id: number) => {
     pendingFrames.delete(id);
   });
+  vi.stubGlobal('ResizeObserver', TestResizeObserver);
 });
 
 afterEach(() => {
@@ -94,7 +209,9 @@ describe('ReplayScene', () => {
       const ready = vi.fn();
       const complete = vi.fn();
       const error = vi.fn();
-      render(<ReplayScene record={record} onReady={ready} onComplete={complete} onError={error} />);
+      const { container } = render(
+        <ReplayScene record={record} onReady={ready} onComplete={complete} onError={error} />,
+      );
 
       expect(screen.getByRole('status').textContent).toContain('Preparando animación');
       await waitFor(() => expect(pendingFrames.size).toBe(1));
@@ -106,8 +223,12 @@ describe('ReplayScene', () => {
       const scene = screen.getByRole('img');
       expect(scene.getAttribute('data-profile')).toBe(LEVEL.id);
       expect(scene.getAttribute('data-action-index')).toBe('0');
-      expect(scene.querySelector('text')?.textContent).toBe(`Turno 1 / ${record.actions.length}`);
+      expectTurnLabel(container, turnLabel(prepared.sample(0).actionNumber, record.actions.length));
+      await waitFor(() => expect(TestResizeObserver.instances.length).toBeGreaterThan(0));
+      resizeObservedScene(container, 1280);
+      expect(readFrame(container).viewWidth).toBe(760);
       expect(scene.getAttribute('data-camera-x')).toBe('0');
+      expect(screen.queryAllByRole('button')).toHaveLength(0);
       expect(
         [...scene.querySelectorAll('[data-replay-layer]')].map((layer) =>
           layer.getAttribute('data-replay-layer'),
@@ -143,6 +264,15 @@ describe('ReplayScene', () => {
       expect(scene.getAttribute('data-terrain-transition-progress')).toBe('0');
       await nextFrame(1000 + (REPLAY_TIMING.walk + REPLAY_TIMING.phase / 2) * 1000);
       expect(Number(scene.getAttribute('data-terrain-transition-progress'))).toBeCloseTo(0.5);
+      const phaseBeforeResize = readFrame(container);
+      resizeObservedScene(container, 390);
+      const phaseAfterResize = readFrame(container);
+      expect(phaseAfterResize.viewWidth).toBeLessThan(phaseBeforeResize.viewWidth);
+      expect(phaseAfterResize.actionIndex).toBe(phaseBeforeResize.actionIndex);
+      expect(phaseAfterResize.pose).toBe(phaseBeforeResize.pose);
+      expect(phaseAfterResize.robotWorldX).toBe(phaseBeforeResize.robotWorldX);
+      expect(phaseAfterResize.transitionProgress).toBe(phaseBeforeResize.transitionProgress);
+      expect(pendingFrames.size).toBe(1);
       expect(scene.querySelectorAll('use[href$="#terrain-barrier-panel"]')).toHaveLength(1);
       expect(scene.querySelector('[data-barrier-y]')?.getAttribute('data-barrier-y')).toBe('196');
       expect(
@@ -155,20 +285,212 @@ describe('ReplayScene', () => {
         level.version === 4 ? 'ground' : 'pit',
       );
 
+      await nextFrame(
+        1000 + (REPLAY_TIMING.walk + REPLAY_TIMING.phase + REPLAY_TIMING.jump / 2) * 1000,
+      );
+      expectTurnLabel(
+        container,
+        turnLabel(
+          prepared.sample(REPLAY_TIMING.walk + REPLAY_TIMING.phase + REPLAY_TIMING.jump / 2)
+            .actionNumber,
+          record.actions.length,
+        ),
+      );
+      expect(scene.getAttribute('data-action-index')).toBe('1');
+      expect(
+        scene.querySelector('[data-replay-layer="robot"] > g')?.getAttribute('data-pose'),
+      ).toBe('jump');
+      resizeObservedScene(container, 1280);
+      expect(readFrame(container).viewWidth).toBe(760);
+      expect(pendingFrames.size).toBe(1);
+
       await nextFrame(1000 + prepared.duration * 1000 + 3000);
       const completed = screen.getByRole('img');
       expect(completed.getAttribute('data-complete')).toBe('true');
       expect(completed.getAttribute('data-action-index')).toBe('');
       expect(Number(completed.getAttribute('data-camera-x'))).toBeGreaterThan(0);
-      expect(completed.querySelector('text')?.textContent).toBe(
-        `Turno ${record.actions.length} / ${record.actions.length}`,
+      expectTurnLabel(
+        container,
+        turnLabel(prepared.sample(prepared.duration).actionNumber, record.actions.length),
       );
+      expect(completed.getAttribute('data-closure-status')).toBe('victory');
       expect(completed.querySelectorAll('use[href$="#effect-victory"]')).toHaveLength(1);
       expect(complete).toHaveBeenCalledOnce();
       expect(error).not.toHaveBeenCalled();
       expect(pendingFrames.size).toBe(0);
+
+      resizeObservedScene(container, 390);
+      expect(readFrame(container).viewWidth).toBeLessThan(760);
+      expect(screen.getByRole('img').getAttribute('data-complete')).toBe('true');
+      expect(screen.getByRole('img').getAttribute('data-action-index')).toBe('');
+      expectTurnLabel(
+        container,
+        turnLabel(prepared.sample(prepared.duration).actionNumber, record.actions.length),
+      );
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(ready).toHaveBeenCalledOnce();
+      expect(complete).toHaveBeenCalledOnce();
+      expect(pendingFrames.size).toBe(0);
     },
   );
+
+  it('keeps world positions while the observed scene width reframes start, middle, and exit', async () => {
+    const record = doorVictoryRecord();
+    const prepared = prepareReplay(record);
+    const { container } = render(
+      <ReplayScene record={record} onReady={vi.fn()} onComplete={vi.fn()} onError={vi.fn()} />,
+    );
+    await waitFor(() => expect(pendingFrames.size).toBe(1));
+    await waitFor(() => expect(TestResizeObserver.instances.length).toBeGreaterThan(0));
+    await nextFrame(1000);
+
+    for (const elapsed of [0, prepared.duration * 0.55, prepared.duration]) {
+      if (elapsed > 0) await nextFrame(1000 + elapsed * 1000);
+
+      resizeObservedScene(container, 1280);
+      const desktop = readFrame(container);
+      resizeObservedScene(container, 390);
+      const phone = readFrame(container);
+
+      expect(desktop.viewWidth).toBe(760);
+      expect(phone.viewWidth).toBeLessThan(desktop.viewWidth);
+      expect(phone.robotWorldX).toBe(desktop.robotWorldX);
+      expect(phone.actionIndex).toBe(desktop.actionIndex);
+      expect(phone.pose).toBe(desktop.pose);
+      expectRobotInsideView(desktop);
+      expectRobotInsideView(phone);
+      if (elapsed === 0) {
+        expect(desktop.cameraX).toBe(0);
+        expect(phone.cameraX).toBe(0);
+      }
+      if (elapsed === prepared.duration) {
+        expect(phone.complete).toBe('true');
+        expect(phone.closureStatus).toBe('victory');
+        expect(desktop.cameraX + desktop.viewWidth).toBeCloseTo(desktop.worldWidth);
+        expect(phone.robotWorldX).toBe(80 + 10 * 120);
+        expect(phone.svg.querySelector('[data-door-state="open"]')).not.toBeNull();
+        expect(phone.svg.querySelector('[data-exit-state="free"]')).not.toBeNull();
+      }
+    }
+  });
+
+  it('preserves the in-flight sample and tears down replay resources on unmount', async () => {
+    const record = doorVictoryRecord();
+    const prepared = prepareReplay(record);
+    const ready = vi.fn();
+    const complete = vi.fn();
+    const { container, unmount } = render(
+      <ReplayScene record={record} onReady={ready} onComplete={complete} onError={vi.fn()} />,
+    );
+    await waitFor(() => expect(pendingFrames.size).toBe(1));
+    await waitFor(() => expect(TestResizeObserver.instances.length).toBeGreaterThan(0));
+    await nextFrame(1000);
+    resizeObservedScene(container, 1280);
+
+    await nextFrame(1000 + (REPLAY_TIMING.walk + REPLAY_TIMING.phase / 2) * 1000);
+    const beforeResize = readFrame(container);
+    const resizeTime = REPLAY_TIMING.walk + REPLAY_TIMING.phase / 2;
+    const currentTurn = expectTurnLabel(
+      container,
+      turnLabel(prepared.sample(resizeTime).actionNumber, record.actions.length),
+    );
+    expect(beforeResize.transitionProgress).not.toBe('');
+    expect(beforeResize.actionIndex).toBe('0');
+    expect(beforeResize.complete).toBe('false');
+
+    resizeObservedScene(container, 390);
+    const afterResize = readFrame(container);
+    expect(afterResize.viewWidth).toBeLessThan(beforeResize.viewWidth);
+    expect(afterResize.actionIndex).toBe(beforeResize.actionIndex);
+    expect(afterResize.pose).toBe(beforeResize.pose);
+    expect(afterResize.robotWorldX).toBe(beforeResize.robotWorldX);
+    expect(afterResize.transitionProgress).toBe(beforeResize.transitionProgress);
+    expect(afterResize.complete).toBe(beforeResize.complete);
+    expect(
+      expectTurnLabel(
+        container,
+        turnLabel(prepared.sample(resizeTime).actionNumber, record.actions.length),
+      ).textContent,
+    ).toBe(currentTurn.textContent);
+    expect(pendingFrames.size).toBe(1);
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(ready).toHaveBeenCalledOnce();
+
+    await nextFrame(
+      1000 + (REPLAY_TIMING.walk + REPLAY_TIMING.phase + REPLAY_TIMING.jump / 2) * 1000,
+    );
+    const nextTick = readFrame(container);
+    expect(nextTick.actionIndex).toBe('1');
+    expect(nextTick.pose).toBe('jump');
+    expectTurnLabel(
+      container,
+      turnLabel(
+        prepared.sample(REPLAY_TIMING.walk + REPLAY_TIMING.phase + REPLAY_TIMING.jump / 2)
+          .actionNumber,
+        record.actions.length,
+      ),
+    );
+    expect(pendingFrames.size).toBe(1);
+
+    const scene = within(container).getByRole('img');
+    const lateEntries = TestResizeObserver.instances.flatMap((observer) =>
+      [...observer.observed]
+        .filter((target) => target === scene || target.contains(scene))
+        .map((target) => resizeEntry(target, 320)),
+    );
+    expect(lateEntries.length).toBeGreaterThan(0);
+    const deliveriesBeforeUnmount = TestResizeObserver.instances.map(
+      (observer) => observer.deliveryCount,
+    );
+
+    unmount();
+    expect(pendingFrames.size).toBe(0);
+    expect(TestResizeObserver.instances.every((observer) => observer.observed.size === 0)).toBe(
+      true,
+    );
+    for (const observer of TestResizeObserver.instances) {
+      expect(observer.dispatch(lateEntries)).toBe(false);
+    }
+    expect(TestResizeObserver.instances.map((observer) => observer.deliveryCount)).toEqual(
+      deliveriesBeforeUnmount,
+    );
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(ready).toHaveBeenCalledOnce();
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it('shows the recorded fall in progress and at its terminal position', async () => {
+    const record = replayRecordForActions([{ kind: 'advance' }, { kind: 'advance' }], 'defeat');
+    const prepared = prepareReplay(record);
+    const fallingAction = record.actions.at(-1)!;
+    expect(fallingAction.resolution.outcome).toBe('fall');
+    const { container } = render(
+      <ReplayScene record={record} onReady={vi.fn()} onComplete={vi.fn()} onError={vi.fn()} />,
+    );
+    await waitFor(() => expect(pendingFrames.size).toBe(1));
+    await nextFrame(1000);
+
+    const fallStart = REPLAY_TIMING.walk + REPLAY_TIMING.phase;
+    await nextFrame(1000 + (fallStart + REPLAY_TIMING.fall * 0.65) * 1000);
+    const falling = readFrame(container);
+    expect(falling.actionIndex).toBe('1');
+    expect(falling.pose).toBe('fall');
+    expect(
+      Number(
+        falling.svg.querySelector('[data-replay-layer="robot"] > g')?.getAttribute('data-drop'),
+      ),
+    ).toBeGreaterThan(0);
+
+    await nextFrame(1000 + prepared.duration * 1000);
+    const ended = readFrame(container);
+    expect(ended.complete).toBe('true');
+    expect(ended.closureStatus).toBe('defeat');
+    expect(ended.pose).toBe('fall');
+    expect(
+      Number(ended.svg.querySelector('[data-replay-layer="robot"] > g')?.getAttribute('data-drop')),
+    ).toBeGreaterThan(0);
+    expect(ended.svg.querySelector('[data-effect="impact"]')).toBeNull();
+  });
 
   it.each([PREVIOUS_LEVEL, LEVEL])(
     'moves the same panel and hinged leaves in both directions for timing version $version',
