@@ -11,9 +11,11 @@ flowchart LR
   R[Registro cerrado y nivel fijo] --> V[Validar y preparar secuencia]
   C[Catálogo: terreno, clips y recetas] --> V
   V --> T[Secuencia temporal de presentación]
-  P[Tiempo transcurrido desde el inicio] --> S[Obtener escena para ese instante]
+  P[Tiempo transcurrido desde el inicio] --> S[Obtener muestra para ese instante]
   T --> S
-  S --> D[SVG: escenario, robot, objetos y cámara]
+  S --> K[Derivar cámara desde el apoyo actual]
+  W[Ancho observado del contenedor] --> K
+  K --> D[SVG: escenario, robot y objetos]
 ```
 
 La API entrega estados y resoluciones, no instrucciones como «dibujar frame 6» o «esperar 200 ms». El navegador prepara una secuencia temporal finita y la dibuja de principio a fin, en el orden registrado. Las duraciones de los clips pertenecen al perfil visual y permanecen fijas durante la reproducción; no hay un multiplicador de velocidad configurable por el usuario.
@@ -32,7 +34,7 @@ La barrera usa un mismo panel: bajo cerca del piso para saltar y elevado dejando
 
 La rama sale de un árbol con varias ramificaciones y copa, dibujado detrás del camino con menor intensidad. El obstáculo superior queda delante del robot y mantiene márgenes respecto de las casillas seguras. Árbol y rama comparten el mismo anclaje en el mundo y se desplazan juntos con la cámara.
 
-Si todo el nivel entra de forma legible, se dibuja completo. Si no, la cámara desplaza el mundo horizontalmente y respeta sus extremos. Su posición depende del mismo instante de reproducción, sin suavizados que acumulen historia entre frames. La cámara mantiene su altura durante una caída.
+Si todo el nivel entra de forma legible, se dibuja completo. Si no, la cámara desplaza el mundo horizontalmente y respeta sus extremos. Su posición se deriva del apoyo de la muestra actual y del ancho observado del contenedor, sin suavizados que acumulen historia entre frames. La cámara mantiene su altura durante una caída.
 
 ## Catálogo de sprites y clips
 
@@ -94,7 +96,9 @@ La vista estática anterior al editor reutiliza el dibujo del recorrido completo
 
 ## Reproducción continua a velocidad fija
 
-`prepareReplay(record)` valida el registro contra el único nivel vigente y construye los intervalos, marcadores y recursos requeridos. `sample(t)` devuelve terreno, objetos, estado derivado de la puerta, salida libre, posición/pose/frame del robot, efectos y cámara para el tiempo transcurrido `t`. Es una función interna de dibujo: la misma entrada y tiempo producen la misma escena, sin depender de haber reproducido todos los frames anteriores. No constituye una función de búsqueda o navegación disponible al usuario.
+`prepareReplay(record)` valida el registro contra el único nivel vigente y construye los intervalos, marcadores y recursos requeridos. `sample(t)` devuelve terreno, objetos, estado derivado de la puerta, salida libre, posición/pose/frame del robot y efectos para el tiempo transcurrido `t`. Es una función interna de dibujo: la misma entrada y tiempo producen la misma muestra, sin depender de haber reproducido todos los frames anteriores. No constituye una función de búsqueda o navegación disponible al usuario.
+
+La presentación observa el ancho real de su contenedor con `ResizeObserver`. Limita el ancho del `viewBox` entre 360 y 760 unidades del mundo y deriva de esa misma medida la cámara con `cameraX = clamp(robotX - anchoVisible / 2, 0, anchoMundo - anchoVisible)`. El alto conserva las 330 unidades del escenario, de modo que la trayectoria completa sigue dentro del `viewBox`; el límite de altura CSS permite que la escena quepa mejor en orientación horizontal. El turno se presenta en texto HTML normal desde la misma muestra, fuera del SVG y sin anuncios por frame. Un cambio de tamaño vuelve a dibujar la muestra vigente, incluso la terminal, sin preparar el registro, iniciar otro reloj o solicitar otro frame. El observador se desconecta al desmontar la escena.
 
 El reloj conserva el instante de inicio y calcula `tiempo = min(ahora - inicio, duraciónTotal)` con una fuente monotónica. Avanza hacia adelante hasta completar la secuencia, sin estados de pausa, cambios de velocidad, retrocesos, saltos de turno ni finalización anticipada por controles del usuario. Los intervalos propios de esperar, aterrizar o celebrar forman parte de la animación continua.
 
@@ -102,7 +106,7 @@ El reloj conserva el instante de inicio y calcula `tiempo = min(ahora - inicio, 
 
 Se actualiza solo el componente de escena y la información visible del progreso, sin hacer que el editor y el historial se vuelvan a renderizar por cada frame. CSS sirve para estilos, pero no hay cadenas de `setTimeout`, transiciones CSS o animaciones independientes que gobiernen posición, frames, fases, objetos o efectos significativos. Todos se muestrean desde `t`.
 
-La pantalla puede informar el turno que se está mostrando, sin controles de transporte, deslizador interactivo ni atajos de teclado que alteren la reproducción. No se anuncian cambios accesibles por cada frame. Después del resultado se puede iniciar otra visualización completa del registro; mientras esa visualización está en curso rige la misma reproducción continua y sin controles.
+La pantalla informa el turno que se está mostrando como texto HTML, sin controles de transporte, deslizador interactivo ni atajos de teclado que alteren la reproducción. No se anuncian cambios accesibles por cada frame. Después del resultado se puede iniciar otra visualización completa del registro; mientras esa visualización está en curso rige la misma reproducción continua y sin controles.
 
 ## Integración con Probar y el resultado
 

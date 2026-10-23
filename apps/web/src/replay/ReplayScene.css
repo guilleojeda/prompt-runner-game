@@ -98,16 +98,27 @@
   margin-bottom: 0;
 }
 
+.replay-scene__viewport {
+  width: 100%;
+}
+
 .replay-scene__canvas {
   display: block;
   width: 100%;
   height: auto;
   max-height: min(70vh, 48rem);
-  aspect-ratio: 760 / 330;
   border: 1px solid rgba(242, 239, 232, 0.2);
   border-radius: 0.85rem;
   background: #eaf8fc;
   box-shadow: 0 0.8rem 2.4rem rgba(0, 0, 0, 0.22);
+}
+
+.replay-scene__turn {
+  margin: 0.55rem 0 0;
+  color: #f2efe8;
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.5;
 }
 
 .replay-scene__object {

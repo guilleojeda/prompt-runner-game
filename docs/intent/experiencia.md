@@ -59,11 +59,13 @@ Compartir es voluntario. Sólo se incluyen resultado, turnos, recompensa o avanc
 2. Edita el borrador: habilita capacidades del catálogo, escribe sus descripciones y modifica las instrucciones generales.
 3. Ajusta el toggle **Animación**. Está activado por defecto, es ajustable y el servidor conserva esa preferencia para futuros intentos; el valor vigente se captura de nuevo en cada clic en **Probar**.
 4. Hace clic en **Probar**. Los controles se bloquean inmediatamente mientras se valida la admisión y se guarda el borrador visible. El intento fija nivel, configuración, parámetros de puntuación y el valor actual de **Animación**. No hay un botón separado para aplicar el borrador.
-5. Si el servidor admite el intento, inicia el cálculo secuencial y conserva el registro. La interfaz desplaza la vista al estado del intento, muestra «Preparando intento» y bloquea la edición. Al preparar la reproducción, vuelve a encuadrar la animación. Los textos para el jugador llaman casillas a las posiciones del robot.
+5. Si el servidor admite el intento, inicia el cálculo secuencial y conserva el registro. La interfaz desplaza la vista al estado del intento, muestra «Preparando intento» y bloquea la edición. La reproducción adapta el encuadre al ancho de su contenedor y muestra el turno como texto junto a la escena. Los textos para el jugador llaman casillas a las posiciones del robot.
 6. Cuando el registro queda cerrado, si el snapshot tiene `Animación` activado, la interfaz reproduce automáticamente el registro completo. Al terminar muestra el resultado; si está desactivado, salta la reproducción y muestra el resultado de inmediato.
 7. La persona consulta el resultado y el historial. Desde cualquiera de ellos puede inspeccionar decisiones en el mapa estático, iniciar otra reproducción completa o revisar la configuración fijada en ese intento. El historial ordena las victorias propias cargadas por puntaje y mantiene aparte los demás resultados. Puede cargar una configuración anterior en el editor, modificarla y volver a hacer clic en **Probar** para iniciar otro intento.
 
 El snapshot de **Animación** es sólo una decisión de presentación para ese intento. No cambia el prompt, las herramientas, las llamadas, los tokens, los turnos, el puntaje, la cuota ni el registro. Ambas rutas guardan siempre el registro completo, las métricas y los recursos necesarios para reproducirlo después desde el historial.
+
+Al cambiar el tamaño del contenedor durante una reproducción, la escena actualiza el encuadre sin reiniciar el intento ni cambiar su instante. Esta garantía cubre la presentación del replay; no describe soporte móvil completo para el acceso, la edición y el resto de las consultas.
 
 ## Estados de la interfaz y controles
 
