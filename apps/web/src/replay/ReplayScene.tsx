@@ -14,7 +14,6 @@ import {
   REPLAY_PIT_LEDGE_WIDTH,
   REPLAY_SEGMENT_WIDTH,
   REPLAY_SUPPORT_START_X,
-  REPLAY_VIEW_WIDTH,
   REPLAY_WORLD_WIDTH,
 } from './prepare.js';
 
@@ -25,8 +24,10 @@ export interface ReplaySceneProps {
   readonly onError: (error: Error) => void;
 }
 
-const WIDTH = REPLAY_VIEW_WIDTH;
+const MIN_VIEW_WIDTH = 360;
+const MAX_VIEW_WIDTH = 760;
 const PREVIEW_HEIGHT = 360;
+const VIEW_HEIGHT = 330;
 const GROUND_Y = 250;
 const ROBOT_SCALE = 0.62;
 const SUPPORT_START_X = REPLAY_SUPPORT_START_X;
@@ -111,20 +112,20 @@ const terrainStateProgress = (sample: ReplaySample, index: number, state: Terrai
     : current;
 };
 
-const Backdrop = ({ width = WIDTH }: { readonly width?: number }) => (
+const Backdrop = ({ width = MAX_VIEW_WIDTH }: { readonly width?: number }) => (
   <>
     <rect width={width} height="330" fill="#eaf8fc" />
     <circle cx="665" cy="65" r="29" fill="#ffcf71" opacity="0.9" />
     <path d="M0 228Q92 202 185 226t183-2q100-23 198 1t194-2v107H0z" fill="#d6edf0" />
     <path d="M0 245Q102 223 206 243t205-1q99-19 193 0t156 1v87H0z" fill="#edf8f4" />
-    {width > WIDTH && (
+    {width > MAX_VIEW_WIDTH && (
       <>
         <path
-          d={`M${WIDTH} 228Q${WIDTH + (width - WIDTH) * 0.25} 202 ${WIDTH + (width - WIDTH) * 0.5} 226T${width} 224v107H${WIDTH}z`}
+          d={`M${MAX_VIEW_WIDTH} 228Q${MAX_VIEW_WIDTH + (width - MAX_VIEW_WIDTH) * 0.25} 202 ${MAX_VIEW_WIDTH + (width - MAX_VIEW_WIDTH) * 0.5} 226T${width} 224v107H${MAX_VIEW_WIDTH}z`}
           fill="#d6edf0"
         />
         <path
-          d={`M${WIDTH} 245Q${WIDTH + (width - WIDTH) * 0.25} 223 ${WIDTH + (width - WIDTH) * 0.5} 243T${width} 244v87H${WIDTH}z`}
+          d={`M${MAX_VIEW_WIDTH} 245Q${MAX_VIEW_WIDTH + (width - MAX_VIEW_WIDTH) * 0.25} 223 ${MAX_VIEW_WIDTH + (width - MAX_VIEW_WIDTH) * 0.5} 243T${width} 244v87H${MAX_VIEW_WIDTH}z`}
           fill="#edf8f4"
         />
       </>
@@ -395,49 +396,55 @@ const Effects = ({
 const ReplayCanvas = ({
   sample,
   record,
+  viewWidth,
 }: {
   readonly sample: ReplaySample;
   readonly record: ReplayRecordView;
-}) => (
-  <svg
-    className="replay-scene__canvas"
-    viewBox={`0 0 ${WIDTH} 330`}
-    role="img"
-    aria-label="Reproducción del intento."
-    data-profile={LEVEL.id}
-    data-complete={sample.complete}
-    data-action-index={sample.actionIndex ?? ''}
-    data-closure-status={sample.closureStatus}
-    data-camera-x={sample.cameraX}
-    data-terrain-transition-progress={sample.terrainTransition?.progress ?? ''}
-  >
-    <title>Reproducción del intento: robot {poseLabel(sample.pose)}</title>
-    <g data-replay-layer="backdrop">
-      <Backdrop />
-    </g>
-    <g
-      data-replay-world="true"
-      transform={`translate(${-sample.cameraX} 0)`}
-      data-world-width={REPLAY_WORLD_WIDTH}
-    >
-      <TerrainBack sample={sample} />
-      <Objects sample={sample} />
-      <g data-replay-layer="robot">
-        <Robot sample={sample} />
-      </g>
-      <TerrainFront sample={sample} />
-      {sample.effect !== 'none' && <Effects sample={sample} record={record} />}
-    </g>
-    <g aria-hidden="true" fontFamily="system-ui, sans-serif">
-      <rect x="22" y="20" width="110" height="34" rx="17" fill="#fff" fillOpacity="0.78" />
-      <text x="77" y="42" textAnchor="middle" fill="#23445b" fontSize="15" fontWeight="600">
+  readonly viewWidth: number;
+}) => {
+  const robotX = SUPPORT_START_X + sample.support * SEGMENT_WIDTH;
+  const cameraX = Math.max(0, Math.min(REPLAY_WORLD_WIDTH - viewWidth, robotX - viewWidth / 2));
+
+  return (
+    <>
+      <svg
+        className="replay-scene__canvas"
+        viewBox={`0 0 ${viewWidth} ${VIEW_HEIGHT}`}
+        role="img"
+        aria-label="Reproducción del intento."
+        data-profile={LEVEL.id}
+        data-complete={sample.complete}
+        data-action-index={sample.actionIndex ?? ''}
+        data-closure-status={sample.closureStatus}
+        data-camera-x={cameraX}
+        data-terrain-transition-progress={sample.terrainTransition?.progress ?? ''}
+      >
+        <title>Reproducción del intento: robot {poseLabel(sample.pose)}</title>
+        <g data-replay-layer="backdrop">
+          <Backdrop width={viewWidth} />
+        </g>
+        <g
+          data-replay-world="true"
+          transform={`translate(${-cameraX} 0)`}
+          data-world-width={REPLAY_WORLD_WIDTH}
+        >
+          <TerrainBack sample={sample} />
+          <Objects sample={sample} />
+          <g data-replay-layer="robot">
+            <Robot sample={sample} />
+          </g>
+          <TerrainFront sample={sample} />
+          {sample.effect !== 'none' && <Effects sample={sample} record={record} />}
+        </g>
+      </svg>
+      <p className="replay-scene__turn">
         {record.actions.length === 0
           ? 'Sin acciones'
           : `Turno ${sample.actionNumber} / ${record.actions.length}`}
-      </text>
-    </g>
-  </svg>
-);
+      </p>
+    </>
+  );
+};
 
 const initialCourseSample: ReplaySample = Object.freeze({
   time: 0,
@@ -450,7 +457,6 @@ const initialCourseSample: ReplaySample = Object.freeze({
   inventory: Object.freeze([]),
   doorState: 'locked',
   terrainTransition: null,
-  cameraX: 0,
   actionIndex: null,
   actionNumber: 0,
   closureStatus: 'incomplete',
@@ -551,6 +557,9 @@ const ReplayPlayer = ({ record, onReady, onComplete, onError }: ReplaySceneProps
   const [sample, setSample] = useState<ReplaySample | null>(null);
   const [error, setError] = useState<Error | null>(null);
   const [started, setStarted] = useState(false);
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const [containerWidth, setContainerWidth] = useState(MIN_VIEW_WIDTH);
+  const viewWidth = Math.min(MAX_VIEW_WIDTH, Math.max(MIN_VIEW_WIDTH, containerWidth));
   const onReadyRef = useRef(onReady);
   const onCompleteRef = useRef(onComplete);
   const onErrorRef = useRef(onError);
@@ -562,6 +571,17 @@ const ReplayPlayer = ({ record, onReady, onComplete, onError }: ReplaySceneProps
     onCompleteRef.current = onComplete;
     onErrorRef.current = onError;
   }, [onReady, onComplete, onError]);
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return undefined;
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries.find(({ target }) => target === viewport);
+      if (entry) setContainerWidth(entry.contentRect.width);
+    });
+    observer.observe(viewport);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -609,19 +629,21 @@ const ReplayPlayer = ({ record, onReady, onComplete, onError }: ReplaySceneProps
     }
   }, [sample, started]);
 
-  if (error)
-    return (
-      <div className="replay-scene__error" role="alert">
-        {error.message}
-      </div>
-    );
-  if (!sample)
-    return (
-      <div className="replay-scene__preparing" role="status">
-        Preparando animación…
-      </div>
-    );
-  return <ReplayCanvas sample={sample} record={record} />;
+  return (
+    <div className="replay-scene__viewport" ref={viewportRef}>
+      {error ? (
+        <div className="replay-scene__error" role="alert">
+          {error.message}
+        </div>
+      ) : sample ? (
+        <ReplayCanvas sample={sample} record={record} viewWidth={viewWidth} />
+      ) : (
+        <div className="replay-scene__preparing" role="status">
+          Preparando animación…
+        </div>
+      )}
+    </div>
+  );
 };
 
 export const ReplayScene = (props: ReplaySceneProps) => (

@@ -40,8 +40,6 @@ export interface ReplaySample {
   readonly doorState: 'locked' | 'open';
   /** Set only during a transition following a continuing action. */
   readonly terrainTransition: ReplayTerrainTransition | null;
-  /** Horizontal world offset for the viewport camera. */
-  readonly cameraX: number;
   readonly actionIndex: number | null;
   readonly actionNumber: number;
   readonly closureStatus: ReplayRecordView['closure']['status'];
@@ -71,7 +69,6 @@ interface ActionCue {
   readonly transition: PhaseTransitionCue | null;
 }
 
-export const REPLAY_VIEW_WIDTH = 760;
 export const REPLAY_SUPPORT_START_X = 80;
 export const REPLAY_SEGMENT_WIDTH = 120;
 export const REPLAY_PIT_LEDGE_WIDTH = 30;
@@ -357,14 +354,6 @@ const validateRecord = (record: ReplayRecordView): void => {
   }
 };
 
-const cameraForSupport = (support: number): number => {
-  const robotX = REPLAY_SUPPORT_START_X + support * REPLAY_SEGMENT_WIDTH;
-  return Math.max(
-    0,
-    Math.min(REPLAY_WORLD_WIDTH - REPLAY_VIEW_WIDTH, robotX - REPLAY_VIEW_WIDTH / 2),
-  );
-};
-
 const doorStateForInventory = (inventory: readonly string[]): 'locked' | 'open' =>
   inventory.includes(LEVEL.door!.requiredObjectId) ? 'open' : 'locked';
 
@@ -422,7 +411,6 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
         inventory: action.before.inventory,
         doorState: doorStateForInventory(action.before.inventory),
         terrainTransition: null,
-        cameraX: cameraForSupport(from),
         actionIndex: cue.index,
         actionNumber: cue.index + 1,
         closureStatus: record.closure.status,
@@ -437,7 +425,6 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
         return {
           ...common,
           support,
-          cameraX: cameraForSupport(support),
           drop: FALL_DEPTH * ease(fallProgress),
           facing: direction,
           pose: 'fall',
@@ -451,7 +438,6 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
         return {
           ...common,
           support,
-          cameraX: cameraForSupport(support),
           drop: 0,
           facing: direction,
           pose: p < 0.58 ? (p < 0.3 ? 'step-a' : 'step-b') : 'impact',
@@ -502,7 +488,6 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
         return {
           ...common,
           support,
-          cameraX: cameraForSupport(support),
           drop: 0,
           facing: direction,
           pose: p < 0.12 || p > 0.88 ? 'idle' : 'crouch',
@@ -515,7 +500,6 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
         return {
           ...common,
           support,
-          cameraX: cameraForSupport(support),
           drop: -Math.sin(Math.PI * p) * 66,
           facing: direction,
           pose: 'jump',
@@ -525,7 +509,6 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
       return {
         ...common,
         support,
-        cameraX: cameraForSupport(support),
         drop: 0,
         facing: direction,
         pose: p >= 0.84 ? 'idle' : p < 0.5 ? 'step-a' : 'step-b',
@@ -554,7 +537,6 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
         inventory: transitioning.action.after.inventory,
         doorState: doorStateForInventory(transitioning.action.after.inventory),
         terrainTransition: { to: phase.to, progress: ease(progress) },
-        cameraX: cameraForSupport(support),
         actionIndex: transitioning.index,
         actionNumber: transitioning.index + 1,
         closureStatus: record.closure.status,
@@ -575,7 +557,6 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
         inventory: lastState.inventory,
         doorState: doorStateForInventory(lastState.inventory),
         terrainTransition: null,
-        cameraX: cameraForSupport(lastState.support),
         actionIndex: null,
         actionNumber: record.actions.length,
         closureStatus: record.closure.status,
@@ -609,7 +590,6 @@ export const prepareReplay = (record: ReplayRecordView): PreparedReplay => {
       inventory: lastState.inventory,
       doorState: doorStateForInventory(lastState.inventory),
       terrainTransition: null,
-      cameraX: cameraForSupport(support),
       actionIndex: terminalCue?.index ?? null,
       actionNumber: record.actions.length,
       closureStatus: record.closure.status,
