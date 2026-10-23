@@ -104,6 +104,7 @@ const readFrame = (container: HTMLElement) => {
     svg,
     viewWidth: viewBox[2]!,
     cameraX: Number(svg.getAttribute('data-camera-x')),
+    worldTransform: world?.getAttribute('transform'),
     worldWidth: Number(world?.getAttribute('data-world-width')),
     robotWorldX: Number(robot?.getAttribute('data-center-x')),
     actionIndex: svg.getAttribute('data-action-index'),
@@ -119,9 +120,7 @@ const expectRobotInsideView = (frame: ReturnType<typeof readFrame>): void => {
   expect(frame.cameraX + frame.viewWidth).toBeLessThanOrEqual(frame.worldWidth);
   expect(frame.robotWorldX - frame.cameraX).toBeGreaterThanOrEqual(0);
   expect(frame.robotWorldX - frame.cameraX).toBeLessThanOrEqual(frame.viewWidth);
-  expect(frame.svg.querySelector('[data-replay-world]')?.getAttribute('transform')).toBe(
-    `translate(${-frame.cameraX} 0)`,
-  );
+  expect(frame.worldTransform).toBe(`translate(${-frame.cameraX} 0)`);
 };
 
 const turnLabel = (actionNumber: number, actionCount: number): string =>
