@@ -498,6 +498,9 @@ export const CoursePreview = ({ locked = false }: { readonly locked?: boolean })
       </div>
       <span className="course-preview__phase">Fase inicial</span>
     </div>
+    <p className="course-preview__slide-hint">
+      Deslizá el mapa horizontalmente para recorrerlo completo.
+    </p>
     <div className="course-preview__scroller" tabIndex={0} aria-label="Recorrido desplazable">
       <svg
         className="course-preview__canvas"

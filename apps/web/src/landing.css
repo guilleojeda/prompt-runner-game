@@ -385,7 +385,8 @@ h3 {
 }
 
 .screen-card figcaption {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: baseline;
   gap: 0.65rem;
   padding: 0.9rem 1rem 1rem;
@@ -402,11 +403,14 @@ h3 {
 }
 
 .screen-card figcaption a {
-  margin-left: auto;
+  grid-row: 2;
+  grid-column: 2;
+  justify-self: start;
+  margin-left: 0;
   color: var(--amber-bright);
   font-size: 0.82rem;
   font-weight: 680;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .steps-section {

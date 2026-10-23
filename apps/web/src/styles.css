@@ -627,13 +627,16 @@ h1 {
 
 .animation-preference label {
   display: inline-flex;
+  min-height: 2.75rem;
   align-items: center;
   gap: 0.55rem;
+  padding-inline: 0.25rem;
   color: #f7f1e1;
   font-weight: 700;
 }
 
 .animation-preference input {
+  flex: 0 0 1.1rem;
   width: 1.1rem;
   height: 1.1rem;
   accent-color: #95c7a0;
@@ -1654,16 +1657,23 @@ h1 {
 
 .skill-toggle {
   display: inline-flex !important;
+  min-height: 2.75rem;
   align-items: center;
   gap: 0.55rem;
   margin: 0 !important;
+  padding: 0.25rem;
   font-size: 1rem !important;
 }
 
 .skill-toggle input {
+  flex: 0 0 1.1rem;
   width: 1.1rem;
   height: 1.1rem;
   accent-color: #d8b36a;
+}
+
+.skill-toggle span {
+  min-width: 0;
 }
 
 .skill-help {
@@ -2074,6 +2084,11 @@ button:disabled {
     padding: 2rem 0 3rem;
   }
 
+  .robot-editor,
+  .attempt-workspace {
+    padding: 1rem;
+  }
+
   .auth-card {
     align-items: flex-start;
   }
@@ -2089,6 +2104,24 @@ button:disabled {
 
   .skill-list {
     grid-template-columns: 1fr;
+  }
+
+  .editor-form fieldset {
+    padding: 0.75rem;
+  }
+
+  .skill-card {
+    padding: 0.75rem;
+  }
+
+  .skill-card-heading {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.15rem;
+  }
+
+  .skill-help {
+    text-align: left;
   }
 
   .attempt-heading,
