@@ -255,6 +255,13 @@ describe('access screen', () => {
     await screen.findByText('Todavía no hay intentos guardados.');
     await within(controls).findByText('de 100 intentos disponibles');
     await within(controls).findByText('El resultado aparece después de la reproducción.');
+    expect(screen.getAllByRole('heading', { name: 'Prepará tu robot' })).toHaveLength(1);
+    expect(screen.getAllByRole('group', { name: 'Controles de prueba y animación' })).toHaveLength(
+      1,
+    );
+    expect(screen.getAllByRole('button', { name: 'Probar' })).toHaveLength(1);
+    expect(screen.getAllByRole('checkbox', { name: 'Animación' })).toHaveLength(1);
+    expect(screen.getAllByLabelText('Cuota: 100 de 100 intentos disponibles')).toHaveLength(1);
     expect(document.querySelector('#attempt-controls-slot')).toBe(controls);
     expect(controls.isConnected).toBe(true);
     expect(within(controls).getByRole('checkbox', { name: 'Animación' })).toBeTruthy();
@@ -262,6 +269,41 @@ describe('access screen', () => {
 
     releaseDraft({ version: 0, draft: createDefaultDraft() });
     await waitFor(() => expect(tryButton.disabled).toBe(false));
+  });
+
+  it('keeps one focused editor and its draft when App rerenders', async () => {
+    const authClient = client({ initialize: vi.fn().mockResolvedValue(session()) });
+    const draftApi: DraftApi = {
+      getDraft: vi.fn().mockResolvedValue({ version: 0, draft: createDefaultDraft() }),
+      putDraft: vi.fn().mockResolvedValue({ version: 1, draft: createDefaultDraft() }),
+    };
+    const attemptApi = emptyAttemptApi();
+    const configLoader = async () => config;
+    const props = { authClient, draftApi, attemptApi, configLoader };
+    const view = render(<App {...props} />);
+
+    await screen.findByRole('heading', { name: 'Historial' });
+    const instructions = (await screen.findByLabelText(
+      'Qué debe tener en cuenta el robot',
+    )) as HTMLTextAreaElement;
+    await screen.findByLabelText('Cuota: 100 de 100 intentos disponibles');
+    await waitFor(() =>
+      expect((screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement).disabled).toBe(
+        false,
+      ),
+    );
+
+    vi.useFakeTimers();
+    const draft = '  Avanzá con cuidado 🦾\n  y conservá este borrador.  ';
+    fireEvent.change(instructions, { target: { value: draft } });
+    instructions.focus();
+    view.rerender(<App {...props} />);
+
+    expect(screen.getAllByRole('heading', { name: 'Prepará tu robot' })).toHaveLength(1);
+    expect(screen.getByLabelText('Qué debe tener en cuenta el robot')).toBe(instructions);
+    expect(instructions.value).toBe(draft);
+    expect(document.activeElement).toBe(instructions);
+    expect(draftApi.putDraft).not.toHaveBeenCalled();
   });
 
   it('keeps saved-copy actions unavailable until the editor configuration loads', async () => {
@@ -1637,9 +1679,14 @@ describe('access screen', () => {
 
     await screen.findByLabelText('Qué debe tener en cuenta el robot');
     const tryButton = await screen.findByRole('button', { name: 'Probar' });
+    const animation = (await screen.findByRole('checkbox', {
+      name: 'Animación',
+    })) as HTMLInputElement;
     await waitFor(() => expect((tryButton as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(tryButton);
 
+    expect((tryButton as HTMLButtonElement).disabled).toBe(true);
+    expect(animation.disabled).toBe(true);
     expect(
       (
         screen

@@ -253,6 +253,72 @@ describe('RobotEditor', () => {
     });
   });
 
+  it('restores the confirmed literal draft after the editor is remounted', async () => {
+    let confirmed = snapshot();
+    let confirmSave!: () => void;
+    const getDraft = vi.fn(async () => confirmed);
+    const putDraft = vi.fn(
+      (version: number, draft: RobotDraft) =>
+        new Promise<DraftSnapshot>((resolve) => {
+          const next = snapshot(version + 1, draft);
+          confirmSave = () => {
+            confirmed = next;
+            resolve(next);
+          };
+        }),
+    );
+    const draftApi = api({ getDraft, putDraft });
+    const savedInstructions = '  Preferí avanzar 🦾\n  si el camino está libre.  ';
+    const savedDescription = '  Esperá 🪜\n  a que cambie el terreno.  ';
+    const firstEditor = render(<RobotEditor api={draftApi} session={session()} />);
+
+    const instructions = (await screen.findByLabelText(
+      'Qué debe tener en cuenta el robot',
+    )) as HTMLTextAreaElement;
+    const waitToggle = (await screen.findByRole('checkbox', {
+      name: 'Esperar',
+    })) as HTMLInputElement;
+    fireEvent.change(instructions, { target: { value: savedInstructions } });
+    fireEvent.click(waitToggle);
+    fireEvent.change(
+      firstEditor.container.querySelector('#skill-description-wait') as HTMLTextAreaElement,
+      { target: { value: savedDescription } },
+    );
+
+    await waitFor(() => expect(putDraft).toHaveBeenCalledOnce(), { timeout: 2_000 });
+    expect(screen.getByText('Guardando…')).toBeTruthy();
+    const sentDraft = putDraft.mock.calls[0]?.[1];
+    expect(sentDraft).toMatchObject({ instructions: savedInstructions });
+    expect(sentDraft?.skills.find((skill) => skill.id === 'wait')).toMatchObject({
+      enabled: true,
+      description: savedDescription,
+    });
+
+    await act(async () => {
+      confirmSave();
+      await Promise.resolve();
+    });
+    expect(confirmed.version).toBe(1);
+    expect(screen.getByText('Guardado')).toBeTruthy();
+
+    firstEditor.unmount();
+    const secondEditor = render(<RobotEditor api={draftApi} session={session()} />);
+    const restoredInstructions = (await screen.findByLabelText(
+      'Qué debe tener en cuenta el robot',
+    )) as HTMLTextAreaElement;
+    const restoredWaitToggle = (await screen.findByRole('checkbox', {
+      name: 'Esperar',
+    })) as HTMLInputElement;
+    const restoredDescription = secondEditor.container.querySelector(
+      '#skill-description-wait',
+    ) as HTMLTextAreaElement;
+
+    expect(getDraft).toHaveBeenCalledTimes(2);
+    expect(restoredInstructions.value).toBe(savedInstructions);
+    expect(restoredWaitToggle.checked).toBe(true);
+    expect(restoredDescription.value).toBe(savedDescription);
+  });
+
   it('keeps the current model fixed as an attempt starts', async () => {
     const editorRef = createRef<RobotEditorHandle>();
     const onTry = vi.fn();
