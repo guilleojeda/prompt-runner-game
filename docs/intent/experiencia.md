@@ -13,15 +13,17 @@ La interfaz está en español y debe poder entenderse sin conocer AWS ni program
 ## Formas de uso
 
 - **Sesión colaborativa:** los presentadores operan una única interfaz desde una computadora de escritorio conectada a un proyector. El público propone habilidades, descripciones e instrucciones y observa los resultados. Los asistentes no necesitan teléfono, cuenta ni conexión propia para participar verbalmente.
-- **Juego individual:** cada participante entra a la aplicación web desde un navegador de escritorio, crea una cuenta con email verificado y usa las mismas mecánicas y posibilidades de edición. El registro, la cuota y el guardado se definen en [plataforma](plataforma.md).
+- **Juego individual:** cada participante entra a la aplicación web desde un navegador, crea una cuenta con email verificado y usa las mismas mecánicas. En un teléfono puede completar el acceso, consultar el mapa inicial, editar y comenzar o cancelar un intento; las vistas de resultados, historial, copias e inspección aún no tienen una adaptación móvil específica. El registro, la cuota y el guardado se definen en [plataforma](plataforma.md).
 
-La primera versión no requiere soporte para celulares o tablets. El booth y el juego individual usan las mismas reglas y el nivel principal vigente; sólo cambia quién opera la interfaz. La pantalla compartida debe mantener texto reconocible, obstáculos distinguibles y resultados visibles desde el proyector.
+El recorrido colaborativo usa la misma interfaz desde una computadora conectada al proyector. En teléfono, el acceso, el mapa inicial, el editor y los controles de cálculo usan una columna y desplazamiento vertical normal, y conservan las mismas reglas y nivel. Las demás vistas siguen disponibles con la presentación actual, que no está adaptada de forma específica para teléfono. La pantalla compartida debe mantener texto reconocible, obstáculos distinguibles y resultados visibles desde el proyector.
 
 ## Preparación disponible
 
 La vista privada muestra las habilidades, sus descripciones e instrucciones y guarda automáticamente al dejar de escribir durante 600 ms. La persona puede seguir editando mientras se guarda una versión anterior; el aviso Guardado sólo corresponde al texto visible confirmado por el servidor. Hay estados de carga, cambios pendientes, guardado, error con reintento, límite de bytes y conflicto entre pestañas.
 
-Antes del editor se muestra una vista estática del recorrido completo para el jugador, con casillas, obstáculos, recompensa, llave, puerta y salida. Los obstáculos periódicos se presentan en su fase inicial y se identifica que cambian con los turnos. Esta vista usa el mismo dibujo del reproductor, no simula una partida ni se envía al agente.
+Antes del editor se muestra una vista estática del recorrido completo para el jugador, con casillas, obstáculos, recompensa, llave, puerta y salida. Los obstáculos periódicos se presentan en su fase inicial y se identifica que cambian con los turnos. En teléfono el mapa mantiene su ancho para que el terreno no se comprima; se recorre con desplazamiento horizontal nativo y una indicación visible explica el gesto. También se puede enfocar y desplazar con teclado. Esta vista usa el mismo dibujo del reproductor, no simula una partida ni se envía al agente.
+
+En teléfono, el mapa, el editor y el área de cálculo se apilan en una sola columna. Se conserva una instancia de cada componente y la ubicación única de **Probar**, **Animación** y cuota, por lo que cambiar el ancho u abrir el teclado móvil no crea otro borrador ni otra ejecución. Los campos mantienen texto legible y ocupan el ancho útil; las etiquetas para habilitar habilidades y Animación tienen un área táctil ampliada. El uso de Managed Login y los servicios de guardado y admisión conserva sus contratos actuales.
 
 Las instrucciones generales admiten hasta 1.000 caracteres visibles y la descripción de cada habilidad hasta 500, también cuando está deshabilitada. Cada campo muestra su contador y máximo, incluyendo espacios y saltos de línea. Los caracteres visibles se cuentan como grafemas Unicode; pegar texto por encima del máximo conserva el contenido y bloquea guardado y Probar hasta corregirlo. El servidor valida los mismos máximos para nuevas escrituras y admisiones; las configuraciones históricas siguen consultables sin recortarse. Se conserva el límite conjunto de 65.536 bytes del borrador serializado, incluidos los contratos fijos: la pantalla avisa al alcanzar el 90% y rechaza el guardado si se supera, sin truncar textos. El contador permanente de bytes no aparece en la edición normal.
 
@@ -29,7 +31,7 @@ Un conflicto conserva el texto local y permite revisar la versión guardada ante
 
 Cargar una copia o usar una configuración histórica confirma su guardado antes de reemplazar el contenido visible y anunciar éxito. Si el guardado falla o entra en conflicto, conserva el contenido anterior y permite resolverlo. Si la persona sigue escribiendo durante la carga o el guardado, conserva esa edición posterior y no la reemplaza cuando llega la respuesta.
 
-La pantalla está en español y se opera con teclado. Probar congela lo visible, confirma su guardado y admite un intento con control de versión. Se bloquean los controles, incluido cerrar sesión, hasta presentar el resultado; durante cálculo sólo Cancelar es operativo. Los errores de acceso o red permiten recuperar la sesión o consulta sin crear otro intento. El historial propio es paginado y abre resultados conservados. La admisión permite un solo intento pendiente o activo por usuario. Si se conservan varios activos históricos, se elige cuál retomar antes de entrar en su cálculo.
+La pantalla está en español y se opera con teclado, mouse o tacto. Probar congela lo visible, confirma su guardado y admite un intento con control de versión. Se bloquean los controles, incluido cerrar sesión, hasta presentar el resultado; durante cálculo sólo Cancelar es operativo. Los errores de acceso o red permiten recuperar la sesión o consulta sin crear otro intento. El historial propio es paginado y abre resultados conservados. La admisión permite un solo intento pendiente o activo por usuario. Si se conservan varios activos históricos, se elige cuál retomar antes de entrar en su cálculo.
 
 Al refrescar el historial, las páginas pendientes del listado anterior dejan de modificar sus filas y cursor. La paginación sigue desde el listado vigente para no omitir intentos ni anunciar que está completo antes de tiempo.
 
@@ -65,7 +67,7 @@ Compartir es voluntario. Sólo se incluyen resultado, turnos, recompensa o avanc
 
 El snapshot de **Animación** es sólo una decisión de presentación para ese intento. No cambia el prompt, las herramientas, las llamadas, los tokens, los turnos, el puntaje, la cuota ni el registro. Ambas rutas guardan siempre el registro completo, las métricas y los recursos necesarios para reproducirlo después desde el historial.
 
-Al cambiar el tamaño del contenedor durante una reproducción, la escena actualiza el encuadre sin reiniciar el intento ni cambiar su instante. Esta garantía cubre la presentación del replay; no describe soporte móvil completo para el acceso, la edición y el resto de las consultas.
+Al cambiar el tamaño del contenedor durante una reproducción, la escena actualiza el encuadre sin reiniciar el intento ni cambiar su instante. En teléfono, el acceso, el mapa inicial, la edición, las preferencias y los controles de cálculo se presentan en una columna; resultados, historial, copias e inspector conservan su presentación actual.
 
 ## Estados de la interfaz y controles
 
@@ -156,10 +158,10 @@ La estética, los assets, la distribución visual y el nombre final se pueden aj
 
 El diseño aprobado para componer sprites, terreno e interacciones está en [animación](../architecture/animacion.md); mantiene el orden acordado de Probar, bloqueo, cálculo, animación opcional continua y resultado.
 
-Quedan fuera de esta versión:
+Límites de la experiencia actual:
 
 - Robot físico, hardware de robótica y el kiosco de empanadas.
-- Control humano directo durante el intento, inferencias por frame, votaciones distribuidas por teléfono, ranking público global y soporte móvil o tablets.
+- Las vistas de resultado, historial, copias guardadas e inspector de decisiones no tienen adaptación móvil específica. No se agregan control humano directo durante el intento, inferencias por frame, votaciones distribuidas por teléfono ni ranking público global.
 - Editor de niveles o generación procedural obligatoria, segundo LLM traductor, generación de código en vivo, entrenamiento, fine-tuning y aprendizaje por refuerzo.
 - GraphRAG, bases vectoriales, múltiples agentes y microservicios innecesarios.
 - Salto largo, física libre, postura agachada persistente y uso manual o combinación de objetos.

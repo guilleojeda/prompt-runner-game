@@ -54,10 +54,28 @@
   outline-offset: 3px;
 }
 
+.course-preview__slide-hint {
+  margin: 0 0 0.65rem;
+  color: #d4c9bc;
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
 .course-preview__canvas {
   display: block;
   max-width: none;
   background: #eaf8fc;
+}
+
+@media (max-width: 40rem) {
+  .course-preview {
+    padding: 1rem;
+  }
+
+  .course-preview__canvas {
+    width: 1260px;
+    height: auto;
+  }
 }
 
 .course-preview__description {

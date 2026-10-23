@@ -771,6 +771,19 @@ h3 {
     width: 100%;
   }
 
+  .screen-card figcaption {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: baseline;
+  }
+
+  .screen-card figcaption a {
+    grid-column: 2;
+    justify-self: start;
+    margin-left: 0;
+    white-space: normal;
+  }
+
   .screen-gallery {
     align-items: start;
   }
