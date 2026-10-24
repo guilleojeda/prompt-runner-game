@@ -745,7 +745,7 @@ h1 {
 
 .decision-inspector {
   margin-top: 1rem;
-  padding: 1rem;
+  padding: clamp(0.65rem, 2.5vw, 1rem);
   border: 1px solid rgba(216, 179, 106, 0.42);
   border-radius: 0.7rem;
   background: rgba(20, 19, 15, 0.3);
@@ -781,8 +781,17 @@ h1 {
   display: grid;
   grid-template-columns: repeat(11, minmax(4.2rem, 1fr));
   gap: 0.45rem;
+  min-width: 0;
+  max-width: 100%;
   overflow-x: auto;
   padding: 0.25rem 0.1rem 0.65rem;
+}
+
+.decision-map-help {
+  margin: 0 0 0.75rem;
+  color: #c9c2b0;
+  font-size: 0.9rem;
+  line-height: 1.4;
 }
 
 .decision-map-cell {
@@ -842,26 +851,35 @@ h1 {
   line-height: 1.25;
 }
 
-.decision-inspector-columns {
+.decision-inspector-support {
   display: grid;
   grid-template-columns: minmax(12rem, 0.8fr) minmax(0, 1.4fr);
   gap: 1rem;
-  margin-top: 1rem;
+  align-items: start;
 }
 
-.decision-inspector-lists {
-  display: grid;
-  align-content: start;
-  gap: 1rem;
-}
-
-.decision-inspector-lists section,
-.decision-detail-wrap {
+.decision-inspector-support > section,
+.decision-detail-wrap,
+.decision-inspector-chronology {
   min-width: 0;
-  padding: 0.8rem;
+  padding: 0.65rem;
   border: 1px solid rgba(242, 239, 232, 0.1);
   border-radius: 0.55rem;
   background: rgba(242, 239, 232, 0.03);
+}
+
+.decision-inspector-chronology {
+  margin-top: 0.75rem;
+}
+
+.decision-detail-wrap {
+  scroll-margin-block: 1rem;
+  overflow-wrap: anywhere;
+}
+
+.decision-detail-wrap:focus {
+  outline: 3px solid #f2c879;
+  outline-offset: 3px;
 }
 
 .decision-inspector h4 {
@@ -878,9 +896,17 @@ h1 {
   list-style: none;
 }
 
+.decision-list li {
+  display: grid;
+  min-width: 0;
+  gap: 0.25rem;
+}
+
 .decision-list-item {
   display: grid;
   width: 100%;
+  min-width: 0;
+  min-height: 2.75rem;
   gap: 0.18rem;
   padding: 0.55rem 0.6rem;
   border: 1px solid rgba(242, 239, 232, 0.12);
@@ -889,6 +915,11 @@ h1 {
   background: rgba(20, 19, 15, 0.26);
   text-align: left;
   cursor: pointer;
+}
+
+.decision-list-item span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .decision-list-item:hover,
@@ -900,6 +931,23 @@ h1 {
 .decision-list-item span:last-child {
   color: #b9b4a8;
   font-size: 0.78rem;
+}
+
+.decision-detail-link {
+  display: inline-flex;
+  min-height: 2.75rem;
+  align-items: center;
+  justify-self: start;
+  padding: 0.45rem 0.6rem;
+  color: #f2c879;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  text-underline-offset: 0.2em;
+}
+
+.decision-detail-link:focus-visible {
+  outline: 3px solid #f2c879;
+  outline-offset: 2px;
 }
 
 .decision-detail {
@@ -914,7 +962,8 @@ h1 {
 }
 
 .decision-fact {
-  padding: 0.7rem;
+  min-width: 0;
+  padding: 0.55rem;
   border: 1px solid rgba(242, 239, 232, 0.1);
   border-radius: 0.45rem;
   background: rgba(20, 19, 15, 0.24);
@@ -927,7 +976,8 @@ h1 {
 .decision-fact p,
 .decision-detail-empty,
 .decision-inspector-empty,
-.decision-inspector-lists section > p {
+.decision-inspector-support > section > p,
+.decision-inspector-chronology > p {
   margin: 0;
   color: #b9b4a8;
   line-height: 1.45;
@@ -2199,7 +2249,7 @@ button:disabled {
     grid-template-columns: repeat(11, 5.1rem);
   }
 
-  .decision-inspector-columns {
+  .decision-inspector-support {
     grid-template-columns: 1fr;
   }
 }
