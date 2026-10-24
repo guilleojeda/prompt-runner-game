@@ -143,6 +143,26 @@ describe('DecisionInspector', () => {
     expect(screen.queryByText(/prompt|response|uso|razonamiento/i)).toBeNull();
   });
 
+  it('keeps the map, selected support, detail, and chronological list in DOM reading order', async () => {
+    const api = inspectorApi();
+    render(<DecisionInspector api={api} attemptId="attempt-1" onClose={vi.fn()} />);
+
+    await screen.findByRole('heading', { name: 'Observación' });
+
+    const map = screen.getByRole('group', { name: 'Mapa estático del recorrido' });
+    const supportHeading = screen.getByRole('heading', { name: 'Decisiones en la casilla 2' });
+    const detailHeading = screen.getByRole('heading', { name: 'Observación' });
+    const chronologicalHeading = screen.getByRole('heading', {
+      name: 'Todas las decisiones, en orden',
+    });
+    const followsInDom = (before: Element, after: Element): boolean =>
+      Boolean(before.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING);
+
+    expect(followsInDom(map, supportHeading)).toBe(true);
+    expect(followsInDom(supportHeading, detailHeading)).toBe(true);
+    expect(followsInDom(detailHeading, chronologicalHeading)).toBe(true);
+  });
+
   it('shows the door requirement and map context to assistive technology', async () => {
     const doorDetail: DecisionDetail = {
       ...detail(1),
@@ -177,6 +197,167 @@ describe('DecisionInspector', () => {
     expect(await screen.findByText('No hay decisiones en esta casilla.')).toBeTruthy();
     expect(screen.queryByText('Cargando la ficha…')).toBeNull();
     expect(screen.getByText('Elegí una decisión para ver su ficha.')).toBeTruthy();
+  });
+
+  it('clears the previous detail and its links when selecting an empty support after success', async () => {
+    const getDecision = vi.fn().mockResolvedValue(detail(1));
+    const api = inspectorApi({ getDecision });
+    render(<DecisionInspector api={api} attemptId="attempt-1" onClose={vi.fn()} />);
+
+    expect(await screen.findByRole('heading', { name: 'Decisión 1, casilla 2' })).toBeTruthy();
+    expect(screen.getAllByRole('link', { name: 'Ver ficha seleccionada' })).toHaveLength(2);
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /Casilla 1, Casilla, Tramo 0[–-]1: suelo/ }),
+    );
+
+    expect(await screen.findByText('Elegí una decisión para ver su ficha.')).toBeTruthy();
+    expect(screen.getByText('No hay decisiones en esta casilla.')).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Decisión 1, casilla 2' })).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Ficha de decisión 1' })).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Ver ficha seleccionada' })).toBeNull();
+    expect(getDecision).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps both selected-row links on one focusable destination through load, error, retry, and success', async () => {
+    const crowdedIndex: DecisionIndex = {
+      ...index,
+      decisions: Array.from({ length: 8 }, (_, position) => ({
+        number: position + 1,
+        decisionId: `decision-${position + 1}`,
+        originSupport: 2,
+        hasAction: position % 2 === 0,
+      })),
+    };
+    let rejectInitial!: (reason: unknown) => void;
+    let resolveRetry!: (loaded: DecisionDetail) => void;
+    const getDecision = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<DecisionDetail>((_resolve, reject) => {
+            rejectInitial = reject;
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise<DecisionDetail>((resolve) => {
+            resolveRetry = resolve;
+          }),
+      );
+    const getDecisionIndex = vi.fn().mockResolvedValue(crowdedIndex);
+    const api = inspectorApi({ getDecisionIndex, getDecision });
+    const scroll = stubScrollIntoView();
+
+    const readLinksAndDestination = () => {
+      const links = screen.getAllByRole('link', { name: 'Ver ficha seleccionada' });
+      expect(links).toHaveLength(2);
+      const href = links[0]?.getAttribute('href');
+      expect(href).not.toBeNull();
+      expect(links[1]?.getAttribute('href')).toBe(href);
+
+      const fragment = new URL(href!, window.location.href).hash.slice(1);
+      expect(fragment).not.toBe('');
+      const destination = document.getElementById(decodeURIComponent(fragment));
+      expect(destination).not.toBeNull();
+      expect(links.map((link) => link.closest('ol')).filter(Boolean)).toHaveLength(2);
+      expect(new Set(links.map((link) => link.closest('ol'))).size).toBe(2);
+
+      for (const link of links) {
+        const selectedButton = link.parentElement?.querySelector('button[aria-pressed="true"]');
+        expect(selectedButton).not.toBeNull();
+        expect(selectedButton?.parentElement).toBe(link.parentElement);
+        expect(selectedButton?.textContent).toContain('Decisión 1');
+      }
+
+      return { links, href, destination: destination! };
+    };
+    const focusDestination = (destination: HTMLElement): void => {
+      destination.focus();
+      expect(document.activeElement).toBe(destination);
+    };
+    const clickWithoutNativeNavigation = (link: HTMLElement): void => {
+      const preventDefault = (event: Event): void => {
+        if (event.target === link) event.preventDefault();
+      };
+      document.addEventListener('click', preventDefault, true);
+      try {
+        fireEvent.click(link);
+      } finally {
+        document.removeEventListener('click', preventDefault, true);
+      }
+    };
+
+    try {
+      render(<DecisionInspector api={api} attemptId="attempt-1" onClose={vi.fn()} />);
+
+      expect(await screen.findByText('Cargando la ficha…')).toBeTruthy();
+      const supportList = screen.getByRole('region', { name: 'Decisiones en la casilla 2' });
+      const chronologicalList = screen.getByRole('region', {
+        name: 'Todas las decisiones, en orden',
+      });
+      expect(within(supportList).getAllByRole('button', { name: /^Decisión \d+/ })).toHaveLength(8);
+      expect(
+        within(chronologicalList).getAllByRole('button', { name: /^Decisión \d+/ }),
+      ).toHaveLength(8);
+      for (const list of [supportList, chronologicalList]) {
+        const selected = within(list).getAllByRole('button', { pressed: true });
+        expect(selected).toHaveLength(1);
+        expect(selected[0]?.textContent).toContain('Decisión 1');
+      }
+
+      const loading = readLinksAndDestination();
+      focusDestination(loading.destination);
+      clickWithoutNativeNavigation(loading.links[0]!);
+      expect(getDecisionIndex).toHaveBeenCalledTimes(1);
+      expect(getDecision).toHaveBeenCalledTimes(1);
+      expect(readLinksAndDestination().destination).toBe(loading.destination);
+
+      await act(async () => {
+        rejectInitial(new Error('detalle no disponible'));
+        await Promise.resolve();
+      });
+      expect(await screen.findByRole('alert')).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Reintentar ficha' })).toBeTruthy();
+      const failed = readLinksAndDestination();
+      expect(failed.href).toBe(loading.href);
+      expect(failed.destination).toBe(loading.destination);
+      expect(document.activeElement).toBe(loading.destination);
+      focusDestination(failed.destination);
+
+      clickWithoutNativeNavigation(failed.links[0]!);
+      expect(getDecision).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole('button', { name: 'Reintentar ficha' })).toBeTruthy();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Reintentar ficha' }));
+      expect(await screen.findByText('Cargando la ficha…')).toBeTruthy();
+      expect(getDecision).toHaveBeenCalledTimes(2);
+      const retrying = readLinksAndDestination();
+      expect(retrying.href).toBe(loading.href);
+      expect(retrying.destination).toBe(loading.destination);
+      focusDestination(retrying.destination);
+      const scrollCallsBeforeSuccess = scroll.scrollIntoView.mock.calls.length;
+
+      const selectedDetail: DecisionDetail = {
+        ...detail(1),
+        item: crowdedIndex.decisions[0]!,
+      };
+      await act(async () => {
+        resolveRetry(selectedDetail);
+      });
+
+      expect(await screen.findByRole('heading', { name: 'Decisión 1, casilla 2' })).toBeTruthy();
+      expect(screen.getAllByRole('heading', { name: 'Observación' })).toHaveLength(1);
+      const loaded = readLinksAndDestination();
+      expect(loaded.href).toBe(loading.href);
+      expect(loaded.destination).toBe(loading.destination);
+      expect(document.activeElement).toBe(loading.destination);
+      expect(scroll.scrollIntoView).toHaveBeenCalledTimes(scrollCallsBeforeSuccess);
+      expect(getDecisionIndex).toHaveBeenCalledTimes(1);
+      expect(getDecision).toHaveBeenCalledTimes(2);
+    } finally {
+      scroll.restore();
+    }
   });
 
   it.each(['decision list', 'selected support on the map'] as const)(
@@ -502,8 +683,11 @@ describe('DecisionInspector', () => {
       expect(await screen.findByRole('heading', { name: 'Observación' })).toBeTruthy();
       expect(scroll.scrollIntoView).not.toHaveBeenCalled();
 
-      fireEvent.click(screen.getByRole('button', { name: /Decisión 3/ }));
+      const manualSelection = screen.getByRole('button', { name: /Decisión 3/ });
+      manualSelection.focus();
+      fireEvent.click(manualSelection);
       expect(await screen.findByText('Consumió el turno 3.')).toBeTruthy();
+      expect(document.activeElement).toBe(manualSelection);
       expect(scroll.scrollIntoView).not.toHaveBeenCalled();
 
       cleanup();
@@ -526,6 +710,148 @@ describe('DecisionInspector', () => {
         Reflect.deleteProperty(window, 'matchMedia');
       }
     }
+  });
+
+  it('does not repeat the pending latest-detail scroll when its selected-row link is activated', async () => {
+    let resolveDetail!: (loaded: DecisionDetail) => void;
+    const getDecision = vi.fn(
+      () =>
+        new Promise<DecisionDetail>((resolve) => {
+          resolveDetail = resolve;
+        }),
+    );
+    const getDecisionIndex = vi.fn().mockResolvedValue(index);
+    const api = inspectorApi({ getDecisionIndex, getDecision });
+    const scroll = stubScrollIntoView();
+    const preventNativeNavigation = (event: Event): void => {
+      if (event.target instanceof HTMLAnchorElement) event.preventDefault();
+    };
+
+    try {
+      render(
+        <DecisionInspector
+          api={api}
+          attemptId="attempt-1"
+          initialSelection="last-action-or-decision"
+          onClose={vi.fn()}
+        />,
+      );
+
+      expect(await screen.findByText('Cargando la ficha…')).toBeTruthy();
+      const links = screen.getAllByRole('link', { name: 'Ver ficha seleccionada' });
+      expect(links).toHaveLength(2);
+      const href = links[0]?.getAttribute('href');
+      expect(href).not.toBeNull();
+      expect(links[1]?.getAttribute('href')).toBe(href);
+      const fragment = new URL(href!, window.location.href).hash.slice(1);
+      const destination = document.getElementById(decodeURIComponent(fragment));
+      expect(destination).not.toBeNull();
+
+      document.addEventListener('click', preventNativeNavigation, true);
+      try {
+        fireEvent.click(links[0]!);
+      } finally {
+        document.removeEventListener('click', preventNativeNavigation, true);
+      }
+      const scrollCallsAfterActivation = scroll.scrollIntoView.mock.calls.length;
+
+      expect(getDecisionIndex).toHaveBeenCalledTimes(1);
+      expect(getDecision).toHaveBeenCalledTimes(1);
+      expect(getDecision).toHaveBeenCalledWith('attempt-1', 3, expect.any(AbortSignal));
+      await act(async () => {
+        resolveDetail(detail(3));
+      });
+
+      expect(await screen.findByRole('heading', { name: 'Decisión 3, casilla 5' })).toBeTruthy();
+      const loadedLinks = screen.getAllByRole('link', { name: 'Ver ficha seleccionada' });
+      expect(loadedLinks).toHaveLength(2);
+      expect(loadedLinks[0]?.getAttribute('href')).toBe(href);
+      expect(loadedLinks[1]?.getAttribute('href')).toBe(href);
+      expect(document.getElementById(decodeURIComponent(fragment))).toBe(destination);
+      expect(scroll.scrollIntoView).toHaveBeenCalledTimes(scrollCallsAfterActivation);
+      expect(getDecisionIndex).toHaveBeenCalledTimes(1);
+      expect(getDecision).toHaveBeenCalledTimes(1);
+    } finally {
+      scroll.restore();
+    }
+  });
+
+  it('ignores a late detail response after selecting a different decision', async () => {
+    let resolveFirst!: (loaded: DecisionDetail) => void;
+    const getDecision = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<DecisionDetail>((resolve) => {
+            resolveFirst = resolve;
+          }),
+      )
+      .mockImplementation((_id: string, number: number) => Promise.resolve(detail(number)));
+    const api = inspectorApi({ getDecision });
+    render(<DecisionInspector api={api} attemptId="attempt-1" onClose={vi.fn()} />);
+
+    expect(await screen.findByText('Cargando la ficha…')).toBeTruthy();
+    fireEvent.click(screen.getAllByRole('button', { name: /Decisión 3/ })[0]!);
+    expect(await screen.findByRole('heading', { name: 'Decisión 3, casilla 5' })).toBeTruthy();
+    expect(getDecision).toHaveBeenCalledWith('attempt-1', 3, expect.any(AbortSignal));
+
+    await act(async () => {
+      resolveFirst(detail(1));
+    });
+
+    expect(screen.getByRole('heading', { name: 'Decisión 3, casilla 5' })).toBeTruthy();
+    expect(screen.queryByText('Consumió el turno 1.')).toBeNull();
+    expect(screen.getByText('Consumió el turno 3.')).toBeTruthy();
+    expect(getDecision).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not show a late response from the previous inspected attempt as the new attempt detail', async () => {
+    const secondIndex: DecisionIndex = { ...index, attemptId: 'attempt-2' };
+    const secondDetail: DecisionDetail = {
+      ...detail(1),
+      attemptId: 'attempt-2',
+      result: {
+        ...detail(1).result,
+        turnsUsed: 9,
+      },
+    };
+    let resolveFirstAttempt!: (loaded: DecisionDetail) => void;
+    let resolveSecondAttempt!: (loaded: DecisionDetail) => void;
+    const oldResponse = new Promise<DecisionDetail>((resolve) => {
+      resolveFirstAttempt = resolve;
+    });
+    const currentResponse = new Promise<DecisionDetail>((resolve) => {
+      resolveSecondAttempt = resolve;
+    });
+    const getDecisionIndex = vi.fn((id: string) =>
+      Promise.resolve(id === 'attempt-1' ? index : secondIndex),
+    );
+    const getDecision = vi.fn((id: string) => (id === 'attempt-1' ? oldResponse : currentResponse));
+    const api = inspectorApi({ getDecisionIndex, getDecision });
+    const props = { api, attemptId: 'attempt-1', onClose: vi.fn() };
+    const view = render(<DecisionInspector {...props} />);
+
+    expect(await screen.findByText('Cargando la ficha…')).toBeTruthy();
+    view.rerender(<DecisionInspector {...props} attemptId="attempt-2" />);
+    await waitFor(() =>
+      expect(getDecisionIndex).toHaveBeenCalledWith('attempt-2', expect.any(AbortSignal)),
+    );
+    await waitFor(() =>
+      expect(getDecision).toHaveBeenCalledWith('attempt-2', 1, expect.any(AbortSignal)),
+    );
+
+    await act(async () => {
+      resolveSecondAttempt(secondDetail);
+    });
+    expect(await screen.findByText('Consumió el turno 9.')).toBeTruthy();
+
+    await act(async () => {
+      resolveFirstAttempt(detail(1));
+    });
+
+    expect(screen.getByText('Consumió el turno 9.')).toBeTruthy();
+    expect(screen.queryByText('Consumió el turno 1.')).toBeNull();
+    expect(screen.getByRole('heading', { name: 'Decisión 1, casilla 2' })).toBeTruthy();
   });
 
   it('falls back to the last recorded decision when the index has no actions', async () => {

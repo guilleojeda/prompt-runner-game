@@ -6,7 +6,7 @@ Especificación acordada del producto. El código disponible implementa acceso C
 
 | Área | Decisión o preferencia |
 |---|---|
-| Frontend | React, para navegadores de escritorio. |
+| Frontend | React, con interfaz web responsive para computadora y celular. |
 | Backend web | TypeScript en AWS Lambda. |
 | Ejecución del agente | AgentCore Runtime con Strands en TypeScript. El ejecutor reúne coordinación del intento, motor y registro. |
 | Infraestructura como código | AWS CDK en TypeScript. |
@@ -24,7 +24,9 @@ Priorizar la solución más simple que funcione bien, con bajo costo de infraest
 
 ## Usuarios, acceso y cuota
 
-Robot Runner: A puro prompt es una beta pública gratuita de Guille Ojeda, en español y para computadora. Se prevé ampliar idiomas y tamaños de pantalla en el futuro, sin una fecha comprometida. La portada explica el objetivo, los tres pasos de juego y el desafío de configurar un agente real de IA; incluye capturas del editor y del recorrido. El contacto es `contacto@guilleojeda.com`.
+Robot Runner: A puro prompt es una beta pública gratuita de Guille Ojeda, en español y con interfaz web adaptable a computadora y celular. Se prevé ampliar idiomas en el futuro, sin una fecha comprometida. La portada explica el objetivo, los tres pasos de juego y el desafío de configurar un agente real de IA; incluye capturas del editor y del recorrido. El contacto es `contacto@guilleojeda.com`.
+
+La adaptación usa la misma interfaz y estado al cambiar de ancho. Las comprobaciones en navegador con tamaños de celular no equivalen a una prueba en dispositivo físico: siguen pendientes el teclado virtual, el tacto, la rotación y el retorno real de Cognito desde un teléfono. No se garantiza compatibilidad universal con todos los dispositivos o navegadores.
 
 El registro está abierto a cualquier persona con un email que pueda verificar. Se usa un User Pool de Amazon Cognito, Managed Login Essentials en español, email y contraseña, confirmación por código y recuperación administrada. Cognito envía las confirmaciones, los reenvíos y la recuperación mediante SES desde `hello@dondeaprendoaws.com`; el asunto es **Tu código de verificación para el juego** y el cuerpo indica cómo usar el código en la pantalla donde se solicitó para confirmar el email o restablecer la contraseña. La cuenta se habilita después de demostrar acceso a la casilla. Si el envío falla o se limita, la interfaz informa el impedimento; un alta puede conservar el estado `UNCONFIRMED` y permitir un reenvío posterior. Nunca se aprueba el email automáticamente. Una pantalla mínima de la aplicación permite retomar la confirmación por email y código, incluso si se abandonó Managed Login. Confirmar no abre una sesión: luego se ingresa por Managed Login y se valida la identidad. Un fallo de envío no desconfirma usuarios ya verificados. La disponibilidad de correo depende del estado y las cuotas efectivos de SES, que se registran por separado del comportamiento de la aplicación.
 

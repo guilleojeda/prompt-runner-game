@@ -322,10 +322,12 @@ function DecisionCard({
   item,
   selected,
   onSelect,
+  onNavigateToDetail,
 }: {
   readonly item: DecisionIndexItem;
   readonly selected: boolean;
   readonly onSelect: () => void;
+  readonly onNavigateToDetail: () => void;
 }) {
   return (
     <li>
@@ -340,6 +342,11 @@ function DecisionCard({
           Casilla {item.originSupport}, {item.hasAction ? 'con acción' : 'sin acción'}
         </span>
       </button>
+      {selected && (
+        <a className="decision-detail-link" href="#decision-detail" onClick={onNavigateToDetail}>
+          Ver ficha seleccionada
+        </a>
+      )}
     </li>
   );
 }
@@ -364,9 +371,6 @@ function DecisionDetailCard({ detail }: { readonly detail: DecisionDetail | null
   const available = detail.availableActions;
   return (
     <section className="decision-detail" aria-label={`Ficha de decisión ${detail.item.number}`}>
-      <h4 className="decision-detail-heading">
-        Decisión {detail.item.number}, casilla {detail.item.originSupport}
-      </h4>
       <div className="decision-fact">
         <h4>Observación</h4>
         <div className="decision-fact-copy">
@@ -554,6 +558,7 @@ export function DecisionInspector({
     () => index?.decisions.filter((item) => item.originSupport === selectedSupport) ?? [],
     [index, selectedSupport],
   );
+  const selectedItem = index?.decisions.find((item) => item.number === selectedNumber) ?? null;
   const selectSupport = (support: number): void => {
     initialScrollNumberRef.current = null;
     setSelectedSupport(support);
@@ -571,6 +576,10 @@ export function DecisionInspector({
     setSelectedNumber(item.number);
     setDetail(null);
     setDetailError(null);
+  };
+  const navigateToDetail = (): void => {
+    initialScrollNumberRef.current = null;
+    detailContainerRef.current?.focus({ preventScroll: true });
   };
 
   useEffect(() => {
@@ -628,13 +637,16 @@ export function DecisionInspector({
             selectedSupport={selectedSupport}
             onSelect={selectSupport}
           />
+          <p className="decision-map-help">
+            Desplazá el mapa horizontalmente para ver todas las casillas.
+          </p>
           {index.decisions.length === 0 ? (
             <p className="decision-inspector-empty" role="status">
               Este intento no tiene decisiones guardadas para inspeccionar.
             </p>
           ) : (
-            <div className="decision-inspector-columns">
-              <div className="decision-inspector-lists">
+            <>
+              <div className="decision-inspector-support">
                 <section aria-labelledby="decision-support-title">
                   <h4 id="decision-support-title">
                     {selectedSupport === null
@@ -648,46 +660,64 @@ export function DecisionInspector({
                         key={item.number}
                         selected={selectedNumber === item.number}
                         onSelect={() => selectDecision(item)}
+                        onNavigateToDetail={navigateToDetail}
                       />
                     ))}
                   </ol>
                   {bySupport.length === 0 && <p>No hay decisiones en esta casilla.</p>}
                 </section>
-                <section aria-labelledby="decision-all-title">
-                  <h4 id="decision-all-title">Todas las decisiones, en orden</h4>
-                  <ol className="decision-list">
-                    {index.decisions.map((item) => (
-                      <DecisionCard
-                        item={item}
-                        key={item.number}
-                        selected={selectedNumber === item.number}
-                        onSelect={() => selectDecision(item)}
-                      />
-                    ))}
-                  </ol>
-                </section>
+                <div
+                  className="decision-detail-wrap"
+                  id="decision-detail"
+                  ref={detailContainerRef}
+                  role="group"
+                  aria-labelledby={selectedItem ? 'decision-detail-title' : undefined}
+                  aria-label={selectedItem ? undefined : 'Ficha sin selección'}
+                  tabIndex={-1}
+                >
+                  {selectedItem && (
+                    <h4 className="decision-detail-heading" id="decision-detail-title">
+                      Decisión {selectedItem.number}, casilla {selectedItem.originSupport}
+                    </h4>
+                  )}
+                  {loadingDetail && (
+                    <p className="attempt-message" role="status">
+                      Cargando la ficha…
+                    </p>
+                  )}
+                  {detailError && (
+                    <div className="attempt-error" role="alert">
+                      <p>{detailError}</p>
+                      <button
+                        className="secondary-button"
+                        type="button"
+                        onClick={() => setDetailRetry((value) => value + 1)}
+                      >
+                        Reintentar ficha
+                      </button>
+                    </div>
+                  )}
+                  {!loadingDetail && !detailError && <DecisionDetailCard detail={detail} />}
+                </div>
               </div>
-              <div className="decision-detail-wrap" ref={detailContainerRef}>
-                {loadingDetail && (
-                  <p className="attempt-message" role="status">
-                    Cargando la ficha…
-                  </p>
-                )}
-                {detailError && (
-                  <div className="attempt-error" role="alert">
-                    <p>{detailError}</p>
-                    <button
-                      className="secondary-button"
-                      type="button"
-                      onClick={() => setDetailRetry((value) => value + 1)}
-                    >
-                      Reintentar ficha
-                    </button>
-                  </div>
-                )}
-                {!loadingDetail && !detailError && <DecisionDetailCard detail={detail} />}
-              </div>
-            </div>
+              <section
+                className="decision-inspector-chronology"
+                aria-labelledby="decision-all-title"
+              >
+                <h4 id="decision-all-title">Todas las decisiones, en orden</h4>
+                <ol className="decision-list">
+                  {index.decisions.map((item) => (
+                    <DecisionCard
+                      item={item}
+                      key={item.number}
+                      selected={selectedNumber === item.number}
+                      onSelect={() => selectDecision(item)}
+                      onNavigateToDetail={navigateToDetail}
+                    />
+                  ))}
+                </ol>
+              </section>
+            </>
           )}
         </>
       )}
