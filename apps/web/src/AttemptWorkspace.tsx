@@ -698,7 +698,7 @@ function HistoryList({
         <ul className="history-list">
           {attempts.map((item) => (
             <li key={item.id}>
-              <div>
+              <div className="history-metadata">
                 <strong>{statusLabel(item.status)}</strong>
                 <span>{historyDetailMetrics(item)}</span>
                 <span>{objectCollectionStatus(item)}</span>

@@ -13,9 +13,9 @@ La interfaz está en español y debe poder entenderse sin conocer AWS ni program
 ## Formas de uso
 
 - **Sesión colaborativa:** los presentadores operan una única interfaz desde una computadora de escritorio conectada a un proyector. El público propone habilidades, descripciones e instrucciones y observa los resultados. Los asistentes no necesitan teléfono, cuenta ni conexión propia para participar verbalmente.
-- **Juego individual:** cada participante entra a la aplicación web desde un navegador, crea una cuenta con email verificado y usa las mismas mecánicas. En un teléfono puede completar el acceso, consultar el mapa inicial, editar y comenzar o cancelar un intento; las vistas de resultados, historial, copias e inspección aún no tienen una adaptación móvil específica. El registro, la cuota y el guardado se definen en [plataforma](plataforma.md).
+- **Juego individual:** cada participante entra a la aplicación web desde un navegador, crea una cuenta con email verificado y usa las mismas mecánicas. En un teléfono puede completar el acceso, consultar el mapa inicial, editar, iniciar o cancelar un intento, leer resultados e historial, revisar y reutilizar configuraciones, gestionar copias y compartir una tarjeta. La inspección de decisiones conserva su presentación actual mientras se completa su adaptación. El registro, la cuota y el guardado se definen en [plataforma](plataforma.md).
 
-El recorrido colaborativo usa la misma interfaz desde una computadora conectada al proyector. En teléfono, el acceso, el mapa inicial, el editor y los controles de cálculo usan una columna y desplazamiento vertical normal, y conservan las mismas reglas y nivel. Las demás vistas siguen disponibles con la presentación actual, que no está adaptada de forma específica para teléfono. La pantalla compartida debe mantener texto reconocible, obstáculos distinguibles y resultados visibles desde el proyector.
+El recorrido colaborativo usa la misma interfaz desde una computadora conectada al proyector. En teléfono, el acceso, el mapa inicial, el editor, los controles de cálculo, los resultados, el historial, las configuraciones y las copias usan una columna y desplazamiento vertical normal, y conservan las mismas reglas y nivel. La inspección de decisiones conserva su presentación actual. La pantalla compartida debe mantener texto reconocible, obstáculos distinguibles y resultados visibles desde el proyector.
 
 ## Preparación disponible
 
@@ -67,7 +67,7 @@ Compartir es voluntario. Sólo se incluyen resultado, turnos, recompensa o avanc
 
 El snapshot de **Animación** es sólo una decisión de presentación para ese intento. No cambia el prompt, las herramientas, las llamadas, los tokens, los turnos, el puntaje, la cuota ni el registro. Ambas rutas guardan siempre el registro completo, las métricas y los recursos necesarios para reproducirlo después desde el historial.
 
-Al cambiar el tamaño del contenedor durante una reproducción, la escena actualiza el encuadre sin reiniciar el intento ni cambiar su instante. En teléfono, el acceso, el mapa inicial, la edición, las preferencias y los controles de cálculo se presentan en una columna; resultados, historial, copias e inspector conservan su presentación actual.
+Al cambiar el tamaño del contenedor durante una reproducción, la escena actualiza el encuadre sin reiniciar el intento ni cambiar su instante. En teléfono, el acceso, el mapa inicial, la edición, las preferencias, los controles de cálculo, los resultados, el historial, las configuraciones y las copias se presentan en una columna. La inspección de decisiones conserva su presentación actual.
 
 ## Estados de la interfaz y controles
 
@@ -161,7 +161,7 @@ El diseño aprobado para componer sprites, terreno e interacciones está en [ani
 Límites de la experiencia actual:
 
 - Robot físico, hardware de robótica y el kiosco de empanadas.
-- Las vistas de resultado, historial, copias guardadas e inspector de decisiones no tienen adaptación móvil específica. No se agregan control humano directo durante el intento, inferencias por frame, votaciones distribuidas por teléfono ni ranking público global.
+- La inspección de decisiones todavía conserva su presentación actual; su adaptación se completa después. No se agregan control humano directo durante el intento, inferencias por frame, votaciones distribuidas por teléfono ni ranking público global.
 - Editor de niveles o generación procedural obligatoria, segundo LLM traductor, generación de código en vivo, entrenamiento, fine-tuning y aprendizaje por refuerzo.
 - GraphRAG, bases vectoriales, múltiples agentes y microservicios innecesarios.
 - Salto largo, física libre, postura agachada persistente y uso manual o combinación de objetos.
