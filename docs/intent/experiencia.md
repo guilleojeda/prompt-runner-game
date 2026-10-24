@@ -112,11 +112,16 @@ habilidad elegida o resultado después de una partida. Durante cálculo o reprod
 las ayudas consultables quedan bloqueadas junto con el resto de la interfaz; sólo **Cancelar** se
 mantiene operativo durante el cálculo.
 
-En la vista autenticada, la cabecera del juego usa un espaciado compacto y conserva el enlace, la
-marca y la introducción. La cuenta se presenta en una franja compacta. El pie del editor reúne **Probar**, **Animación**, el
-saldo de cuota y su próxima renovación. La cuota muestra el saldo sobre el límite y una fecha y
-hora legibles. Una consulta de cuota superada por otra más reciente no reemplaza su saldo ni su error de consulta; los rechazos de acceso siguen el flujo de recuperación de sesión. El único modelo operativo se muestra como metadato junto al título del editor, como
-información fija y no como un selector.
+En la vista autenticada, la cabecera compacta muestra la marca a la izquierda y el botón **Cuenta**
+arriba a la derecha. Al abrirlo se consultan la identidad y **Cerrar sesión**; Escape cierra y
+devuelve el foco al botón, y pulsar otro control cierra sin quitarle el foco. El correo admite
+ajuste de línea en celular y escritorio. La cuenta no ocupa una sección sobre el mapa y la
+introducción redundante no se muestra antes del juego. El pie del editor reúne **Probar**,
+**Animación**, el saldo de cuota y su próxima renovación. La cuota muestra el saldo sobre el límite
+y una fecha y hora legibles. Una consulta de cuota superada por otra más reciente no reemplaza su
+saldo ni su error de consulta; los rechazos de acceso siguen el flujo de recuperación de sesión. El
+único modelo operativo se muestra como metadato junto al título del editor, como información fija y
+no como un selector.
 La pantalla mantiene el orden del mapa, editor y controles, resultado, copias guardadas e historial.
 Las fechas de intentos y copias usan formatos humanos; los tokens se explican brevemente como
 unidades de texto y conservan el valor desconocido cuando el proveedor no lo informa.

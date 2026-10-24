@@ -33,15 +33,9 @@ button:focus-visible {
   outline-offset: 3px;
 }
 
-.game-home-link,
 .game-footer a {
   color: #f2c879;
   text-underline-offset: 0.2em;
-}
-
-.game-home-link {
-  display: inline-block;
-  margin-bottom: 1.5rem;
 }
 
 .game-footer {
@@ -52,7 +46,6 @@ button:focus-visible {
   font-size: 0.9rem;
 }
 
-.game-home-link:focus-visible,
 .game-footer a:focus-visible {
   outline: 3px solid #f2c879;
   outline-offset: 4px;
@@ -71,7 +64,7 @@ button:focus-visible {
 
 .shell-authenticated {
   align-content: start;
-  padding: 3rem 0 5rem;
+  padding: 1rem 0 5rem;
 }
 
 .shell-auth {
@@ -124,6 +117,106 @@ button:focus-visible {
   letter-spacing: -0.045em;
 }
 
+.game-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-width: 0;
+  padding: 0.5rem 0;
+}
+
+.game-header .auth-brand {
+  flex: 1 1 auto;
+  justify-content: flex-start;
+  min-width: 0;
+  gap: 0.7rem;
+  padding: 0;
+}
+
+.game-header .auth-brand > div {
+  min-width: 0;
+}
+
+.game-header .auth-brand img {
+  width: 2.5rem;
+  height: 2.5rem;
+}
+
+.game-header .auth-brand-tagline {
+  font-size: 0.62rem;
+}
+
+.game-header .auth-brand h1 {
+  margin: 0.15rem 0 0;
+  font-size: clamp(1.2rem, 5vw, 1.55rem);
+  line-height: 1.05;
+}
+
+.account-menu {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.account-trigger {
+  display: grid;
+  width: 2.75rem;
+  min-width: 2.75rem;
+  height: 2.75rem;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(242, 239, 232, 0.25);
+  border-radius: 0.65rem;
+  color: #f7f1e1;
+  background: rgba(242, 239, 232, 0.07);
+  cursor: pointer;
+}
+
+.account-trigger:hover:not(:disabled) {
+  background: rgba(242, 239, 232, 0.14);
+}
+
+.account-trigger svg {
+  width: 1.5rem;
+  height: 1.5rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
+.account-panel {
+  position: absolute;
+  z-index: 2;
+  top: calc(100% + 0.5rem);
+  right: 0;
+  display: grid;
+  gap: 0.75rem;
+  width: min(20rem, calc(100vw - 2rem));
+  padding: 1rem;
+  border: 1px solid #494940;
+  border-radius: 0.85rem;
+  background: #24251f;
+  box-shadow: 0 1rem 2.5rem rgba(0, 0, 0, 0.38);
+}
+
+.account-panel[hidden] {
+  display: none;
+}
+
+.account-email {
+  min-width: 0;
+  margin: 0;
+  color: #f7f1e1;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.account-panel .secondary-button {
+  width: 100%;
+}
+
 .shell-auth > .status {
   width: min(100%, 432px);
   margin-right: auto;
@@ -136,22 +229,6 @@ button:focus-visible {
   margin: 0.5rem auto 0;
   padding-top: 1rem;
   border-top: 1px solid rgba(242, 239, 232, 0.12);
-}
-
-.shell-authenticated .game-home-link {
-  margin-bottom: 0.75rem;
-}
-
-.shell-authenticated h1 {
-  max-width: none;
-  margin-bottom: 0.25rem;
-  font-size: clamp(2.2rem, 5vw, 4rem);
-}
-
-.shell-authenticated .intro {
-  margin-bottom: 1.1rem;
-  font-size: 1rem;
-  line-height: 1.45;
 }
 
 .eyebrow {
@@ -205,35 +282,6 @@ h1 {
 .shell-auth > .auth-notice {
   margin-right: auto;
   margin-left: auto;
-}
-
-.account-summary {
-  align-items: flex-start;
-  width: min(100%, 432px);
-  padding: 1.5rem 1.75rem;
-  gap: 0;
-  box-shadow: none;
-}
-
-.account-summary .auth-card-content {
-  display: grid;
-  width: 100%;
-  gap: 0;
-}
-
-.account-summary .card-kicker,
-.account-summary h2,
-.account-summary p {
-  margin: 0 !important;
-}
-
-.account-summary h2 {
-  font-size: 1rem;
-}
-
-.account-summary .secondary-button {
-  width: 100%;
-  margin-top: 0.35rem;
 }
 
 .editor-help {
@@ -1864,8 +1912,7 @@ h1 {
   min-width: 0;
 }
 
-.auth-card:not(.account-summary),
-.session-card {
+.auth-card {
   display: block;
   width: min(100%, 432px);
   margin-right: auto;
@@ -1877,8 +1924,7 @@ h1 {
   box-shadow: 0 1.25rem 3rem rgba(0, 0, 0, 0.24);
 }
 
-.auth-card:not(.account-summary) .auth-card-content,
-.session-card .auth-card-content {
+.auth-card .auth-card-content {
   display: grid;
   gap: 0;
 }
@@ -1909,8 +1955,8 @@ h1 {
   margin-top: 0.35rem;
 }
 
-.auth-card:not(.account-summary) .primary-button,
-.auth-card:not(.account-summary) .secondary-button {
+.auth-card .primary-button,
+.auth-card .secondary-button {
   width: 100%;
 }
 
@@ -2145,7 +2191,7 @@ button:disabled {
   }
 
   .shell.shell-authenticated {
-    padding: 2rem 0 3rem;
+    padding: 1rem 0 3rem;
   }
 
   .robot-editor,
