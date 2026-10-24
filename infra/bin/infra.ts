@@ -1,6 +1,9 @@
 import * as cdk from 'aws-cdk-lib';
 import { PromptRunnerAccessStack } from '../src/access-stack.js';
-import { requireMonitoringAuthVerifier } from '../src/monitoring-auth.js';
+import {
+  requireMonitoringApiKeyVerifier,
+  requireMonitoringAuthVerifier,
+} from '../src/monitoring-auth.js';
 import { PromptRunnerMonitoringStack } from '../src/monitoring-stack.js';
 import { APPLICATION_ACCOUNT, APPLICATION_REGION, PromptRunnerHostingStack } from '../src/stack.js';
 
@@ -42,6 +45,7 @@ new PromptRunnerMonitoringStack(app, 'PromptRunnerMonitoring', {
   userPool: hosting.userPool,
   draftTable: hosting.draftTable,
   authVerifier: requireMonitoringAuthVerifier(),
+  apiKeyVerifier: requireMonitoringApiKeyVerifier(),
   buildRevision:
     process.env.BUILD_REVISION ??
     process.env.GITHUB_SHA ??

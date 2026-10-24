@@ -21,6 +21,7 @@ jobs:
       BUILD_REVISION: ${{ github.sha }}
       VITE_BUILD_REVISION: ${{ github.sha }}
       MONITORING_BASIC_AUTH_SHA256: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.MONITORING_BASIC_AUTH_SHA256 || '' }}
+      MONITORING_API_KEY_SHA256: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.MONITORING_API_KEY_SHA256 || '' }}
     steps:
       - name: Check out source
         uses: actions/checkout@v7.0.1
@@ -35,10 +36,16 @@ jobs:
         run: |
           if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
             export MONITORING_BASIC_AUTH_SHA256=a8b72980f5f7bd9fa1ac542c5608252885ff846c0bfdda2e07750608c55ac64f
+            export MONITORING_API_KEY_SHA256=b7c9d143f3da3e38793d79c2088ae9fb58e5ce752d8b7c4ca1c432d4fa6e0b79
             echo "MONITORING_BASIC_AUTH_SHA256=a8b72980f5f7bd9fa1ac542c5608252885ff846c0bfdda2e07750608c55ac64f" >> "$GITHUB_ENV"
+            echo "MONITORING_API_KEY_SHA256=b7c9d143f3da3e38793d79c2088ae9fb58e5ce752d8b7c4ca1c432d4fa6e0b79" >> "$GITHUB_ENV"
           elif [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main" ]]; then
             if [[ ! "$MONITORING_BASIC_AUTH_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
               echo "The main-branch check requires the MONITORING_BASIC_AUTH_SHA256 repository secret." >&2
+              exit 1
+            fi
+            if [[ ! "$MONITORING_API_KEY_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "The main-branch check requires the MONITORING_API_KEY_SHA256 repository secret." >&2
               exit 1
             fi
           fi
