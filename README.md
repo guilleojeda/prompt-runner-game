@@ -23,13 +23,15 @@ Vite sirve la portada en `http://localhost:5173/` y el juego en `http://localhos
 VITE_AUTH_CONFIG_URL=https://robotrunner.guilleojeda.com/auth-config.json npm run dev
 ```
 
-El servidor de desarrollo obtiene la configuración pública y adapta los retornos a localhost; usa la misma API y los mismos datos del ambiente publicado. Sin esa configuración, la web informa que no puede iniciar el acceso. Para ejecutar los mismos controles que GitHub Actions, sin credenciales AWS, configurar un verificador ficticio para la síntesis local del monitor:
+El servidor de desarrollo obtiene la configuración pública y adapta los retornos a localhost; usa la misma API y los mismos datos del ambiente publicado. Sin esa configuración, la web informa que no puede iniciar el acceso. Para ejecutar los mismos controles que GitHub Actions, sin credenciales AWS, configurar verificadores ficticios explícitos para la síntesis local del monitor:
 
 ```sh
-MONITORING_BASIC_AUTH_SHA256="$(node -e "process.stdout.write(require('node:crypto').createHash('sha256').update('monitor:fixture-only-password').digest('hex'))")" npm run check
+MONITORING_BASIC_AUTH_SHA256="$(node -e "process.stdout.write(require('node:crypto').createHash('sha256').update('monitor:fixture-only-password').digest('hex'))")" \
+MONITORING_API_KEY_SHA256="$(node -e "process.stdout.write(require('node:crypto').createHash('sha256').update('0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef').digest('hex'))")" \
+npm run check
 ```
 
-El comando verifica formato, lint, tipos, pruebas del motor, agente, persistencia, API, interfaz e infraestructura, los builds y la síntesis CDK. Usa un transporte de prueba explícito para el modelo: no llama a Bedrock ni necesita credenciales AWS o enviar correo. `apps/monitoring-web/` y `apps/monitoring-api/` contienen el monitor privado; el verificador anterior es sólo de pruebas locales y nunca debe configurarse como acceso real. `apps/web/` contiene la web, `apps/api/` la API y el arranque, `apps/runner/` el ejecutor en Runtime, `shared/` los contratos y el motor, e `infra/` la infraestructura. El lockfile fija las versiones instaladas; `.work/` conserva evidencia local y está excluido de Git.
+El comando verifica formato, lint, tipos, pruebas del motor, agente, persistencia, API, interfaz e infraestructura, los builds y la síntesis CDK. Usa un transporte de prueba explícito para el modelo: no llama a Bedrock ni necesita credenciales AWS o enviar correo. Ambos valores anteriores son fixtures ficticios y sólo sirven para controles locales o de PR; nunca deben configurarse como acceso real. `apps/monitoring-web/` y `apps/monitoring-api/` contienen el monitor privado; `apps/web/` contiene la web, `apps/api/` la API y el arranque, `apps/runner/` el ejecutor en Runtime, `shared/` los contratos y el motor, e `infra/` la infraestructura. El lockfile fija las versiones instaladas; `.work/` conserva evidencia local y está excluido de Git.
 
 ## Acceso
 
@@ -41,7 +43,7 @@ Una recarga conserva la sesión en la misma pestaña. Si ya no hay una sesión v
 
 El [dashboard privado](docs/intent/monitoreo.md) usa un stack propio `PromptRunnerMonitoring`. Muestra registrados y nuevos con email confirmado, intentos usados por usuario en 24 horas/3 días/7 días y puntaje máximo, en una tabla de diez columnas ordenables. También muestra el gasto calculado de Bedrock total y por usuario en ventanas móviles de 24 horas, 3 días y 7 días, a partir del uso registrado y las tarifas guardadas por llamada. Activos cuenta los usuarios con un login registrado en esas ventanas, y Última sesión muestra su fecha de autenticación más reciente. La API registra ese dato al cargar el juego con una sesión validada, sin contar la renovación de tokens como otro ingreso; una cuenta sin fecha registrada conserva `N/A` en Última sesión. Se consulta al entrar, recargar y pulsar Actualizar, sin actualización automática.
 
-La URL se obtiene del output `MonitoringUrl` de ese stack. El acceso usa el usuario `monitor` y la contraseña configurada por el operador; su preparación y rotación están en [acceso y entrega](docs/architecture/acceso-y-entrega.md#monitor-administrativo). Los secretos no forman parte del build web.
+La URL se obtiene del output `MonitoringUrl` de ese stack. El dashboard conserva Basic Auth con el usuario `monitor` y la contraseña configurada por el operador. También se puede consultar por HTTPS `GET /api/metrics` con el header `x-api-key`; esa key autoriza sólo esa solicitud exacta. Si se envía el header, su valor debe ser válido y Basic Auth no sirve como alternativa; sin el header se conserva el acceso Basic actual. La preparación, el uso seguro y la rotación de ambos accesos están en [acceso y entrega](docs/architecture/acceso-y-entrega.md#monitor-administrativo). Ninguno de los secretos forma parte del build web.
 
 ## Preparar el robot
 

@@ -216,13 +216,78 @@ Antes de publicar, el operador prepara los parámetros privados y actualiza `Pro
 
 `PromptRunnerMonitoring` publica una aplicación propia desde `apps/monitoring-web` y `apps/monitoring-api`, con bucket, distribución, gate y Lambda separados. Usa referencias CDK al User Pool y a la tabla existente de metadatos de intentos, llamadas y actividad; no crea otra identidad o tabla ni modifica las rutas públicas/JWT del jugador. Separar el stack permite actualizar y revertir el monitor por separado, aunque la entrega normal publique ambos stacks y no sea una transacción entre ellos. El [contrato de monitoreo](../intent/monitoreo.md) define las métricas, desconocidos y actualización.
 
-La distribución inicial usa su hostname de CloudFront. Su output `MonitoringUrl` permite abrirla. Una CloudFront Function JS 2.0 valida Basic Auth en viewer-request para página, assets y `/api/*`. El usuario fijo es `monitor`; el verificador es SHA-256 de los bytes UTF-8 de `monitor:<contraseña>`. Se guarda sólo en el código de edge y configuración privada de síntesis, sin contraseña/Base64/verificador en S3 o bundle. El navegador presenta el diálogo nativo y administra la credencial. El gate elimina Authorization y los OAC firman ante S3 y la Function URL; ésta exige IAM y ambos permisos de invocación sólo a la distribución propia.
+La distribución inicial usa su hostname de CloudFront. Su output `MonitoringUrl` permite abrirla. Una CloudFront Function JS 2.0 valida el acceso en viewer-request. El dashboard, los assets y las demás rutas conservan Basic Auth con el usuario fijo `monitor` y el verificador SHA-256 de los bytes UTF-8 de `monitor:<contraseña>`. El GET exacto `/api/metrics` también acepta una API key por `x-api-key`: si el header está presente, su valor debe ser válido; un valor vacío, malformado, duplicado o incorrecto se rechaza y no recurre a Basic Auth. Si el header no está presente, se conserva el flujo Basic actual, incluido su challenge. La API key no concede acceso a páginas, assets, otras rutas ni métodos. En cualquier solicitud aceptada el gate elimina `authorization` y `x-api-key` antes del origen. OAC firma ante S3 y la Function URL; ésta exige IAM y ambos permisos de invocación sólo a la distribución propia. La Lambda devuelve el `MonitoringSnapshot` actual; no cambia cálculos, corte, datos ausentes, errores ni caché de métricas.
 
 La Lambda fija un corte UTC por solicitud, pagina el User Pool y recorre secuencialmente la tabla completa con `Scan`, lectura fuerte por ítem, filtro de claves y proyección de metadatos. Usa cabeceras para intentos y puntajes, llamadas con sus tarifas guardadas para sumar costos y registros ACTIVITY para última sesión y activos; no lee cuerpos, reservas ni otros datos privados. El Scan evalúa toda la tabla, así que lectura y duración crecen con el historial retenido; se eligió para obtener el total global sin índices ni consultas por cada usuario. El rol runtime conserva sólo `cognito-idp:ListUsers` en el User Pool exacto, `dynamodb:Scan` en el ARN exacto de `prompt-runner-game-drafts` y escritura en los logs propios, además de las acciones X-Ray necesarias para su traza. No recibe `Query`, escrituras u otras lecturas de DynamoDB, acceso a índices o Bedrock. La Lambda mantiene su timeout de 15 segundos. Los permisos de ejecución quedan en esa Lambda; el principal de despliegue sólo actualiza la policy inline del rol existente. El [contrato de monitoreo](../intent/monitoreo.md) describe el cálculo por llamada, ventanas, omisiones y atribución.
 
 La API del juego registra el `auth_time` del access token validado al atender `GET /draft`, después de comprobar el email confirmado. Guarda sólo la mayor fecha ISO UTC en `USER#<sub>/ACTIVITY.lastLoginAt` mediante UpdateItem condicional en la tabla existente, con sus permisos actuales. La espera de escritura está acotada y una falla no interrumpe la carga del borrador; los errores operativos no incluyen tokens ni cuerpos privados. El monitor incorpora ese registro al mismo Scan y no necesita nuevas rutas, triggers de Cognito, permisos, índices o tablas. `auth_time` conserva el momento de autenticación al renovar tokens, por lo que restaurar o recargar no equivale a otro ingreso. La cobertura y los valores desconocidos se detallan en el [contrato de monitoreo](../intent/monitoreo.md).
 
-El secret de Actions `MONITORING_BASIC_AUTH_SHA256` debe existir **antes de integrar** un cambio que publique el monitor. Se consume en el job check, que produce el assembly del mismo SHA; el deploy no reconstruye. Los checks de PR y locales usan un verificador ficticio explícito. Main falla si no recibe el verificador real válido y nunca usa ese fixture como fallback.
+Los secrets de Actions `MONITORING_BASIC_AUTH_SHA256` y `MONITORING_API_KEY_SHA256` deben existir **antes de integrar** un cambio que publique el monitor. Ambos contienen sólo verificadores SHA-256: el primero corresponde a `monitor:<contraseña>` y el segundo a los bytes UTF-8 exactos de la API key. La key es un único valor de 32 bytes aleatorios, representado por 64 caracteres hexadecimales en minúscula. La CLI de infraestructura y el check de main requieren ambos verificadores y fallan si alguno falta o no tiene el formato esperado. Main produce el assembly comprobado para el SHA revisado y el deploy consume ese mismo assembly, sin reconstruir. Los checks de PR y locales usan fixtures explícitos para ambos valores; nunca hay fallback a fixtures en main.
+
+Para preparar o cambiar la API key, usa una terminal autorizada. Guárdala en un archivo privado fuera del repositorio, con directorio `0700` y archivo `0600`. El ejemplo crea una nueva key sólo si esa ruta todavía no existe; para rotar, usa otro nombre de archivo:
+
+```sh
+KEY_DIR="$HOME/.local/share/prompt-runner-game"
+KEY_FILE="$KEY_DIR/monitoring-api-key"
+umask 077
+mkdir -p "$KEY_DIR"
+chmod 700 "$KEY_DIR"
+python3 - "$KEY_FILE" <<'PYTHON'
+import os
+import secrets
+import sys
+
+fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(fd, 'w', encoding='ascii') as key_file:
+    key_file.write(secrets.token_hex(32))
+PYTHON
+```
+
+Configura en GitHub **sólo el digest** de esa key. El siguiente procedimiento valida el formato y los permisos del archivo, calcula SHA-256 sobre los bytes UTF-8 exactos y lo envía por stdin a `gh secret set`; no imprime ni pasa la key como argumento:
+
+```sh
+python3 - "$KEY_FILE" <<'PYTHON'
+import hashlib
+import pathlib
+import re
+import stat
+import subprocess
+import sys
+
+path = pathlib.Path(sys.argv[1])
+if stat.S_IMODE(path.stat().st_mode) != 0o600:
+    raise SystemExit('La key debe tener permisos 0600.')
+key = path.read_text(encoding='utf-8')
+if re.fullmatch(r'[0-9a-f]{64}', key) is None:
+    raise SystemExit('La key debe contener exactamente 64 hexadecimales minúsculos.')
+digest = hashlib.sha256(key.encode('utf-8')).hexdigest()
+subprocess.run(
+    ['gh', 'secret', 'set', 'MONITORING_API_KEY_SHA256',
+     '--repo', 'guilleojeda/prompt-runner-game'],
+    input=digest + '\n', text=True, check=True,
+)
+PYTHON
+```
+
+La URL base se obtiene del output `MonitoringUrl`. Un ejemplo de solicitud usa placeholders deliberados:
+
+```sh
+curl --fail-with-body \
+  -H 'x-api-key: <TU_API_KEY>' \
+  'https://<HOST_DE_MONITORING_URL>/api/metrics'
+```
+
+Para consumir la key desde su archivo sin poner su valor en el historial, argumentos del proceso o salida de terminal, Bash y zsh permiten pasar la configuración de curl por un descriptor temporal. El comando no imprime la key; no lo ejecutes con trazado de shell (`set -x`) ni con modo verbose de curl:
+
+```sh
+KEY_FILE="$HOME/.local/share/prompt-runner-game/monitoring-api-key"
+MONITORING_URL='https://<HOST_DE_MONITORING_URL>'
+curl --fail-with-body \
+  --config <(printf 'header = "x-api-key: %s"\n' "$(cat "$KEY_FILE")") \
+  "$MONITORING_URL/api/metrics"
+```
+
+El secret `MONITORING_BASIC_AUTH_SHA256` se configura de la misma forma privada, calculando SHA-256 de `monitor:<contraseña>` y enviando el digest por stdin. Ambos secrets deben estar listos antes del merge para que main pueda sintetizar el assembly con los accesos requeridos. Cambiar un secret por sí solo no cambia CloudFront: requiere una entrega normal desde main. La rotación no es atómica; durante la propagación de la distribución algunas ubicaciones pueden aceptar la key anterior y otras la nueva, porque cada versión tiene un único digest y no hay solapamiento configurado. Para rollback se prepara y publica un assembly nuevo mediante el circuito normal, sintetizado con el digest vigente de la key que se quiere conservar; no se vuelve a desplegar un assembly antiguo que pueda reactivar un digest retirado. El dashboard no incluye la API key ni muestra instrucciones de operación.
 
 Para configurar o cambiar el acceso, usar una terminal autorizada y suministrar la contraseña sin guardarla en el historial o argumentos:
 

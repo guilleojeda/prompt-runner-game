@@ -13,7 +13,11 @@ import {
   aws_s3_deployment as s3deploy,
 } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
-import { cloudFrontBasicAuthCode, validateMonitoringAuthVerifier } from './monitoring-auth.js';
+import {
+  cloudFrontMonitoringAuthCode,
+  validateMonitoringApiKeyVerifier,
+  validateMonitoringAuthVerifier,
+} from './monitoring-auth.js';
 import { lambdaTelemetryOptions } from './lambda-telemetry.js';
 import {
   MONITORING_ASSET_DEPLOYMENT_FUNCTION_NAME,
@@ -37,6 +41,8 @@ export interface PromptRunnerMonitoringStackProps extends cdk.StackProps {
   readonly draftTable: dynamodb.ITable;
   /** SHA-256 of the UTF-8 bytes for `monitor:<password>`. */
   readonly authVerifier: string;
+  /** SHA-256 of the UTF-8 bytes for the monitoring API key. */
+  readonly apiKeyVerifier: string;
   /** Revision recorded with the published entry and in the stack outputs. */
   readonly buildRevision: string;
   /** Fixed publisher role prepared by PromptRunnerAccess. */
@@ -55,6 +61,7 @@ export class PromptRunnerMonitoringStack extends cdk.Stack {
     const region = props.env?.region ?? APPLICATION_REGION;
     const buildRevision = props.buildRevision;
     const authVerifier = validateMonitoringAuthVerifier(props.authVerifier);
+    const apiKeyVerifier = validateMonitoringApiKeyVerifier(props.apiKeyVerifier);
     const bucketName = monitoringBucketNameFor(account, region);
     const webDistPath = path.resolve(__dirname, '../../apps/monitoring-web/dist');
     const deploymentRoleArn =
@@ -143,8 +150,11 @@ export class PromptRunnerMonitoringStack extends cdk.Stack {
     const authFunction = new cloudfront.Function(this, 'MonitoringAuthentication', {
       functionName: MONITORING_AUTH_FUNCTION_NAME,
       runtime: cloudfront.FunctionRuntime.JS_2_0,
-      code: cloudfront.FunctionCode.fromInline(cloudFrontBasicAuthCode(authVerifier)),
-      comment: 'Protects every monitoring request with HTTP Basic authentication.',
+      code: cloudfront.FunctionCode.fromInline(
+        cloudFrontMonitoringAuthCode(authVerifier, apiKeyVerifier),
+      ),
+      comment:
+        'Protects monitoring requests with HTTP Basic authentication or the metrics API key.',
     });
     const authAssociation = [
       { function: authFunction, eventType: cloudfront.FunctionEventType.VIEWER_REQUEST },
