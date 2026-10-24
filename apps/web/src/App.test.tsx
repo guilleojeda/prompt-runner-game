@@ -93,6 +93,35 @@ function client(overrides: Partial<AuthClient> = {}): AuthClient {
   };
 }
 
+function openAccountPanel(): HTMLButtonElement {
+  const trigger = getAccountTrigger();
+  if (trigger.getAttribute('aria-expanded') !== 'true') {
+    fireEvent.click(trigger);
+  }
+  return trigger;
+}
+
+function getAccountTrigger(): HTMLButtonElement {
+  return screen.getByRole('button', { name: 'Cuenta' }) as HTMLButtonElement;
+}
+
+function getLogoutButton(): HTMLButtonElement {
+  openAccountPanel();
+  return screen.getByRole('button', { name: 'Cerrar sesión' }) as HTMLButtonElement;
+}
+
+function clickLogout(): void {
+  fireEvent.click(getLogoutButton());
+}
+
+function expectAccountTriggerLocked(): void {
+  expect(getAccountTrigger().disabled).toBe(true);
+  const logoutButton = screen.queryByRole('button', { name: 'Cerrar sesión' });
+  if (logoutButton) {
+    expect((logoutButton as HTMLButtonElement).disabled).toBe(true);
+  }
+}
+
 function emptyAttemptApi(): AttemptApi {
   return {
     createAttempt: vi.fn(),
@@ -636,13 +665,13 @@ describe('access screen', () => {
       .fn()
       .mockRejectedValueOnce(new Error('No se pudo cargar el borrador.'))
       .mockResolvedValueOnce({ version: 0, draft: createDefaultDraft() });
-    const draftApi: DraftApi = {
-      getDraft,
-      putDraft: vi.fn().mockImplementation(async (version, draft) => ({
-        version: version + 1,
-        draft,
-      })),
-    };
+    let resolvePut!: (snapshot: DraftSnapshot) => void;
+    const putDraft = vi.fn<DraftApi['putDraft']>().mockReturnValue(
+      new Promise<DraftSnapshot>((resolve) => {
+        resolvePut = resolve;
+      }),
+    );
+    const draftApi: DraftApi = { getDraft, putDraft };
     const attemptApi: AttemptApi = {
       ...emptyAttemptApi(),
       listAttempts: vi.fn().mockResolvedValue({ attempts: [sourceSummary] }),
@@ -690,6 +719,12 @@ describe('access screen', () => {
       ).toBe(false),
     );
     fireEvent.click(screen.getByRole('button', { name: 'Usar esta configuración' }));
+    await waitFor(() => expect(putDraft).toHaveBeenCalledOnce());
+    expectAccountTriggerLocked();
+    expect(attemptApi.createAttempt).not.toHaveBeenCalled();
+    await act(async () => {
+      resolvePut({ version: 1, draft: recovered });
+    });
     expect(await screen.findByDisplayValue('Recuperada desde el historial')).toBeTruthy();
     expect(
       await screen.findByText(
@@ -697,6 +732,7 @@ describe('access screen', () => {
       ),
     ).toBeTruthy();
     expect(getDraft).toHaveBeenCalledTimes(2);
+    expect(getAccountTrigger().disabled).toBe(false);
     expect(attemptApi.createAttempt).not.toHaveBeenCalled();
   });
 
@@ -784,7 +820,7 @@ describe('access screen', () => {
     expect(attemptApi.createAttempt).not.toHaveBeenCalled();
   });
 
-  it('keeps the logout label while the signed-in account loads its attempts', async () => {
+  it('keeps the account control stable and locked while loading attempts', async () => {
     window.sessionStorage.clear();
     const authClient = client({ initialize: vi.fn().mockResolvedValue(session()) });
     const draftApi: DraftApi = {
@@ -805,9 +841,9 @@ describe('access screen', () => {
     );
 
     await screen.findByText('Recuperando tus intentos…');
-    const logoutButton = screen.getByRole('button', { name: 'Cerrar sesión' });
-    expect(logoutButton.textContent).toBe('Cerrar sesión');
-    await waitFor(() => expect((logoutButton as HTMLButtonElement).disabled).toBe(true));
+    const accountTrigger = getAccountTrigger();
+    await waitFor(() => expect(accountTrigger.disabled).toBe(true));
+    expect(screen.queryByRole('button', { name: 'Cerrar sesión' })).toBeNull();
     expect(authClient.logout).not.toHaveBeenCalled();
   });
 
@@ -820,11 +856,9 @@ describe('access screen', () => {
       </StrictMode>,
     );
 
-    expect(await screen.findByText('a@example.com')).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Cuenta' })).toBeTruthy();
     expect(authClient.initialize).toHaveBeenCalledOnce();
-    expect(
-      (screen.getByRole('button', { name: 'Cerrar sesión' }) as HTMLButtonElement).disabled,
-    ).toBe(false);
+    expect(getLogoutButton().disabled).toBe(false);
   });
 
   it('shows a visitor and starts managed access from the visible button', async () => {
@@ -966,13 +1000,27 @@ describe('access screen', () => {
     });
     render(<App authClient={authClient} />);
 
-    await screen.findByText('a@example.com');
-    fireEvent.click(screen.getByRole('button', { name: 'Cerrar sesión' }));
+    await screen.findByRole('button', { name: 'Cuenta' });
+    clickLogout();
     expect((await screen.findByRole('alert')).textContent).toContain(
       'no se pudo completar el cierre remoto',
     );
     expect(screen.queryByText('a@example.com')).toBeNull();
     expect(screen.getByRole('button', { name: 'Completar cierre remoto' })).toBeTruthy();
+  });
+
+  it('closes a clean session from the account panel', async () => {
+    const logout = vi.fn().mockResolvedValue(undefined);
+    const authClient = client({ initialize: vi.fn().mockResolvedValue(session()), logout });
+    render(<App authClient={authClient} />);
+
+    await screen.findByRole('button', { name: 'Cuenta' });
+    clickLogout();
+
+    await waitFor(() => expect(logout).toHaveBeenCalledOnce());
+    expect(await screen.findByRole('button', { name: 'Entrar o crear una cuenta' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Cuenta' })).toBeNull();
+    expect(screen.queryByText('a@example.com')).toBeNull();
   });
 
   it.each(['resolved', 'remote-failure'] as const)(
@@ -1015,7 +1063,7 @@ describe('access screen', () => {
       fireEvent.change(screen.getByLabelText('Qué debe tener en cuenta el robot'), {
         target: { value: 'Cambio ficticio pendiente' },
       });
-      fireEvent.click(screen.getByRole('button', { name: 'Cerrar sesión' }));
+      clickLogout();
       expect(screen.getByRole('heading', { name: 'Tenés cambios sin confirmar' })).toBeTruthy();
       await act(async () => {
         vi.advanceTimersByTime(5_000);
@@ -1031,7 +1079,7 @@ describe('access screen', () => {
         expect(screen.getByRole('button', { name: 'Entrar o crear una cuenta' })).toBeTruthy();
       } else {
         expect(screen.getByText(logoutMessage)).toBeTruthy();
-        expect(screen.queryByRole('heading', { name: 'Sesión confirmada' })).toBeNull();
+        expect(screen.queryByRole('button', { name: 'Cuenta' })).toBeNull();
       }
 
       await act(async () => {
@@ -1043,7 +1091,7 @@ describe('access screen', () => {
         expect(screen.getByRole('button', { name: 'Entrar o crear una cuenta' })).toBeTruthy();
       } else {
         expect(screen.getByText(logoutMessage)).toBeTruthy();
-        expect(screen.queryByRole('heading', { name: 'Sesión confirmada' })).toBeNull();
+        expect(screen.queryByRole('button', { name: 'Cuenta' })).toBeNull();
       }
       expect(logout).toHaveBeenCalledOnce();
     },
@@ -1086,7 +1134,7 @@ describe('access screen', () => {
     fireEvent.change(screen.getByLabelText('Qué debe tener en cuenta el robot'), {
       target: { value: 'Cambio ficticio pendiente' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Cerrar sesión' }));
+    clickLogout();
     await act(async () => {
       vi.advanceTimersByTime(5_000);
       await flushAuthMicrotasks();
@@ -1102,7 +1150,7 @@ describe('access screen', () => {
 
     expect(screen.getByText(logoutMessage)).toBeTruthy();
     expect(screen.queryByText('Error tardío de renovación.')).toBeNull();
-    expect(screen.queryByRole('heading', { name: 'Sesión confirmada' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Cuenta' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Completar cierre remoto' })).toBeTruthy();
   });
 
@@ -1145,7 +1193,7 @@ describe('access screen', () => {
       fireEvent.change(screen.getByLabelText('Qué debe tener en cuenta el robot'), {
         target: { value: 'Cambio ficticio pendiente' },
       });
-      fireEvent.click(screen.getByRole('button', { name: 'Cerrar sesión' }));
+      clickLogout();
       await act(async () => {
         vi.advanceTimersByTime(5_000);
         await flushAuthMicrotasks();
@@ -1170,7 +1218,7 @@ describe('access screen', () => {
       });
 
       expect(screen.getByRole('button', { name: 'Entrar o crear una cuenta' })).toBeTruthy();
-      expect(screen.queryByRole('heading', { name: 'Sesión confirmada' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Cuenta' })).toBeNull();
       expect(screen.queryByText('Error tardío de revalidación.')).toBeNull();
       expect(logout).toHaveBeenCalledOnce();
     },
@@ -1218,8 +1266,9 @@ describe('access screen', () => {
     fireEvent.change(screen.getByLabelText('Qué debe tener en cuenta el robot'), {
       target: { value: instructions },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Cerrar sesión' }));
+    clickLogout();
     expect(screen.getByRole('heading', { name: 'Tenés cambios sin confirmar' })).toBeTruthy();
+    openAccountPanel();
     await act(async () => {
       vi.advanceTimersByTime(600);
       await flushAuthMicrotasks();
@@ -1231,6 +1280,7 @@ describe('access screen', () => {
     });
     expect(initialize).toHaveBeenCalledTimes(2);
     expect(screen.getByRole('heading', { name: 'Comprobando tu sesión…' })).toBeTruthy();
+    expectAccountTriggerLocked();
 
     fireEvent.click(screen.getByRole('button', { name: 'Esperar guardado' }));
     await act(flushAuthMicrotasks);
@@ -1241,7 +1291,7 @@ describe('access screen', () => {
       resolveRenewal(renewed);
       await flushAuthMicrotasks();
     });
-    expect(screen.getByRole('heading', { name: 'Sesión confirmada' })).toBeTruthy();
+    expect(getLogoutButton().disabled).toBe(false);
     expect(screen.getByRole('heading', { name: 'Tenés cambios sin confirmar' })).toBeTruthy();
     expect(logout).not.toHaveBeenCalled();
 
@@ -1253,7 +1303,7 @@ describe('access screen', () => {
     });
     expect(logout).toHaveBeenCalledOnce();
     expect(screen.getByRole('button', { name: 'Entrar o crear una cuenta' })).toBeTruthy();
-    expect(screen.queryByRole('heading', { name: 'Sesión confirmada' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Cuenta' })).toBeNull();
   });
 
   it('retries a configuration failure and reaches the visitor state', async () => {
@@ -1322,8 +1372,9 @@ describe('access screen', () => {
     const authClient = client({ initialize });
     render(<App authClient={authClient} />);
 
-    expect(await screen.findByText('a@example.com')).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Cuenta' })).toBeTruthy();
     await waitFor(() => expect(initialize).toHaveBeenCalledTimes(2));
+    expect(openAccountPanel().getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByText('a@example.com')).toBeTruthy();
   });
 
@@ -1390,6 +1441,7 @@ describe('access screen', () => {
     await act(async () => {
       vi.advanceTimersByTime(300);
     });
+    openAccountPanel();
     fireEvent.change(screen.getByLabelText('Qué debe tener en cuenta el robot'), {
       target: { value: 'Texto pendiente durante la renovación' },
     });
@@ -1397,6 +1449,7 @@ describe('access screen', () => {
       vi.advanceTimersByTime(500);
     });
     expect(initialize).toHaveBeenCalledTimes(2);
+    expectAccountTriggerLocked();
     expect(fetchImpl.mock.calls.filter((call) => call[1]?.method === 'PUT')).toHaveLength(0);
     expect(screen.getByDisplayValue('Texto pendiente durante la renovación')).toBeTruthy();
 
@@ -1415,6 +1468,7 @@ describe('access screen', () => {
       headers: expect.objectContaining({ Authorization: 'Bearer new-token' }),
     });
     expect(screen.getByDisplayValue('Texto pendiente durante la renovación')).toBeTruthy();
+    expect(getLogoutButton().disabled).toBe(false);
   });
 
   it('preserves an account recovery snapshot when renewal temporarily returns no session', async () => {
@@ -1541,7 +1595,7 @@ describe('access screen', () => {
       vi.advanceTimersByTime(600);
     });
     expect(putDraft).toHaveBeenCalledOnce();
-    fireEvent.click(screen.getByRole('button', { name: 'Cerrar sesión' }));
+    clickLogout();
     expect(screen.getByRole('heading', { name: 'Tenés cambios sin confirmar' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Esperar guardado' }));
     await act(async () => {
@@ -1588,7 +1642,7 @@ describe('access screen', () => {
     fireEvent.change(screen.getByLabelText('Qué debe tener en cuenta el robot'), {
       target: { value: 'Cambios locales para la admisión' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Cerrar sesión' }));
+    clickLogout();
     expect(screen.getByRole('heading', { name: 'Tenés cambios sin confirmar' })).toBeTruthy();
 
     fireEvent.click(tryButton);
@@ -1596,10 +1650,7 @@ describe('access screen', () => {
 
     expect(screen.queryByRole('heading', { name: 'Tenés cambios sin confirmar' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Descartar cambios locales y salir' })).toBeNull();
-    expect(
-      (screen.getByRole('button', { name: 'Cerrar sesión' }) as HTMLButtonElement).disabled,
-    ).toBe(true);
-    expect(screen.getByRole('heading', { name: 'Sesión confirmada' })).toBeTruthy();
+    expectAccountTriggerLocked();
     expect(logout).not.toHaveBeenCalled();
   });
 
@@ -1631,13 +1682,13 @@ describe('access screen', () => {
     fireEvent.change(screen.getByLabelText('Qué debe tener en cuenta el robot'), {
       target: { value: 'Guardado pendiente antes de probar' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Cerrar sesión' }));
+    clickLogout();
     fireEvent.click(screen.getByRole('button', { name: 'Esperar guardado' }));
     await waitFor(() => expect(putDraft).toHaveBeenCalledOnce());
 
     fireEvent.click(tryButton);
     expect(screen.queryByRole('heading', { name: 'Tenés cambios sin confirmar' })).toBeNull();
-    expect(screen.getByRole('heading', { name: 'Sesión confirmada' })).toBeTruthy();
+    expectAccountTriggerLocked();
     expect(logout).not.toHaveBeenCalled();
     await act(async () => {
       resolvePut({
@@ -1654,20 +1705,55 @@ describe('access screen', () => {
       true,
     );
     expect(logout).not.toHaveBeenCalled();
-    expect(screen.getByRole('heading', { name: 'Sesión confirmada' })).toBeTruthy();
-    expect(
-      (screen.getByRole('button', { name: 'Cerrar sesión' }) as HTMLButtonElement).disabled,
-    ).toBe(true);
+    expectAccountTriggerLocked();
   });
 
-  it('locks editor fields and logout in the same click that starts admission', async () => {
+  it('locks the account and editor while keeping cancellation available during an attempt', async () => {
+    window.sessionStorage.clear();
     const authClient = client({ initialize: vi.fn().mockResolvedValue(session()) });
     const draftApi: DraftApi = {
       getDraft: vi.fn().mockResolvedValue({ version: 0, draft: createDefaultDraft() }),
       putDraft: vi.fn().mockResolvedValue({ version: 1, draft: createDefaultDraft() }),
     };
-    const createAttempt = vi.fn(() => new Promise<never>(() => undefined));
-    const attemptApi = { ...emptyAttemptApi(), createAttempt };
+    const activeAttempt: AttemptSummary = {
+      id: 'attempt-account-lock',
+      createdAt: '2026-09-21T12:00:00.000Z',
+      updatedAt: '2026-09-21T12:00:01.000Z',
+      status: 'pending',
+      cancelRequested: false,
+      levelId: LEVEL.id,
+      modelKey: 'claude-sonnet-4.6',
+      modelLabel: 'Claude Sonnet 4.6',
+      modelId: 'global.anthropic.claude-sonnet-4-6',
+      turnsUsed: 0,
+      maxTurns: LEVEL.maxTurns,
+      calls: 0,
+      inputTokens: null,
+      outputTokens: null,
+      reasoningTokens: null,
+      gameTokens: null,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+      score: null,
+      collectedObjectIds: [],
+      objectPoints: 0,
+      progress: 0,
+      finalSupport: LEVEL.exit.support,
+      animationEnabled: true,
+      presentationComplete: false,
+      recordComplete: false,
+    };
+    const cancelledAttempt: AttemptSummary = {
+      ...activeAttempt,
+      status: 'cancelled',
+      cancelRequested: true,
+    };
+    const createAttempt = vi.fn().mockResolvedValue({
+      attempt: activeAttempt,
+      dispatchConfirmed: true,
+    });
+    const cancelAttempt = vi.fn().mockResolvedValue(cancelledAttempt);
+    const attemptApi = { ...emptyAttemptApi(), createAttempt, cancelAttempt };
     render(
       <App
         authClient={authClient}
@@ -1685,6 +1771,7 @@ describe('access screen', () => {
     await waitFor(() => expect((tryButton as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(tryButton);
 
+    expectAccountTriggerLocked();
     expect((tryButton as HTMLButtonElement).disabled).toBe(true);
     expect(animation.disabled).toBe(true);
     expect(
@@ -1694,10 +1781,11 @@ describe('access screen', () => {
           .closest('fieldset') as HTMLFieldSetElement
       ).disabled,
     ).toBe(true);
-    expect(
-      (screen.getByRole('button', { name: 'Cerrar sesión' }) as HTMLButtonElement).disabled,
-    ).toBe(true);
-    expect(screen.getByRole('button', { name: 'Cerrar sesión' }).textContent).toBe('Cerrar sesión');
+    const cancelButton = await screen.findByRole('button', { name: 'Cancelar' });
+    expectAccountTriggerLocked();
+    expect((cancelButton as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(cancelButton);
+    await waitFor(() => expect(cancelAttempt).toHaveBeenCalledOnce());
   });
 
   it('locks editor, history, and logout through automatic replay, then releases them at the result', async () => {
@@ -1762,19 +1850,13 @@ describe('access screen', () => {
     expect((screen.getByRole('checkbox', { name: 'Animación' }) as HTMLInputElement).disabled).toBe(
       true,
     );
-    expect(
-      (screen.getByRole('button', { name: 'Cerrar sesión' }) as HTMLButtonElement).disabled,
-    ).toBe(true);
+    expectAccountTriggerLocked();
     expect(screen.queryByRole('heading', { name: 'Historial' })).toBeNull();
     expect(screen.queryByRole('heading', { name: 'Victoria' })).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: 'Terminar escena' }));
     expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
-    await waitFor(() =>
-      expect(
-        (screen.getByRole('button', { name: 'Cerrar sesión' }) as HTMLButtonElement).disabled,
-      ).toBe(false),
-    );
+    await waitFor(() => expect(getAccountTrigger().disabled).toBe(false));
     expect(screen.getByRole('heading', { name: 'Historial' })).toBeTruthy();
     expect(attemptApi.createAttempt).not.toHaveBeenCalled();
   });
@@ -1805,11 +1887,7 @@ describe('access screen', () => {
     expect(await screen.findByRole('heading', { name: 'Historial' })).toBeTruthy();
     const tryButton = screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement;
     expect(tryButton.disabled).toBe(true);
-    await waitFor(() =>
-      expect(
-        (screen.getByRole('button', { name: 'Cerrar sesión' }) as HTMLButtonElement).disabled,
-      ).toBe(false),
-    );
+    await waitFor(() => expect(getLogoutButton().disabled).toBe(false));
 
     fireEvent.click(screen.getByRole('button', { name: 'Reintentar preferencia' }));
     await waitFor(() => expect(getAnimationPreference).toHaveBeenCalledTimes(2));
@@ -1900,7 +1978,7 @@ describe('access screen', () => {
       />,
     );
 
-    await screen.findByText('a@example.com');
+    await screen.findByRole('button', { name: 'Cuenta' });
     fireEvent.click(await screen.findByRole('button', { name: 'Ver resultado' }));
     expect(await screen.findByText('La sesión ya no está autorizada.')).toBeTruthy();
     expect(screen.getByText(/La sesión dejó de tener acceso a esta cuenta/)).toBeTruthy();
@@ -1914,15 +1992,17 @@ describe('access screen', () => {
     expect((screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement).disabled).toBe(
       true,
     );
-    await waitFor(() =>
-      expect(
-        (screen.getByRole('button', { name: 'Cerrar sesión' }) as HTMLButtonElement).disabled,
-      ).toBe(false),
-    );
+    await waitFor(() => expect(getLogoutButton().disabled).toBe(false));
+    expect(openAccountPanel().getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByText('a@example.com')).toBeTruthy();
     expect(
       screen.getByText('La sesión necesita volver a validarse antes de continuar.'),
     ).toBeTruthy();
+    const accessNotice = screen.getByRole('alert');
+    const accountPanel = document.getElementById(
+      getAccountTrigger().getAttribute('aria-controls')!,
+    );
+    expect(accountPanel?.contains(accessNotice)).toBe(false);
     expect(screen.queryByText('Tu cuenta está confirmada y la sesión es válida.')).toBeNull();
     expect(screen.getByRole('button', { name: 'Volver a ingresar' })).toBeTruthy();
   });
@@ -1967,7 +2047,7 @@ describe('access screen', () => {
       />,
     );
 
-    await screen.findByText('a@example.com');
+    await screen.findByRole('button', { name: 'Cuenta' });
     await waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce());
     await waitFor(() => expect(initialize).toHaveBeenCalledTimes(2));
 
@@ -2035,7 +2115,7 @@ describe('access screen', () => {
       />,
     );
 
-    await screen.findByText('a@example.com');
+    await screen.findByRole('button', { name: 'Cuenta' });
     await waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce());
     await waitFor(() => expect(initialize).toHaveBeenCalledTimes(2));
     await act(async () => {
@@ -2258,6 +2338,7 @@ describe('access screen', () => {
     await waitFor(() => expect(putAnimationPreference).toHaveBeenCalledOnce());
     await waitFor(() => expect(getAnimationPreference).toHaveBeenCalledTimes(2));
     expect(await screen.findByRole('button', { name: 'Volver a ingresar' })).toBeTruthy();
+    expect(openAccountPanel().getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByText('a@example.com')).toBeTruthy();
     expect(
       screen.getByText('La sesión necesita volver a validarse antes de continuar.'),
@@ -2391,5 +2472,119 @@ describe('access screen', () => {
     expect(createAttempt.mock.calls[0]?.[0]).not.toBe('attempt-source');
     expect(savedRobotApi.saveRobot).toHaveBeenCalledOnce();
     expect(JSON.stringify(sourceSummary)).toBe(sourceSerialized);
+  });
+});
+
+describe('compact account panel', () => {
+  it('keeps identity inside an accessible panel without disturbing the pending editor', async () => {
+    const email = 'robot.runner.with.a.very.long.account.identifier@example.subdomain.example.com';
+    const authClient = client({ initialize: vi.fn().mockResolvedValue(session(email)) });
+    const putDraft = vi.fn<DraftApi['putDraft']>(() => new Promise(() => undefined));
+    const draftApi: DraftApi = {
+      getDraft: vi.fn().mockResolvedValue({ version: 0, draft: createDefaultDraft() }),
+      putDraft,
+    };
+    const createAttempt = vi.fn();
+    const attemptApi = { ...emptyAttemptApi(), createAttempt };
+
+    render(
+      <App
+        authClient={authClient}
+        draftApi={draftApi}
+        attemptApi={attemptApi}
+        configLoader={async () => config}
+      />,
+    );
+
+    const instructions = (await screen.findByLabelText(
+      'Qué debe tener en cuenta el robot',
+    )) as HTMLTextAreaElement;
+    const trigger = (await screen.findByRole('button', { name: 'Cuenta' })) as HTMLButtonElement;
+    const header = trigger.closest('header');
+    const brand = screen.getByRole('link', { name: 'Acerca de Robot Runner' });
+    expect(header?.contains(brand)).toBe(true);
+    expect(brand.compareDocumentPosition(trigger) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(trigger.tagName).toBe('BUTTON');
+    expect(trigger.tabIndex).toBe(0);
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+
+    const panelId = trigger.getAttribute('aria-controls');
+    expect(panelId).toBeTruthy();
+    const expectPanelClosed = (): void => {
+      const closedPanel = document.getElementById(panelId as string);
+      expect(
+        !closedPanel ||
+          closedPanel.hidden ||
+          closedPanel.getAttribute('aria-hidden') === 'true' ||
+          getComputedStyle(closedPanel).display === 'none' ||
+          getComputedStyle(closedPanel).visibility === 'hidden',
+      ).toBe(true);
+    };
+    const expectIdentityOnlyWithinPanel = (): void => {
+      const identity = screen.queryByText(email);
+      if (identity) {
+        expect(document.getElementById(panelId as string)?.contains(identity)).toBe(true);
+      }
+    };
+    expectPanelClosed();
+    expectIdentityOnlyWithinPanel();
+    expect(screen.queryByRole('heading', { name: 'Sesión confirmada' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Cerrar sesión' })).toBeNull();
+
+    vi.useFakeTimers();
+    const editedInstructions = 'Conservar mientras abro y cierro la cuenta.';
+    fireEvent.change(instructions, { target: { value: editedInstructions } });
+    await act(async () => {
+      vi.advanceTimersByTime(600);
+      await Promise.resolve();
+    });
+    expect(putDraft).toHaveBeenCalledOnce();
+
+    trigger.focus();
+    fireEvent.click(trigger);
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    const panel = document.getElementById(panelId as string);
+    expect(panel).toBeTruthy();
+    expect(panel?.contains(screen.getByText(email))).toBe(true);
+    expect(
+      within(panel as HTMLElement).getByRole('button', { name: 'Cerrar sesión' }),
+    ).toBeTruthy();
+    expect(document.activeElement).toBe(trigger);
+    expect(createAttempt).not.toHaveBeenCalled();
+    expect(putDraft).toHaveBeenCalledOnce();
+
+    fireEvent.click(trigger);
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expectPanelClosed();
+    expectIdentityOnlyWithinPanel();
+    expect(screen.queryByRole('button', { name: 'Cerrar sesión' })).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    expect(putDraft).toHaveBeenCalledOnce();
+    expect(createAttempt).not.toHaveBeenCalled();
+
+    fireEvent.click(trigger);
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+
+    instructions.focus();
+    fireEvent.click(instructions);
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expectPanelClosed();
+    expect(screen.queryByRole('button', { name: 'Cerrar sesión' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Sesión confirmada' })).toBeNull();
+    expect(document.activeElement).toBe(instructions);
+    expect(instructions.isConnected).toBe(true);
+    expect(instructions.value).toBe(editedInstructions);
+    expect(putDraft).toHaveBeenCalledOnce();
+    expect(createAttempt).not.toHaveBeenCalled();
+
+    fireEvent.click(trigger);
+    const logoutButton = screen.getByRole('button', { name: 'Cerrar sesión' });
+    logoutButton.focus();
+    fireEvent.keyDown(logoutButton, { key: 'Escape' });
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(document.activeElement).toBe(trigger);
+    expectPanelClosed();
+    expectIdentityOnlyWithinPanel();
+    expect(screen.queryByRole('button', { name: 'Cerrar sesión' })).toBeNull();
   });
 });
