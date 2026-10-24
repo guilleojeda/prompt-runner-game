@@ -11,6 +11,10 @@ import { APPLICATION_ACCOUNT, APPLICATION_REGION } from './stack.js';
 // Fictitious acceptance credential. Never the operator's real password/verifier.
 const password = 'fixture-only-password';
 const verifier = crypto.createHash('sha256').update(`monitor:${password}`).digest('hex');
+const apiKeyVerifier = crypto
+  .createHash('sha256')
+  .update('fixture-only-monitoring-api-key')
+  .digest('hex');
 
 describe('protected monitoring publication', { timeout: 15_000 }, () => {
   let template: Template;
@@ -31,6 +35,7 @@ describe('protected monitoring publication', { timeout: 15_000 }, () => {
       userPool,
       draftTable,
       authVerifier: verifier,
+      apiKeyVerifier,
       buildRevision: 'acceptance-revision',
     } as ConstructorParameters<typeof PromptRunnerMonitoringStack>[2];
     template = Template.fromStack(

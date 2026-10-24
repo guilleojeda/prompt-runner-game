@@ -27,14 +27,16 @@ describe('Lambda traces and correlated log delivery', { timeout: 15_000 }, () =>
       assetDeploymentRoleArn: `arn:aws:iam::${APPLICATION_ACCOUNT}:role/prompt-runner-game-frontend-asset-deployment-us-east-1`,
       buildRevision: 'telemetry-acceptance',
     });
-    const monitor = new PromptRunnerMonitoringStack(app, 'TelemetryMonitoring', {
+    const monitoringProps = {
       env,
       userPool: game.userPool,
       draftTable: game.draftTable,
       // Same fictitious verifier used by the pull-request verification workflow.
       authVerifier: 'a8b72980f5f7bd9fa1ac542c5608252885ff846c0bfdda2e07750608c55ac64f',
+      apiKeyVerifier: 'b7c9d143f3da3e38793d79c2088ae9fb58e5ce752d8b7c4ca1c432d4fa6e0b79',
       buildRevision: 'telemetry-acceptance',
-    });
+    };
+    const monitor = new PromptRunnerMonitoringStack(app, 'TelemetryMonitoring', monitoringProps);
     const permissions = new PromptRunnerAccessStack(app, 'TelemetryAccess', {
       env,
       githubOidcProviderArn: `arn:aws:iam::${APPLICATION_ACCOUNT}:oidc-provider/token.actions.githubusercontent.com`,
