@@ -371,9 +371,6 @@ function DecisionDetailCard({ detail }: { readonly detail: DecisionDetail | null
   const available = detail.availableActions;
   return (
     <section className="decision-detail" aria-label={`Ficha de decisión ${detail.item.number}`}>
-      <h4 className="decision-detail-heading">
-        Decisión {detail.item.number}, casilla {detail.item.originSupport}
-      </h4>
       <div className="decision-fact">
         <h4>Observación</h4>
         <div className="decision-fact-copy">
@@ -561,6 +558,7 @@ export function DecisionInspector({
     () => index?.decisions.filter((item) => item.originSupport === selectedSupport) ?? [],
     [index, selectedSupport],
   );
+  const selectedItem = index?.decisions.find((item) => item.number === selectedNumber) ?? null;
   const selectSupport = (support: number): void => {
     initialScrollNumberRef.current = null;
     setSelectedSupport(support);
@@ -673,13 +671,15 @@ export function DecisionInspector({
                   id="decision-detail"
                   ref={detailContainerRef}
                   role="group"
-                  aria-label={
-                    selectedNumber === null
-                      ? 'Ficha sin selección'
-                      : `Ficha de la decisión ${selectedNumber}`
-                  }
+                  aria-labelledby={selectedItem ? 'decision-detail-title' : undefined}
+                  aria-label={selectedItem ? undefined : 'Ficha sin selección'}
                   tabIndex={-1}
                 >
+                  {selectedItem && (
+                    <h4 className="decision-detail-heading" id="decision-detail-title">
+                      Decisión {selectedItem.number}, casilla {selectedItem.originSupport}
+                    </h4>
+                  )}
                   {loadingDetail && (
                     <p className="attempt-message" role="status">
                       Cargando la ficha…

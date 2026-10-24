@@ -956,7 +956,7 @@ h1 {
 }
 
 .decision-detail-heading {
-  margin: 0;
+  margin: 0 0 0.7rem;
   color: #f7f1e1;
   font-size: 1rem;
 }
