@@ -1,9 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import {
   AuthFailure,
   type AuthClient,
   type AuthConfig,
-  type AuthIdentity,
   type AuthSession,
   createAuthClient,
   loadAuthConfig,
@@ -192,34 +191,84 @@ function PendingConfirmationCard({
   );
 }
 
-function AccountCard({
-  identity,
+function AccountHeader({
+  email,
   onLogout,
   disabled,
+  homeLinkDisabled,
 }: {
-  identity: AuthIdentity;
+  email: string;
   onLogout: () => void;
   disabled: boolean;
+  homeLinkDisabled: boolean;
 }) {
+  const panelId = useId();
+  const [menuState, setMenuState] = useState({ disabled, open: false });
+  const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
+  if (menuState.disabled !== disabled) {
+    setMenuState({ disabled, open: false });
+  }
+
+  const expanded = menuState.open && !disabled;
+
+  useEffect(() => {
+    if (!expanded) {
+      return undefined;
+    }
+
+    const closeOnOutsideClick = (event: MouseEvent): void => {
+      const target = event.target;
+      if (target instanceof Node && menuRef.current?.contains(target)) {
+        return;
+      }
+      setMenuState((current) => ({ ...current, open: false }));
+    };
+    const closeOnEscape = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') {
+        return;
+      }
+      event.preventDefault();
+      setMenuState((current) => ({ ...current, open: false }));
+      triggerRef.current?.focus();
+    };
+
+    document.addEventListener('click', closeOnOutsideClick);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('click', closeOnOutsideClick);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [expanded]);
+
   return (
-    <section className="auth-card account-card account-summary" aria-labelledby="account-title">
-      <div className="auth-card-content">
-        <p className="card-kicker">Cuenta</p>
-        <h2 id="account-title">Sesión confirmada</h2>
-        <p>
-          Sesión activa para <strong>{identity.email}</strong>.
-        </p>
+    <header className="game-header">
+      <AuthBrand linkDisabled={homeLinkDisabled} />
+      <div className="account-menu" ref={menuRef}>
         <button
-          className="secondary-button"
+          ref={triggerRef}
+          className="account-trigger"
           type="button"
-          onClick={onLogout}
+          aria-label="Cuenta"
+          aria-controls={panelId}
+          aria-expanded={expanded}
           disabled={disabled}
-          aria-label="Cerrar sesión"
+          onClick={() => setMenuState((current) => ({ ...current, open: !current.open }))}
         >
-          Cerrar sesión
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="8" r="3.5" />
+            <path d="M5 20c.7-3.4 3-5 7-5s6.3 1.6 7 5" />
+          </svg>
         </button>
+        <div id={panelId} className="account-panel" hidden={!expanded}>
+          <p className="account-email">{email}</p>
+          <button className="secondary-button" type="button" onClick={onLogout} disabled={disabled}>
+            Cerrar sesión
+          </button>
+        </div>
       </div>
-    </section>
+    </header>
   );
 }
 
@@ -239,14 +288,24 @@ function SessionLoadingCard() {
   );
 }
 
-function AuthBrand() {
-  return (
-    <a className="auth-brand" href="/" aria-label="Acerca de Robot Runner">
+function AuthBrand({ linkDisabled = false }: { linkDisabled?: boolean } = {}) {
+  const brand = (
+    <>
       <img src="/favicon.svg" width="48" height="48" alt="" />
       <div>
         <p className="auth-brand-tagline">A puro prompt</p>
         <h1>Robot Runner</h1>
       </div>
+    </>
+  );
+
+  if (linkDisabled) {
+    return <div className="auth-brand">{brand}</div>;
+  }
+
+  return (
+    <a className="auth-brand" href="/" aria-label="Acerca de Robot Runner">
+      {brand}
     </a>
   );
 }
@@ -718,6 +777,8 @@ export function App({
     editorRef.current?.focusEditor?.();
   }, []);
 
+  const accountDisabled = attemptBusy || configurationBusy || renewing;
+
   const handleAttemptControlsHostChange = useCallback((node: HTMLDivElement | null): void => {
     setAttemptControlsHost(node);
   }, []);
@@ -725,19 +786,12 @@ export function App({
   return (
     <main className={`shell${session ? ' shell-authenticated' : ' shell-auth'}`}>
       {session ? (
-        <header>
-          {!attemptBusy && (
-            <a className="game-home-link" href="/">
-              Acerca de Robot Runner
-            </a>
-          )}
-          <p className="eyebrow">A puro prompt</p>
-          <h1>Robot Runner</h1>
-          <p className="intro">
-            Configurá sus instrucciones y observá cómo decide recorrer el mundo, una decisión a la
-            vez.
-          </p>
-        </header>
+        <AccountHeader
+          email={session.identity.email}
+          onLogout={logout}
+          disabled={accountDisabled}
+          homeLinkDisabled={attemptBusy}
+        />
       ) : (
         <header className="auth-header">
           <AuthBrand />
@@ -781,13 +835,6 @@ export function App({
           error={confirmationError}
           message={confirmationMessage}
           operation={confirmationOperation}
-        />
-      )}
-      {phase === 'account' && session && (
-        <AccountCard
-          identity={session.identity}
-          onLogout={logout}
-          disabled={attemptBusy || configurationBusy || renewing}
         />
       )}
       {session &&
