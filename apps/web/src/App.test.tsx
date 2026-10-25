@@ -1998,7 +1998,10 @@ describe('access screen', () => {
     expect(
       screen.getByText('La sesión necesita volver a validarse antes de continuar.'),
     ).toBeTruthy();
-    const accessNotice = screen.getByRole('alert');
+    const accessNotice = screen
+      .getByText(/La sesión dejó de tener acceso a esta cuenta/)
+      .closest('[role="alert"]');
+    expect(accessNotice).not.toBeNull();
     const accountPanel = document.getElementById(
       getAccountTrigger().getAttribute('aria-controls')!,
     );
