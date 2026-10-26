@@ -105,6 +105,7 @@ describe('account header focus behavior', () => {
       expect(document.activeElement).toBe(focusTargetElement);
       const header = trigger.closest('header');
       expect(header).toBeTruthy();
+      expect(header?.tabIndex).toBe(-1);
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(60_000);

@@ -429,7 +429,7 @@ describe('DecisionInspector', () => {
     });
 
     expect(await screen.findByRole('alert')).toBeTruthy();
-    expect(screen.getByText('segundo fallo')).toBeTruthy();
+    expect(screen.getByText('No se pudo cargar la inspección. Podés reintentar.')).toBeTruthy();
     expect(document.activeElement).toBe(destination);
     expect(screen.getByRole('button', { name: 'Reintentar ficha' })).toBeTruthy();
     expect(getDecision).toHaveBeenCalledTimes(2);
