@@ -851,6 +851,55 @@ describe('DecisionInspector', () => {
     }
   });
 
+  it('cancels the pending latest-detail scroll when retrying a failed initial detail', async () => {
+    let resolveRetry!: (loaded: DecisionDetail) => void;
+    const getDecision = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('initial detail unavailable'))
+      .mockImplementationOnce(
+        () =>
+          new Promise<DecisionDetail>((resolve) => {
+            resolveRetry = resolve;
+          }),
+      );
+    const api = inspectorApi({ getDecision });
+    const scroll = stubScrollIntoView();
+
+    try {
+      render(
+        <DecisionInspector
+          api={api}
+          attemptId="attempt-1"
+          initialSelection="last-action-or-decision"
+          onClose={vi.fn()}
+        />,
+      );
+
+      const retryButton = await screen.findByRole('button', { name: 'Reintentar ficha' });
+      const destination = document.getElementById('decision-detail');
+      expect(destination).not.toBeNull();
+      expect(getDecision).toHaveBeenCalledWith('attempt-1', 3, expect.any(AbortSignal));
+      expect(scroll.scrollIntoView).not.toHaveBeenCalled();
+
+      retryButton.focus();
+      fireEvent.click(retryButton);
+      expect(await screen.findByText('Cargando la ficha…')).toBeTruthy();
+      expect(document.activeElement).toBe(destination);
+      expect(scroll.scrollIntoView).not.toHaveBeenCalled();
+
+      await act(async () => {
+        resolveRetry(detail(3));
+      });
+
+      expect(await screen.findByRole('heading', { name: 'Decisión 3, casilla 5' })).toBeTruthy();
+      expect(document.activeElement).toBe(destination);
+      expect(scroll.scrollIntoView).not.toHaveBeenCalled();
+      expect(getDecision).toHaveBeenCalledTimes(2);
+    } finally {
+      scroll.restore();
+    }
+  });
+
   it('ignores a late detail response after selecting a different decision', async () => {
     let resolveFirst!: (loaded: DecisionDetail) => void;
     const getDecision = vi
