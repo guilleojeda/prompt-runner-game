@@ -1028,7 +1028,7 @@ describe('AttemptWorkspace', () => {
     expect(await screen.findByRole('button', { name: 'Cancelar' })).toBeTruthy();
   });
 
-  it('persists the visible animation choice and freezes that value for the new attempt', async () => {
+  it('waits for a confirmed animation choice before admitting the new attempt', async () => {
     let finishPreferenceSave!: (value: { animationEnabled: boolean; version: number }) => void;
     const putAnimationPreference = vi.fn(
       () =>
@@ -1069,16 +1069,27 @@ describe('AttemptWorkspace', () => {
       await Promise.resolve();
     });
 
-    expect(createAttempt).toHaveBeenCalledWith(expect.any(String), 2, createDefaultDraft(), false);
+    expect(createAttempt).not.toHaveBeenCalled();
     expect(attemptApi.getReplay).not.toHaveBeenCalled();
-    expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
-    expect(screen.queryByText(/El robot llegó a la salida del recorrido/)).toBeNull();
-    expect(screen.queryByText(/estático/)).toBeNull();
     expect(putAnimationPreference).toHaveBeenCalledWith(false, 0, expect.any(AbortSignal));
     await act(async () => {
       finishPreferenceSave({ animationEnabled: false, version: 1 });
       await Promise.resolve();
     });
+    await waitFor(() => expect(screen.queryByText('Guardando preferencia…')).toBeNull());
+    expect(createAttempt).not.toHaveBeenCalled();
+
+    await act(async () => {
+      (ref.current as AttemptWorkspaceHandle).start();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(createAttempt).toHaveBeenCalledWith(expect.any(String), 2, createDefaultDraft(), false);
+    expect(attemptApi.getReplay).not.toHaveBeenCalled();
+    expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
+    expect(screen.queryByText(/El robot llegó a la salida del recorrido/)).toBeNull();
+    expect(screen.queryByText(/estático/)).toBeNull();
   });
 
   it('shows and resolves a cross-tab preference conflict without changing the visible choice', async () => {
@@ -1182,7 +1193,6 @@ describe('AttemptWorkspace', () => {
     });
 
     expect(animation.checked).toBe(false);
-    expect(screen.getByText('El resultado aparece directamente.')).toBeTruthy();
   });
 
   it('ignores an older focus read error after this tab saves a newer preference', async () => {
@@ -1226,7 +1236,6 @@ describe('AttemptWorkspace', () => {
     expect((screen.getByRole('checkbox', { name: 'Animación' }) as HTMLInputElement).checked).toBe(
       false,
     );
-    expect(screen.getByText('El resultado aparece directamente.')).toBeTruthy();
     expect(screen.queryByText('No se pudo consultar la preferencia de animación.')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Reintentar preferencia' })).toBeNull();
   });

@@ -283,7 +283,9 @@ describe('access screen', () => {
 
     await screen.findByText('Todavía no hay intentos guardados.');
     await within(controls).findByText('de 100 intentos disponibles');
-    await within(controls).findByText('El resultado aparece después de la reproducción.');
+    expect(
+      (within(controls).getByRole('checkbox', { name: 'Animación' }) as HTMLInputElement).checked,
+    ).toBe(true);
     expect(screen.getAllByRole('heading', { name: 'Prepará tu robot' })).toHaveLength(1);
     expect(screen.getAllByRole('group', { name: 'Controles de prueba y animación' })).toHaveLength(
       1,
@@ -1899,7 +1901,7 @@ describe('access screen', () => {
     expect(attemptApi.createAttempt).not.toHaveBeenCalled();
   });
 
-  it('keeps Probar locked after preference loading fails and restores the server value on retry', async () => {
+  it('keeps preparation available after preference loading fails and restores the server value on retry', async () => {
     const authClient = client({ initialize: vi.fn().mockResolvedValue(session()) });
     const draftApi: DraftApi = {
       getDraft: vi.fn().mockResolvedValue({ version: 0, draft: createDefaultDraft() }),
@@ -1925,6 +1927,14 @@ describe('access screen', () => {
     expect(await screen.findByRole('heading', { name: 'Historial' })).toBeTruthy();
     const tryButton = screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement;
     expect(tryButton.disabled).toBe(true);
+    const instructions = screen.getByLabelText(
+      'Qué debe tener en cuenta el robot',
+    ) as HTMLTextAreaElement;
+    expect(instructions.readOnly).toBe(false);
+    expect(instructions.matches(':disabled')).toBe(false);
+    expect((screen.getByRole('checkbox', { name: 'Avanzar' }) as HTMLInputElement).disabled).toBe(
+      false,
+    );
     await waitFor(() => expect(getLogoutButton().disabled).toBe(false));
 
     fireEvent.click(screen.getByRole('button', { name: 'Reintentar preferencia' }));
