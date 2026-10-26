@@ -106,11 +106,10 @@ afterEach(() => {
 });
 
 describe('RobotEditor recovery regressions', () => {
-  it('keeps a confirmed candidate failure clean, then saves a later edit at the original minute', async () => {
+  it('retains a candidate application after rate limiting and retries it at the original minute', async () => {
     vi.useFakeTimers();
     const base = createDefaultDraft();
-    const candidate = { ...base, instructions: 'Candidato no aplicado' };
-    const later = { ...base, instructions: 'Edición durante la espera' };
+    const candidate = { ...base, instructions: 'Candidato retenido' };
     const getDraft = vi.fn<DraftApi['getDraft']>().mockResolvedValue(snapshot(7, base));
     const putDraft = vi
       .fn<DraftApi['putDraft']>()
@@ -123,43 +122,35 @@ describe('RobotEditor recovery regressions', () => {
     await renderReady(draftApi, editorRef);
 
     let applied: boolean | undefined;
+    let applyPromise!: Promise<boolean>;
     await act(async () => {
-      applied = await editorRef.current?.applyDraft(candidate);
+      applyPromise = editorRef.current!.applyDraft(candidate);
+      void applyPromise.then((result) => {
+        applied = result;
+      });
+      await settle();
     });
 
-    expect(applied).toBe(false);
+    expect(applied).toBeUndefined();
     expect(instructionValue()).toBe(base.instructions);
-    expect(screen.queryByText(candidate.instructions)).toBeNull();
     expect(screen.queryByRole('alert')).toBeNull();
-    expect(screen.getByText('Guardado')).toBeTruthy();
     expect(editorRef.current?.hasUnconfirmedChanges()).toBe(false);
     expect(putDraft).toHaveBeenCalledOnce();
     expect(putDraft.mock.calls[0]?.[0]).toBe(7);
-    expect(await editorRef.current?.waitForConfirmed(new AbortController().signal)).toBe(true);
-    await expect(editorRef.current?.captureSnapshot()).resolves.toMatchObject({
-      version: 7,
-      draft: base,
-    });
-    expect(getDraft).toHaveBeenCalledOnce();
+    await advance(59_999);
     expect(putDraft).toHaveBeenCalledOnce();
-
-    await advance(30_000);
-    expect(screen.getByText('Guardado')).toBeTruthy();
-    editInstructions(later.instructions);
-    expect(instructionValue()).toBe(later.instructions);
-    expect(
-      screen.getByText('Guardado pendiente: volveremos a intentarlo cada minuto'),
-    ).toBeTruthy();
-    await advance(29_999);
-    expect(putDraft).toHaveBeenCalledOnce();
-    expect(getDraft).toHaveBeenCalledOnce();
     await advance(1);
+    await expect(applyPromise).resolves.toBe(true);
+    expect(applied).toBe(true);
     expect(putDraft).toHaveBeenCalledTimes(2);
     expect(putDraft.mock.calls[1]?.[0]).toBe(7);
-    expect(putDraft.mock.calls[1]?.[1]).toMatchObject({ instructions: later.instructions });
-    expect(draftApi.getDraft).toHaveBeenCalledOnce();
+    expect(putDraft.mock.calls[1]?.[1]).toMatchObject({ instructions: candidate.instructions });
+    expect(instructionValue()).toBe(candidate.instructions);
+    expect(getDraft).toHaveBeenCalledOnce();
+    await advance(120_000);
+    expect(putDraft).toHaveBeenCalledTimes(2);
+    expect(getDraft).toHaveBeenCalledOnce();
     expect(screen.getByText('Guardado')).toBeTruthy();
-    expect(screen.queryByText(candidate.instructions)).toBeNull();
   });
 
   it('joins the active visible PUT to capture its confirmed positive snapshot', async () => {
@@ -304,15 +295,20 @@ describe('RobotEditor recovery regressions', () => {
     let applyPromise!: Promise<boolean>;
     await act(async () => {
       applyPromise = editorRef.current!.applyDraft(candidate);
+      void applyPromise.then((result) => {
+        applied = result;
+      });
       await settle();
     });
     expect(putDraft).toHaveBeenCalledOnce();
 
     editInstructions(later.instructions);
     expect(instructionValue()).toBe(later.instructions);
+    await settle();
+    expect(applied).toBe(false);
     await act(async () => {
       rejectCandidate(new DraftApiFailure('rate_limited', 'Demasiadas solicitudes.', 429));
-      applied = await applyPromise;
+      await settle();
     });
 
     expect(applied).toBe(false);

@@ -21,6 +21,36 @@ function robot(id = 'robot-a', version = 1) {
 }
 
 describe('SavedRobotApiClient', () => {
+  it.each([
+    ['stored_robot_incompatible', 500, 'incompatible'],
+    ['dependency_unavailable', 503, 'server'],
+  ])(
+    'classifies candidate GET %s by code rather than message',
+    async (code, status, expectedCode) => {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(JSON.stringify({ code, message: 'La copia no está disponible.' }), {
+          status,
+        }),
+      );
+      const client = new SavedRobotApiClient(config, {
+        tokenProvider: () => ({ accessToken: 'test-token', authContext: 23 }),
+        fetch: fetchImpl,
+      });
+      const controller = new AbortController();
+
+      await expect(client.getRobot('robot-a', controller.signal)).rejects.toMatchObject({
+        code: expectedCode,
+        status,
+        ambiguous: false,
+        message: 'La copia no está disponible.',
+      });
+      expect(fetchImpl).toHaveBeenCalledWith(
+        'https://api.example.test/robots/robot-a',
+        expect.objectContaining({ method: 'GET', signal: controller.signal }),
+      );
+    },
+  );
+
   it('uses the current token and exact paginated routes and payloads', async () => {
     const saved = robot();
     const fetchImpl = vi

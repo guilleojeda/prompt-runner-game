@@ -418,7 +418,7 @@ describe('access screen', () => {
     expect(listRobots).toHaveBeenCalledTimes(2);
   });
 
-  it('preserves an edit made during a saved-copy load and applies it after an explicit retry', async () => {
+  it('cancels a saved-copy application on edit and applies only after choosing it again', async () => {
     const loadedDraft = { ...createDefaultDraft(), instructions: 'Copia guardada.' };
     const localDraft = { ...createDefaultDraft(), instructions: 'Edición posterior.' };
     const savedCopy: SavedRobot = {
@@ -431,7 +431,7 @@ describe('access screen', () => {
       draft: loadedDraft,
     };
     let resolveRobot!: (robot: SavedRobot) => void;
-    const getRobot = vi.fn().mockReturnValue(
+    const getRobot = vi.fn<SavedRobotApi['getRobot']>().mockReturnValue(
       new Promise<SavedRobot>((resolve) => {
         resolveRobot = resolve;
       }),
@@ -483,7 +483,10 @@ describe('access screen', () => {
     await waitFor(() => expect((copyButton as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(copyButton);
     await waitFor(() => expect(getRobot).toHaveBeenCalledOnce());
+    const firstSignal = getRobot.mock.calls[0]?.[1];
+    expect(firstSignal).toBeInstanceOf(AbortSignal);
     fireEvent.change(instructions, { target: { value: localDraft.instructions } });
+    expect(firstSignal?.aborted).toBe(true);
     await act(async () => {
       resolveRobot(savedCopy);
       await Promise.resolve();
@@ -497,11 +500,18 @@ describe('access screen', () => {
       instructions: loadedDraft.instructions,
     });
     expect(screen.queryByText(`Cargaste «${savedCopy.name}».`)).toBeNull();
+    expect(
+      screen.queryByText(
+        'No se pudo cargar la copia. Revisá el estado del editor y volvé a intentarlo.',
+      ),
+    ).toBeNull();
 
     getRobot.mockResolvedValueOnce(savedCopy);
     fireEvent.click(copyButton);
     await waitFor(() => expect(screen.getByDisplayValue(loadedDraft.instructions)).toBeTruthy());
     expect(await screen.findByText(`Cargaste «${savedCopy.name}».`)).toBeTruthy();
+    expect(getRobot).toHaveBeenCalledTimes(2);
+    expect(getRobot.mock.calls[1]?.[1]).toBeInstanceOf(AbortSignal);
   });
 
   it('rejects a saved-copy response that arrives after Probar starts', async () => {
@@ -739,7 +749,7 @@ describe('access screen', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Usar esta configuración' }));
     await act(flushAuthMicrotasks);
     expect(putDraft).toHaveBeenCalledOnce();
-    expectAccountTriggerLocked();
+    expect(getAccountTrigger().disabled).toBe(false);
     expect(attemptApi.createAttempt).not.toHaveBeenCalled();
     await act(async () => {
       resolvePut({ version: 1, draft: recovered });
@@ -823,11 +833,15 @@ describe('access screen', () => {
     fireEvent.click(within(history).getByRole('button', { name: 'Ver configuración' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Usar esta configuración' }));
 
+    expect(await screen.findByRole('button', { name: 'Comparar versiones' })).toBeTruthy();
     expect(
-      await screen.findByText(
+      screen.queryByText(
         'No se pudo aplicar la configuración. Revisá el estado del editor y volvé a intentarlo.',
       ),
-    ).toBeTruthy();
+    ).toBeNull();
+    expect(
+      screen.queryByText('Configuración cargada en el editor. Se guarda como una edición normal.'),
+    ).toBeNull();
     expect(screen.getByDisplayValue(previous.instructions)).toBeTruthy();
     expect(screen.queryByDisplayValue(recovered.instructions)).toBeNull();
     const compare = screen.queryByRole('button', { name: 'Comparar versiones' });
