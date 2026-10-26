@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent, type RefObject } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type RefObject,
+} from 'react';
 import {
   draftsEqual,
   draftLimitMessage,
@@ -18,6 +26,13 @@ import { SavedRobotApiFailure, type SavedRobotApi } from './saved-robot-api.js';
 type NameFormMode = 'new' | null;
 type SavedOperation = 'load' | 'save' | 'delete' | null;
 type ErrorKind = 'list' | 'load' | 'save' | 'new' | 'delete' | null;
+
+interface SavedApplication {
+  readonly id: number;
+  readonly label: string;
+  readonly identitySub: string;
+  readonly controller: AbortController;
+}
 
 interface DeleteConflict {
   readonly summary: SavedRobotSummary;
@@ -181,9 +196,12 @@ export function SavedRobots({
   const [inspectionLoadingId, setInspectionLoadingId] = useState<string | null>(null);
   const [inspectionError, setInspectionError] = useState<string | null>(null);
   const [inspectionNotice, setInspectionNotice] = useState<string | null>(null);
+  const [application, setApplication] = useState<SavedApplication | null>(null);
   const [listAttempt, setListAttempt] = useState(0);
   const generationRef = useRef(0);
   const inspectionRequestRef = useRef(0);
+  const applicationIdRef = useRef(0);
+  const applicationRef = useRef<SavedApplication | null>(null);
   const operationTokenRef = useRef(0);
   const operationOwnerRef = useRef<number | null>(null);
   const inspectionOperationRef = useRef<number | null>(null);
@@ -194,12 +212,56 @@ export function SavedRobots({
   const selectedNameInputRef = useRef<HTMLInputElement | null>(null);
   const pendingCreateRef = useRef<PendingCreate | null>(null);
   const [pendingCreate, setPendingCreate] = useState<PendingCreate | null>(null);
+  const identitySubRef = useRef(session.identity.sub);
+  const unavailableRef = useRef(paused || locked);
+  useLayoutEffect(() => {
+    identitySubRef.current = session.identity.sub;
+    unavailableRef.current = paused || locked;
+  }, [locked, paused, session.identity.sub]);
   const isCurrent = useCallback(
     (generation: number): boolean => generationRef.current === generation,
     [],
   );
 
+  const cancelApplication = useCallback((): void => {
+    const current = applicationRef.current;
+    if (!current) return;
+    applicationRef.current = null;
+    applicationIdRef.current += 1;
+    current.controller.abort();
+    setApplication(null);
+  }, []);
+
+  const beginApplication = (label: string): SavedApplication => {
+    cancelApplication();
+    const intent = {
+      id: applicationIdRef.current + 1,
+      label,
+      identitySub: session.identity.sub,
+      controller: new AbortController(),
+    };
+    applicationIdRef.current = intent.id;
+    applicationRef.current = intent;
+    setApplication(intent);
+    return intent;
+  };
+
+  const isCurrentApplication = (intent: SavedApplication, generation: number): boolean =>
+    applicationRef.current?.id === intent.id &&
+    !intent.controller.signal.aborted &&
+    !unavailableRef.current &&
+    identitySubRef.current === intent.identitySub &&
+    isCurrent(generation);
+
+  const finishApplication = (intent: SavedApplication): void => {
+    if (applicationRef.current?.id !== intent.id) return;
+    applicationRef.current = null;
+    setApplication(null);
+  };
+
   const beginOperation = (kind: Exclude<SavedOperation, null>): number => {
+    cancelApplication();
+    editor.current?.cancelApplication?.();
     const token = operationTokenRef.current + 1;
     operationTokenRef.current = token;
     operationOwnerRef.current = token;
@@ -254,6 +316,26 @@ export function SavedRobots({
     inputRef.current?.select();
   }, [nameMode]);
 
+  useEffect(() => {
+    if (
+      paused ||
+      locked ||
+      (applicationRef.current !== null &&
+        applicationRef.current.identitySub !== session.identity.sub)
+    ) {
+      cancelApplication();
+    }
+  }, [cancelApplication, locked, paused, session.identity.sub]);
+
+  useEffect(
+    () => () => {
+      const current = applicationRef.current;
+      applicationRef.current = null;
+      current?.controller.abort();
+    },
+    [],
+  );
+
   const busy = paused || locked || listBusy || operation !== null;
   const selectedSummary = selected ? summaryFromRobot(selected) : null;
   const selectedManagementSummary = selected
@@ -290,6 +372,7 @@ export function SavedRobots({
   };
 
   const clearInspection = (returnFocus: boolean): void => {
+    cancelApplication();
     inspectionRequestRef.current += 1;
     const inspectionOperation = inspectionOperationRef.current;
     inspectionOperationRef.current = null;
@@ -352,29 +435,26 @@ export function SavedRobots({
   ): Promise<void> => {
     if (busy || !configurationAvailable) return;
     clearInspection(false);
-    const operationToken = beginOperation('load');
     setError(null);
     setErrorKind(null);
     setMessage(null);
     setConflict(null);
     const generation = generationRef.current;
+    const intent = beginApplication(summary.name);
     try {
-      if (!isCurrent(generation)) return;
+      if (!isCurrentApplication(intent, generation)) return;
       const loadedRobotRef = { current: null as SavedRobot | null };
-      const applied = await editor.current?.applyDraft(async () => {
-        const robot = await api.getRobot(summary.id);
-        if (!isCurrent(generation)) throw new StaleSavedOperation();
-        loadedRobotRef.current = robot;
-        const limitMessage = draftLimitMessage(robot.draft);
-        if (limitMessage) throw new OversizedSavedDraft(robot, limitMessage);
-        return loadedRobotRef.current.draft;
-      });
-      if (!isCurrent(generation)) return;
-      if (!applied) {
-        setError('No se pudo cargar la copia. Revisá el estado del editor y volvé a intentarlo.');
-        setErrorKind('load');
-        return;
-      }
+      const applied = await editor.current?.applyDraft(
+        async (operationSignal) => {
+          const robot = await api.getRobot(summary.id, operationSignal);
+          loadedRobotRef.current = robot;
+          const limitMessage = draftLimitMessage(robot.draft);
+          if (limitMessage) throw new OversizedSavedDraft(robot, limitMessage);
+          return robot.draft;
+        },
+        { signal: intent.controller.signal },
+      );
+      if (!isCurrentApplication(intent, generation) || applied !== true) return;
       const robot = loadedRobotRef.current;
       if (!robot) {
         setError('No se pudo cargar el robot guardado.');
@@ -384,8 +464,9 @@ export function SavedRobots({
       setSelected(robot);
       setName(robot.name);
       setMessage(`Cargaste «${robot.name}».`);
+      editor.current?.focusEditor?.();
     } catch (loadError) {
-      if (!isCurrent(generation)) return;
+      if (!isCurrentApplication(intent, generation)) return;
       if (loadError instanceof OversizedSavedDraft) {
         inspectionTriggerRef.current = trigger;
         inspectionOpeningRef.current = true;
@@ -399,7 +480,6 @@ export function SavedRobots({
       }
       setError(apiErrorMessage(loadError, 'No se pudo cargar el robot guardado.'));
       setErrorKind('load');
-      if (isAuthError(loadError)) onAuthRequired?.(loadError.authContext);
       if (isMissingError(loadError)) {
         setRobots((current) => current.filter((robot) => robot.id !== summary.id));
         if (selected?.id === summary.id) {
@@ -408,7 +488,7 @@ export function SavedRobots({
         }
       }
     } finally {
-      if (isCurrent(generation)) finishOperation(operationToken);
+      finishApplication(intent);
     }
   };
 
@@ -761,6 +841,8 @@ export function SavedRobots({
 
   const handleUseDeleteConflict = (): void => {
     if (!deleteConflict || busy) return;
+    cancelApplication();
+    editor.current?.cancelApplication?.();
     const { summary } = deleteConflict;
     updateListWithSummary(summary);
     setDeleteConflict(null);
@@ -772,30 +854,29 @@ export function SavedRobots({
   const handleUseConflict = async (): Promise<void> => {
     if (!conflict || busy) return;
     const generation = generationRef.current;
-    const operationToken = beginOperation('load');
+    const selectedConflict = conflict;
+    const intent = beginApplication(selectedConflict.name);
     setError(null);
     setErrorKind(null);
     try {
-      if (!isCurrent(generation)) return;
-      const applied = await editor.current?.applyDraft(conflict.draft);
-      if (!isCurrent(generation)) return;
-      if (!applied) {
-        setError('No se pudo cargar la versión remota porque hay cambios pendientes.');
-        setErrorKind('load');
-        return;
-      }
-      setSelected(conflict);
-      setName(conflict.name);
-      updateListWith(conflict);
+      if (!isCurrentApplication(intent, generation)) return;
+      const applied = await editor.current?.applyDraft(selectedConflict.draft, {
+        signal: intent.controller.signal,
+      });
+      if (!isCurrentApplication(intent, generation) || applied !== true) return;
+      setSelected(selectedConflict);
+      setName(selectedConflict.name);
+      updateListWith(selectedConflict);
       setConflict(null);
-      setMessage(`Cargaste la versión remota de «${conflict.name}».`);
+      setMessage(`Cargaste la versión remota de «${selectedConflict.name}».`);
+      editor.current?.focusEditor?.();
     } catch (loadError) {
-      if (isCurrent(generation)) {
+      if (isCurrentApplication(intent, generation)) {
         setError(apiErrorMessage(loadError, 'No se pudo cargar la versión remota.'));
         setErrorKind('load');
       }
     } finally {
-      if (isCurrent(generation)) finishOperation(operationToken);
+      finishApplication(intent);
     }
   };
 
@@ -809,7 +890,11 @@ export function SavedRobots({
     conflict === null;
   const canSaveAsNew = configurationAvailable || pendingCreate !== null;
   return (
-    <section className="saved-robots" aria-labelledby="saved-robots-title" aria-busy={busy}>
+    <section
+      className="saved-robots"
+      aria-labelledby="saved-robots-title"
+      aria-busy={busy || application !== null}
+    >
       <div className="saved-robots-heading">
         <div>
           <p className="card-kicker">Copias guardadas</p>
@@ -829,6 +914,19 @@ export function SavedRobots({
             : 'Verificando tu sesión… Tus robots guardados siguen protegidos.'}
         </p>
       )}
+      {application && (
+        <div className="saved-robots-message" role="status" aria-live="polite">
+          <span>Aplicando «{application.label}»…</span>
+          <button
+            className="text-button"
+            type="button"
+            onClick={cancelApplication}
+            disabled={paused || locked}
+          >
+            Cancelar aplicación
+          </button>
+        </div>
+      )}
       {error &&
         (errorKind === 'list' ||
           errorKind === 'load' ||
@@ -843,6 +941,7 @@ export function SavedRobots({
                 className="secondary-button"
                 type="button"
                 onClick={() => {
+                  cancelApplication();
                   setListBusy(true);
                   setError(null);
                   setErrorKind(null);

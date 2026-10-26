@@ -10,10 +10,7 @@ import { DraftApiFailure, type DraftApi } from './draft-api.js';
 import { RobotEditor, type RobotEditorHandle, type RobotEditorProps } from './RobotEditor.js';
 import { SavedRobotApiFailure } from './saved-robot-api.js';
 
-type DraftSource = RobotDraft | ((signal?: AbortSignal) => Promise<RobotDraft>);
-type Phase7EditorHandle = Omit<RobotEditorHandle, 'applyDraft'> & {
-  applyDraft(source: DraftSource, options?: { signal?: AbortSignal }): Promise<boolean>;
-};
+type DraftSource = RobotDraft | ((signal: AbortSignal) => Promise<RobotDraft>);
 type ApplicationState =
   | { readonly state: 'pending' }
   | { readonly state: 'fulfilled'; readonly result: boolean }
@@ -59,7 +56,7 @@ function applyWithSignal(
   signal: AbortSignal,
 ): Promise<boolean> {
   if (!editor) throw new Error('The editor handle was not ready.');
-  return (editor as unknown as Phase7EditorHandle).applyDraft(source, { signal });
+  return editor.applyDraft(source, { signal });
 }
 
 function observe(promise: Promise<boolean>): { current(): ApplicationState } {
@@ -169,6 +166,65 @@ describe('RobotEditor D2 application acceptance', () => {
     expect(getDraft).toHaveBeenCalledOnce();
   });
 
+  it('shows the clean saved status after canceling a transient candidate load and does no retry', async () => {
+    vi.useFakeTimers();
+    const base = createDefaultDraft();
+    const source = vi
+      .fn<(signal: AbortSignal) => Promise<RobotDraft>>()
+      .mockRejectedValueOnce(new DraftApiFailure('network', 'La copia no respondió.'));
+    const getDraft = vi.fn<DraftApi['getDraft']>().mockResolvedValue(snapshot(4, base));
+    const putDraft = vi.fn<DraftApi['putDraft']>();
+    const editorRef = createRef<RobotEditorHandle>();
+    await renderReady(api({ getDraft, putDraft }), editorRef);
+    const applying = applyWithSignal(editorRef.current, source, new AbortController().signal);
+    const application = observe(applying);
+    await settle();
+    expect(application.current().state).toBe('pending');
+    expect(
+      screen.getByText('Guardado pendiente: volveremos a intentarlo cada minuto', { exact: true }),
+    ).toBeTruthy();
+
+    act(() => editorRef.current?.cancelApplication());
+    await expect(applying).resolves.toBe(false);
+    expect(screen.getByText('Guardado', { exact: true })).toBeTruthy();
+    await advance(60_000);
+
+    expect(source).toHaveBeenCalledOnce();
+    expect(getDraft).toHaveBeenCalledOnce();
+    expect(putDraft).not.toHaveBeenCalled();
+    expect(screen.getByText('Guardado', { exact: true })).toBeTruthy();
+  });
+
+  it('keeps the original deadline when editing after canceling a transient candidate load', async () => {
+    vi.useFakeTimers();
+    const base = createDefaultDraft();
+    const visible = { ...base, instructions: 'Edición visible después de cancelar.' };
+    const source = vi
+      .fn<(signal: AbortSignal) => Promise<RobotDraft>>()
+      .mockRejectedValueOnce(new DraftApiFailure('network', 'La copia no respondió.'));
+    const getDraft = vi.fn<DraftApi['getDraft']>().mockResolvedValue(snapshot(4, base));
+    const putDraft = vi
+      .fn<DraftApi['putDraft']>()
+      .mockImplementation(async (version, draft) => snapshot(version + 1, draft));
+    const editorRef = createRef<RobotEditorHandle>();
+    await renderReady(api({ getDraft, putDraft }), editorRef);
+    const applying = applyWithSignal(editorRef.current, source, new AbortController().signal);
+    await settle();
+    act(() => editorRef.current?.cancelApplication());
+    await expect(applying).resolves.toBe(false);
+
+    await advance(20_000);
+    editInstructions(visible.instructions);
+    await advance(39_999);
+    expect(putDraft).not.toHaveBeenCalled();
+    expect(source).toHaveBeenCalledOnce();
+    await advance(1);
+
+    expect(putDraft).toHaveBeenCalledOnce();
+    expect(putDraft.mock.calls[0]?.slice(0, 2)).toEqual([4, visible]);
+    expect(instructionsValue()).toBe(visible.instructions);
+  });
+
   it('saves a dirty visible revision before the candidate and keeps it visible until candidate confirmation', async () => {
     vi.useFakeTimers();
     const base = createDefaultDraft();
@@ -224,6 +280,149 @@ describe('RobotEditor D2 application acceptance', () => {
     });
     await expect(applying).resolves.toBe(true);
     expect(instructionsValue()).toBe(candidate.instructions);
+  });
+
+  it('ends the application when an uncertain visible retry is definitively rejected', async () => {
+    vi.useFakeTimers();
+    const base = createDefaultDraft();
+    const visible = { ...base, instructions: 'A visible con respuesta incierta' };
+    const candidate = { ...base, instructions: 'B candidato que no debe aplicarse' };
+    const getDraft = vi
+      .fn<DraftApi['getDraft']>()
+      .mockResolvedValueOnce(snapshot(4, base))
+      .mockResolvedValueOnce(snapshot(4, base))
+      .mockResolvedValueOnce(snapshot(5, visible));
+    let rejectFirstPut!: (error: DraftApiFailure) => void;
+    const putDraft = vi
+      .fn<DraftApi['putDraft']>()
+      .mockImplementationOnce(
+        () =>
+          new Promise<DraftSnapshot>((_resolve, reject) => {
+            rejectFirstPut = reject;
+          }),
+      )
+      .mockRejectedValueOnce(incompatibleFailure());
+    const editorRef = createRef<RobotEditorHandle>();
+    await renderReady(api({ getDraft, putDraft }), editorRef);
+    editInstructions(visible.instructions);
+    await advance(600);
+    expect(putDraft).toHaveBeenCalledOnce();
+
+    const applying = applyWithSignal(editorRef.current, candidate, new AbortController().signal);
+    const application = observe(applying);
+    await settle();
+    expect(application.current().state).toBe('pending');
+
+    await act(async () => {
+      rejectFirstPut(
+        new DraftApiFailure('network', 'Se perdió la respuesta.', undefined, undefined, true),
+      );
+      await settle();
+    });
+    await advance(59_999);
+    expect(getDraft).toHaveBeenCalledOnce();
+    expect(putDraft).toHaveBeenCalledOnce();
+    await advance(1);
+
+    await expect(applying).resolves.toBe(false);
+    expect(putDraft).toHaveBeenCalledTimes(2);
+    expect(putDraft.mock.calls[1]?.[1]).toMatchObject({ instructions: visible.instructions });
+    expect(instructionsValue()).toBe(visible.instructions);
+    expect(application.current()).toEqual({ state: 'fulfilled', result: false });
+
+    await advance(60_000);
+    expect(getDraft).toHaveBeenCalledTimes(3);
+    expect(putDraft).toHaveBeenCalledTimes(2);
+    expect(instructionsValue()).toBe(visible.instructions);
+    expect(application.current()).toEqual({ state: 'fulfilled', result: false });
+  });
+
+  it('ends an application waiting on an already active visible PUT after a definitive rejection', async () => {
+    vi.useFakeTimers();
+    const base = createDefaultDraft();
+    const visible = { ...base, instructions: 'Visible que ya se está guardando' };
+    const candidate = { ...base, instructions: 'Candidato que depende de ese guardado' };
+    let rejectVisible!: (error: DraftApiFailure) => void;
+    const putDraft = vi.fn<DraftApi['putDraft']>().mockImplementationOnce(
+      () =>
+        new Promise<DraftSnapshot>((_resolve, reject) => {
+          rejectVisible = reject;
+        }),
+    );
+    const editorRef = createRef<RobotEditorHandle>();
+    await renderReady(
+      api({
+        getDraft: vi.fn<DraftApi['getDraft']>().mockResolvedValue(snapshot(4, base)),
+        putDraft,
+      }),
+      editorRef,
+    );
+    editInstructions(visible.instructions);
+    await advance(600);
+    expect(putDraft).toHaveBeenCalledOnce();
+
+    const applying = applyWithSignal(editorRef.current, candidate, new AbortController().signal);
+    const application = observe(applying);
+    await settle();
+    expect(application.current().state).toBe('pending');
+
+    await act(async () => {
+      rejectVisible(incompatibleFailure());
+      await settle();
+    });
+    await expect(applying).resolves.toBe(false);
+    expect(putDraft).toHaveBeenCalledOnce();
+    expect(instructionsValue()).toBe(visible.instructions);
+    expect(application.current()).toEqual({ state: 'fulfilled', result: false });
+  });
+
+  it('keeps a newer application alive when an older visible PUT is definitively rejected', async () => {
+    vi.useFakeTimers();
+    const base = createDefaultDraft();
+    const olderVisible = { ...base, instructions: 'A visible de una revisión anterior' };
+    const currentVisible = { ...base, instructions: 'B visible corregida' };
+    const candidate = { ...base, instructions: 'C candidato vigente' };
+    let rejectOlderPut!: (error: DraftApiFailure) => void;
+    const putDraft = vi
+      .fn<DraftApi['putDraft']>()
+      .mockImplementationOnce(
+        () =>
+          new Promise<DraftSnapshot>((_resolve, reject) => {
+            rejectOlderPut = reject;
+          }),
+      )
+      .mockImplementation(async (version, draft) => snapshot(version + 1, draft));
+    const editorRef = createRef<RobotEditorHandle>();
+    await renderReady(
+      api({
+        getDraft: vi.fn<DraftApi['getDraft']>().mockResolvedValue(snapshot(4, base)),
+        putDraft,
+      }),
+      editorRef,
+    );
+    editInstructions(olderVisible.instructions);
+    await advance(600);
+    expect(putDraft).toHaveBeenCalledOnce();
+
+    editInstructions(currentVisible.instructions);
+    const applying = applyWithSignal(editorRef.current, candidate, new AbortController().signal);
+    const application = observe(applying);
+    await settle();
+    await act(async () => {
+      rejectOlderPut(incompatibleFailure());
+      await settle();
+    });
+    expect(application.current().state).toBe('pending');
+
+    await advance(600);
+    await expect(applying).resolves.toBe(true);
+    expect(putDraft).toHaveBeenCalledTimes(3);
+    expect(putDraft.mock.calls[1]?.[1]).toMatchObject({
+      instructions: currentVisible.instructions,
+    });
+    expect(putDraft.mock.calls[2]?.[1]).toMatchObject({ instructions: candidate.instructions });
+    expect(instructionsValue()).toBe(candidate.instructions);
+    expect(application.current()).toEqual({ state: 'fulfilled', result: true });
   });
 
   it('serializes the candidate GET with the visible and candidate PUT operations', async () => {
@@ -523,6 +722,62 @@ describe('RobotEditor D2 application acceptance', () => {
     expect(instructionsValue()).toBe(candidate.instructions);
   });
 
+  it.each(['candidate PUT', 'visible preparation'] as const)(
+    'keeps an application pending after App rejects stale authentication for %s',
+    async (writeStage) => {
+      vi.useFakeTimers();
+      const base = createDefaultDraft();
+      const visible = { ...base, instructions: 'Visible que debe guardarse primero' };
+      const candidate = { ...base, instructions: 'Candidato con credencial vigente' };
+      const staleAuthentication = new DraftApiFailure(
+        'authentication',
+        'La credencial anterior fue rechazada.',
+        401,
+        undefined,
+        false,
+        { authContext: 17 },
+      );
+      const onAuthRequired = vi.fn().mockReturnValue(false);
+      const putDraft = vi
+        .fn<DraftApi['putDraft']>()
+        .mockRejectedValueOnce(staleAuthentication)
+        .mockImplementation(async (version, draft) => snapshot(version + 1, draft));
+      const editorRef = createRef<RobotEditorHandle>();
+      await renderReady(
+        api({
+          getDraft: vi.fn<DraftApi['getDraft']>().mockResolvedValue(snapshot(4, base)),
+          putDraft,
+        }),
+        editorRef,
+        { onAuthRequired },
+      );
+      if (writeStage === 'visible preparation') editInstructions(visible.instructions);
+      const applying = applyWithSignal(editorRef.current, candidate, new AbortController().signal);
+      const application = observe(applying);
+
+      await settle();
+      expect(onAuthRequired).toHaveBeenCalledExactlyOnceWith(17);
+      expect(application.current().state).toBe('pending');
+      expect(putDraft).toHaveBeenCalledOnce();
+      await advance(59_999);
+      expect(onAuthRequired).toHaveBeenCalledOnce();
+      expect(putDraft).toHaveBeenCalledOnce();
+      expect(instructionsValue()).toBe(
+        writeStage === 'visible preparation' ? visible.instructions : base.instructions,
+      );
+      await advance(1);
+
+      await expect(applying).resolves.toBe(true);
+      expect(onAuthRequired).toHaveBeenCalledOnce();
+      expect(putDraft).toHaveBeenCalledTimes(writeStage === 'visible preparation' ? 3 : 2);
+      expect(putDraft.mock.calls.at(-1)?.[1]).toMatchObject({
+        instructions: candidate.instructions,
+      });
+      expect(instructionsValue()).toBe(candidate.instructions);
+      expect(application.current()).toEqual({ state: 'fulfilled', result: true });
+    },
+  );
+
   it('ends on a transient candidate PUT after caller cancellation and does not retry later', async () => {
     vi.useFakeTimers();
     const base = createDefaultDraft();
@@ -610,6 +865,48 @@ describe('RobotEditor D2 application acceptance', () => {
       expect(instructionsValue()).toBe(corrected.instructions);
     },
   );
+
+  it('ends the application after an uncertain candidate retry is definitively rejected', async () => {
+    vi.useFakeTimers();
+    const base = createDefaultDraft();
+    const candidate = { ...base, instructions: 'Candidato cuya primera respuesta se perdió' };
+    const getDraft = vi
+      .fn<DraftApi['getDraft']>()
+      .mockResolvedValueOnce(snapshot(4, base))
+      .mockResolvedValueOnce(snapshot(4, base))
+      .mockResolvedValueOnce(snapshot(5, candidate));
+    const putDraft = vi
+      .fn<DraftApi['putDraft']>()
+      .mockRejectedValueOnce(
+        new DraftApiFailure('network', 'Se perdió la respuesta.', undefined, undefined, true),
+      )
+      .mockRejectedValueOnce(incompatibleFailure())
+      .mockImplementationOnce(async (version, draft) => snapshot(version + 1, draft));
+    const editorRef = createRef<RobotEditorHandle>();
+    await renderReady(api({ getDraft, putDraft }), editorRef);
+    const applicationPromise = applyWithSignal(
+      editorRef.current,
+      candidate,
+      new AbortController().signal,
+    );
+    const application = observe(applicationPromise);
+
+    await settle();
+    expect(putDraft).toHaveBeenCalledOnce();
+    expect(application.current().state).toBe('pending');
+    await advance(60_000);
+    await expect(applicationPromise).resolves.toBe(false);
+    expect(putDraft).toHaveBeenCalledTimes(2);
+    expect(putDraft.mock.calls[1]?.[1]).toMatchObject({ instructions: candidate.instructions });
+    expect(instructionsValue()).toBe(base.instructions);
+
+    await advance(60_000);
+    expect(getDraft).toHaveBeenCalledTimes(3);
+    expect(putDraft).toHaveBeenCalledTimes(3);
+    expect(putDraft.mock.calls[2]?.slice(0, 2)).toEqual([5, base]);
+    expect(instructionsValue()).toBe(base.instructions);
+    expect(application.current()).toEqual({ state: 'fulfilled', result: false });
+  });
 
   it('keeps a later visible B when cancelled candidate A is confirmed after an uncertain response', async () => {
     vi.useFakeTimers();

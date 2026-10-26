@@ -24,6 +24,7 @@ import { MODEL_CATALOG } from '../../../shared/models.js';
 import type { AuthSession } from './auth.js';
 import type { ApiAuthRequired } from './api-auth.js';
 import { DraftApiFailure, type DraftApi } from './draft-api.js';
+import { SavedRobotApiFailure } from './saved-robot-api.js';
 
 type EditorStatus = 'loading' | 'clean' | 'dirty' | 'saving' | 'recovering' | 'conflict' | 'error';
 interface ReconciliationTarget {
@@ -31,7 +32,25 @@ interface ReconciliationTarget {
   readonly base: DraftSnapshot;
   readonly draft: RobotDraft;
   readonly source: 'visible' | 'candidate';
+  readonly applicationId?: number;
   readonly recognizes?: ReconciliationTarget;
+}
+
+type DraftApplicationSource = RobotDraft | ((signal: AbortSignal) => Promise<RobotDraft>);
+
+interface DraftApplication {
+  readonly id: number;
+  readonly epoch: number;
+  readonly owner: string;
+  readonly revision: number;
+  readonly visible: RobotDraft;
+  readonly source: DraftApplicationSource;
+  readonly signal?: AbortSignal;
+  readonly resolve: (applied: boolean) => void;
+  readonly reject: (error: unknown) => void;
+  onAbort?: () => void;
+  candidate?: RobotDraft;
+  settled: boolean;
 }
 
 interface ScheduledWork {
@@ -42,6 +61,7 @@ interface ActiveOperation {
   readonly id: number;
   readonly controller: AbortController;
   readonly kind: 'get' | 'put';
+  readonly applicationId?: number;
 }
 
 interface Waiter {
@@ -56,7 +76,8 @@ export interface RobotEditorHandle {
   flushPending(): Promise<boolean>;
   waitForConfirmed(signal: AbortSignal): Promise<boolean>;
   captureSnapshot(): Promise<DraftSnapshot | null>;
-  applyDraft(draft: RobotDraft | (() => Promise<RobotDraft>)): Promise<boolean>;
+  applyDraft(source: DraftApplicationSource, options?: { signal?: AbortSignal }): Promise<boolean>;
+  cancelApplication(): void;
   releaseAttemptLock(): void;
   focusEditor?(): void;
 }
@@ -67,7 +88,6 @@ export interface RobotEditorProps {
   paused?: boolean;
   accessState?: 'ready' | 'checking' | 'required';
   locked?: boolean;
-  tryLocked?: boolean;
   onTry?: () => void;
   onAuthRequired?: ApiAuthRequired;
   onConfigurationAvailabilityChange?: (available: boolean) => void;
@@ -130,7 +150,6 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     paused = false,
     accessState = 'ready',
     locked = false,
-    tryLocked = false,
     onTry,
     onAuthRequired,
     onConfigurationAvailabilityChange,
@@ -149,10 +168,14 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
   const ownerRef = useRef('');
   const mountedRef = useRef(false);
   const operationIdRef = useRef(0);
+  const applicationIdRef = useRef(0);
   const operationRef = useRef<ActiveOperation | null>(null);
+  const applicationRef = useRef<DraftApplication | null>(null);
+  const cancelApplicationRef = useRef<() => void>(() => undefined);
   const cyclePromiseRef = useRef<Promise<boolean> | null>(null);
   const timerRef = useRef<number | null>(null);
   const scheduledRef = useRef<ScheduledWork | null>(null);
+  const recoveryDeadlineRef = useRef<number | null>(null);
   const scheduleAtRef = useRef<(deadline: number) => void>(() => undefined);
   const recoveryRef = useRef(false);
   const editDeadlineRef = useRef<number | null>(null);
@@ -195,6 +218,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
       timerRef.current = null;
     }
     scheduledRef.current = null;
+    recoveryDeadlineRef.current = null;
   };
 
   const cancelTimer = (): void => {
@@ -257,6 +281,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
       confirmed &&
       operationRef.current === null &&
       targetRef.current === null &&
+      applicationRef.current === null &&
       conflictRef.current === null &&
       draftsEqual(visible, confirmed.draft),
     );
@@ -264,7 +289,19 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     if (!draftRef.current && !message) {
       setMessage('No se pudo cargar la configuración. Se volverá a intentar automáticamente.');
     }
-    scheduleAt(Date.now() + 60_000);
+    const deadline = Date.now() + 60_000;
+    recoveryDeadlineRef.current = deadline;
+    scheduleAt(deadline);
+    notifyWaiters();
+  };
+
+  const preserveRecoveryDeadline = (): void => {
+    recoveryRef.current = true;
+    const deadline = recoveryDeadlineRef.current ?? scheduledRef.current?.deadline;
+    const preservedDeadline = deadline ?? Date.now() + 60_000;
+    recoveryDeadlineRef.current = preservedDeadline;
+    scheduleAt(Math.max(Date.now(), preservedDeadline));
+    updateVisibleState();
     notifyWaiters();
   };
 
@@ -273,6 +310,63 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     if (deadline === null || recoveryRef.current || !canAccess()) return;
     scheduleAt(deadline);
   };
+
+  const finishApplication = (application: DraftApplication, applied: boolean): void => {
+    if (applicationRef.current !== application || application.settled) return;
+    application.settled = true;
+    if (application.signal && application.onAbort) {
+      application.signal.removeEventListener('abort', application.onAbort);
+    }
+    applicationRef.current = null;
+    application.resolve(applied);
+  };
+
+  const rejectApplication = (application: DraftApplication, error: unknown): void => {
+    if (applicationRef.current !== application || application.settled) return;
+    application.settled = true;
+    if (application.signal && application.onAbort) {
+      application.signal.removeEventListener('abort', application.onAbort);
+    }
+    applicationRef.current = null;
+    application.reject(error);
+  };
+
+  const cancelApplication = (expectedId?: number): void => {
+    const application = applicationRef.current;
+    if (!application || (expectedId !== undefined && application.id !== expectedId)) return;
+
+    const operation = operationRef.current;
+    if (operation?.applicationId === application.id) {
+      operation.controller.abort();
+      operationRef.current = null;
+      cyclePromiseRef.current = null;
+    }
+    finishApplication(application, false);
+
+    if (targetRef.current?.source === 'candidate') {
+      preserveRecoveryDeadline();
+    } else if (!targetRef.current) {
+      if (recoveryRef.current && scheduledRef.current !== null) {
+        preserveRecoveryDeadline();
+      } else {
+        if (recoveryRef.current) {
+          recoveryRef.current = false;
+          clearTimer();
+        }
+        const visible = draftRef.current;
+        const confirmed = confirmedRef.current;
+        if (visible && confirmed && !draftsEqual(visible, confirmed.draft)) {
+          if (editDeadlineRef.current === null || editDeadlineRef.current <= Date.now()) {
+            editDeadlineRef.current = Date.now() + 600;
+          }
+          scheduleVisibleEdit();
+        } else {
+          updateVisibleState();
+        }
+      }
+    }
+  };
+  cancelApplicationRef.current = cancelApplication;
 
   const cloneSnapshot = (snapshot: DraftSnapshot): DraftSnapshot => ({
     ...snapshot,
@@ -285,6 +379,22 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
       error.code === 'network' ||
       error.code === 'server' ||
       error.code === 'rate_limited');
+
+  const isApplicationTransient = (error: unknown): boolean =>
+    (error instanceof SavedRobotApiFailure &&
+      (error.code === 'network' || error.code === 'server' || error.code === 'rate_limited')) ||
+    isTransient(error);
+
+  const isApplicationAuthentication = (
+    error: unknown,
+  ): { readonly authContext?: number; readonly message: string } | null => {
+    if (error instanceof DraftApiFailure || error instanceof SavedRobotApiFailure) {
+      return error.code === 'authentication'
+        ? { authContext: error.authContext, message: error.message }
+        : null;
+    }
+    return null;
+  };
 
   const isAmbiguous = (error: unknown): boolean =>
     error instanceof DraftApiFailure && error.ambiguous;
@@ -300,7 +410,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     );
   };
 
-  const handleFailure = (error: unknown, isLoad: boolean): void => {
+  const handleFailure = (error: unknown, isLoad: boolean): boolean => {
     if (error instanceof DraftApiFailure && error.code === 'authentication') {
       setMessage(error.message);
       setStatus('error');
@@ -316,7 +426,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
         setMessage(null);
         scheduleRecovery();
       }
-      return;
+      return !accepted;
     }
     if (isTransient(error)) {
       if (isLoad && !draftRef.current) {
@@ -327,12 +437,14 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
             : 'No se pudo cargar la configuración. Se volverá a intentar automáticamente.',
         );
         recoveryRef.current = true;
-        scheduleAt(Date.now() + 60_000);
+        const deadline = Date.now() + 60_000;
+        recoveryDeadlineRef.current = deadline;
+        scheduleAt(deadline);
       } else {
         setMessage(null);
         scheduleRecovery();
       }
-      return;
+      return false;
     }
     recoveryRef.current = false;
     clearTimer();
@@ -344,11 +456,13 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
           ? 'No se pudo cargar la configuración.'
           : 'No se pudo guardar la configuración.',
     );
+    return false;
   };
 
   const performOperation = async <T,>(
     request: (signal: AbortSignal) => Promise<T>,
     kind: ActiveOperation['kind'] = 'get',
+    applicationId?: number,
   ): Promise<OperationResult<T>> => {
     if (operationRef.current !== null) {
       return { cancelled: true };
@@ -359,6 +473,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
       id: ++operationIdRef.current,
       controller,
       kind,
+      ...(applicationId === undefined ? {} : { applicationId }),
     };
     operationRef.current = operation;
     if (mountedRef.current) setStatus(draftRef.current ? 'saving' : 'loading');
@@ -404,6 +519,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
 
   const markConflict = (snapshot: DraftSnapshot): void => {
     const copy = cloneSnapshot(snapshot);
+    if (applicationRef.current) finishApplication(applicationRef.current, false);
     targetRef.current = null;
     failedRevisionRef.current = null;
     conflictRefreshPendingRef.current = false;
@@ -430,10 +546,14 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
       return;
     }
     if (draftsEqual(current, confirmed.draft)) {
-      setStatus('clean');
+      setStatus(applicationRef.current && recoveryRef.current ? 'recovering' : 'clean');
       setMessage(null);
       editDeadlineRef.current = null;
-      if (!targetRef.current && (!recoveryRef.current || scheduledRef.current === null)) {
+      if (
+        !targetRef.current &&
+        applicationRef.current === null &&
+        (!recoveryRef.current || scheduledRef.current === null)
+      ) {
         recoveryRef.current = false;
         clearTimer();
       }
@@ -449,6 +569,48 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
 
   const isCurrentOwner = (epoch: number, sub: string): boolean =>
     mountedRef.current && epochRef.current === epoch && ownerRef.current === sub;
+
+  const isCurrentApplication = (application: DraftApplication): boolean =>
+    applicationRef.current === application &&
+    !application.settled &&
+    !application.signal?.aborted &&
+    isCurrentOwner(application.epoch, application.owner) &&
+    canAccess() &&
+    !lockedRef.current &&
+    revisionRef.current === application.revision &&
+    draftRef.current !== null &&
+    draftsEqual(draftRef.current, application.visible) &&
+    conflictRef.current === null;
+
+  const applicationWaitingOnDefinitiveWrite = (
+    applicationId: number | undefined,
+    source: ReconciliationTarget['source'],
+    revision: number,
+    sent: RobotDraft,
+  ): DraftApplication | null => {
+    const application = applicationRef.current;
+    if (
+      !application ||
+      application.settled ||
+      !mountedRef.current ||
+      application.epoch !== epochRef.current ||
+      application.owner !== ownerRef.current ||
+      application.revision !== revisionRef.current ||
+      !draftRef.current ||
+      !draftsEqual(draftRef.current, application.visible) ||
+      conflictRef.current !== null
+    ) {
+      return null;
+    }
+    if (applicationId !== undefined) {
+      return application.id === applicationId ? application : null;
+    }
+    return source === 'visible' &&
+      application.revision === revision &&
+      draftsEqual(sent, application.visible)
+      ? application
+      : null;
+  };
 
   const confirmsKnownWrite = (snapshot: DraftSnapshot, target: ReconciliationTarget): boolean => {
     let knownWrite: ReconciliationTarget | undefined = target;
@@ -471,6 +633,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     revision: number,
     recognizeTarget?: ReconciliationTarget,
     source: ReconciliationTarget['source'] = 'visible',
+    applicationId?: number,
   ): Promise<boolean> => {
     if (!canAccess() || conflictRef.current || operationRef.current) return false;
     const validation = draftLimitMessage(sentDraft);
@@ -485,6 +648,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
       base: cloneSnapshot(base),
       draft: sent,
       source,
+      ...(source !== 'candidate' || applicationId === undefined ? {} : { applicationId }),
       ...(recognizeTarget ? { recognizes: recognizeTarget } : {}),
     };
     targetRef.current = target;
@@ -495,8 +659,38 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     const result = await performOperation(
       (signal) => apiRef.current.putDraft(expectedVersion, sent, signal),
       'put',
+      source === 'candidate' ? applicationId : undefined,
     );
-    if (!isCurrentOwner(epoch, sub) || result.cancelled) return false;
+    if (!isCurrentOwner(epoch, sub)) return false;
+    if (result.cancelled) {
+      const lateTarget = targetRef.current;
+      if (
+        result.value &&
+        source === 'candidate' &&
+        lateTarget === target &&
+        result.value.version > expectedVersion &&
+        draftsEqual(result.value.draft, sent)
+      ) {
+        confirmedRef.current = cloneSnapshot(result.value);
+        targetRef.current = null;
+        failedRevisionRef.current = null;
+        recoveryRef.current = false;
+        clearTimer();
+        setMessage(null);
+        const visible = draftRef.current;
+        if (visible && !draftsEqual(visible, result.value.draft)) {
+          if (editDeadlineRef.current === null || editDeadlineRef.current <= Date.now()) {
+            editDeadlineRef.current = Date.now() + 600;
+          }
+          updateVisibleState();
+          scheduleAt(editDeadlineRef.current);
+        } else {
+          updateVisibleState();
+        }
+        notifyWaiters();
+      }
+      return false;
+    }
     if (result.value) {
       if (result.value.version <= expectedVersion || !draftsEqual(result.value.draft, sent)) {
         targetRef.current = target;
@@ -519,12 +713,29 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
         confirmedRef.current = current;
         targetRef.current = null;
         recoveryRef.current = false;
+        const application = applicationRef.current;
+        if (
+          recognizeTarget.applicationId !== undefined &&
+          application?.id === recognizeTarget.applicationId &&
+          isCurrentApplication(application) &&
+          draftsEqual(current.draft, application.candidate ?? recognizeTarget.draft)
+        ) {
+          return true;
+        }
         const visible = draftRef.current;
         if (!visible || draftsEqual(visible, current.draft)) {
           updateVisibleState();
           return true;
         }
-        return writeDraft(visible, current.version, current, revisionRef.current);
+        return writeDraft(
+          visible,
+          current.version,
+          current,
+          revisionRef.current,
+          undefined,
+          'visible',
+          applicationRef.current?.id,
+        );
       }
       if (current.version > expectedVersion && draftsEqual(current.draft, sent)) {
         confirmedRef.current = current;
@@ -570,7 +781,17 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     recoveryRef.current = false;
     clearTimer();
     const latest = draftRef.current;
-    handleFailure(error, false);
+    const applicationToFinish = applicationWaitingOnDefinitiveWrite(
+      applicationId,
+      source,
+      revision,
+      sent,
+    );
+    const ignoredStaleAuthentication = handleFailure(error, false);
+    if (applicationToFinish && !ignoredStaleAuthentication) {
+      finishApplication(applicationToFinish, false);
+    }
+    if (ignoredStaleAuthentication) return false;
     if (recognizeTarget) {
       // The descendant CAS was rejected, but the ancestor PUT can still have
       // committed. Keep checking that ancestor without retrying this exact
@@ -586,6 +807,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
             ? editDeadlineRef.current
             : Date.now() + 60_000,
         );
+        recoveryDeadlineRef.current = scheduledRef.current?.deadline ?? null;
       }
       return false;
     }
@@ -600,15 +822,26 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     return false;
   };
 
-  const reconcileTarget = async (): Promise<boolean> => {
+  const reconcileTarget = async (application?: DraftApplication): Promise<boolean> => {
     const target = targetRef.current;
     if (!target || !canAccess() || operationRef.current) return false;
     const epoch = epochRef.current;
     const sub = ownerRef.current;
-    const result = await performOperation((signal) => apiRef.current.getDraft(signal));
+    const result = await performOperation(
+      (signal) => apiRef.current.getDraft(signal),
+      'get',
+      application && target.applicationId === application.id ? application.id : undefined,
+    );
     if (!isCurrentOwner(epoch, sub) || result.cancelled) return false;
     if (!result.value) {
       handleFailure(result.error, false);
+      if (
+        application &&
+        isCurrentApplication(application) &&
+        (authBlockedRef.current || (!recoveryRef.current && conflictRef.current === null))
+      ) {
+        finishApplication(application, false);
+      }
       return false;
     }
     const remote = cloneSnapshot(result.value);
@@ -620,14 +853,42 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
       setStatus('recovering');
       setMessage('La versión leída no coincide con la versión esperada. Conservamos tus cambios.');
       recoveryRef.current = true;
-      scheduleAt(Date.now() + 60_000);
+      const deadline = Date.now() + 60_000;
+      recoveryDeadlineRef.current = deadline;
+      scheduleAt(deadline);
       return false;
     }
     if (remote.version === target.expectedVersion) {
       if (failedRevisionRef.current === revisionRef.current) {
+        if (application && target.applicationId === application.id) {
+          targetRef.current = null;
+          failedRevisionRef.current = null;
+          recoveryRef.current = false;
+          finishApplication(application, false);
+          updateVisibleState();
+          return false;
+        }
         targetRef.current = target;
         scheduleRecovery();
         return false;
+      }
+      if (application && target.applicationId === application.id && application.candidate) {
+        const saved = await writeDraft(
+          application.candidate,
+          target.expectedVersion,
+          target.base,
+          application.revision,
+          target,
+          'candidate',
+          application.id,
+        );
+        if (saved && isCurrentApplication(application)) {
+          return importApplication(application, confirmedRef.current);
+        }
+        if (isCurrentApplication(application) && !recoveryRef.current) {
+          finishApplication(application, false);
+        }
+        return saved;
       }
       const latest = draftRef.current;
       if (!latest) return false;
@@ -642,6 +903,8 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
         target.base,
         revisionRef.current,
         target,
+        'visible',
+        application?.id,
       );
       if (saved) {
         recoveryRef.current = false;
@@ -654,6 +917,14 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
       confirmedRef.current = remote;
       targetRef.current = null;
       recoveryRef.current = false;
+      if (
+        application &&
+        target.applicationId === application.id &&
+        application.candidate &&
+        draftsEqual(remote.draft, application.candidate)
+      ) {
+        return importApplication(application, remote);
+      }
       setMessage(null);
       updateVisibleState();
       return true;
@@ -662,8 +933,20 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
       confirmedRef.current = remote;
       targetRef.current = null;
       recoveryRef.current = false;
+      if (
+        application &&
+        target.applicationId === application.id &&
+        application.candidate &&
+        draftsEqual(remote.draft, application.candidate)
+      ) {
+        return importApplication(application, remote);
+      }
       if (visible && !draftsEqual(visible, remote.draft)) {
-        if (failedRevisionRef.current === revisionRef.current) {
+        const rejectedVisibleRevision = failedRevisionRef.current === revisionRef.current;
+        const abandonedCandidate =
+          target.source === 'candidate' && target.applicationId !== application?.id;
+        if (rejectedVisibleRevision && !abandonedCandidate) {
+          if (application) finishApplication(application, false);
           setStatus('error');
           return false;
         }
@@ -674,7 +957,15 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
           scheduleAt(deadline);
           return false;
         }
-        return writeDraft(visible, remote.version, remote, revisionRef.current);
+        return writeDraft(
+          visible,
+          remote.version,
+          remote,
+          revisionRef.current,
+          undefined,
+          'visible',
+          application?.id,
+        );
       }
       setMessage(null);
       updateVisibleState();
@@ -682,6 +973,186 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     }
     markConflict(remote);
     return false;
+  };
+
+  const importApplication = (
+    application: DraftApplication,
+    confirmed: DraftSnapshot | null,
+  ): boolean => {
+    const candidate = application.candidate;
+    if (
+      !isCurrentApplication(application) ||
+      !candidate ||
+      !confirmed ||
+      confirmed.version <= 0 ||
+      !draftsEqual(confirmed.draft, candidate)
+    ) {
+      return false;
+    }
+    confirmedRef.current = cloneSnapshot(confirmed);
+    targetRef.current = null;
+    failedRevisionRef.current = null;
+    recoveryRef.current = false;
+    editDeadlineRef.current = null;
+    draftRef.current = cloneDraft(candidate);
+    revisionRef.current += 1;
+    setDraft(cloneDraft(candidate));
+    setConflictState(null);
+    clearTimer();
+    setMessage(null);
+    setStatus('clean');
+    finishApplication(application, true);
+    notifyWaiters();
+    return true;
+  };
+
+  const handleApplicationSourceFailure = (application: DraftApplication, error: unknown): void => {
+    if (!isCurrentApplication(application)) return;
+    const authentication = isApplicationAuthentication(error);
+    if (authentication) {
+      setMessage(authentication.message);
+      setStatus('error');
+      let accepted = true;
+      try {
+        accepted = onAuthRequiredRef.current?.(authentication.authContext) !== false;
+      } catch {
+        accepted = true;
+      }
+      if (accepted) {
+        authBlockedRef.current = true;
+        finishApplication(application, false);
+      } else {
+        setMessage(null);
+        scheduleRecovery();
+      }
+      return;
+    }
+    if (isApplicationTransient(error)) {
+      setMessage(null);
+      scheduleRecovery();
+      return;
+    }
+
+    setMessage(error instanceof Error ? error.message : 'No se pudo cargar la configuración.');
+    setStatus('error');
+    rejectApplication(application, error);
+    const visible = draftRef.current;
+    const confirmed = confirmedRef.current;
+    if (visible && confirmed && !draftsEqual(visible, confirmed.draft) && !targetRef.current) {
+      if (editDeadlineRef.current === null || editDeadlineRef.current <= Date.now()) {
+        editDeadlineRef.current = Date.now() + 600;
+      }
+      scheduleVisibleEdit();
+    }
+  };
+
+  const runApplicationCycle = async (application: DraftApplication): Promise<boolean> => {
+    if (!isCurrentApplication(application)) {
+      cancelApplication(application.id);
+      return false;
+    }
+    if (recoveryRef.current && scheduledRef.current !== null) return false;
+    if (recoveryRef.current) recoveryRef.current = false;
+
+    const target = targetRef.current;
+    if (target) {
+      const saved = await reconcileTarget(application);
+      if (!isCurrentApplication(application)) return false;
+      if (!saved) {
+        if (conflictRef.current || authBlockedRef.current) {
+          finishApplication(application, false);
+        } else if (!recoveryRef.current && targetRef.current === null) {
+          finishApplication(application, false);
+        }
+        return false;
+      }
+      if (targetRef.current) return false;
+    }
+
+    if (!application.candidate) {
+      if (typeof application.source === 'function') {
+        const loader = application.source;
+        const loaded = await performOperation(
+          (signal) => loader(signal).then(cloneDraft),
+          'get',
+          application.id,
+        );
+        if (!isCurrentApplication(application) || loaded.cancelled) return false;
+        if (!loaded.value) {
+          handleApplicationSourceFailure(application, loaded.error);
+          return false;
+        }
+        application.candidate = loaded.value;
+      } else {
+        application.candidate = cloneDraft(application.source);
+      }
+    }
+
+    const candidate = application.candidate;
+    const candidateLimit = candidate
+      ? draftLimitMessage(candidate)
+      : 'La configuración no es válida.';
+    if (candidateLimit) {
+      setStatus('error');
+      setMessage(candidateLimit);
+      finishApplication(application, false);
+      return false;
+    }
+
+    const visible = draftRef.current;
+    const confirmed = confirmedRef.current;
+    if (!visible || !confirmed) {
+      finishApplication(application, false);
+      return false;
+    }
+    if (!draftsEqual(visible, confirmed.draft)) {
+      editDeadlineRef.current = null;
+      const savedVisible = await writeDraft(
+        visible,
+        confirmed.version,
+        confirmed,
+        application.revision,
+        undefined,
+        'visible',
+        application.id,
+      );
+      if (!isCurrentApplication(application)) return false;
+      if (!savedVisible) {
+        if (conflictRef.current || authBlockedRef.current) {
+          finishApplication(application, false);
+        } else if (!recoveryRef.current && targetRef.current === null) {
+          finishApplication(application, false);
+        }
+        return false;
+      }
+    }
+
+    if (!isCurrentApplication(application)) return false;
+    const candidateBase = confirmedRef.current;
+    if (!candidateBase || !candidate) {
+      finishApplication(application, false);
+      return false;
+    }
+    const savedCandidate = await writeDraft(
+      candidate,
+      candidateBase.version,
+      candidateBase,
+      application.revision,
+      undefined,
+      'candidate',
+      application.id,
+    );
+    if (savedCandidate && isCurrentApplication(application)) {
+      return importApplication(application, confirmedRef.current);
+    }
+    if (isCurrentApplication(application)) {
+      if (conflictRef.current || authBlockedRef.current) {
+        finishApplication(application, false);
+      } else if (!recoveryRef.current && targetRef.current === null) {
+        finishApplication(application, false);
+      }
+    }
+    return savedCandidate;
   };
 
   const refreshConflict = async (): Promise<boolean> => {
@@ -726,6 +1197,8 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     const epoch = epochRef.current;
     const sub = ownerRef.current;
     const promise = (async (): Promise<boolean> => {
+      const application = applicationRef.current;
+      if (application) return runApplicationCycle(application);
       if (conflictRefreshPendingRef.current && conflictRef.current) return refreshConflict();
       if (!confirmedRef.current) {
         const result = await performOperation((signal) => apiRef.current.getDraft(signal));
@@ -751,6 +1224,19 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     void promise.then((succeeded) => {
       if (cyclePromiseRef.current === promise) cyclePromiseRef.current = null;
       if (!mountedRef.current || !canAccess() || conflictRef.current) return;
+      const application = applicationRef.current;
+      if (application) {
+        if (
+          isCurrentApplication(application) &&
+          operationRef.current === null &&
+          scheduledRef.current === null &&
+          !recoveryRef.current &&
+          targetRef.current === null
+        ) {
+          void runCycleRef.current();
+        }
+        return;
+      }
       if (!succeeded) return;
       if (targetRef.current) return;
       const visible = draftRef.current;
@@ -769,6 +1255,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
 
   const updateDraft = (next: RobotDraft): void => {
     if (!canAccess() || lockedRef.current) return;
+    cancelApplication();
     const copy = cloneDraft(next);
     draftRef.current = copy;
     revisionRef.current += 1;
@@ -937,94 +1424,63 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     return cloneSnapshot(after);
   };
 
-  const applyDraft = async (
-    nextDraftOrLoader: RobotDraft | (() => Promise<RobotDraft>),
+  const applyDraft = (
+    source: DraftApplicationSource,
+    options?: { signal?: AbortSignal },
   ): Promise<boolean> => {
+    cancelApplication();
+    const signal = options?.signal;
     if (
+      signal?.aborted ||
       !canAccess() ||
       lockedRef.current ||
+      attemptClickLockedRef.current ||
       !confirmedRef.current ||
       conflictRef.current ||
       !draftRef.current
     ) {
-      return false;
+      return Promise.resolve(false);
     }
-    const epoch = epochRef.current;
-    const sub = ownerRef.current;
-    const frozenRevision = revisionRef.current;
-    const frozenVisible = cloneDraft(draftRef.current);
-    let candidate: RobotDraft;
+
+    let visible: RobotDraft;
+    let candidate: RobotDraft | undefined;
     try {
-      candidate = cloneDraft(
-        typeof nextDraftOrLoader === 'function' ? await nextDraftOrLoader() : nextDraftOrLoader,
-      );
+      visible = cloneDraft(draftRef.current);
+      if (typeof source !== 'function') candidate = cloneDraft(source);
     } catch {
-      return false;
+      return Promise.resolve(false);
     }
-    if (
-      !isCurrentOwner(epoch, sub) ||
-      !canAccess() ||
-      lockedRef.current ||
-      revisionRef.current !== frozenRevision ||
-      !draftRef.current ||
-      !draftsEqual(draftRef.current, frozenVisible) ||
-      conflictRef.current
-    ) {
-      return false;
-    }
-    if (!(await flushPending())) return false;
-    if (
-      !isCurrentOwner(epoch, sub) ||
-      !canAccess() ||
-      lockedRef.current ||
-      revisionRef.current !== frozenRevision ||
-      !draftRef.current ||
-      !draftsEqual(draftRef.current, frozenVisible) ||
-      conflictRef.current
-    ) {
-      return false;
-    }
-    const base = confirmedRef.current;
-    if (!base) return false;
-    const saved = await writeDraft(
-      candidate,
-      base.version,
-      base,
-      frozenRevision,
-      undefined,
-      'candidate',
-    );
-    if (!saved) return false;
-    if (
-      !isCurrentOwner(epoch, sub) ||
-      !canAccess() ||
-      lockedRef.current ||
-      revisionRef.current !== frozenRevision ||
-      !draftRef.current ||
-      !draftsEqual(draftRef.current, frozenVisible) ||
-      conflictRef.current
-    ) {
-      if (
-        draftRef.current &&
-        confirmedRef.current &&
-        !draftsEqual(draftRef.current, confirmedRef.current.draft)
-      ) {
-        if (editDeadlineRef.current === null) editDeadlineRef.current = Date.now() + 600;
-        scheduleVisibleEdit();
-        setStatus('dirty');
+
+    let resolve!: (applied: boolean) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<boolean>((resolvePromise, rejectPromise) => {
+      resolve = resolvePromise;
+      reject = rejectPromise;
+    });
+    const application: DraftApplication = {
+      id: ++applicationIdRef.current,
+      epoch: epochRef.current,
+      owner: ownerRef.current,
+      revision: revisionRef.current,
+      visible,
+      source,
+      ...(signal ? { signal } : {}),
+      resolve,
+      reject,
+      ...(candidate ? { candidate } : {}),
+      settled: false,
+    };
+    applicationRef.current = application;
+    if (signal) {
+      application.onAbort = () => cancelApplication(application.id);
+      signal.addEventListener('abort', application.onAbort, { once: true });
+      if (signal.aborted) {
+        cancelApplication(application.id);
+        return promise;
       }
-      return false;
     }
-    draftRef.current = cloneDraft(candidate);
-    revisionRef.current += 1;
-    editDeadlineRef.current = null;
-    setDraft(cloneDraft(candidate));
-    setConflictState(null);
-    setMessage(null);
-    setStatus('clean');
-    clearTimer();
-    notifyWaiters();
-    return true;
+    void runCycleRef.current();
+    return promise;
   };
 
   const waitForConfirmed = (signal: AbortSignal): Promise<boolean> => {
@@ -1047,6 +1503,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
 
   const discardPending = (): void => {
     const replacement = conflictRef.current ?? confirmedRef.current;
+    cancelApplication();
     epochRef.current += 1;
     clearTimer();
     operationRef.current?.controller.abort();
@@ -1088,6 +1545,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     waitForConfirmed,
     captureSnapshot,
     applyDraft,
+    cancelApplication,
     releaseAttemptLock: () => {
       attemptClickLockedRef.current = false;
       setAttemptClickLocked(false);
@@ -1107,6 +1565,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
 
   useEffect(() => {
     mountedRef.current = true;
+    cancelApplication();
     const sub = session.identity.sub;
     epochRef.current += 1;
     ownerRef.current = sub;
@@ -1130,6 +1589,15 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     setStatus('loading');
     if (canAccess()) void runCycleRef.current();
     return () => {
+      const application = applicationRef.current;
+      if (application) {
+        const operation = operationRef.current;
+        if (operation?.applicationId === application.id) {
+          operation.controller.abort();
+          operationRef.current = null;
+        }
+        finishApplication(application, false);
+      }
       mountedRef.current = false;
       epochRef.current += 1;
       clearTimer();
@@ -1146,6 +1614,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
   useLayoutEffect(() => {
     const blocked = paused || accessState !== 'ready';
     if (blocked) {
+      cancelApplicationRef.current();
       cancelTimer();
       epochRef.current += 1;
       const active = operationRef.current;
@@ -1171,6 +1640,10 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
       }
     }
   }, [paused, accessState]);
+
+  useEffect(() => {
+    if (locked) cancelApplicationRef.current();
+  }, [locked]);
 
   useEffect(() => {
     if (!comparisonOpen || !conflict) return;
@@ -1514,11 +1987,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
                 onTry();
               }}
               disabled={
-                disabled ||
-                draft === null ||
-                tryLocked ||
-                status === 'conflict' ||
-                limitMessage !== null
+                disabled || draft === null || status === 'conflict' || limitMessage !== null
               }
             >
               Probar
