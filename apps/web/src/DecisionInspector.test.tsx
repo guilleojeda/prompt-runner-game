@@ -329,13 +329,16 @@ describe('DecisionInspector', () => {
       expect(getDecision).toHaveBeenCalledTimes(1);
       expect(screen.getByRole('button', { name: 'Reintentar ficha' })).toBeTruthy();
 
-      fireEvent.click(screen.getByRole('button', { name: 'Reintentar ficha' }));
+      const retryButton = screen.getByRole('button', { name: 'Reintentar ficha' });
+      retryButton.focus();
+      expect(document.activeElement).toBe(retryButton);
+      fireEvent.click(retryButton);
       expect(await screen.findByText('Cargando la ficha…')).toBeTruthy();
       expect(getDecision).toHaveBeenCalledTimes(2);
       const retrying = readLinksAndDestination();
       expect(retrying.href).toBe(loading.href);
       expect(retrying.destination).toBe(loading.destination);
-      focusDestination(retrying.destination);
+      expect(document.activeElement).toBe(retrying.destination);
       const scrollCallsBeforeSuccess = scroll.scrollIntoView.mock.calls.length;
 
       const selectedDetail: DecisionDetail = {
@@ -358,6 +361,78 @@ describe('DecisionInspector', () => {
     } finally {
       scroll.restore();
     }
+  });
+
+  it('does not move focus back to a retried detail after a later decision is selected', async () => {
+    let resolveRetry!: (loaded: DecisionDetail) => void;
+    const getDecision = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('detalle no disponible'))
+      .mockImplementationOnce(
+        () =>
+          new Promise<DecisionDetail>((resolve) => {
+            resolveRetry = resolve;
+          }),
+      )
+      .mockImplementation((_id: string, number: number) => Promise.resolve(detail(number)));
+    const api = inspectorApi({ getDecision });
+    render(<DecisionInspector api={api} attemptId="attempt-1" onClose={vi.fn()} />);
+
+    const retryButton = await screen.findByRole('button', { name: 'Reintentar ficha' });
+    retryButton.focus();
+    expect(document.activeElement).toBe(retryButton);
+    fireEvent.click(retryButton);
+    expect(await screen.findByText('Cargando la ficha…')).toBeTruthy();
+
+    const laterDecision = screen.getAllByRole('button', { name: /Decisión 3/ })[0]!;
+    laterDecision.focus();
+    fireEvent.click(laterDecision);
+    expect(await screen.findByRole('heading', { name: 'Decisión 3, casilla 5' })).toBeTruthy();
+    expect(document.activeElement).toBe(laterDecision);
+
+    await act(async () => {
+      resolveRetry(detail(1));
+    });
+
+    expect(screen.getByRole('heading', { name: 'Decisión 3, casilla 5' })).toBeTruthy();
+    expect(screen.queryByText('Consumió el turno 1.')).toBeNull();
+    expect(screen.getByText('Consumió el turno 3.')).toBeTruthy();
+    expect(document.activeElement).toBe(laterDecision);
+    expect(getDecision).toHaveBeenCalledTimes(3);
+  });
+
+  it('keeps the detail focused when a retry fails again', async () => {
+    let rejectRetry!: (reason: unknown) => void;
+    const getDecision = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('primer fallo'))
+      .mockImplementationOnce(
+        () =>
+          new Promise<DecisionDetail>((_resolve, reject) => {
+            rejectRetry = reject;
+          }),
+      );
+    const api = inspectorApi({ getDecision });
+    render(<DecisionInspector api={api} attemptId="attempt-1" onClose={vi.fn()} />);
+
+    const retryButton = await screen.findByRole('button', { name: 'Reintentar ficha' });
+    retryButton.focus();
+    fireEvent.click(retryButton);
+    expect(await screen.findByText('Cargando la ficha…')).toBeTruthy();
+
+    const destination = document.getElementById('decision-detail');
+    expect(destination).not.toBeNull();
+    expect(document.activeElement).toBe(destination);
+
+    await act(async () => {
+      rejectRetry(new Error('segundo fallo'));
+    });
+
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    expect(screen.getByText('segundo fallo')).toBeTruthy();
+    expect(document.activeElement).toBe(destination);
+    expect(screen.getByRole('button', { name: 'Reintentar ficha' })).toBeTruthy();
+    expect(getDecision).toHaveBeenCalledTimes(2);
   });
 
   it.each(['decision list', 'selected support on the map'] as const)(
