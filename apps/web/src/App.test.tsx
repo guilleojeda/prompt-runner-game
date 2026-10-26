@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
 import { AuthFailure, type AuthClient, type AuthConfig, type AuthSession } from './auth.js';
 import { DraftApiClient, DraftApiFailure, type DraftApi } from './draft-api.js';
-import type { SavedRobotApi } from './saved-robot-api.js';
+import { SavedRobotApiClient, type SavedRobotApi } from './saved-robot-api.js';
 import { AttemptApiFailure, type AttemptApi, type AttemptSummary } from './attempt-api.js';
 import {
   CognitoPendingConfirmationClient,
@@ -336,6 +336,7 @@ describe('access screen', () => {
   });
 
   it('keeps saved-copy actions unavailable until the editor configuration loads', async () => {
+    vi.useFakeTimers();
     const savedDraft = { ...createDefaultDraft(), instructions: 'Configuración guardada.' };
     const savedCopy: SavedRobot = {
       id: 'saved-copy',
@@ -348,7 +349,7 @@ describe('access screen', () => {
     };
     const getDraft = vi
       .fn()
-      .mockRejectedValueOnce(new Error('No se pudo cargar.'))
+      .mockRejectedValueOnce(new DraftApiFailure('network', 'No se pudo cargar.'))
       .mockResolvedValueOnce({ version: 0, draft: createDefaultDraft() });
     const draftApi: DraftApi = { getDraft, putDraft: vi.fn() };
     const listRobots = vi
@@ -382,15 +383,17 @@ describe('access screen', () => {
       />,
     );
 
-    const savedSection = (await screen.findByRole('heading', { name: 'Tus robots' })).closest(
-      'section',
-    ) as HTMLElement;
-    const retryList = await within(savedSection).findByRole('button', {
+    await act(flushAuthMicrotasks);
+    const savedSection = screen
+      .getByRole('heading', { name: 'Tus robots' })
+      .closest('section') as HTMLElement;
+    const retryList = within(savedSection).getByRole('button', {
       name: 'Reintentar lista',
     });
-    await waitFor(() => expect((retryList as HTMLButtonElement).disabled).toBe(false));
+    expect((retryList as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(retryList);
-    const copyButton = await within(savedSection).findByRole('button', {
+    await act(flushAuthMicrotasks);
+    const copyButton = within(savedSection).getByRole('button', {
       name: /Explorador guardado.*Cargar/,
     });
     const createButton = within(savedSection).getByRole('button', {
@@ -399,12 +402,18 @@ describe('access screen', () => {
     expect((copyButton as HTMLButtonElement).disabled).toBe(true);
     expect(createButton.disabled).toBe(true);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Reintentar carga' }));
-    await screen.findByDisplayValue(createDefaultDraft().instructions);
-    await waitFor(() => {
-      expect((copyButton as HTMLButtonElement).disabled).toBe(false);
-      expect(createButton.disabled).toBe(false);
+    expect(screen.queryByRole('button', { name: 'Reintentar carga' })).toBeNull();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(59_999);
     });
+    expect(getDraft).toHaveBeenCalledOnce();
+    expect((copyButton as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(screen.getByDisplayValue(createDefaultDraft().instructions)).toBeTruthy();
+    expect((copyButton as HTMLButtonElement).disabled).toBe(false);
+    expect(createButton.disabled).toBe(false);
     expect(getDraft).toHaveBeenCalledTimes(2);
     expect(listRobots).toHaveBeenCalledTimes(2);
   });
@@ -631,7 +640,8 @@ describe('access screen', () => {
     expect(createAttempt).not.toHaveBeenCalled();
   });
 
-  it('previews history while the editor load fails, then applies the snapshot after retry', async () => {
+  it('previews history while the editor load fails, then applies the snapshot after automatic recovery', async () => {
+    vi.useFakeTimers();
     const sourceSummary: AttemptSummary = {
       id: 'attempt-editor-retry',
       createdAt: '2026-09-21T12:00:00.000Z',
@@ -663,7 +673,7 @@ describe('access screen', () => {
     const recovered = { ...createDefaultDraft(), instructions: 'Recuperada desde el historial' };
     const getDraft = vi
       .fn()
-      .mockRejectedValueOnce(new Error('No se pudo cargar el borrador.'))
+      .mockRejectedValueOnce(new DraftApiFailure('network', 'No se pudo cargar el borrador.'))
       .mockResolvedValueOnce({ version: 0, draft: createDefaultDraft() });
     let resolvePut!: (snapshot: DraftSnapshot) => void;
     const putDraft = vi.fn<DraftApi['putDraft']>().mockReturnValue(
@@ -688,7 +698,8 @@ describe('access screen', () => {
       />,
     );
 
-    const history = await screen.findByRole('heading', { name: 'Historial' });
+    await act(flushAuthMicrotasks);
+    const history = screen.getByRole('heading', { name: 'Historial' });
     const openConfiguration = () =>
       fireEvent.click(
         within(history.closest('section') as HTMLElement).getAllByRole('button', {
@@ -696,7 +707,8 @@ describe('access screen', () => {
         })[0]!,
       );
     openConfiguration();
-    expect(await screen.findByText('Recuperada desde el historial')).toBeTruthy();
+    await act(flushAuthMicrotasks);
+    expect(screen.getByText('Recuperada desde el historial')).toBeTruthy();
     expect(
       (screen.getByRole('button', { name: 'Usar esta configuración' }) as HTMLButtonElement)
         .disabled,
@@ -709,27 +721,33 @@ describe('access screen', () => {
     expect(screen.queryByRole('heading', { name: 'Configuración del intento' })).toBeNull();
 
     openConfiguration();
-    expect(await screen.findByText('Recuperada desde el historial')).toBeTruthy();
-    fireEvent.click(await screen.findByRole('button', { name: 'Reintentar carga' }));
-    await screen.findByDisplayValue(createDefaultDraft().instructions);
-    await waitFor(() =>
-      expect(
-        (screen.getByRole('button', { name: 'Usar esta configuración' }) as HTMLButtonElement)
-          .disabled,
-      ).toBe(false),
-    );
+    await act(flushAuthMicrotasks);
+    expect(screen.getByText('Recuperada desde el historial')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Reintentar carga' })).toBeNull();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(59_999);
+    });
+    expect(getDraft).toHaveBeenCalledOnce();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(screen.getByDisplayValue(createDefaultDraft().instructions)).toBeTruthy();
+    expect(
+      (screen.getByRole('button', { name: 'Usar esta configuración' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
     fireEvent.click(screen.getByRole('button', { name: 'Usar esta configuración' }));
-    await waitFor(() => expect(putDraft).toHaveBeenCalledOnce());
+    await act(flushAuthMicrotasks);
+    expect(putDraft).toHaveBeenCalledOnce();
     expectAccountTriggerLocked();
     expect(attemptApi.createAttempt).not.toHaveBeenCalled();
     await act(async () => {
       resolvePut({ version: 1, draft: recovered });
+      await flushAuthMicrotasks();
     });
-    expect(await screen.findByDisplayValue('Recuperada desde el historial')).toBeTruthy();
+    expect(screen.getByDisplayValue('Recuperada desde el historial')).toBeTruthy();
     expect(
-      await screen.findByText(
-        'Configuración cargada en el editor. Se guarda como una edición normal.',
-      ),
+      screen.getByText('Configuración cargada en el editor. Se guarda como una edición normal.'),
     ).toBeTruthy();
     expect(getDraft).toHaveBeenCalledTimes(2);
     expect(getAccountTrigger().disabled).toBe(false);
@@ -812,10 +830,13 @@ describe('access screen', () => {
     ).toBeTruthy();
     expect(screen.getByDisplayValue(previous.instructions)).toBeTruthy();
     expect(screen.queryByDisplayValue(recovered.instructions)).toBeNull();
+    const compare = screen.queryByRole('button', { name: 'Comparar versiones' });
+    if (compare) fireEvent.click(compare);
     expect(screen.getByText(remote.instructions)).toBeTruthy();
     expect(putDraft).toHaveBeenCalledWith(
       1,
       expect.objectContaining({ instructions: recovered.instructions }),
+      expect.any(AbortSignal),
     );
     expect(attemptApi.createAttempt).not.toHaveBeenCalled();
   });
@@ -1224,7 +1245,7 @@ describe('access screen', () => {
     },
   );
 
-  it('keeps a pending renewal valid when Esperar guardado is clicked while paused', async () => {
+  it('completes a waiting exit after same-account renewal reconciles the sent save', async () => {
     vi.useFakeTimers();
     window.sessionStorage.clear();
     const initial = session('a@example.com', (Date.now() + 5_000) / 1000, 'old-token');
@@ -1245,13 +1266,16 @@ describe('access screen', () => {
         resolvePut = resolve;
       }),
     );
+    const instructions = 'Guardar antes de salir tras renovar';
     const draftApi: DraftApi = {
-      getDraft: vi.fn().mockResolvedValue({ version: 0, draft: createDefaultDraft() }),
+      getDraft: vi
+        .fn()
+        .mockResolvedValueOnce({ version: 0, draft: createDefaultDraft() })
+        .mockResolvedValueOnce({ version: 1, draft: { ...createDefaultDraft(), instructions } }),
       putDraft,
     };
     const logout = vi.fn().mockResolvedValue(undefined);
     const authClient = client({ initialize, logout });
-    const instructions = 'Guardar antes de salir tras renovar';
     render(
       <App
         authClient={authClient}
@@ -1282,7 +1306,7 @@ describe('access screen', () => {
     expect(screen.getByRole('heading', { name: 'Comprobando tu sesión…' })).toBeTruthy();
     expectAccountTriggerLocked();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Esperar guardado' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Esperar guardado y salir' }));
     await act(flushAuthMicrotasks);
     expect(screen.getByRole('heading', { name: 'Tenés cambios sin confirmar' })).toBeTruthy();
     expect(logout).not.toHaveBeenCalled();
@@ -1291,19 +1315,19 @@ describe('access screen', () => {
       resolveRenewal(renewed);
       await flushAuthMicrotasks();
     });
-    expect(getLogoutButton().disabled).toBe(false);
-    expect(screen.getByRole('heading', { name: 'Tenés cambios sin confirmar' })).toBeTruthy();
-    expect(logout).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Esperar guardado' }));
-    await act(flushAuthMicrotasks);
+    expect(draftApi.getDraft).toHaveBeenCalledTimes(2);
+    expect(putDraft).toHaveBeenCalledOnce();
+    expect(logout).toHaveBeenCalledOnce();
+    expect(screen.getByRole('button', { name: 'Entrar o crear una cuenta' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Cuenta' })).toBeNull();
+    // The aborted request may still answer; it must not reopen work or log out twice.
     await act(async () => {
       resolvePut({ version: 1, draft: { ...createDefaultDraft(), instructions } });
       await flushAuthMicrotasks();
     });
+    expect(draftApi.getDraft).toHaveBeenCalledTimes(2);
+    expect(putDraft).toHaveBeenCalledOnce();
     expect(logout).toHaveBeenCalledOnce();
-    expect(screen.getByRole('button', { name: 'Entrar o crear una cuenta' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Cuenta' })).toBeNull();
   });
 
   it('retries a configuration failure and reaches the visitor state', async () => {
@@ -1597,7 +1621,7 @@ describe('access screen', () => {
     expect(putDraft).toHaveBeenCalledOnce();
     clickLogout();
     expect(screen.getByRole('heading', { name: 'Tenés cambios sin confirmar' })).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Esperar guardado' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Esperar guardado y salir' }));
     await act(async () => {
       await Promise.resolve();
     });
@@ -1683,7 +1707,7 @@ describe('access screen', () => {
       target: { value: 'Guardado pendiente antes de probar' },
     });
     clickLogout();
-    fireEvent.click(screen.getByRole('button', { name: 'Esperar guardado' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Esperar guardado y salir' }));
     await waitFor(() => expect(putDraft).toHaveBeenCalledOnce());
 
     fireEvent.click(tryButton);
@@ -1983,12 +2007,11 @@ describe('access screen', () => {
     expect(await screen.findByText('La sesión ya no está autorizada.')).toBeTruthy();
     expect(screen.getByText(/La sesión dejó de tener acceso a esta cuenta/)).toBeTruthy();
     expect(
-      (
-        screen
-          .getByLabelText('Qué debe tener en cuenta el robot')
-          .closest('fieldset') as HTMLFieldSetElement
-      ).disabled,
+      (screen.getByLabelText('Qué debe tener en cuenta el robot') as HTMLTextAreaElement).readOnly,
     ).toBe(true);
+    expect((screen.getByRole('checkbox', { name: 'Avanzar' }) as HTMLInputElement).disabled).toBe(
+      true,
+    );
     expect((screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement).disabled).toBe(
       true,
     );
@@ -2019,9 +2042,7 @@ describe('access screen', () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
       .mockReturnValueOnce(oldResponse)
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ version: 0, draft: createDefaultDraft() }), { status: 200 }),
-      );
+      .mockResolvedValueOnce(new Response(JSON.stringify({ robots: [] }), { status: 200 }));
     const firstSession = session('a@example.com', Math.floor(Date.now() / 1000), 'old-token');
     const renewedSession = session(
       'a@example.com',
@@ -2037,15 +2058,13 @@ describe('access screen', () => {
       <App
         configLoader={async () => config}
         clientFactory={() => client({ initialize })}
-        draftApiFactory={(apiConfig, tokenProvider) =>
-          new DraftApiClient(apiConfig, { tokenProvider, fetch: fetchImpl })
-        }
-        savedRobotApiFactory={() => ({
-          listRobots: vi.fn().mockResolvedValue({ robots: [] }),
-          getRobot: vi.fn(),
-          saveRobot: vi.fn(),
-          deleteRobot: vi.fn(),
+        draftApiFactory={() => ({
+          getDraft: vi.fn().mockResolvedValue({ version: 0, draft: createDefaultDraft() }),
+          putDraft: vi.fn(),
         })}
+        savedRobotApiFactory={(apiConfig, tokenProvider) =>
+          new SavedRobotApiClient(apiConfig, { tokenProvider, fetch: fetchImpl })
+        }
         attemptApiFactory={() => emptyAttemptApi()}
       />,
     );
@@ -2069,7 +2088,7 @@ describe('access screen', () => {
     expect(screen.queryByText(/La sesión dejó de tener acceso/)).toBeNull();
     expect(screen.queryByRole('button', { name: 'Volver a ingresar' })).toBeNull();
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Reintentar carga' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Reintentar lista' }));
     await waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(2));
     expect(fetchImpl.mock.calls[1]?.[1]).toMatchObject({
       headers: expect.objectContaining({ Authorization: 'Bearer new-token' }),
@@ -2105,15 +2124,13 @@ describe('access screen', () => {
       <App
         configLoader={async () => config}
         clientFactory={() => client({ initialize })}
-        draftApiFactory={(apiConfig, tokenProvider) =>
-          new DraftApiClient(apiConfig, { tokenProvider, fetch: fetchImpl })
-        }
-        savedRobotApiFactory={() => ({
-          listRobots: vi.fn().mockResolvedValue({ robots: [] }),
-          getRobot: vi.fn(),
-          saveRobot: vi.fn(),
-          deleteRobot: vi.fn(),
+        draftApiFactory={() => ({
+          getDraft: vi.fn().mockResolvedValue({ version: 0, draft: createDefaultDraft() }),
+          putDraft: vi.fn(),
         })}
+        savedRobotApiFactory={(apiConfig, tokenProvider) =>
+          new SavedRobotApiClient(apiConfig, { tokenProvider, fetch: fetchImpl })
+        }
         attemptApiFactory={() => emptyAttemptApi()}
       />,
     );
@@ -2348,12 +2365,11 @@ describe('access screen', () => {
     ).toBeTruthy();
     expect(animation.disabled).toBe(true);
     expect(
-      (
-        screen
-          .getByLabelText('Qué debe tener en cuenta el robot')
-          .closest('fieldset') as HTMLFieldSetElement
-      ).disabled,
+      (screen.getByLabelText('Qué debe tener en cuenta el robot') as HTMLTextAreaElement).readOnly,
     ).toBe(true);
+    expect((screen.getByRole('checkbox', { name: 'Avanzar' }) as HTMLInputElement).disabled).toBe(
+      true,
+    );
 
     fireEvent.click(animation);
     expect(putAnimationPreference).toHaveBeenCalledOnce();

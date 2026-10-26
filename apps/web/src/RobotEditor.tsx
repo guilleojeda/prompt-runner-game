@@ -2,11 +2,10 @@ import {
   forwardRef,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useRef,
   useState,
   type ChangeEvent,
-  type FormEvent,
-  type MutableRefObject,
 } from 'react';
 import {
   MAX_DRAFT_BYTES,
@@ -26,13 +25,36 @@ import type { AuthSession } from './auth.js';
 import type { ApiAuthRequired } from './api-auth.js';
 import { DraftApiFailure, type DraftApi } from './draft-api.js';
 
-type EditorStatus = 'loading' | 'clean' | 'dirty' | 'saving' | 'conflict' | 'error';
-type RetryMode = 'save' | 'reconcile' | null;
+type EditorStatus = 'loading' | 'clean' | 'dirty' | 'saving' | 'recovering' | 'conflict' | 'error';
+interface ReconciliationTarget {
+  readonly expectedVersion: number;
+  readonly base: DraftSnapshot;
+  readonly draft: RobotDraft;
+  readonly source: 'visible' | 'candidate';
+  readonly recognizes?: ReconciliationTarget;
+}
+
+interface ScheduledWork {
+  readonly deadline: number;
+}
+
+interface ActiveOperation {
+  readonly id: number;
+  readonly controller: AbortController;
+  readonly kind: 'get' | 'put';
+}
+
+interface Waiter {
+  readonly signal: AbortSignal;
+  readonly resolve: (confirmed: boolean) => void;
+  readonly onAbort: () => void;
+}
 
 export interface RobotEditorHandle {
   hasUnconfirmedChanges(): boolean;
   discardPending(): void;
   flushPending(): Promise<boolean>;
+  waitForConfirmed(signal: AbortSignal): Promise<boolean>;
   captureSnapshot(): Promise<DraftSnapshot | null>;
   applyDraft(draft: RobotDraft | (() => Promise<RobotDraft>)): Promise<boolean>;
   releaseAttemptLock(): void;
@@ -43,6 +65,7 @@ export interface RobotEditorProps {
   api: DraftApi;
   session: AuthSession;
   paused?: boolean;
+  accessState?: 'ready' | 'checking' | 'required';
   locked?: boolean;
   tryLocked?: boolean;
   onTry?: () => void;
@@ -51,21 +74,10 @@ export interface RobotEditorProps {
   onAttemptControlsHostChange?: (node: HTMLDivElement | null) => void;
 }
 
-interface InFlightSave {
-  generation: number;
-  promise: Promise<boolean>;
-  operation: object;
-}
-
-interface ReconciliationTarget {
-  generation: number;
-  expectedVersion: number;
-  draft: RobotDraft;
-}
-
-interface SaveOptions {
-  readonly draft?: RobotDraft;
-  readonly force?: boolean;
+interface OperationResult<T> {
+  readonly value?: T;
+  readonly error?: unknown;
+  readonly cancelled: boolean;
 }
 
 function cloneDraft(draft: RobotDraft): RobotDraft {
@@ -98,6 +110,8 @@ function statusLabel(status: EditorStatus, isLoadError: boolean): string {
       return 'Cambios pendientes';
     case 'saving':
       return 'Guardando…';
+    case 'recovering':
+      return 'Guardado pendiente: volveremos a intentarlo cada minuto';
     case 'clean':
       return 'Guardado';
     case 'conflict':
@@ -109,19 +123,12 @@ function statusLabel(status: EditorStatus, isLoadError: boolean): string {
   }
 }
 
-function isCurrent(
-  generationRef: MutableRefObject<number>,
-  generation: number,
-  session: AuthSession,
-): boolean {
-  return generationRef.current === generation && session.identity.sub.length > 0;
-}
-
 export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(function RobotEditor(
   {
     api,
     session,
     paused = false,
+    accessState = 'ready',
     locked = false,
     tryLocked = false,
     onTry,
@@ -135,33 +142,924 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
   const [status, setStatus] = useState<EditorStatus>('loading');
   const [message, setMessage] = useState<string | null>(null);
   const [conflict, setConflict] = useState<DraftSnapshot | null>(null);
-  const [retryMode, setRetryMode] = useState<RetryMode>(null);
+  const [comparisonOpen, setComparisonOpen] = useState(false);
+  const [conflictActionPending, setConflictActionPending] = useState(false);
   const [attemptClickLocked, setAttemptClickLocked] = useState(false);
-  const [loadAttempt, setLoadAttempt] = useState(0);
-  const generationRef = useRef(0);
+  const epochRef = useRef(0);
+  const ownerRef = useRef('');
+  const mountedRef = useRef(false);
+  const operationIdRef = useRef(0);
+  const operationRef = useRef<ActiveOperation | null>(null);
+  const cyclePromiseRef = useRef<Promise<boolean> | null>(null);
+  const timerRef = useRef<number | null>(null);
+  const scheduledRef = useRef<ScheduledWork | null>(null);
+  const scheduleAtRef = useRef<(deadline: number) => void>(() => undefined);
+  const recoveryRef = useRef(false);
+  const editDeadlineRef = useRef<number | null>(null);
+  const revisionRef = useRef(0);
+  const failedRevisionRef = useRef<number | null>(null);
   const draftRef = useRef<RobotDraft | null>(null);
   const confirmedRef = useRef<DraftSnapshot | null>(null);
   const conflictRef = useRef<DraftSnapshot | null>(null);
-  const inFlightRef = useRef<InFlightSave | null>(null);
-  const reconciliationRef = useRef<ReconciliationTarget | null>(null);
+  const targetRef = useRef<ReconciliationTarget | null>(null);
+  const conflictRefreshPendingRef = useRef(false);
   const pausedRef = useRef(paused);
+  const accessStateRef = useRef(accessState);
   const lockedRef = useRef(locked);
   const attemptClickLockedRef = useRef(false);
-  const sessionRef = useRef(session);
+  const apiRef = useRef(api);
   const onAuthRequiredRef = useRef(onAuthRequired);
-  const sendSaveRef = useRef<() => Promise<boolean>>(() => Promise.resolve(false));
-  const setLoadedSnapshotRef = useRef<(snapshot: DraftSnapshot) => void>(() => undefined);
+  const authBlockedRef = useRef(false);
+  const waitersRef = useRef(new Set<Waiter>());
+  const runCycleRef = useRef<() => Promise<boolean>>(() => Promise.resolve(false));
   const editorHeadingRef = useRef<HTMLHeadingElement | null>(null);
+  const comparisonHeadingRef = useRef<HTMLHeadingElement | null>(null);
+  const conflictTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   pausedRef.current = paused;
+  accessStateRef.current = accessState;
   lockedRef.current = locked;
   conflictRef.current = conflict;
-  sessionRef.current = session;
+  apiRef.current = api;
   onAuthRequiredRef.current = onAuthRequired;
+
+  const canAccess = (): boolean =>
+    mountedRef.current &&
+    !pausedRef.current &&
+    accessStateRef.current === 'ready' &&
+    !authBlockedRef.current;
+
+  const clearTimer = (): void => {
+    if (timerRef.current !== null) {
+      window.clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    scheduledRef.current = null;
+  };
+
+  const cancelTimer = (): void => {
+    if (timerRef.current !== null) {
+      window.clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  };
+
+  const notifyWaiters = (result?: boolean): void => {
+    const current = draftRef.current;
+    const confirmed = confirmedRef.current;
+    const clean = Boolean(
+      current &&
+      confirmed &&
+      operationRef.current === null &&
+      targetRef.current === null &&
+      conflictRef.current === null &&
+      draftsEqual(current, confirmed.draft),
+    );
+    if (result === false || clean) {
+      for (const waiter of waitersRef.current) {
+        waiter.signal.removeEventListener('abort', waiter.onAbort);
+        waiter.resolve(result === false ? false : clean);
+      }
+      waitersRef.current.clear();
+    }
+  };
 
   const setConflictState = (next: DraftSnapshot | null): void => {
     conflictRef.current = next;
     setConflict(next);
+    if (!next) setComparisonOpen(false);
+    notifyWaiters();
+  };
+
+  const scheduleAt = (deadline: number): void => {
+    if (!mountedRef.current || !canAccess()) return;
+    if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    const epoch = epochRef.current;
+    scheduledRef.current = { deadline };
+    timerRef.current = window.setTimeout(
+      () => {
+        timerRef.current = null;
+        scheduledRef.current = null;
+        if (epoch !== epochRef.current || !canAccess()) return;
+        void runCycleRef.current();
+      },
+      Math.max(0, deadline - Date.now()),
+    );
+  };
+  scheduleAtRef.current = scheduleAt;
+
+  const scheduleRecovery = (): void => {
+    recoveryRef.current = true;
+    const visible = draftRef.current;
+    const confirmed = confirmedRef.current;
+    const visibleIsClean = Boolean(
+      visible &&
+      confirmed &&
+      operationRef.current === null &&
+      targetRef.current === null &&
+      conflictRef.current === null &&
+      draftsEqual(visible, confirmed.draft),
+    );
+    setStatus(visibleIsClean ? 'clean' : visible ? 'recovering' : 'error');
+    if (!draftRef.current && !message) {
+      setMessage('No se pudo cargar la configuración. Se volverá a intentar automáticamente.');
+    }
+    scheduleAt(Date.now() + 60_000);
+    notifyWaiters();
+  };
+
+  const scheduleVisibleEdit = (): void => {
+    const deadline = editDeadlineRef.current;
+    if (deadline === null || recoveryRef.current || !canAccess()) return;
+    scheduleAt(deadline);
+  };
+
+  const cloneSnapshot = (snapshot: DraftSnapshot): DraftSnapshot => ({
+    ...snapshot,
+    draft: cloneDraft(snapshot.draft),
+  });
+
+  const isTransient = (error: unknown): boolean =>
+    error instanceof DraftApiFailure &&
+    (error.ambiguous ||
+      error.code === 'network' ||
+      error.code === 'server' ||
+      error.code === 'rate_limited');
+
+  const isAmbiguous = (error: unknown): boolean =>
+    error instanceof DraftApiFailure && error.ambiguous;
+
+  const isVisiblePutInFlight = (): boolean => {
+    const operation = operationRef.current;
+    const target = targetRef.current;
+    return Boolean(
+      operation?.kind === 'put' &&
+      target &&
+      target.source === 'visible' &&
+      conflictRef.current === null,
+    );
+  };
+
+  const handleFailure = (error: unknown, isLoad: boolean): void => {
+    if (error instanceof DraftApiFailure && error.code === 'authentication') {
+      setMessage(error.message);
+      setStatus('error');
+      let accepted = true;
+      try {
+        accepted = onAuthRequiredRef.current?.(error.authContext) !== false;
+      } catch {
+        accepted = true;
+      }
+      if (accepted) {
+        authBlockedRef.current = true;
+      } else {
+        setMessage(null);
+        scheduleRecovery();
+      }
+      return;
+    }
+    if (isTransient(error)) {
+      if (isLoad && !draftRef.current) {
+        setStatus('error');
+        setMessage(
+          error instanceof DraftApiFailure
+            ? error.message
+            : 'No se pudo cargar la configuración. Se volverá a intentar automáticamente.',
+        );
+        recoveryRef.current = true;
+        scheduleAt(Date.now() + 60_000);
+      } else {
+        setMessage(null);
+        scheduleRecovery();
+      }
+      return;
+    }
+    recoveryRef.current = false;
+    clearTimer();
+    setStatus('error');
+    setMessage(
+      error instanceof DraftApiFailure
+        ? error.message
+        : isLoad
+          ? 'No se pudo cargar la configuración.'
+          : 'No se pudo guardar la configuración.',
+    );
+  };
+
+  const performOperation = async <T,>(
+    request: (signal: AbortSignal) => Promise<T>,
+    kind: ActiveOperation['kind'] = 'get',
+  ): Promise<OperationResult<T>> => {
+    if (operationRef.current !== null) {
+      return { cancelled: true };
+    }
+    const epoch = epochRef.current;
+    const controller = new AbortController();
+    const operation: ActiveOperation = {
+      id: ++operationIdRef.current,
+      controller,
+      kind,
+    };
+    operationRef.current = operation;
+    if (mountedRef.current) setStatus(draftRef.current ? 'saving' : 'loading');
+    try {
+      const value = await request(controller.signal);
+      return {
+        value,
+        cancelled:
+          controller.signal.aborted ||
+          epoch !== epochRef.current ||
+          operationRef.current?.id !== operation.id,
+      };
+    } catch (error) {
+      return {
+        error,
+        cancelled:
+          controller.signal.aborted ||
+          epoch !== epochRef.current ||
+          operationRef.current?.id !== operation.id,
+      };
+    } finally {
+      if (operationRef.current?.id === operation.id) operationRef.current = null;
+      notifyWaiters();
+    }
+  };
+
+  const setLoadedSnapshot = (snapshot: DraftSnapshot): void => {
+    const copy = cloneSnapshot(snapshot);
+    confirmedRef.current = copy;
+    draftRef.current = cloneDraft(copy.draft);
+    targetRef.current = null;
+    failedRevisionRef.current = null;
+    conflictRefreshPendingRef.current = false;
+    recoveryRef.current = false;
+    editDeadlineRef.current = null;
+    clearTimer();
+    setDraft(cloneDraft(copy.draft));
+    setConflictState(null);
+    setMessage(null);
+    setStatus('clean');
+    notifyWaiters();
+  };
+
+  const markConflict = (snapshot: DraftSnapshot): void => {
+    const copy = cloneSnapshot(snapshot);
+    targetRef.current = null;
+    failedRevisionRef.current = null;
+    conflictRefreshPendingRef.current = false;
+    recoveryRef.current = false;
+    clearTimer();
+    setConflictState(copy);
+    setStatus('conflict');
+    setMessage('Otra pestaña guardó una versión distinta. Compará ambas versiones para resolver.');
+  };
+
+  const updateVisibleState = (): void => {
+    const current = draftRef.current;
+    const confirmed = confirmedRef.current;
+    if (conflictRef.current) {
+      setStatus('conflict');
+      return;
+    }
+    if (targetRef.current && operationRef.current === null) {
+      setStatus(recoveryRef.current ? 'recovering' : 'dirty');
+      return;
+    }
+    if (!current || !confirmed) {
+      setStatus('loading');
+      return;
+    }
+    if (draftsEqual(current, confirmed.draft)) {
+      setStatus('clean');
+      setMessage(null);
+      editDeadlineRef.current = null;
+      if (!targetRef.current && (!recoveryRef.current || scheduledRef.current === null)) {
+        recoveryRef.current = false;
+        clearTimer();
+      }
+      notifyWaiters();
+    } else if (operationRef.current) {
+      setStatus('saving');
+    } else if (recoveryRef.current) {
+      setStatus('recovering');
+    } else {
+      setStatus('dirty');
+    }
+  };
+
+  const isCurrentOwner = (epoch: number, sub: string): boolean =>
+    mountedRef.current && epochRef.current === epoch && ownerRef.current === sub;
+
+  const confirmsKnownWrite = (snapshot: DraftSnapshot, target: ReconciliationTarget): boolean => {
+    let knownWrite: ReconciliationTarget | undefined = target;
+    while (knownWrite) {
+      if (
+        snapshot.version > knownWrite.expectedVersion &&
+        draftsEqual(snapshot.draft, knownWrite.draft)
+      ) {
+        return true;
+      }
+      knownWrite = knownWrite.recognizes;
+    }
+    return false;
+  };
+
+  const writeDraft = async (
+    sentDraft: RobotDraft,
+    expectedVersion: number,
+    base: DraftSnapshot,
+    revision: number,
+    recognizeTarget?: ReconciliationTarget,
+    source: ReconciliationTarget['source'] = 'visible',
+  ): Promise<boolean> => {
+    if (!canAccess() || conflictRef.current || operationRef.current) return false;
+    const validation = draftLimitMessage(sentDraft);
+    if (validation) {
+      setStatus('error');
+      setMessage(validation);
+      return false;
+    }
+    const sent = cloneDraft(sentDraft);
+    const target: ReconciliationTarget = {
+      expectedVersion,
+      base: cloneSnapshot(base),
+      draft: sent,
+      source,
+      ...(recognizeTarget ? { recognizes: recognizeTarget } : {}),
+    };
+    targetRef.current = target;
+    const epoch = epochRef.current;
+    const sub = ownerRef.current;
+    setStatus('saving');
+    setMessage(null);
+    const result = await performOperation(
+      (signal) => apiRef.current.putDraft(expectedVersion, sent, signal),
+      'put',
+    );
+    if (!isCurrentOwner(epoch, sub) || result.cancelled) return false;
+    if (result.value) {
+      if (result.value.version <= expectedVersion || !draftsEqual(result.value.draft, sent)) {
+        targetRef.current = target;
+        setMessage(null);
+        scheduleRecovery();
+        return false;
+      }
+      confirmedRef.current = cloneSnapshot(result.value);
+      targetRef.current = null;
+      failedRevisionRef.current = null;
+      recoveryRef.current = false;
+      updateVisibleState();
+      notifyWaiters();
+      return true;
+    }
+    const error = result.error;
+    if (error instanceof DraftApiFailure && error.code === 'conflict' && error.current) {
+      const current = cloneSnapshot(error.current);
+      if (recognizeTarget && confirmsKnownWrite(current, recognizeTarget)) {
+        confirmedRef.current = current;
+        targetRef.current = null;
+        recoveryRef.current = false;
+        const visible = draftRef.current;
+        if (!visible || draftsEqual(visible, current.draft)) {
+          updateVisibleState();
+          return true;
+        }
+        return writeDraft(visible, current.version, current, revisionRef.current);
+      }
+      if (current.version > expectedVersion && draftsEqual(current.draft, sent)) {
+        confirmedRef.current = current;
+        targetRef.current = null;
+        recoveryRef.current = false;
+        updateVisibleState();
+        return true;
+      }
+      if (current.version <= expectedVersion) {
+        if (recognizeTarget) {
+          targetRef.current = recognizeTarget;
+          failedRevisionRef.current = revision;
+          const newerEdit = revisionRef.current !== revision;
+          if (!newerEdit) editDeadlineRef.current = null;
+          setMessage(null);
+          scheduleRecovery();
+          if (newerEdit && editDeadlineRef.current !== null) {
+            scheduleAt(editDeadlineRef.current);
+          }
+        } else {
+          targetRef.current = target;
+          setMessage(null);
+          scheduleRecovery();
+        }
+        return false;
+      }
+      markConflict(current);
+      return false;
+    }
+    if (error instanceof DraftApiFailure && error.code === 'conflict') {
+      targetRef.current = target;
+      setMessage(null);
+      scheduleRecovery();
+      return false;
+    }
+    if (isTransient(error)) {
+      targetRef.current = isAmbiguous(error) ? target : (recognizeTarget ?? null);
+      handleFailure(error, false);
+      return false;
+    }
+    targetRef.current = recognizeTarget ?? null;
+    conflictRefreshPendingRef.current = false;
+    recoveryRef.current = false;
+    clearTimer();
+    const latest = draftRef.current;
+    handleFailure(error, false);
+    if (recognizeTarget) {
+      // The descendant CAS was rejected, but the ancestor PUT can still have
+      // committed. Keep checking that ancestor without retrying this exact
+      // rejected revision; a later edit can resume writes.
+      failedRevisionRef.current = revision;
+      const newerEdit = revisionRef.current !== revision && latest !== null;
+      if (!newerEdit) editDeadlineRef.current = null;
+      if (!authBlockedRef.current) {
+        recoveryRef.current = true;
+        setStatus('recovering');
+        scheduleAt(
+          newerEdit && editDeadlineRef.current !== null
+            ? editDeadlineRef.current
+            : Date.now() + 60_000,
+        );
+      }
+      return false;
+    }
+    if (
+      latest &&
+      revisionRef.current !== revision &&
+      draftLimitMessage(latest) === null &&
+      editDeadlineRef.current !== null
+    ) {
+      scheduleAt(editDeadlineRef.current);
+    }
+    return false;
+  };
+
+  const reconcileTarget = async (): Promise<boolean> => {
+    const target = targetRef.current;
+    if (!target || !canAccess() || operationRef.current) return false;
+    const epoch = epochRef.current;
+    const sub = ownerRef.current;
+    const result = await performOperation((signal) => apiRef.current.getDraft(signal));
+    if (!isCurrentOwner(epoch, sub) || result.cancelled) return false;
+    if (!result.value) {
+      handleFailure(result.error, false);
+      return false;
+    }
+    const remote = cloneSnapshot(result.value);
+    if (
+      remote.version < target.expectedVersion ||
+      (remote.version === target.expectedVersion && !draftsEqual(remote.draft, target.base.draft))
+    ) {
+      targetRef.current = target;
+      setStatus('recovering');
+      setMessage('La versión leída no coincide con la versión esperada. Conservamos tus cambios.');
+      recoveryRef.current = true;
+      scheduleAt(Date.now() + 60_000);
+      return false;
+    }
+    if (remote.version === target.expectedVersion) {
+      if (failedRevisionRef.current === revisionRef.current) {
+        targetRef.current = target;
+        scheduleRecovery();
+        return false;
+      }
+      const latest = draftRef.current;
+      if (!latest) return false;
+      const deadline = editDeadlineRef.current;
+      if (deadline !== null && deadline > Date.now()) {
+        scheduleAtRef.current(deadline);
+        return false;
+      }
+      const saved = await writeDraft(
+        latest,
+        target.expectedVersion,
+        target.base,
+        revisionRef.current,
+        target,
+      );
+      if (saved) {
+        recoveryRef.current = false;
+        updateVisibleState();
+      }
+      return saved;
+    }
+    const visible = draftRef.current;
+    if (visible && remote.version > target.expectedVersion && draftsEqual(remote.draft, visible)) {
+      confirmedRef.current = remote;
+      targetRef.current = null;
+      recoveryRef.current = false;
+      setMessage(null);
+      updateVisibleState();
+      return true;
+    }
+    if (confirmsKnownWrite(remote, target)) {
+      confirmedRef.current = remote;
+      targetRef.current = null;
+      recoveryRef.current = false;
+      if (visible && !draftsEqual(visible, remote.draft)) {
+        if (failedRevisionRef.current === revisionRef.current) {
+          setStatus('error');
+          return false;
+        }
+        setMessage(null);
+        updateVisibleState();
+        const deadline = editDeadlineRef.current;
+        if (deadline !== null && deadline > Date.now()) {
+          scheduleAt(deadline);
+          return false;
+        }
+        return writeDraft(visible, remote.version, remote, revisionRef.current);
+      }
+      setMessage(null);
+      updateVisibleState();
+      return true;
+    }
+    markConflict(remote);
+    return false;
+  };
+
+  const refreshConflict = async (): Promise<boolean> => {
+    const displayed = conflictRef.current;
+    if (!displayed || !conflictRefreshPendingRef.current || !canAccess()) return false;
+    const epoch = epochRef.current;
+    const sub = ownerRef.current;
+    setConflictActionPending(true);
+    try {
+      const result = await performOperation((signal) => apiRef.current.getDraft(signal));
+      if (!isCurrentOwner(epoch, sub) || result.cancelled) return false;
+      if (!result.value) {
+        handleFailure(result.error, false);
+        return false;
+      }
+      conflictRefreshPendingRef.current = false;
+      recoveryRef.current = false;
+      const latest = cloneSnapshot(result.value);
+      if (latest.version !== displayed.version || !draftsEqual(latest.draft, displayed.draft)) {
+        markConflict(latest);
+        setComparisonOpen(true);
+        setMessage('La versión guardada cambió. Revisá la comparación y elegí de nuevo.');
+      } else {
+        setStatus('conflict');
+        setMessage('La versión sigue igual. Elegí cómo resolver el conflicto.');
+      }
+      return false;
+    } finally {
+      if (isCurrentOwner(epoch, sub)) setConflictActionPending(false);
+    }
+  };
+
+  const runCycle = (): Promise<boolean> => {
+    if (cyclePromiseRef.current) return cyclePromiseRef.current;
+    if (
+      !canAccess() ||
+      (conflictRef.current && !conflictRefreshPendingRef.current) ||
+      operationRef.current
+    ) {
+      return Promise.resolve(false);
+    }
+    const epoch = epochRef.current;
+    const sub = ownerRef.current;
+    const promise = (async (): Promise<boolean> => {
+      if (conflictRefreshPendingRef.current && conflictRef.current) return refreshConflict();
+      if (!confirmedRef.current) {
+        const result = await performOperation((signal) => apiRef.current.getDraft(signal));
+        if (!isCurrentOwner(epoch, sub) || result.cancelled) return false;
+        if (result.value) {
+          setLoadedSnapshot(result.value);
+          return true;
+        }
+        handleFailure(result.error, true);
+        return false;
+      }
+      if (targetRef.current) return reconcileTarget();
+      const visible = draftRef.current;
+      const confirmed = confirmedRef.current;
+      if (!visible || !confirmed) return false;
+      if (draftsEqual(visible, confirmed.draft)) {
+        updateVisibleState();
+        return true;
+      }
+      return writeDraft(visible, confirmed.version, confirmed, revisionRef.current);
+    })();
+    cyclePromiseRef.current = promise;
+    void promise.then((succeeded) => {
+      if (cyclePromiseRef.current === promise) cyclePromiseRef.current = null;
+      if (!mountedRef.current || !canAccess() || conflictRef.current) return;
+      if (!succeeded) return;
+      if (targetRef.current) return;
+      const visible = draftRef.current;
+      const confirmed = confirmedRef.current;
+      if (!visible || !confirmed || draftsEqual(visible, confirmed.draft)) return;
+      if (recoveryRef.current) return;
+      const deadline = editDeadlineRef.current;
+      if (deadline !== null) {
+        if (deadline <= Date.now()) void runCycleRef.current();
+        else scheduleAt(deadline);
+      }
+    });
+    return promise;
+  };
+  runCycleRef.current = runCycle;
+
+  const updateDraft = (next: RobotDraft): void => {
+    if (!canAccess() || lockedRef.current) return;
+    const copy = cloneDraft(next);
+    draftRef.current = copy;
+    revisionRef.current += 1;
+    failedRevisionRef.current = null;
+    editDeadlineRef.current = Date.now() + 600;
+    setDraft(copy);
+    if (conflictRef.current) {
+      setStatus('conflict');
+      setMessage(
+        'Otra pestaña guardó una versión distinta. Compará ambas versiones para resolver.',
+      );
+      return;
+    }
+    const confirmed = confirmedRef.current;
+    if (
+      confirmed &&
+      !targetRef.current &&
+      !operationRef.current &&
+      draftsEqual(copy, confirmed.draft)
+    ) {
+      editDeadlineRef.current = null;
+      if (!recoveryRef.current || scheduledRef.current === null) {
+        recoveryRef.current = false;
+        clearTimer();
+      }
+      setStatus('clean');
+      setMessage(null);
+      notifyWaiters();
+      return;
+    }
+    if (recoveryRef.current || targetRef.current) {
+      setStatus(operationRef.current ? 'saving' : 'recovering');
+      return;
+    }
+    if (confirmed && draftsEqual(copy, confirmed.draft)) {
+      setStatus(operationRef.current ? 'saving' : 'clean');
+      setMessage(null);
+      if (!operationRef.current) {
+        editDeadlineRef.current = null;
+        clearTimer();
+      } else {
+        scheduleVisibleEdit();
+      }
+    } else {
+      setStatus(operationRef.current ? 'saving' : 'dirty');
+      setMessage(null);
+      scheduleVisibleEdit();
+    }
+  };
+
+  const isClean = (): boolean => {
+    const visible = draftRef.current;
+    const confirmed = confirmedRef.current;
+    return Boolean(
+      visible &&
+      confirmed &&
+      operationRef.current === null &&
+      targetRef.current === null &&
+      conflictRef.current === null &&
+      draftsEqual(visible, confirmed.draft),
+    );
+  };
+
+  const flushPending = async (): Promise<boolean> => {
+    if (!canAccess() || conflictRef.current) return false;
+    const cycle = cyclePromiseRef.current;
+    if (cycle && isVisiblePutInFlight()) {
+      await cycle;
+      return isClean();
+    }
+    if (isClean()) return true;
+    if (recoveryRef.current || targetRef.current) return false;
+    if (cycle) {
+      await cycle;
+      return isClean();
+    }
+    if (operationRef.current !== null) return false;
+    const current = draftRef.current;
+    const confirmed = confirmedRef.current;
+    if (current && confirmed && draftsEqual(current, confirmed.draft)) return true;
+    clearTimer();
+    const result = await runCycle();
+    return result && isClean();
+  };
+
+  const captureSnapshot = async (): Promise<DraftSnapshot | null> => {
+    const frozen = draftRef.current;
+    const revision = revisionRef.current;
+    const epoch = epochRef.current;
+    const owner = ownerRef.current;
+    const saved = confirmedRef.current;
+    const joinVisiblePut = isVisiblePutInFlight();
+    if (
+      !frozen ||
+      !saved ||
+      !canAccess() ||
+      conflictRef.current ||
+      (targetRef.current && !joinVisiblePut) ||
+      draftLimitMessage(frozen)
+    ) {
+      return null;
+    }
+    if (
+      draftsEqual(frozen, saved.draft) &&
+      saved.version > 0 &&
+      operationRef.current === null &&
+      targetRef.current === null
+    ) {
+      return cloneSnapshot(saved);
+    }
+    if (recoveryRef.current && !joinVisiblePut) return null;
+    let confirmed: boolean;
+    if (joinVisiblePut) {
+      const firstCycle = cyclePromiseRef.current;
+      if (!firstCycle) return null;
+      const firstSucceeded = await firstCycle;
+      if (
+        !firstSucceeded ||
+        !isCurrentOwner(epoch, owner) ||
+        revisionRef.current !== revision ||
+        !canAccess() ||
+        conflictRef.current
+      ) {
+        return null;
+      }
+
+      // A visible save may finish after a newer revision was edited. Capture
+      // only the revision frozen above: join a normal autosave if it already
+      // started for that exact draft, otherwise send that frozen draft now.
+      if (targetRef.current) {
+        const nextCycle = cyclePromiseRef.current;
+        if (
+          !nextCycle ||
+          !isVisiblePutInFlight() ||
+          !draftsEqual(targetRef.current.draft, frozen)
+        ) {
+          return null;
+        }
+        confirmed = await nextCycle;
+      } else {
+        const latest = confirmedRef.current;
+        if (!latest || recoveryRef.current) return null;
+        if (draftsEqual(latest.draft, frozen)) {
+          confirmed = true;
+        } else {
+          clearTimer();
+          editDeadlineRef.current = null;
+          confirmed = await writeDraft(frozen, latest.version, latest, revision);
+        }
+      }
+    } else if (saved.version === 0 && draftsEqual(frozen, saved.draft)) {
+      confirmed = await writeDraft(frozen, saved.version, saved, revision);
+    } else {
+      confirmed = await flushPending();
+    }
+    const after = confirmedRef.current;
+    if (
+      !confirmed ||
+      revisionRef.current !== revision ||
+      !after ||
+      after.version <= 0 ||
+      !draftsEqual(after.draft, frozen)
+    ) {
+      return null;
+    }
+    return cloneSnapshot(after);
+  };
+
+  const applyDraft = async (
+    nextDraftOrLoader: RobotDraft | (() => Promise<RobotDraft>),
+  ): Promise<boolean> => {
+    if (
+      !canAccess() ||
+      lockedRef.current ||
+      !confirmedRef.current ||
+      conflictRef.current ||
+      !draftRef.current
+    ) {
+      return false;
+    }
+    const epoch = epochRef.current;
+    const sub = ownerRef.current;
+    const frozenRevision = revisionRef.current;
+    const frozenVisible = cloneDraft(draftRef.current);
+    let candidate: RobotDraft;
+    try {
+      candidate = cloneDraft(
+        typeof nextDraftOrLoader === 'function' ? await nextDraftOrLoader() : nextDraftOrLoader,
+      );
+    } catch {
+      return false;
+    }
+    if (
+      !isCurrentOwner(epoch, sub) ||
+      !canAccess() ||
+      lockedRef.current ||
+      revisionRef.current !== frozenRevision ||
+      !draftRef.current ||
+      !draftsEqual(draftRef.current, frozenVisible) ||
+      conflictRef.current
+    ) {
+      return false;
+    }
+    if (!(await flushPending())) return false;
+    if (
+      !isCurrentOwner(epoch, sub) ||
+      !canAccess() ||
+      lockedRef.current ||
+      revisionRef.current !== frozenRevision ||
+      !draftRef.current ||
+      !draftsEqual(draftRef.current, frozenVisible) ||
+      conflictRef.current
+    ) {
+      return false;
+    }
+    const base = confirmedRef.current;
+    if (!base) return false;
+    const saved = await writeDraft(
+      candidate,
+      base.version,
+      base,
+      frozenRevision,
+      undefined,
+      'candidate',
+    );
+    if (!saved) return false;
+    if (
+      !isCurrentOwner(epoch, sub) ||
+      !canAccess() ||
+      lockedRef.current ||
+      revisionRef.current !== frozenRevision ||
+      !draftRef.current ||
+      !draftsEqual(draftRef.current, frozenVisible) ||
+      conflictRef.current
+    ) {
+      if (
+        draftRef.current &&
+        confirmedRef.current &&
+        !draftsEqual(draftRef.current, confirmedRef.current.draft)
+      ) {
+        if (editDeadlineRef.current === null) editDeadlineRef.current = Date.now() + 600;
+        scheduleVisibleEdit();
+        setStatus('dirty');
+      }
+      return false;
+    }
+    draftRef.current = cloneDraft(candidate);
+    revisionRef.current += 1;
+    editDeadlineRef.current = null;
+    setDraft(cloneDraft(candidate));
+    setConflictState(null);
+    setMessage(null);
+    setStatus('clean');
+    clearTimer();
+    notifyWaiters();
+    return true;
+  };
+
+  const waitForConfirmed = (signal: AbortSignal): Promise<boolean> => {
+    if (signal.aborted) return Promise.resolve(false);
+    if (isClean()) return Promise.resolve(true);
+    return new Promise<boolean>((resolve) => {
+      const waiter: Waiter = {
+        signal,
+        resolve,
+        onAbort: () => {
+          waitersRef.current.delete(waiter);
+          signal.removeEventListener('abort', waiter.onAbort);
+          resolve(false);
+        },
+      };
+      waitersRef.current.add(waiter);
+      signal.addEventListener('abort', waiter.onAbort, { once: true });
+    });
+  };
+
+  const discardPending = (): void => {
+    const replacement = conflictRef.current ?? confirmedRef.current;
+    epochRef.current += 1;
+    clearTimer();
+    operationRef.current?.controller.abort();
+    operationRef.current = null;
+    cyclePromiseRef.current = null;
+    setConflictActionPending(false);
+    targetRef.current = null;
+    failedRevisionRef.current = null;
+    recoveryRef.current = false;
+    editDeadlineRef.current = null;
+    revisionRef.current += 1;
+    notifyWaiters(false);
+    if (replacement) setLoadedSnapshot(replacement);
   };
 
   useEffect(() => {
@@ -173,428 +1071,6 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     [onConfigurationAvailabilityChange],
   );
 
-  const updateDraft = (next: RobotDraft): void => {
-    if (pausedRef.current || lockedRef.current) {
-      return;
-    }
-    const copy = cloneDraft(next);
-    draftRef.current = copy;
-    setDraft(copy);
-    const isConflict = conflictRef.current !== null;
-    const hasPendingOperation = inFlightRef.current !== null || reconciliationRef.current !== null;
-    if (isConflict) {
-      setStatus('conflict');
-      setMessage('Otra pestaña guardó una versión distinta. Elegí cómo resolver el conflicto.');
-    } else if (hasPendingOperation) {
-      setStatus(inFlightRef.current ? 'saving' : 'error');
-      setMessage(
-        inFlightRef.current
-          ? 'Guardando… Este cambio quedará pendiente.'
-          : 'No se pudo comprobar el guardado. Podés reintentar.',
-      );
-      if (!inFlightRef.current && retryMode !== 'save') {
-        setRetryMode('reconcile');
-      }
-    } else if (confirmedRef.current && draftsEqual(copy, confirmedRef.current.draft)) {
-      setStatus('clean');
-      setMessage(null);
-    } else {
-      setStatus('dirty');
-      setMessage(null);
-    }
-    if (!isConflict) {
-      setConflictState(null);
-    }
-    if (!hasPendingOperation) {
-      setRetryMode(null);
-    }
-  };
-
-  const setLoadedSnapshot = (snapshot: DraftSnapshot): void => {
-    const copy = cloneDraft(snapshot.draft);
-    confirmedRef.current = { ...snapshot, draft: copy };
-    draftRef.current = copy;
-    reconciliationRef.current = null;
-    setDraft(copy);
-    setConflictState(null);
-    setRetryMode(null);
-    setMessage(null);
-    setStatus('clean');
-  };
-
-  setLoadedSnapshotRef.current = setLoadedSnapshot;
-
-  const reconcile = (target: ReconciliationTarget): Promise<boolean> => {
-    const existing = inFlightRef.current;
-    if (existing) {
-      return existing.promise;
-    }
-    if (!isCurrent(generationRef, target.generation, sessionRef.current)) {
-      return Promise.resolve(false);
-    }
-    reconciliationRef.current = target;
-    setStatus('saving');
-    setMessage('Comprobando si el último guardado llegó al servidor…');
-    const operation = {};
-    const promise = (async (): Promise<boolean> => {
-      try {
-        const remote = await Promise.resolve().then(() => api.getDraft());
-        if (!isCurrent(generationRef, target.generation, sessionRef.current)) {
-          return false;
-        }
-        if (draftsEqual(remote.draft, target.draft)) {
-          if (inFlightRef.current?.operation === operation) {
-            inFlightRef.current = null;
-          }
-          confirmedRef.current = remote;
-          const current = draftRef.current;
-          if (current && draftsEqual(current, remote.draft)) {
-            setStatus('clean');
-            setMessage(null);
-          } else {
-            setStatus('dirty');
-            setMessage('El último guardado llegó. También hay cambios posteriores pendientes.');
-          }
-          reconciliationRef.current = null;
-          setRetryMode(null);
-          return true;
-        }
-        if (remote.version <= target.expectedVersion) {
-          if (inFlightRef.current?.operation === operation) {
-            inFlightRef.current = null;
-          }
-          setStatus('error');
-          setMessage('No se confirmó el guardado. Podés reintentar con la misma versión.');
-          reconciliationRef.current = target;
-          setRetryMode('save');
-          return false;
-        }
-        if (inFlightRef.current?.operation === operation) {
-          inFlightRef.current = null;
-        }
-        setConflictState(remote);
-        setStatus('conflict');
-        setMessage('Otra pestaña guardó una versión distinta. Elegí cómo resolver el conflicto.');
-        reconciliationRef.current = null;
-        setRetryMode(null);
-        return false;
-      } catch (error) {
-        if (!isCurrent(generationRef, target.generation, sessionRef.current)) {
-          return false;
-        }
-        if (inFlightRef.current?.operation === operation) {
-          inFlightRef.current = null;
-        }
-        if (error instanceof DraftApiFailure && error.code === 'authentication') {
-          setStatus('error');
-          setMessage(error.message);
-          onAuthRequiredRef.current?.(error.authContext);
-        } else {
-          setStatus('error');
-          setMessage('No se pudo comprobar el guardado. Podés reintentar.');
-        }
-        reconciliationRef.current = target;
-        setRetryMode('reconcile');
-        return false;
-      } finally {
-        if (inFlightRef.current?.operation === operation) {
-          inFlightRef.current = null;
-        }
-      }
-    })();
-    inFlightRef.current = { generation: target.generation, promise, operation };
-    return promise;
-  };
-
-  const sendSave = (options: SaveOptions = {}): Promise<boolean> => {
-    const existing = inFlightRef.current;
-    if (existing) {
-      return existing.promise;
-    }
-    const current = options.draft ?? draftRef.current;
-    const currentConfirmed = confirmedRef.current;
-    const generation = generationRef.current;
-    if (
-      !current ||
-      !currentConfirmed ||
-      pausedRef.current ||
-      (draftsEqual(current, currentConfirmed.draft) &&
-        !(reconciliationRef.current !== null && retryMode === 'save') &&
-        !options.force)
-    ) {
-      return Promise.resolve(true);
-    }
-    const limitMessage = draftLimitMessage(current);
-    if (limitMessage) {
-      setStatus('error');
-      setMessage(limitMessage);
-      setRetryMode(null);
-      return Promise.resolve(false);
-    }
-
-    const sentDraft = cloneDraft(current);
-    const expectedVersion = currentConfirmed.version;
-    const operation = {};
-    setStatus('saving');
-    setMessage(null);
-    const promise = (async (): Promise<boolean> => {
-      try {
-        const saved = await api.putDraft(expectedVersion, sentDraft);
-        if (!isCurrent(generationRef, generation, sessionRef.current)) {
-          return false;
-        }
-        if (inFlightRef.current?.generation === generation) {
-          inFlightRef.current = null;
-        }
-        reconciliationRef.current = null;
-        confirmedRef.current = saved;
-        const latest = draftRef.current;
-        if (latest && draftsEqual(latest, saved.draft)) {
-          setStatus('clean');
-          setMessage(null);
-        } else {
-          setStatus('dirty');
-          setMessage('Guardado. Hay cambios posteriores pendientes.');
-        }
-        setRetryMode(null);
-        return true;
-      } catch (error) {
-        if (!isCurrent(generationRef, generation, sessionRef.current)) {
-          return false;
-        }
-        if (inFlightRef.current?.generation === generation) {
-          inFlightRef.current = null;
-        }
-        if (error instanceof DraftApiFailure && error.code === 'conflict') {
-          if (error.current) {
-            reconciliationRef.current = null;
-            setConflictState(error.current);
-            setStatus('conflict');
-            setMessage(
-              'Otra pestaña guardó una versión distinta. Elegí cómo resolver el conflicto.',
-            );
-            setRetryMode(null);
-          } else {
-            await reconcile({ generation, expectedVersion, draft: sentDraft });
-          }
-          return false;
-        }
-        if (error instanceof DraftApiFailure && error.code === 'authentication') {
-          setStatus('error');
-          setMessage(error.message);
-          setRetryMode('save');
-          onAuthRequiredRef.current?.(error.authContext);
-          return false;
-        }
-        if (error instanceof DraftApiFailure && error.ambiguous) {
-          reconciliationRef.current = { generation, expectedVersion, draft: sentDraft };
-          setRetryMode('reconcile');
-          return reconcile(reconciliationRef.current);
-        }
-        setStatus('error');
-        setMessage(
-          error instanceof DraftApiFailure ? error.message : 'No se pudo guardar la configuración.',
-        );
-        setRetryMode('save');
-        return false;
-      }
-    })();
-    inFlightRef.current = { generation, promise, operation };
-    return promise;
-  };
-
-  sendSaveRef.current = sendSave;
-
-  const flushPending = async (): Promise<boolean> => {
-    if (pausedRef.current) {
-      return false;
-    }
-    for (let attempt = 0; attempt < 8; attempt += 1) {
-      const inFlight = inFlightRef.current;
-      if (inFlight) {
-        if (!(await inFlight.promise)) {
-          return false;
-        }
-      } else {
-        const reconciliation = reconciliationRef.current;
-        if (reconciliation && retryMode === 'reconcile') {
-          if (!(await reconcile(reconciliation))) {
-            return false;
-          }
-          continue;
-        }
-        const current = draftRef.current;
-        const currentConfirmed = confirmedRef.current;
-        if (
-          !current ||
-          !currentConfirmed ||
-          (draftsEqual(current, currentConfirmed.draft) &&
-            !(reconciliation !== null && retryMode === 'save'))
-        ) {
-          return true;
-        }
-        if (!(await sendSave())) {
-          return false;
-        }
-      }
-      const current = draftRef.current;
-      const currentConfirmed = confirmedRef.current;
-      if (current && currentConfirmed && draftsEqual(current, currentConfirmed.draft)) {
-        return true;
-      }
-    }
-    return false;
-  };
-
-  const captureSnapshot = async (): Promise<DraftSnapshot | null> => {
-    const visible = draftRef.current;
-    const confirmed = confirmedRef.current;
-    if (
-      !visible ||
-      !confirmed ||
-      pausedRef.current ||
-      conflictRef.current !== null ||
-      draftLimitMessage(visible) !== null
-    ) {
-      return null;
-    }
-    const frozen = cloneDraft(visible);
-    for (let attempt = 0; attempt < 8; attempt += 1) {
-      const inFlight = inFlightRef.current;
-      if (inFlight && !(await inFlight.promise)) {
-        return null;
-      }
-      const reconciliation = reconciliationRef.current;
-      if (reconciliation && retryMode === 'reconcile') {
-        if (!(await reconcile(reconciliation))) {
-          return null;
-        }
-        continue;
-      }
-      const current = draftRef.current;
-      const currentConfirmed = confirmedRef.current;
-      if (!current || !currentConfirmed || !draftsEqual(current, frozen)) {
-        return null;
-      }
-      if (draftsEqual(frozen, currentConfirmed.draft) && currentConfirmed.version > 0) {
-        return { ...currentConfirmed, draft: cloneDraft(frozen) };
-      }
-      const saved = await sendSave({ draft: frozen, force: true });
-      if (!saved) {
-        return null;
-      }
-      const afterSave = confirmedRef.current;
-      if (afterSave && draftsEqual(afterSave.draft, frozen)) {
-        return { ...afterSave, draft: cloneDraft(frozen) };
-      }
-    }
-    return null;
-  };
-
-  const applyDraft = async (
-    nextDraftOrLoader: RobotDraft | (() => Promise<RobotDraft>),
-  ): Promise<boolean> => {
-    if (
-      pausedRef.current ||
-      lockedRef.current ||
-      status === 'loading' ||
-      conflictRef.current !== null
-    ) {
-      return false;
-    }
-    const generation = generationRef.current;
-    const visibleAtStart = draftRef.current;
-    if (!visibleAtStart) {
-      return false;
-    }
-    const frozenVisible = cloneDraft(visibleAtStart);
-    const nextDraft =
-      typeof nextDraftOrLoader === 'function' ? await nextDraftOrLoader() : nextDraftOrLoader;
-    if (
-      !isCurrent(generationRef, generation, sessionRef.current) ||
-      pausedRef.current ||
-      lockedRef.current ||
-      conflictRef.current !== null ||
-      !draftRef.current ||
-      !draftsEqual(draftRef.current, frozenVisible)
-    ) {
-      return false;
-    }
-    const initialInFlight = inFlightRef.current;
-    if (initialInFlight && !(await initialInFlight.promise)) {
-      return false;
-    }
-    if (!draftRef.current || !draftsEqual(draftRef.current, frozenVisible)) {
-      return false;
-    }
-    if (!(await flushPending())) {
-      return false;
-    }
-    if (
-      !isCurrent(generationRef, generation, sessionRef.current) ||
-      pausedRef.current ||
-      lockedRef.current ||
-      conflictRef.current !== null ||
-      !draftRef.current ||
-      !draftsEqual(draftRef.current, frozenVisible)
-    ) {
-      return false;
-    }
-    const copy = cloneDraft(nextDraft);
-    if (!(await sendSave({ draft: copy }))) {
-      return false;
-    }
-    if (
-      !isCurrent(generationRef, generation, sessionRef.current) ||
-      pausedRef.current ||
-      lockedRef.current ||
-      conflictRef.current !== null ||
-      !draftRef.current ||
-      !draftsEqual(draftRef.current, frozenVisible)
-    ) {
-      return false;
-    }
-    draftRef.current = copy;
-    setDraft(copy);
-    setConflictState(null);
-    setRetryMode(null);
-    if (confirmedRef.current && draftsEqual(copy, confirmedRef.current.draft)) {
-      setStatus('clean');
-      setMessage(null);
-    } else {
-      setStatus('dirty');
-      setMessage(null);
-    }
-    return true;
-  };
-
-  const retry = (): void => {
-    const target = reconciliationRef.current;
-    if (target && retryMode === 'reconcile') {
-      void reconcile(target);
-      return;
-    }
-    if (!confirmedRef.current && retryMode === 'reconcile') {
-      setLoadAttempt((attempt) => attempt + 1);
-      return;
-    }
-    const current = draftRef.current;
-    const currentConfirmed = confirmedRef.current;
-    if (
-      current &&
-      currentConfirmed &&
-      reconciliationRef.current === null &&
-      conflictRef.current === null &&
-      draftsEqual(current, currentConfirmed.draft)
-    ) {
-      setStatus('clean');
-      setMessage(null);
-      setRetryMode(null);
-      return;
-    }
-    void sendSave();
-  };
-
   useImperativeHandle(ref, () => ({
     hasUnconfirmedChanges: () => {
       const current = draftRef.current;
@@ -602,18 +1078,14 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
       return Boolean(
         current &&
         saved &&
-        (inFlightRef.current !== null ||
-          reconciliationRef.current !== null ||
+        (operationRef.current !== null ||
+          targetRef.current !== null ||
           !draftsEqual(current, saved.draft)),
       );
     },
-    discardPending: () => {
-      const replacement = conflict ?? confirmedRef.current;
-      if (replacement) {
-        setLoadedSnapshot(replacement);
-      }
-    },
+    discardPending,
     flushPending,
+    waitForConfirmed,
     captureSnapshot,
     applyDraft,
     releaseAttemptLock: () => {
@@ -634,82 +1106,158 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
   }));
 
   useEffect(() => {
-    const generation = generationRef.current + 1;
-    generationRef.current = generation;
-    const controller = new AbortController();
-    inFlightRef.current = null;
-    reconciliationRef.current = null;
+    mountedRef.current = true;
+    const sub = session.identity.sub;
+    epochRef.current += 1;
+    ownerRef.current = sub;
+    authBlockedRef.current = false;
+    conflictRefreshPendingRef.current = false;
+    setConflictActionPending(false);
+    clearTimer();
+    operationRef.current?.controller.abort();
+    operationRef.current = null;
+    cyclePromiseRef.current = null;
+    targetRef.current = null;
+    failedRevisionRef.current = null;
+    recoveryRef.current = false;
+    editDeadlineRef.current = null;
+    revisionRef.current = 0;
     draftRef.current = null;
     confirmedRef.current = null;
     setDraft(null);
     setConflictState(null);
-    setRetryMode(null);
     setMessage(null);
     setStatus('loading');
-    void api
-      .getDraft(controller.signal)
-      .then((snapshot) => {
-        if (
-          controller.signal.aborted ||
-          !isCurrent(generationRef, generation, sessionRef.current)
-        ) {
-          return;
-        }
-        setLoadedSnapshotRef.current(snapshot);
-      })
-      .catch((error: unknown) => {
-        if (
-          controller.signal.aborted ||
-          !isCurrent(generationRef, generation, sessionRef.current)
-        ) {
-          return;
-        }
-        setStatus('error');
-        setRetryMode('reconcile');
-        setMessage(
-          error instanceof DraftApiFailure ? error.message : 'No se pudo cargar la configuración.',
-        );
-        if (error instanceof DraftApiFailure && error.code === 'authentication') {
-          onAuthRequiredRef.current?.(error.authContext);
-        }
-      });
+    if (canAccess()) void runCycleRef.current();
     return () => {
-      generationRef.current += 1;
-      controller.abort();
+      mountedRef.current = false;
+      epochRef.current += 1;
+      clearTimer();
+      operationRef.current?.controller.abort();
+      operationRef.current = null;
+      targetRef.current = null;
+      cyclePromiseRef.current = null;
+      notifyWaiters(false);
     };
-  }, [api, loadAttempt, session.identity.sub]);
+    // The editor owner changes only with API client or authenticated identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api, session.identity.sub]);
+
+  useLayoutEffect(() => {
+    const blocked = paused || accessState !== 'ready';
+    if (blocked) {
+      cancelTimer();
+      epochRef.current += 1;
+      const active = operationRef.current;
+      active?.controller.abort();
+      operationRef.current = null;
+      cyclePromiseRef.current = null;
+      setConflictActionPending(false);
+      return;
+    }
+    if (authBlockedRef.current) authBlockedRef.current = false;
+    if (mountedRef.current && (targetRef.current || !confirmedRef.current || !isClean())) {
+      if (targetRef.current || !confirmedRef.current) {
+        clearTimer();
+        recoveryRef.current = false;
+        void runCycleRef.current();
+      } else if (recoveryRef.current) {
+        const deadline = scheduledRef.current?.deadline ?? Date.now() + 60_000;
+        scheduleAtRef.current(deadline);
+      } else {
+        const deadline = editDeadlineRef.current;
+        if (deadline !== null) scheduleAtRef.current(deadline);
+        else void runCycleRef.current();
+      }
+    }
+  }, [paused, accessState]);
 
   useEffect(() => {
-    if (paused || status !== 'dirty' || conflict || inFlightRef.current) {
-      return undefined;
-    }
-    const timer = window.setTimeout(() => {
-      void sendSaveRef.current();
-    }, 600);
-    return () => window.clearTimeout(timer);
-  }, [conflict, draft, paused, status]);
+    if (!comparisonOpen || !conflict) return;
+    comparisonHeadingRef.current?.focus();
+  }, [comparisonOpen, conflict]);
 
   useEffect(() => {
-    const saved = confirmedRef.current;
-    const hasPending =
-      draft !== null &&
-      saved !== null &&
-      (inFlightRef.current !== null ||
-        reconciliationRef.current !== null ||
-        !draftsEqual(draft, saved.draft)) &&
-      status !== 'loading' &&
-      status !== 'clean';
-    if (!hasPending) {
-      return undefined;
-    }
-    const warnBeforeUnload = (event: BeforeUnloadEvent): string => {
-      event.preventDefault();
-      event.returnValue = '';
-      return '';
+    if (!comparisonOpen) return;
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        setComparisonOpen(false);
+        requestAnimationFrame(() => conflictTriggerRef.current?.focus());
+      }
     };
-    window.addEventListener('beforeunload', warnBeforeUnload);
-    return () => window.removeEventListener('beforeunload', warnBeforeUnload);
-  }, [conflict, draft, status]);
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [comparisonOpen]);
+
+  const resolveUseStored = async (): Promise<void> => {
+    if (
+      !canAccess() ||
+      lockedRef.current ||
+      attemptClickLockedRef.current ||
+      conflictActionPending
+    ) {
+      return;
+    }
+    const displayed = conflictRef.current;
+    if (!displayed || operationRef.current) return;
+    const localRevision = revisionRef.current;
+    clearTimer();
+    recoveryRef.current = false;
+    conflictRefreshPendingRef.current = false;
+    setConflictActionPending(true);
+    setMessage(null);
+    const epoch = epochRef.current;
+    const sub = ownerRef.current;
+    try {
+      const result = await performOperation((signal) => apiRef.current.getDraft(signal));
+      if (!isCurrentOwner(epoch, sub) || result.cancelled || !result.value) {
+        if (!result.cancelled) {
+          if (isTransient(result.error)) conflictRefreshPendingRef.current = true;
+          handleFailure(result.error, false);
+        }
+        return;
+      }
+      const latest = cloneSnapshot(result.value);
+      if (latest.version !== displayed.version || !draftsEqual(latest.draft, displayed.draft)) {
+        markConflict(latest);
+        setComparisonOpen(true);
+        setMessage('La versión guardada cambió. Revisá la comparación y elegí de nuevo.');
+        return;
+      }
+      if (revisionRef.current !== localRevision) {
+        setStatus('conflict');
+        setMessage('Tus cambios cambiaron mientras comprobábamos. Elegí de nuevo.');
+        return;
+      }
+      setLoadedSnapshot(latest);
+    } finally {
+      if (isCurrentOwner(epoch, sub)) setConflictActionPending(false);
+    }
+  };
+
+  const resolveKeepMine = (): void => {
+    if (
+      !canAccess() ||
+      lockedRef.current ||
+      attemptClickLockedRef.current ||
+      conflictActionPending
+    ) {
+      return;
+    }
+    if (operationRef.current) return;
+    const displayed = conflictRef.current;
+    const visible = draftRef.current;
+    if (!displayed || !visible) return;
+    conflictRefreshPendingRef.current = false;
+    recoveryRef.current = false;
+    clearTimer();
+    confirmedRef.current = cloneSnapshot(displayed);
+    setConflictState(null);
+    setMessage(null);
+    editDeadlineRef.current = Date.now() + 600;
+    setStatus('dirty');
+    scheduleAt(editDeadlineRef.current);
+  };
 
   const onInstructionsChange = (event: ChangeEvent<HTMLTextAreaElement>): void => {
     if (!draft) return;
@@ -734,21 +1282,40 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     });
   };
 
-  const submitRetry = (event: FormEvent): void => {
-    event.preventDefault();
-    retry();
-  };
-
-  const disabled = paused || locked || attemptClickLocked || status === 'loading';
+  const disabled =
+    paused || accessState !== 'ready' || locked || attemptClickLocked || status === 'loading';
+  const fieldsetDisabled = locked || attemptClickLocked || status === 'loading';
   const byteCount = draft ? draftByteLength(draft) : 0;
   const limitMessage = draft ? draftLimitMessage(draft) : null;
   const shouldWarnAboutDraftSize = byteCount >= DRAFT_SIZE_WARNING_THRESHOLD;
   const isLoadError = status === 'error' && draft === null && confirmedRef.current === null;
+  const localComparisonDraft = draft;
+
+  useEffect(() => {
+    const saved = confirmedRef.current;
+    const hasPending = Boolean(
+      draft &&
+      saved &&
+      (operationRef.current !== null ||
+        targetRef.current !== null ||
+        !draftsEqual(draft, saved.draft)),
+    );
+    if (!hasPending) return undefined;
+    const warnBeforeUnload = (event: BeforeUnloadEvent): string => {
+      event.preventDefault();
+      event.returnValue = '';
+      return '';
+    };
+    window.addEventListener('beforeunload', warnBeforeUnload);
+    return () => window.removeEventListener('beforeunload', warnBeforeUnload);
+  }, [conflict, draft, status]);
   return (
     <section
       className="robot-editor"
       aria-labelledby="robot-editor-title"
-      aria-busy={paused || locked || attemptClickLocked || status === 'loading'}
+      aria-busy={
+        paused || accessState !== 'ready' || locked || attemptClickLocked || status === 'loading'
+      }
     >
       <div className="editor-heading">
         <div>
@@ -771,12 +1338,8 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
             Elegí sus habilidades y escribí las instrucciones que recibirá. Los cambios se guardan
             automáticamente. Al probarlo, se fija exactamente lo que estás viendo.
           </p>
-          <details
-            className="editor-help"
-            aria-disabled={disabled}
-            onClick={disabled ? (event) => event.preventDefault() : undefined}
-          >
-            <summary tabIndex={disabled ? -1 : 0}>Ayuda para empezar</summary>
+          <details className="editor-help">
+            <summary>Ayuda para empezar</summary>
             <div className="editor-help-copy">
               <p>
                 La configuración inicial es limitada a propósito: sólo Avanzar viene habilitada y
@@ -813,12 +1376,17 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
         </span>
       </div>
 
-      {paused && (
-        <p className="editor-paused" role="status">
+      {(accessState === 'checking' || (paused && accessState === 'ready')) && (
+        <p className="editor-access-status editor-access-status-checking" role="status">
           Verificando tu sesión… Conservamos tus cambios en esta pestaña.
         </p>
       )}
-      {locked && !paused && (
+      {accessState === 'required' && (
+        <p className="editor-access-status editor-access-status-required" role="status">
+          Tu sesión necesita atención. Conservamos tus cambios en esta pestaña.
+        </p>
+      )}
+      {locked && !paused && accessState === 'ready' && (
         <p className="editor-paused" role="status">
           Conservamos esta configuración mientras preparamos o reproducimos el intento, o cargamos
           la preferencia de animación.
@@ -840,14 +1408,15 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
       )}
 
       {draft && (
-        <form className="editor-form" onSubmit={submitRetry}>
-          <fieldset disabled={disabled}>
+        <form className="editor-form" onSubmit={(event) => event.preventDefault()}>
+          <fieldset disabled={fieldsetDisabled}>
             <legend>Instrucciones generales</legend>
             <label htmlFor="robot-instructions">Qué debe tener en cuenta el robot</label>
             <textarea
               id="robot-instructions"
               value={draft.instructions}
               onChange={onInstructionsChange}
+              readOnly={disabled}
               aria-describedby="robot-instructions-count"
               aria-invalid={countCharacters(draft.instructions) > MAX_INSTRUCTIONS_CHARACTERS}
               rows={5}
@@ -857,7 +1426,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
             </p>
           </fieldset>
 
-          <fieldset disabled={disabled}>
+          <fieldset disabled={fieldsetDisabled}>
             <legend>Habilidades disponibles</legend>
             <p className="field-help">
               Las descripciones se envían literalmente al agente. La ayuda de cada tarjeta no se
@@ -874,6 +1443,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
                         <input
                           type="checkbox"
                           checked={skill.enabled}
+                          disabled={disabled}
                           onChange={(event) => onSkillEnabledChange(entry.id, event.target.checked)}
                         />
                         <span>{entry.name}</span>
@@ -887,6 +1457,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
                       id={`skill-description-${entry.id}`}
                       value={skill.description ?? ''}
                       onChange={(event) => onSkillDescriptionChange(entry.id, event.target.value)}
+                      readOnly={disabled}
                       aria-describedby={`skill-description-count-${entry.id}`}
                       aria-invalid={
                         countCharacters(skill.description ?? '') > MAX_SKILL_DESCRIPTION_CHARACTERS
@@ -921,16 +1492,6 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
               La configuración está cerca del límite de tamaño. Si lo supera, no se va a poder
               guardar.
             </p>
-          )}
-
-          {(status === 'error' || status === 'conflict') && (
-            <div className="editor-actions">
-              {retryMode && (
-                <button className="secondary-button" type="submit" disabled={disabled}>
-                  Reintentar guardado
-                </button>
-              )}
-            </div>
           )}
         </form>
       )}
@@ -970,77 +1531,100 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
         )}
       </div>
 
-      {status === 'error' && !draft && (
-        <div className="editor-actions">
-          <button className="secondary-button" type="button" onClick={retry}>
-            Reintentar carga
-          </button>
-        </div>
-      )}
-
       {conflict && (
-        <section className="conflict-card" aria-labelledby="conflict-title">
-          <h3 id="conflict-title">Hay una versión guardada en otra pestaña</h3>
-          <p>
-            Revisá la versión actual y elegí si querés conservarla o volver a guardar tus cambios
-            sobre ella.
-          </p>
-          <div className="conflict-preview">
-            <strong>Instrucciones guardadas</strong>
-            <p>{conflict.draft.instructions}</p>
-            <strong>Habilidades guardadas</strong>
-            <ul>
-              {conflict.draft.skills.map((skill) => (
-                <li key={skill.id}>
-                  {ROBOT_CATALOG.find((entry) => entry.id === skill.id)?.name ?? 'Habilidad'}:{' '}
-                  {skill.enabled ? 'habilitada' : 'deshabilitada'},{' '}
-                  <span className="conflict-literal">
-                    {Object.prototype.hasOwnProperty.call(skill, 'description')
-                      ? skill.description
-                      : '(sin descripción)'}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </div>
-          <div className="editor-actions">
-            <button
-              className="secondary-button"
-              type="button"
-              onClick={() => {
-                if (pausedRef.current || lockedRef.current || attemptClickLockedRef.current) {
-                  return;
-                }
-                const currentConflict = conflictRef.current;
-                if (currentConflict) {
-                  setLoadedSnapshot(currentConflict);
-                }
-              }}
-              disabled={disabled}
+        <div className="editor-conflict" role="group" aria-label="Resolución del conflicto">
+          <button
+            className="secondary-button editor-conflict-trigger"
+            type="button"
+            ref={conflictTriggerRef}
+            aria-expanded={comparisonOpen}
+            aria-controls="editor-conflict-comparison"
+            onClick={() => setComparisonOpen((open) => !open)}
+          >
+            Comparar versiones
+          </button>
+          {comparisonOpen && (
+            <div
+              className="editor-conflict-comparison"
+              id="editor-conflict-comparison"
+              role="region"
+              aria-labelledby="editor-conflict-comparison-title"
             >
-              Usar la versión guardada
-            </button>
-            <button
-              className="primary-button"
-              type="button"
-              onClick={() => {
-                if (pausedRef.current || lockedRef.current || attemptClickLockedRef.current) {
-                  return;
-                }
-                const currentConflict = conflictRef.current;
-                if (!currentConflict) return;
-                confirmedRef.current = currentConflict;
-                setConflictState(null);
-                setStatus('dirty');
-                setMessage(null);
-                setRetryMode('save');
-              }}
-              disabled={disabled}
-            >
-              Guardar mis cambios
-            </button>
-          </div>
-        </section>
+              <h4 id="editor-conflict-comparison-title" ref={comparisonHeadingRef} tabIndex={-1}>
+                Comparación completa de versiones
+              </h4>
+              <p>
+                Tu borrador sigue visible. La versión guardada puede cambiar mientras comparás;
+                volveremos a comprobarla antes de descartarlo.
+              </p>
+              <div className="editor-conflict-fields">
+                <div className="editor-conflict-field">
+                  <h4>Instrucciones generales</h4>
+                  <div className="editor-conflict-side">
+                    <strong>Tu borrador (base v{confirmedRef.current?.version ?? 0})</strong>
+                    <pre>{localComparisonDraft?.instructions ?? ''}</pre>
+                  </div>
+                  <div className="editor-conflict-side">
+                    <strong>Guardada (v{conflict.version})</strong>
+                    <pre>{conflict.draft.instructions}</pre>
+                  </div>
+                </div>
+              </div>
+              <ul className="editor-conflict-fields editor-conflict-skills">
+                {ROBOT_CATALOG.map((entry) => {
+                  const localSkill = localComparisonDraft?.skills.find(
+                    (skill) => skill.id === entry.id,
+                  );
+                  const savedSkill = conflict.draft.skills.find((skill) => skill.id === entry.id);
+                  if (!localSkill || !savedSkill) return null;
+                  const formatSkill = (skill: RobotDraft['skills'][number]): string =>
+                    `${skill.enabled ? 'Habilitada' : 'Deshabilitada'}\n${Object.prototype.hasOwnProperty.call(skill, 'description') ? skill.description : '(sin descripción)'}`;
+                  return (
+                    <li className="editor-conflict-field" key={entry.id}>
+                      <h4>{entry.name}</h4>
+                      <div className="editor-conflict-side">
+                        <strong>Tu borrador (base v{confirmedRef.current?.version ?? 0})</strong>
+                        <pre>{formatSkill(localSkill)}</pre>
+                      </div>
+                      <div className="editor-conflict-side">
+                        <strong>Guardada (v{conflict.version})</strong>
+                        <pre>{formatSkill(savedSkill)}</pre>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+              <div className="editor-conflict-actions">
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={() => void resolveUseStored()}
+                  disabled={disabled || conflictActionPending}
+                >
+                  Usar lo guardado
+                </button>
+                <button
+                  className="primary-button"
+                  type="button"
+                  onClick={resolveKeepMine}
+                  disabled={disabled || conflictActionPending}
+                >
+                  Conservar mis cambios
+                </button>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={() => {
+                    setComparisonOpen(false);
+                    requestAnimationFrame(() => conflictTriggerRef.current?.focus());
+                  }}
+                >
+                  Cerrar comparación
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       )}
     </section>
   );

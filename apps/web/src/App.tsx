@@ -406,6 +406,7 @@ export function App({
   const [renewing, setRenewing] = useState(false);
   const [logoutPrompt, setLogoutPrompt] = useState(false);
   const [logoutChoiceBusy, setLogoutChoiceBusy] = useState(false);
+  const [loginDiscardPrompt, setLoginDiscardPrompt] = useState(false);
   const [apiAuthError, setApiAuthError] = useState(false);
   const [editorApi, setEditorApi] = useState<DraftApi | null>(draftApi ?? null);
   const [savedApi, setSavedApi] = useState<SavedRobotApi | null>(savedRobotApi ?? null);
@@ -427,7 +428,10 @@ export function App({
   const apiAuthErrorContextRef = useRef<number | undefined>(undefined);
   const editorRef = useRef<RobotEditorHandle | null>(null);
   const attemptWorkspaceRef = useRef<AttemptWorkspaceHandle | null>(null);
-  const logoutAttemptRef = useRef(0);
+  const logoutPromptHeadingRef = useRef<HTMLHeadingElement | null>(null);
+  const loginDiscardHeadingRef = useRef<HTMLHeadingElement | null>(null);
+  const logoutIntentIdRef = useRef(0);
+  const logoutWaitControllerRef = useRef<AbortController | null>(null);
   const sessionEndRef = useRef(0);
   const draftApiFactoryRef = useRef(draftApiFactory);
   const savedRobotApiFactoryRef = useRef(savedRobotApiFactory);
@@ -435,40 +439,63 @@ export function App({
   const confirmationRef = useRef<PendingConfirmationClient | null>(confirmationClient ?? null);
   const initializationRef = useRef<Promise<AuthSession | null> | null>(null);
 
-  const applySessionState = useCallback((nextSession: AuthSession | null): void => {
-    const previousSession = currentSessionRef.current;
-    if (
-      previousSession &&
-      nextSession &&
-      previousSession.identity.sub !== nextSession.identity.sub
-    ) {
-      clearAttemptRecovery(previousSession.identity.sub);
-    }
+  const invalidateLogoutIntent = useCallback((): void => {
+    logoutIntentIdRef.current += 1;
+    logoutWaitControllerRef.current?.abort();
+    logoutWaitControllerRef.current = null;
+    setLogoutChoiceBusy(false);
+  }, []);
 
-    if (nextSession === null) {
-      accessSnapshotRef.current = null;
-      apiAuthErrorContextRef.current = undefined;
-      setApiAuthError(false);
-    } else {
-      const previousSnapshot = accessSnapshotRef.current;
-      const sameIdentity =
-        previousSession?.identity.sub === nextSession.identity.sub && previousSession !== null;
-      const tokenChanged = previousSnapshot?.accessToken !== nextSession.user.access_token;
-      if (!sameIdentity || !previousSnapshot || tokenChanged) {
-        const nextSnapshot: ApiAccessSnapshot = {
-          accessToken: nextSession.user.access_token,
-          authContext: ++nextAuthContextRef.current,
-        };
-        accessSnapshotRef.current = nextSnapshot;
-        if (apiAuthErrorContextRef.current !== nextSnapshot.authContext) {
-          apiAuthErrorContextRef.current = undefined;
-          setApiAuthError(false);
+  const applySessionState = useCallback(
+    (nextSession: AuthSession | null): void => {
+      const previousSession = currentSessionRef.current;
+      if (previousSession?.identity.sub !== nextSession?.identity.sub) {
+        invalidateLogoutIntent();
+        setLogoutPrompt(false);
+        setLoginDiscardPrompt(false);
+      }
+      if (
+        previousSession &&
+        nextSession &&
+        previousSession.identity.sub !== nextSession.identity.sub
+      ) {
+        clearAttemptRecovery(previousSession.identity.sub);
+      }
+
+      if (nextSession === null) {
+        accessSnapshotRef.current = null;
+        apiAuthErrorContextRef.current = undefined;
+        setApiAuthError(false);
+      } else {
+        const previousSnapshot = accessSnapshotRef.current;
+        const sameIdentity =
+          previousSession?.identity.sub === nextSession.identity.sub && previousSession !== null;
+        const tokenChanged = previousSnapshot?.accessToken !== nextSession.user.access_token;
+        if (!sameIdentity || !previousSnapshot || tokenChanged) {
+          const nextSnapshot: ApiAccessSnapshot = {
+            accessToken: nextSession.user.access_token,
+            authContext: ++nextAuthContextRef.current,
+          };
+          accessSnapshotRef.current = nextSnapshot;
+          if (apiAuthErrorContextRef.current !== nextSnapshot.authContext) {
+            apiAuthErrorContextRef.current = undefined;
+            setApiAuthError(false);
+          }
         }
       }
-    }
-    currentSessionRef.current = nextSession;
-    setSession(nextSession);
-  }, []);
+      currentSessionRef.current = nextSession;
+      setSession(nextSession);
+    },
+    [invalidateLogoutIntent],
+  );
+
+  useEffect(() => {
+    if (logoutPrompt) logoutPromptHeadingRef.current?.focus();
+  }, [logoutPrompt]);
+
+  useEffect(() => {
+    if (loginDiscardPrompt) loginDiscardHeadingRef.current?.focus();
+  }, [loginDiscardPrompt]);
 
   const handleEditorAvailabilityChange = useCallback((available: boolean): void => {
     setEditorReadySubject(available ? (currentSessionRef.current?.identity.sub ?? null) : null);
@@ -585,6 +612,24 @@ export function App({
           if (renewedSession && !sameIdentity) {
             clearAttemptRecovery(session.identity.sub);
           }
+          if (renewedSession === null) {
+            if (!editorRef.current) {
+              applySessionState(null);
+              setRenewing(false);
+              setPhase('visitor');
+              setRetryAction(null);
+              return;
+            }
+            // Keep the known identity and editor mounted, but paused, until the person chooses
+            // whether to discard the local draft and sign in again.
+            apiAuthErrorContextRef.current = accessSnapshotRef.current?.authContext;
+            setApiAuthError(true);
+            setRenewing(false);
+            setError(null);
+            setRetryAction('login');
+            setPhase('error');
+            return;
+          }
           const nextSession = sameIdentity ? renewedSession : null;
           applySessionState(nextSession);
           setRenewing(false);
@@ -608,7 +653,7 @@ export function App({
     return () => window.clearTimeout(timer);
   }, [applySessionState, phase, session?.identity.sub, session?.user.expires_at]);
 
-  const beginLogin = async () => {
+  const startLogin = async (): Promise<void> => {
     const client = clientRef.current;
     if (!client) {
       setError('La configuración de acceso todavía no está lista.');
@@ -616,16 +661,46 @@ export function App({
       setPhase('error');
       return;
     }
+    const loginContext = ++sessionEndRef.current;
+    setRenewing(false);
     setError(null);
     setPhase('signing-in');
     setRetryAction(null);
     try {
       await client.beginLogin();
     } catch (loginError) {
+      if (sessionEndRef.current !== loginContext) return;
       setError(errorMessage(loginError));
       setRetryAction('login');
       setPhase('error');
     }
+  };
+
+  const beginLogin = async (): Promise<void> => {
+    const client = clientRef.current;
+    if (!client) {
+      setError('La configuración de acceso todavía no está lista.');
+      setRetryAction('config');
+      setPhase('error');
+      return;
+    }
+
+    invalidateLogoutIntent();
+    setLogoutPrompt(false);
+    if (editorRef.current?.hasUnconfirmedChanges()) {
+      setLoginDiscardPrompt(true);
+      return;
+    }
+    setLoginDiscardPrompt(false);
+    await startLogin();
+  };
+
+  const discardAndBeginLogin = (): void => {
+    invalidateLogoutIntent();
+    setLogoutPrompt(false);
+    setLoginDiscardPrompt(false);
+    editorRef.current?.discardPending();
+    void startLogin();
   };
 
   const showPendingConfirmation = () => {
@@ -697,7 +772,7 @@ export function App({
   };
 
   const performLogout = async () => {
-    logoutAttemptRef.current += 1;
+    invalidateLogoutIntent();
     sessionEndRef.current += 1;
     if (session) {
       clearAttemptRecovery(session.identity.sub);
@@ -706,6 +781,7 @@ export function App({
     applySessionState(null);
     setRenewing(false);
     setLogoutPrompt(false);
+    setLoginDiscardPrompt(false);
     if (!client) {
       setPhase('visitor');
       return;
@@ -728,6 +804,7 @@ export function App({
     if (attemptBusy) {
       return;
     }
+    setLoginDiscardPrompt(false);
     if (editorRef.current?.hasUnconfirmedChanges()) {
       setLogoutPrompt(true);
       return;
@@ -736,31 +813,60 @@ export function App({
   };
 
   const startAttempt = () => {
-    logoutAttemptRef.current += 1;
+    invalidateLogoutIntent();
     setLogoutPrompt(false);
-    setLogoutChoiceBusy(false);
+    setLoginDiscardPrompt(false);
     attemptWorkspaceRef.current?.start();
   };
 
   const waitAndLogout = async () => {
-    const attempt = logoutAttemptRef.current + 1;
-    logoutAttemptRef.current = attempt;
+    if (logoutWaitControllerRef.current) return;
+    const intentId = ++logoutIntentIdRef.current;
+    const intentSessionSub = session?.identity.sub;
+    const controller = new AbortController();
+    logoutWaitControllerRef.current = controller;
     setLogoutChoiceBusy(true);
-    const saved = await editorRef.current?.flushPending();
-    if (logoutAttemptRef.current !== attempt) {
-      return;
-    }
-    setLogoutChoiceBusy(false);
-    if (saved) {
+    try {
+      const confirmed = await editorRef.current?.waitForConfirmed(controller.signal);
+      if (
+        logoutIntentIdRef.current !== intentId ||
+        controller.signal.aborted ||
+        currentSessionRef.current?.identity.sub !== intentSessionSub
+      ) {
+        return;
+      }
+      if (!confirmed) {
+        logoutWaitControllerRef.current = null;
+        setLogoutChoiceBusy(false);
+        return;
+      }
+      logoutWaitControllerRef.current = null;
+      setLogoutChoiceBusy(false);
       await performLogout();
+    } catch {
+      if (logoutIntentIdRef.current === intentId) {
+        logoutWaitControllerRef.current = null;
+        setLogoutChoiceBusy(false);
+      }
     }
   };
 
   const discardAndLogout = () => {
-    logoutAttemptRef.current += 1;
-    setLogoutChoiceBusy(false);
+    invalidateLogoutIntent();
+    setLoginDiscardPrompt(false);
     editorRef.current?.discardPending();
     void performLogout();
+  };
+
+  const continueEditing = (): void => {
+    invalidateLogoutIntent();
+    setLogoutPrompt(false);
+    editorRef.current?.focusEditor?.();
+  };
+
+  const cancelLoginDiscard = (): void => {
+    setLoginDiscardPrompt(false);
+    editorRef.current?.focusEditor?.();
   };
 
   const restoreSession = async () => {
@@ -826,6 +932,12 @@ export function App({
   }, []);
 
   const accountDisabled = attemptBusy || configurationBusy || renewing;
+  const accessState: 'ready' | 'checking' | 'required' = apiAuthError
+    ? 'required'
+    : phase === 'account' && !renewing
+      ? 'ready'
+      : 'checking';
+  const editorPaused = accessState !== 'required' && (renewing || phase !== 'account');
 
   const handleAttemptControlsHostChange = useCallback((node: HTMLDivElement | null): void => {
     setAttemptControlsHost(node);
@@ -899,7 +1011,8 @@ export function App({
                 ref={editorRef}
                 api={editorApi}
                 session={session}
-                paused={renewing || phase !== 'account' || apiAuthError}
+                accessState={accessState}
+                paused={editorPaused}
                 locked={attemptBusy || !attemptPreferenceReady}
                 tryLocked={configurationBusy}
                 onTry={runnerApi ? startAttempt : undefined}
@@ -918,6 +1031,7 @@ export function App({
                   editor={editorRef}
                   session={session}
                   configurationAvailable={editorReadySubject === session.identity.sub}
+                  accessState={accessState}
                   authPaused={renewing || phase !== 'account' || apiAuthError}
                   onBusyChange={handleAttemptBusyChange}
                   onConfigurationBusyChange={setConfigurationBusy}
@@ -933,6 +1047,7 @@ export function App({
                         editor={editorRef}
                         session={session}
                         configurationAvailable={editorReadySubject === session.identity.sub}
+                        accessState={accessState}
                         paused={renewing || phase !== 'account' || apiAuthError}
                         locked={attemptBusy || configurationBusy || !attemptPreferenceReady}
                         onAuthRequired={handleApiAuthRequired}
@@ -976,32 +1091,62 @@ export function App({
           aria-labelledby="logout-prompt-title"
         >
           <div>
-            <h2 id="logout-prompt-title">Tenés cambios sin confirmar</h2>
+            <h2 id="logout-prompt-title" ref={logoutPromptHeadingRef} tabIndex={-1}>
+              Tenés cambios sin confirmar
+            </h2>
             <p>
-              Elegí si querés esperar el guardado, reintentarlo o descartar esos cambios antes de
-              cerrar sesión. Una escritura que ya salió puede haberse guardado; al descartar se
-              pierden los cambios locales pendientes.
+              Elegí si querés seguir editando, esperar la confirmación del guardado o descartar los
+              cambios locales antes de cerrar sesión. Una escritura que ya salió puede haberse
+              guardado; al descartar se pierden los cambios locales pendientes.
             </p>
+            {accessState === 'required' && (
+              <p role="status">
+                El acceso fue rechazado. Volvé a ingresar para continuar o descartá los cambios
+                locales.
+              </p>
+            )}
           </div>
           <div className="editor-actions">
-            <button
-              className="primary-button"
-              type="button"
-              onClick={() => void waitAndLogout()}
-              disabled={logoutChoiceBusy}
-            >
-              {logoutChoiceBusy ? 'Esperando guardado…' : 'Esperar guardado'}
-            </button>
-            <button
-              className="secondary-button"
-              type="button"
-              onClick={() => void waitAndLogout()}
-              disabled={logoutChoiceBusy}
-            >
-              Reintentar guardado
+            {accessState !== 'required' && (
+              <button
+                className="primary-button"
+                type="button"
+                onClick={() => void waitAndLogout()}
+                disabled={logoutChoiceBusy}
+              >
+                {logoutChoiceBusy ? 'Esperando guardado…' : 'Esperar guardado y salir'}
+              </button>
+            )}
+            <button className="secondary-button" type="button" onClick={continueEditing}>
+              Seguir editando
             </button>
             <button className="text-button" type="button" onClick={discardAndLogout}>
               Descartar cambios locales y salir
+            </button>
+          </div>
+        </section>
+      )}
+      {loginDiscardPrompt && session && (
+        <section
+          className="notice logout-prompt"
+          role="alert"
+          aria-labelledby="login-discard-title"
+        >
+          <div>
+            <h2 id="login-discard-title" ref={loginDiscardHeadingRef} tabIndex={-1}>
+              Tenés cambios sin confirmar
+            </h2>
+            <p>
+              Al volver a ingresar se va a cargar la última configuración confirmada. Si seguís, se
+              descartan los cambios locales que todavía no se confirmaron.
+            </p>
+          </div>
+          <div className="editor-actions">
+            <button className="secondary-button" type="button" onClick={cancelLoginDiscard}>
+              Cancelar
+            </button>
+            <button className="primary-button" type="button" onClick={discardAndBeginLogin}>
+              Ingresar y descartar cambios sin confirmar
             </button>
           </div>
         </section>
