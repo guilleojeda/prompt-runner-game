@@ -126,6 +126,12 @@ button:focus-visible {
   padding: 0.5rem 0;
 }
 
+.game-header:focus-visible {
+  outline: 3px solid #f2c879;
+  outline-offset: 4px;
+  border-radius: 0.85rem;
+}
+
 .game-header .auth-brand {
   flex: 1 1 auto;
   justify-content: flex-start;

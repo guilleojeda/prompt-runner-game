@@ -691,7 +691,10 @@ export function DecisionInspector({
                       <button
                         className="secondary-button"
                         type="button"
-                        onClick={() => setDetailRetry((value) => value + 1)}
+                        onClick={() => {
+                          detailContainerRef.current?.focus({ preventScroll: true });
+                          setDetailRetry((value) => value + 1);
+                        }}
                       >
                         Reintentar ficha
                       </button>
