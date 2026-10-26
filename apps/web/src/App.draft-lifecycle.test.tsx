@@ -5,9 +5,10 @@ import { User } from 'oidc-client-ts';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createDefaultDraft, type DraftSnapshot } from '../../../shared/robot.js';
 import { App } from './App.js';
-import { AttemptApiFailure, type AttemptApi } from './attempt-api.js';
+import type { AttemptApi } from './attempt-api.js';
 import type { AuthClient, AuthConfig, AuthSession } from './auth.js';
 import { DraftApiFailure, type DraftApi } from './draft-api.js';
+import { SavedRobotApiFailure, type SavedRobotApi } from './saved-robot-api.js';
 
 vi.mock('./replay/ReplayScene.js', () => ({
   CoursePreview: () => null,
@@ -98,6 +99,7 @@ async function mount(
   options: {
     draftApi?: Partial<DraftApi>;
     runnerApi?: Partial<AttemptApi>;
+    savedApi?: Partial<SavedRobotApi>;
     authClient?: Partial<AuthClient>;
   } = {},
 ) {
@@ -126,6 +128,7 @@ async function mount(
         getRobot: vi.fn(),
         saveRobot: vi.fn(),
         deleteRobot: vi.fn(),
+        ...options.savedApi,
       }}
       configLoader={async () => config}
     />,
@@ -423,7 +426,7 @@ describe('draft recovery and account departure', () => {
 
   it('aborts and invalidates the old draft before a confirmed re-entry redirect, even with a sent PUT', async () => {
     const pendingSave = deferred<DraftSnapshot>();
-    const pendingQuota = deferred<Awaited<ReturnType<AttemptApi['getQuota']>>>();
+    const pendingAccess = deferred<Awaited<ReturnType<SavedRobotApi['listRobots']>>>();
     const putDraft = vi.fn<DraftApi['putDraft']>().mockReturnValue(pendingSave.promise);
     let abortedAtLogin = false;
     const beginLogin = vi.fn(async () => {
@@ -431,12 +434,16 @@ describe('draft recovery and account departure', () => {
     });
     const { currentDraft } = await mount({
       draftApi: { putDraft },
-      runnerApi: { getQuota: vi.fn().mockReturnValue(pendingQuota.promise) },
+      savedApi: { listRobots: vi.fn().mockReturnValue(pendingAccess.promise) },
       authClient: { beginLogin },
     });
+    expect((screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
     edit('Enviada y pendiente al volver a ingresar');
     await advance(600);
-    pendingQuota.reject(new AttemptApiFailure('authentication', 'Acceso rechazado', 401));
+    expect(putDraft).toHaveBeenCalledOnce();
+    pendingAccess.reject(new SavedRobotApiFailure('authentication', 'Acceso rechazado', 401));
     await settle();
     fireEvent.click(screen.getByRole('button', { name: 'Volver a ingresar' }));
     await settle();

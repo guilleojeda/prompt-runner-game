@@ -836,6 +836,7 @@ describe('access screen', () => {
     expect(putDraft).toHaveBeenCalledWith(
       1,
       expect.objectContaining({ instructions: recovered.instructions }),
+      expect.any(AbortSignal),
     );
     expect(attemptApi.createAttempt).not.toHaveBeenCalled();
   });
@@ -2006,12 +2007,11 @@ describe('access screen', () => {
     expect(await screen.findByText('La sesión ya no está autorizada.')).toBeTruthy();
     expect(screen.getByText(/La sesión dejó de tener acceso a esta cuenta/)).toBeTruthy();
     expect(
-      (
-        screen
-          .getByLabelText('Qué debe tener en cuenta el robot')
-          .closest('fieldset') as HTMLFieldSetElement
-      ).disabled,
+      (screen.getByLabelText('Qué debe tener en cuenta el robot') as HTMLTextAreaElement).readOnly,
     ).toBe(true);
+    expect((screen.getByRole('checkbox', { name: 'Avanzar' }) as HTMLInputElement).disabled).toBe(
+      true,
+    );
     expect((screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement).disabled).toBe(
       true,
     );
@@ -2365,12 +2365,11 @@ describe('access screen', () => {
     ).toBeTruthy();
     expect(animation.disabled).toBe(true);
     expect(
-      (
-        screen
-          .getByLabelText('Qué debe tener en cuenta el robot')
-          .closest('fieldset') as HTMLFieldSetElement
-      ).disabled,
+      (screen.getByLabelText('Qué debe tener en cuenta el robot') as HTMLTextAreaElement).readOnly,
     ).toBe(true);
+    expect((screen.getByRole('checkbox', { name: 'Avanzar' }) as HTMLInputElement).disabled).toBe(
+      true,
+    );
 
     fireEvent.click(animation);
     expect(putAnimationPreference).toHaveBeenCalledOnce();

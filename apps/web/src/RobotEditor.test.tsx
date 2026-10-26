@@ -447,6 +447,7 @@ describe('RobotEditor', () => {
     expect(putDraft).toHaveBeenCalledWith(
       1,
       expect.objectContaining({ instructions: recovered.instructions }),
+      expect.any(AbortSignal),
     );
     expect(screen.getByDisplayValue(previous.instructions)).toBeTruthy();
     expect(screen.queryByDisplayValue(recovered.instructions)).toBeNull();
@@ -460,7 +461,9 @@ describe('RobotEditor', () => {
     const recovered = { ...previous, instructions: 'Configuración recuperada' };
     const putDraft = vi
       .fn()
-      .mockRejectedValue(new DraftApiFailure('network', 'No se pudo guardar la configuración.'));
+      .mockRejectedValue(
+        new DraftApiFailure('invalid', 'No se pudo guardar la configuración.', 400),
+      );
     const editorRef = createRef<RobotEditorHandle>();
     render(
       <RobotEditor
