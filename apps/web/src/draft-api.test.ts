@@ -255,24 +255,53 @@ describe('DraftApiClient', () => {
     });
   });
 
-  it('preserves a stored draft incompatibility message on GET', async () => {
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          code: 'stored_draft_incompatible',
-          message: 'La versión guardada no es compatible.',
-        }),
-        { status: 500 },
-      ),
+  it.each(['GET', 'PUT'] as const)(
+    'classifies stored draft incompatibility as definitive on %s without inspecting the message',
+    async (method) => {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            code: 'stored_draft_incompatible',
+            message: 'No se pudo completar la operación.',
+          }),
+          { status: 500 },
+        ),
+      );
+      const client = new DraftApiClient(config, {
+        tokenProvider: () => 'access-token',
+        fetch: fetchImpl,
+      });
+
+      const request =
+        method === 'GET' ? client.getDraft() : client.putDraft(0, createDefaultDraft());
+      await expect(request).rejects.toMatchObject({
+        code: 'incompatible',
+        message: 'No se pudo completar la operación.',
+        ambiguous: false,
+      });
+    },
+  );
+
+  it('keeps a dependency failure transient even when it has the same message as incompatibility', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            code: 'dependency_unavailable',
+            message: 'No se pudo completar la operación.',
+          }),
+          { status: 503 },
+        ),
     );
     const client = new DraftApiClient(config, {
       tokenProvider: () => 'access-token',
       fetch: fetchImpl,
     });
 
-    await expect(client.getDraft()).rejects.toMatchObject({
+    await expect(client.getDraft()).rejects.toMatchObject({ code: 'server', ambiguous: false });
+    await expect(client.putDraft(0, createDefaultDraft())).rejects.toMatchObject({
       code: 'server',
-      message: 'La versión guardada no es compatible.',
+      ambiguous: true,
     });
   });
 });
