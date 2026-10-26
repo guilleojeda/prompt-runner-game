@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useRef,
   useState,
   type ReactNode,
@@ -130,7 +131,6 @@ interface AttemptWorkspaceProps {
   readonly authPaused?: boolean;
   readonly accessState?: 'ready' | 'checking' | 'required';
   readonly onBusyChange?: (busy: boolean) => void;
-  readonly onConfigurationBusyChange?: (busy: boolean) => void;
   readonly onPreferenceReadyChange?: (ready: boolean) => void;
   readonly onAuthRequired?: ApiAuthRequired;
   readonly onReturnToEditor?: () => void;
@@ -920,7 +920,6 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       authPaused = false,
       accessState = 'checking',
       onBusyChange,
-      onConfigurationBusyChange,
       onPreferenceReadyChange,
       onAuthRequired,
       onReturnToEditor,
@@ -973,8 +972,22 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     const completionOperationRef = useRef(0);
     const configurationOperationRef = useRef(0);
     const configurationControllerRef = useRef<AbortController | null>(null);
-    const configurationApplyingRef = useRef(false);
+    const configurationApplicationIdRef = useRef(0);
+    const configurationApplicationRef = useRef<{
+      readonly id: number;
+      readonly operation: number;
+      readonly generation: number;
+      readonly sessionSub: string;
+      readonly targetId: string;
+      readonly controller: AbortController;
+    } | null>(null);
     const configurationTriggerRef = useRef<HTMLElement | null>(null);
+    const pendingConfigurationFocusRef = useRef<{
+      readonly trigger: HTMLElement;
+      readonly generation: number;
+      readonly operation: number;
+      readonly sessionSub: string;
+    } | null>(null);
     const decisionInspectorTriggerRef = useRef<HTMLElement | null>(null);
     const animationEnabledRef = useRef(true);
     const preferenceVersionRef = useRef(0);
@@ -990,10 +1003,13 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       readonly revision: number;
       readonly generation: number;
     } | null>(null);
+    const sessionSub = session.identity.sub;
     const authPausedRef = useRef(authPaused);
-    useEffect(() => {
+    const currentSessionSubRef = useRef(sessionSub);
+    useLayoutEffect(() => {
       authPausedRef.current = authPaused;
-    }, [authPaused]);
+      currentSessionSubRef.current = sessionSub;
+    }, [authPaused, sessionSub]);
     const startServerAttemptRef = useRef<
       (
         admission: AttemptAdmission,
@@ -1001,7 +1017,6 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         operationEpoch: number,
       ) => Promise<void>
     >(async () => undefined);
-    const sessionSub = session.identity.sub;
     const sessionSubRef = useRef(sessionSub);
     const resetCancelBusy = useCallback((): void => {
       cancelOperationRef.current += 1;
@@ -1031,20 +1046,66 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       setDecisionInspectorTarget(null);
       if (trigger?.isConnected) trigger.focus();
     }, []);
+    const cancelConfigurationApplication = useCallback((): void => {
+      const application = configurationApplicationRef.current;
+      if (!application) return;
+      configurationApplicationRef.current = null;
+      configurationApplicationIdRef.current += 1;
+      application.controller.abort();
+      setConfigurationState((state) =>
+        state && state.targetId === application.targetId && state.status === 'applying'
+          ? { ...state, status: 'ready', applied: false, message: undefined }
+          : state,
+      );
+    }, []);
+    const isCurrentConfigurationApplication = useCallback(
+      (application: NonNullable<typeof configurationApplicationRef.current>): boolean =>
+        configurationApplicationRef.current?.id === application.id &&
+        !application.controller.signal.aborted &&
+        generationRef.current === application.generation &&
+        currentSessionSubRef.current === application.sessionSub &&
+        !authPausedRef.current &&
+        configurationOperationRef.current === application.operation,
+      [],
+    );
     const clearConfiguration = useCallback((): void => {
       configurationOperationRef.current += 1;
       configurationControllerRef.current?.abort();
       configurationControllerRef.current = null;
-      configurationApplyingRef.current = false;
+      cancelConfigurationApplication();
       configurationTriggerRef.current = null;
-      onConfigurationBusyChange?.(false);
+      pendingConfigurationFocusRef.current = null;
       setConfigurationState(null);
-    }, [onConfigurationBusyChange]);
+    }, [cancelConfigurationApplication]);
     const closeConfiguration = useCallback((): void => {
       const trigger = configurationTriggerRef.current;
       clearConfiguration();
-      if (trigger?.isConnected) trigger.focus();
-    }, [clearConfiguration]);
+      if (trigger?.isConnected) {
+        pendingConfigurationFocusRef.current = {
+          trigger,
+          generation: generationRef.current,
+          operation: configurationOperationRef.current,
+          sessionSub,
+        };
+      }
+    }, [clearConfiguration, sessionSub]);
+
+    useLayoutEffect(() => {
+      const pending = pendingConfigurationFocusRef.current;
+      if (!pending) return;
+      pendingConfigurationFocusRef.current = null;
+      if (
+        !pending.trigger.isConnected ||
+        generationRef.current !== pending.generation ||
+        configurationOperationRef.current !== pending.operation ||
+        currentSessionSubRef.current !== pending.sessionSub ||
+        authPausedRef.current
+      ) {
+        return;
+      }
+      if (pending.trigger instanceof HTMLButtonElement && pending.trigger.disabled) return;
+      pending.trigger.focus();
+    }, [authPaused, configurationState, sessionSub]);
 
     useEffect(() => {
       const previousSub = sessionSubRef.current;
@@ -1088,6 +1149,19 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     useEffect(() => {
       if (authPaused) queueMicrotask(clearDecisionInspector);
     }, [authPaused, clearDecisionInspector]);
+
+    useEffect(() => {
+      if (authPaused) cancelConfigurationApplication();
+    }, [authPaused, cancelConfigurationApplication]);
+
+    useEffect(
+      () => () => {
+        const application = configurationApplicationRef.current;
+        configurationApplicationRef.current = null;
+        application?.controller.abort();
+      },
+      [],
+    );
 
     useEffect(() => {
       attemptRef.current = attempt;
@@ -1335,7 +1409,8 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
 
     const beginReplay = useCallback(
       async (target: AttemptSummary, kind: PlaybackKind): Promise<void> => {
-        if (configurationApplyingRef.current) return;
+        clearConfiguration();
+        editor.current?.cancelApplication?.();
         if (kind === 'manual' && target.turnsUsed === 0) {
           setReplayRecord(null);
           setPlaybackKind(null);
@@ -1345,7 +1420,6 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         }
         const generation = generationRef.current;
         const epoch = ++replayEpochRef.current;
-        clearConfiguration();
         setPlaybackKind(kind);
         setReplayRecord(null);
         setPlaybackReachedEnd(false);
@@ -1395,7 +1469,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           setMode('replay-error');
         }
       },
-      [api, clearConfiguration, clearDecisionInspector, onAuthRequired],
+      [api, clearConfiguration, clearDecisionInspector, editor, onAuthRequired],
     );
 
     const refreshPreferenceOnFocus = useCallback((): void => {
@@ -1953,6 +2027,8 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     }, [startServerAttempt]);
 
     const start = useCallback(async (): Promise<void> => {
+      clearConfiguration();
+      editor.current?.cancelApplication?.();
       if (!preferenceReadyRef.current) {
         setPreferenceError('Cargá la preferencia de animación antes de probar el robot.');
         return;
@@ -1960,8 +2036,6 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       if (
         startLockRef.current ||
         busy ||
-        configurationApplyingRef.current ||
-        configurationState?.status === 'applying' ||
         authPaused ||
         (modeRef.current === 'result' && attemptRef.current?.status === 'running')
       ) {
@@ -1969,7 +2043,6 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       }
       startLockRef.current = true;
       clearDecisionInspector();
-      clearConfiguration();
       completionOperationRef.current += 1;
       completionBusyRef.current = false;
       completionAttemptRef.current = null;
@@ -2087,7 +2160,6 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       clearDecisionInspector,
       editor,
       clearConfiguration,
-      configurationState,
       onAuthRequired,
       sessionSub,
       startServerAttempt,
@@ -2233,8 +2305,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
 
     const openAttempt = useCallback(
       async (id: string): Promise<void> => {
-        if (busy || configurationApplyingRef.current) return;
+        if (busy) return;
         clearConfiguration();
+        editor.current?.cancelApplication?.();
         const operationGeneration = generationRef.current;
         operationEpochRef.current += 1;
         const operationEpoch = operationEpochRef.current;
@@ -2275,6 +2348,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         busy,
         clearConfiguration,
         clearDecisionInspector,
+        editor,
         onAuthRequired,
         retryPendingStart,
       ],
@@ -2282,7 +2356,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
 
     const openConfiguration = useCallback(
       async (id: string, rememberTrigger = true): Promise<void> => {
-        if (busy || authPaused || configurationApplyingRef.current) return;
+        if (busy || authPaused) return;
+        cancelConfigurationApplication();
+        editor.current?.cancelApplication?.();
         if (rememberTrigger) {
           configurationTriggerRef.current =
             document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -2331,7 +2407,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           }
         }
       },
-      [api, authPaused, busy, onAuthRequired],
+      [api, authPaused, busy, cancelConfigurationApplication, editor, onAuthRequired],
     );
 
     const applyConfiguration = useCallback(async (): Promise<void> => {
@@ -2342,46 +2418,53 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         busy ||
         authPaused ||
         !configurationAvailable ||
-        current.status === 'applying' ||
-        configurationApplyingRef.current
+        current.status === 'applying'
       )
         return;
       const generation = generationRef.current;
       const operation = configurationOperationRef.current;
-      configurationApplyingRef.current = true;
-      onConfigurationBusyChange?.(true);
+      const application = {
+        id: configurationApplicationIdRef.current + 1,
+        operation,
+        generation,
+        sessionSub,
+        targetId: configuration.attemptId,
+        controller: new AbortController(),
+      };
+      configurationApplicationIdRef.current = application.id;
+      configurationApplicationRef.current = application;
       setConfigurationState({ ...current, status: 'applying', message: undefined });
       try {
-        const applied = await editor.current?.applyDraft(configuration.draft);
-        if (
-          generationRef.current !== generation ||
-          configurationOperationRef.current !== operation ||
-          !configurationState
-        ) {
-          return;
-        }
+        const applied = await editor.current?.applyDraft(configuration.draft, {
+          signal: application.controller.signal,
+        });
+        if (!isCurrentConfigurationApplication(application)) return;
         setConfigurationState((state) =>
           state && state.targetId === configuration.attemptId
             ? {
                 ...state,
-                status: applied === true ? 'ready' : 'error',
+                status: 'ready',
                 applied: applied === true,
-                ...(applied
-                  ? {}
-                  : {
-                      message:
-                        'No se pudo aplicar la configuración. Revisá el estado del editor y volvé a intentarlo.',
-                    }),
+                message: undefined,
+              }
+            : state,
+        );
+        if (applied === true) onReturnToEditor?.();
+      } catch (applyError) {
+        if (!isCurrentConfigurationApplication(application)) return;
+        setConfigurationState((state) =>
+          state && state.targetId === configuration.attemptId
+            ? {
+                ...state,
+                status: 'error',
+                applied: false,
+                message: attemptErrorMessage(applyError),
               }
             : state,
         );
       } finally {
-        if (
-          generationRef.current === generation &&
-          configurationOperationRef.current === operation
-        ) {
-          configurationApplyingRef.current = false;
-          onConfigurationBusyChange?.(false);
+        if (configurationApplicationRef.current?.id === application.id) {
+          configurationApplicationRef.current = null;
         }
       }
     }, [
@@ -2390,15 +2473,19 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       configurationAvailable,
       configurationState,
       editor,
-      onConfigurationBusyChange,
+      isCurrentConfigurationApplication,
+      onReturnToEditor,
+      sessionSub,
     ]);
 
     const openDecisionInspector = useCallback(
       (initialSelection: DecisionInitialSelection = 'first'): void => {
         const current = attemptRef.current;
-        if (busy || configurationApplyingRef.current || !current || !isTerminal(current.status)) {
+        if (busy || !current || !isTerminal(current.status)) {
           return;
         }
+        cancelConfigurationApplication();
+        editor.current?.cancelApplication?.();
         decisionInspectorTriggerRef.current =
           document.activeElement instanceof HTMLElement ? document.activeElement : null;
         setDecisionInspectorTarget(current);
@@ -2406,12 +2493,12 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         setDecisionInspectorOpenVersion((version) => version + 1);
         setError(null);
       },
-      [busy],
+      [busy, cancelConfigurationApplication, editor],
     );
 
     const openDecisionInspectorFromHistory = useCallback(
       (id: string, initialSelection: DecisionInitialSelection = 'first'): void => {
-        if (busy || configurationApplyingRef.current) return;
+        if (busy) return;
         const target = history.find((item) => item.id === id);
         if (!target) {
           setError(
@@ -2431,6 +2518,8 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           );
           return;
         }
+        cancelConfigurationApplication();
+        editor.current?.cancelApplication?.();
         decisionInspectorTriggerRef.current =
           document.activeElement instanceof HTMLElement ? document.activeElement : null;
         setDecisionInspectorTarget(target);
@@ -2438,17 +2527,18 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         setDecisionInspectorOpenVersion((version) => version + 1);
         setError(null);
       },
-      [busy, history],
+      [busy, cancelConfigurationApplication, editor, history],
     );
 
     const openReplayFromHistory = useCallback(
       async (id: string): Promise<void> => {
-        if (busy || configurationApplyingRef.current) return;
+        if (busy) return;
         const operationGeneration = generationRef.current;
         operationEpochRef.current += 1;
         const operationEpoch = operationEpochRef.current;
         clearDecisionInspector();
         clearConfiguration();
+        editor.current?.cancelApplication?.();
         setMode('opening');
         const sameAttempt = attemptRef.current?.id === id;
         setError((current) =>
@@ -2517,6 +2607,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         busy,
         clearConfiguration,
         clearDecisionInspector,
+        editor,
         onAuthRequired,
         resetCancelBusy,
       ],
@@ -3105,10 +3196,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
               onReturnToEditor={onReturnToEditor}
               configurationBusy={
                 configurationState?.targetId === attempt.id &&
-                (configurationState.status === 'loading' ||
-                  configurationState.status === 'applying')
+                configurationState.status === 'loading'
               }
-              busy={busy || configurationState?.status === 'applying'}
+              busy={busy}
             />
           )}
         </div>
@@ -3116,8 +3206,8 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         {configurationState && (
           <ConfigurationPreview
             state={configurationState}
-            busy={busy || authPaused || configurationState.status === 'applying'}
-            configurationAvailable={configurationAvailable}
+            busy={busy}
+            configurationAvailable={configurationAvailable && !authPaused}
             onApply={() => void applyConfiguration()}
             onRetry={() => void openConfiguration(configurationState.targetId, false)}
             onClose={closeConfiguration}
@@ -3163,14 +3253,13 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           <HistoryList
             attempts={history}
             nextCursor={historyCursor}
-            busy={busy || loadingHistory || configurationState?.status === 'applying'}
+            busy={busy || loadingHistory}
             onOpen={(id) => void openAttempt(id)}
             onReplay={(id) => void openReplayFromHistory(id)}
             onInspect={(id, selection) => void openDecisionInspectorFromHistory(id, selection)}
             onConfiguration={(id) => void openConfiguration(id)}
             configurationBusyId={
-              configurationState &&
-              (configurationState.status === 'loading' || configurationState.status === 'applying')
+              configurationState && configurationState.status === 'loading'
                 ? configurationState.targetId
                 : null
             }

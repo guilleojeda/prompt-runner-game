@@ -22,6 +22,7 @@ export interface SavedRobotDeleteResult {
 export type SavedRobotApiFailureCode =
   | 'authentication'
   | 'conflict'
+  | 'incompatible'
   | 'limit'
   | 'not_found'
   | 'invalid'
@@ -333,6 +334,13 @@ export class SavedRobotApiClient implements SavedRobotApi {
         throw new SavedRobotApiFailure(
           'not_found',
           errorMessage(parsed, 'No se encontró ese robot guardado.'),
+          response.status,
+        );
+      }
+      if (responseCode(parsed) === 'stored_robot_incompatible') {
+        throw new SavedRobotApiFailure(
+          'incompatible',
+          errorMessage(parsed, 'La copia guardada no es compatible con esta versión.'),
           response.status,
         );
       }

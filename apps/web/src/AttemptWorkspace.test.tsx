@@ -8,6 +8,7 @@ import {
   createDefaultDraft,
   ROBOT_CATALOG_VERSION,
   ROBOT_SCHEMA_VERSION,
+  type RobotDraft,
   type DraftSnapshot,
 } from '../../../shared/robot.js';
 import { LEVEL } from '../../../shared/game.js';
@@ -73,6 +74,19 @@ function session(
     }),
   };
 }
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+type ApplyOptions = { signal: AbortSignal };
+type ApplyDraftMock = (draft: RobotDraft, options: ApplyOptions) => Promise<boolean>;
 
 function summary(status: AttemptSummary['status'] = 'running'): AttemptSummary {
   return {
@@ -3958,9 +3972,12 @@ describe('AttemptWorkspace', () => {
       ),
     };
     const applyDraft = vi.fn().mockResolvedValue(true);
+    const getConfiguration = vi
+      .fn()
+      .mockResolvedValue({ attemptId: terminal.id, draft: recovered });
     const attemptApi = api({
       listAttempts: vi.fn().mockResolvedValue({ attempts: [terminal] }),
-      getConfiguration: vi.fn().mockResolvedValue({ attemptId: terminal.id, draft: recovered }),
+      getConfiguration,
     });
     const editor = { current: { applyDraft } } as unknown as { current: RobotEditorHandle | null };
     const view = render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
@@ -3972,6 +3989,7 @@ describe('AttemptWorkspace', () => {
     );
     fireEvent.click(configurationButtons[0]!);
     expect(await screen.findByRole('heading', { name: 'Configuración del intento' })).toBeTruthy();
+    expect(getConfiguration).toHaveBeenCalledWith(terminal.id, expect.any(AbortSignal));
     expect(screen.getByText('Recuperada desde el intento')).toBeTruthy();
     expect(screen.getByText('Claude Sonnet 4.6')).toBeTruthy();
     const configuration = screen
@@ -3993,9 +4011,181 @@ describe('AttemptWorkspace', () => {
     expect(applyDraft).not.toHaveBeenCalled();
     view.rerender(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Usar esta configuración' }));
-    await waitFor(() => expect(applyDraft).toHaveBeenCalledWith(recovered));
+    await waitFor(() =>
+      expect(applyDraft).toHaveBeenCalledWith(
+        recovered,
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      ),
+    );
     expect(attemptApi.createAttempt).not.toHaveBeenCalled();
   });
+
+  it('keeps Cerrar available during a history application and ignores its late success', async () => {
+    const terminal = { ...summary('victory'), id: 'attempt-apply-close', score: 100 };
+    const recovered = { ...createDefaultDraft(), instructions: 'Candidato de historial.' };
+    const application = deferred<boolean>();
+    const applyDraft = vi.fn<ApplyDraftMock>().mockReturnValue(application.promise);
+    const getConfiguration = vi
+      .fn<AttemptApi['getConfiguration']>()
+      .mockResolvedValue({ attemptId: terminal.id, draft: recovered });
+    const attemptApi = api({
+      listAttempts: vi.fn().mockResolvedValue({ attempts: [terminal] }),
+      getConfiguration,
+    });
+    const editor = { current: { applyDraft } } as unknown as { current: RobotEditorHandle | null };
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+
+    const history = await screen.findByRole('heading', { name: 'Historial' });
+    const opener = within(history.closest('section') as HTMLElement).getAllByRole('button', {
+      name: 'Ver configuración',
+    })[0]!;
+    opener.focus();
+    fireEvent.click(opener);
+    await screen.findByText('Candidato de historial.');
+    fireEvent.click(screen.getByRole('button', { name: 'Usar esta configuración' }));
+
+    expect(applyDraft).toHaveBeenCalledWith(
+      recovered,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    const signal = applyDraft.mock.calls[0]?.[1]?.signal;
+    expect(signal).toBeInstanceOf(AbortSignal);
+    const close = screen.getByRole('button', { name: 'Cerrar' }) as HTMLButtonElement;
+    expect(close.disabled).toBe(false);
+    fireEvent.click(close);
+
+    expect(signal?.aborted).toBe(true);
+    expect(screen.queryByRole('heading', { name: 'Configuración del intento' })).toBeNull();
+    expect(document.activeElement).toBe(opener);
+    await act(async () => {
+      application.resolve(true);
+      await Promise.resolve();
+    });
+
+    expect(
+      screen.queryByText('Configuración cargada en el editor. Se guarda como una edición normal.'),
+    ).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Configuración del intento' })).toBeNull();
+    expect(document.activeElement).toBe(opener);
+    expect(attemptApi.createAttempt).not.toHaveBeenCalled();
+  });
+
+  it('lets another history choice cancel an application and close the new loading query', async () => {
+    const first = { ...summary('victory'), id: 'attempt-first-apply', score: 100 };
+    const second = { ...summary('defeat'), id: 'attempt-second-apply' };
+    const firstDraft = { ...createDefaultDraft(), instructions: 'Primera configuración.' };
+    const secondDraft = { ...createDefaultDraft(), instructions: 'Segunda configuración.' };
+    const firstApplication = deferred<boolean>();
+    const secondConfiguration = deferred<Awaited<ReturnType<AttemptApi['getConfiguration']>>>();
+    const applyDraft = vi.fn<ApplyDraftMock>().mockReturnValue(firstApplication.promise);
+    const getConfiguration = vi
+      .fn<AttemptApi['getConfiguration']>()
+      .mockImplementation((id) =>
+        id === first.id
+          ? Promise.resolve({ attemptId: first.id, draft: firstDraft })
+          : secondConfiguration.promise,
+      );
+    const attemptApi = api({
+      listAttempts: vi.fn().mockResolvedValue({ attempts: [first, second] }),
+      getConfiguration,
+    });
+    const editor = { current: { applyDraft } } as unknown as { current: RobotEditorHandle | null };
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+
+    const history = await screen.findByRole('heading', { name: 'Historial' });
+    const historyList = within(history.closest('section') as HTMLElement).getByRole('list');
+    const configurationButtons = within(historyList).getAllByRole('button', {
+      name: 'Ver configuración',
+    });
+    const firstOpener = configurationButtons[0]!;
+    const secondOpener = configurationButtons[1]!;
+    fireEvent.click(firstOpener);
+    await screen.findByText('Primera configuración.');
+    fireEvent.click(screen.getByRole('button', { name: 'Usar esta configuración' }));
+    const applicationSignal = applyDraft.mock.calls[0]?.[1]?.signal;
+    expect(applicationSignal).toBeInstanceOf(AbortSignal);
+
+    expect((secondOpener as HTMLButtonElement).disabled).toBe(false);
+    secondOpener.focus();
+    fireEvent.click(secondOpener);
+    await waitFor(() => expect(getConfiguration).toHaveBeenCalledTimes(2));
+    expect(applicationSignal?.aborted).toBe(true);
+    const secondLoadSignal = getConfiguration.mock.calls[1]?.[1];
+    expect(secondLoadSignal).toBeInstanceOf(AbortSignal);
+    const close = screen.getByRole('button', { name: 'Cerrar' }) as HTMLButtonElement;
+    expect(close.disabled).toBe(false);
+    fireEvent.click(close);
+    expect(secondLoadSignal?.aborted).toBe(true);
+    expect(document.activeElement).toBe(secondOpener);
+
+    await act(async () => {
+      firstApplication.resolve(true);
+      secondConfiguration.resolve({ attemptId: second.id, draft: secondDraft });
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByRole('heading', { name: 'Configuración del intento' })).toBeNull();
+    expect(
+      screen.queryByText('Configuración cargada en el editor. Se guarda como una edición normal.'),
+    ).toBeNull();
+    expect(document.activeElement).toBe(secondOpener);
+    expect(attemptApi.createAttempt).not.toHaveBeenCalled();
+  });
+
+  it.each(['pause', 'unmount'] as const)(
+    'aborts a history application on %s and ignores a late success',
+    async (abandonment) => {
+      const terminal = { ...summary('victory'), id: `attempt-apply-${abandonment}`, score: 100 };
+      const recovered = { ...createDefaultDraft(), instructions: 'Aplicación cancelada.' };
+      const application = deferred<boolean>();
+      const applyDraft = vi.fn<ApplyDraftMock>().mockReturnValue(application.promise);
+      const attemptApi = api({
+        listAttempts: vi.fn().mockResolvedValue({ attempts: [terminal] }),
+        getConfiguration: vi.fn().mockResolvedValue({ attemptId: terminal.id, draft: recovered }),
+      });
+      const editor = { current: { applyDraft } } as unknown as {
+        current: RobotEditorHandle | null;
+      };
+      const view = render(
+        <AttemptWorkspace api={attemptApi} editor={editor} session={session()} />,
+      );
+
+      const history = await screen.findByRole('heading', { name: 'Historial' });
+      fireEvent.click(
+        within(history.closest('section') as HTMLElement).getAllByRole('button', {
+          name: 'Ver configuración',
+        })[0]!,
+      );
+      await screen.findByText('Aplicación cancelada.');
+      fireEvent.click(screen.getByRole('button', { name: 'Usar esta configuración' }));
+      const signal = applyDraft.mock.calls[0]?.[1]?.signal;
+      expect(signal).toBeInstanceOf(AbortSignal);
+
+      if (abandonment === 'pause') {
+        view.rerender(
+          <AttemptWorkspace api={attemptApi} editor={editor} session={session()} authPaused />,
+        );
+      } else {
+        view.unmount();
+      }
+      await waitFor(() => expect(signal?.aborted).toBe(true));
+      const focusAfterAbandonment = document.activeElement;
+      await act(async () => {
+        application.resolve(true);
+        await Promise.resolve();
+      });
+
+      if (abandonment === 'pause') {
+        expect(
+          screen.queryByText(
+            'Configuración cargada en el editor. Se guarda como una edición normal.',
+          ),
+        ).toBeNull();
+        expect(document.activeElement).toBe(focusAfterAbandonment);
+      }
+      expect(attemptApi.createAttempt).not.toHaveBeenCalled();
+    },
+  );
 
   it('keeps history configuration preview and closing available while the editor is unavailable', async () => {
     const terminal = { ...summary('victory'), id: 'attempt-editor-unavailable' };
@@ -4113,7 +4303,7 @@ describe('AttemptWorkspace', () => {
     expect(attemptApi.createAttempt).not.toHaveBeenCalled();
   });
 
-  it('shows an actionable configuration apply failure without promising editor content', async () => {
+  it('does not announce an error or success when a history application returns false', async () => {
     const terminal = {
       ...summary('victory'),
       id: 'attempt-config-failure',
@@ -4136,12 +4326,23 @@ describe('AttemptWorkspace', () => {
       })[0]!,
     );
     fireEvent.click(await screen.findByRole('button', { name: 'Usar esta configuración' }));
-    expect((await screen.findByRole('alert')).textContent).toContain(
-      'No se pudo aplicar la configuración',
+    await waitFor(() => expect(applyDraft).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Usar esta configuración' })).toBeTruthy(),
     );
-    expect(screen.getByRole('alert').textContent).toContain('estado del editor');
-    expect(screen.getByRole('alert').textContent).not.toContain('conserva su contenido');
-    expect(applyDraft).toHaveBeenCalledWith(recovered);
+    expect(
+      screen.queryByText('Configuración cargada en el editor. Se guarda como una edición normal.'),
+    ).toBeNull();
+    expect(
+      screen.queryByText(
+        'No se pudo aplicar la configuración. Revisá el estado del editor y volvé a intentarlo.',
+      ),
+    ).toBeNull();
+    expect(screen.getByRole('button', { name: 'Usar esta configuración' })).toBeTruthy();
+    expect(applyDraft).toHaveBeenCalledWith(
+      recovered,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 
   it('discards a late configuration response after opening another attempt', async () => {
@@ -4231,7 +4432,7 @@ describe('AttemptWorkspace', () => {
     expect(screen.queryByRole('heading', { name: 'Configuración del intento' })).toBeNull();
   });
 
-  it('keeps the second account locked when an old configuration application finishes late', async () => {
+  it('keeps the second account application current when the old account finishes late', async () => {
     const terminal = {
       ...summary('victory'),
       id: 'attempt-apply-race',
@@ -4239,13 +4440,12 @@ describe('AttemptWorkspace', () => {
       gameTokens: 700,
     };
     const finishApply: Array<(applied: boolean) => void> = [];
-    const applyDraft = vi.fn().mockImplementation(
+    const applyDraft = vi.fn<ApplyDraftMock>().mockImplementation(
       () =>
         new Promise<boolean>((resolve) => {
           finishApply.push(resolve);
         }),
     );
-    const onConfigurationBusyChange = vi.fn();
     const attemptApi = api({
       listAttempts: vi.fn().mockResolvedValue({ attempts: [terminal] }),
       getConfiguration: vi
@@ -4253,14 +4453,7 @@ describe('AttemptWorkspace', () => {
         .mockResolvedValue({ attemptId: terminal.id, draft: createDefaultDraft() }),
     });
     const editor = { current: { applyDraft } } as unknown as { current: RobotEditorHandle | null };
-    const view = render(
-      <AttemptWorkspace
-        api={attemptApi}
-        editor={editor}
-        session={session()}
-        onConfigurationBusyChange={onConfigurationBusyChange}
-      />,
-    );
+    const view = render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
     const openFromHistory = async (): Promise<void> => {
       const history = await screen.findByRole('heading', { name: 'Historial' });
       const button = within(history.closest('section') as HTMLElement).getAllByRole('button', {
@@ -4273,6 +4466,8 @@ describe('AttemptWorkspace', () => {
 
     await openFromHistory();
     await waitFor(() => expect(finishApply).toHaveLength(1));
+    const firstSignal = applyDraft.mock.calls[0]?.[1]?.signal;
+    expect(firstSignal).toBeInstanceOf(AbortSignal);
     view.rerender(
       <AttemptWorkspace
         api={attemptApi}
@@ -4283,7 +4478,6 @@ describe('AttemptWorkspace', () => {
           'token-b',
           'subject-b',
         )}
-        onConfigurationBusyChange={onConfigurationBusyChange}
       />,
     );
     await waitFor(() =>
@@ -4291,32 +4485,38 @@ describe('AttemptWorkspace', () => {
     );
     await openFromHistory();
     await waitFor(() => expect(finishApply).toHaveLength(2));
-    expect(onConfigurationBusyChange.mock.lastCall?.[0]).toBe(true);
+    const secondSignal = applyDraft.mock.calls[1]?.[1]?.signal;
+    expect(firstSignal?.aborted).toBe(true);
+    expect(secondSignal).toBeInstanceOf(AbortSignal);
+    expect(secondSignal?.aborted).toBe(false);
 
     await act(async () => {
       finishApply[0]!(false);
       await Promise.resolve();
     });
     expect(screen.getByText('Aplicando configuración…')).toBeTruthy();
-    expect(onConfigurationBusyChange.mock.lastCall?.[0]).toBe(true);
+    expect(secondSignal?.aborted).toBe(false);
+    expect((screen.getByRole('button', { name: 'Cerrar' }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
 
     await act(async () => {
       finishApply[1]!(true);
       await Promise.resolve();
     });
-    expect(onConfigurationBusyChange.mock.lastCall?.[0]).toBe(false);
+    expect(screen.queryByText('Aplicando configuración…')).toBeNull();
+    expect(
+      screen.getByText('Configuración cargada en el editor. Se guarda como una edición normal.'),
+    ).toBeTruthy();
   });
 
-  it('uses a recovered draft for a new Probar request while the source attempt stays unchanged', async () => {
+  it('uses a confirmed recovered draft for a later Probar request without changing its source', async () => {
     const source = { ...summary('victory'), id: 'attempt-source', score: 321, gameTokens: 700 };
     const recovered = { ...createDefaultDraft(), instructions: 'Desde la victoria' };
     let currentDraft = createDefaultDraft();
-    let finishApply!: (value: boolean) => void;
-    const applyDraft = vi.fn().mockImplementation(async (draft: typeof recovered) => {
+    const applyDraft = vi.fn<ApplyDraftMock>().mockImplementation(async (draft) => {
       currentDraft = draft;
-      return new Promise<boolean>((resolve) => {
-        finishApply = resolve;
-      });
+      return true;
     });
     const captureSnapshot = vi
       .fn()
@@ -4343,23 +4543,18 @@ describe('AttemptWorkspace', () => {
       })[0]!,
     );
     fireEvent.click(await screen.findByRole('button', { name: 'Usar esta configuración' }));
-    await waitFor(() => expect(applyDraft).toHaveBeenCalledWith(recovered));
-    expect(await screen.findByText('Aplicando configuración…')).toBeTruthy();
+    await waitFor(() =>
+      expect(applyDraft).toHaveBeenCalledWith(
+        recovered,
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      ),
+    );
+    expect(
+      await screen.findByText(
+        'Configuración cargada en el editor. Se guarda como una edición normal.',
+      ),
+    ).toBeTruthy();
     (ref.current as AttemptWorkspaceHandle).start();
-    await act(async () => {
-      await Promise.resolve();
-    });
-    expect(createAttempt).not.toHaveBeenCalled();
-    await act(async () => {
-      finishApply(true);
-      await Promise.resolve();
-    });
-
-    await act(async () => {
-      (ref.current as AttemptWorkspaceHandle).start();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
     await waitFor(() => expect(createAttempt).toHaveBeenCalledOnce());
     const [requestKey, expectedVersion, sentDraft] = createAttempt.mock.calls[0] ?? [];
     expect(requestKey).not.toBe(source.id);

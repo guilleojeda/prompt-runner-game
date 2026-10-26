@@ -413,7 +413,6 @@ export function App({
   const [runnerApi, setRunnerApi] = useState<AttemptApi | null>(attemptApi ?? null);
   const [editorConfig, setEditorConfig] = useState<AuthConfig | null>(null);
   const [attemptBusy, setAttemptBusy] = useState(false);
-  const [configurationBusy, setConfigurationBusy] = useState(false);
   const [attemptPreferenceReady, setAttemptPreferenceReady] = useState(false);
   const [editorReadySubject, setEditorReadySubject] = useState<string | null>(null);
   const [attemptControlsHost, setAttemptControlsHost] = useState<HTMLDivElement | null>(null);
@@ -931,7 +930,7 @@ export function App({
     editorRef.current?.focusEditor?.();
   }, []);
 
-  const accountDisabled = attemptBusy || configurationBusy || renewing;
+  const accountDisabled = attemptBusy || renewing;
   const accessState: 'ready' | 'checking' | 'required' = apiAuthError
     ? 'required'
     : phase === 'account' && !renewing
@@ -1004,7 +1003,7 @@ export function App({
           phase === 'signing-in') && (
           <>
             {editorApi && editorConfig && session.user.scopes.includes(editorConfig.apiScope) && (
-              <CoursePreview locked={attemptBusy || configurationBusy} />
+              <CoursePreview locked={attemptBusy} />
             )}
             {editorApi && editorConfig && session.user.scopes.includes(editorConfig.apiScope) && (
               <RobotEditor
@@ -1014,7 +1013,6 @@ export function App({
                 accessState={accessState}
                 paused={editorPaused}
                 locked={attemptBusy || !attemptPreferenceReady}
-                tryLocked={configurationBusy}
                 onTry={runnerApi ? startAttempt : undefined}
                 onAuthRequired={handleApiAuthRequired}
                 onConfigurationAvailabilityChange={handleEditorAvailabilityChange}
@@ -1034,7 +1032,6 @@ export function App({
                   accessState={accessState}
                   authPaused={renewing || phase !== 'account' || apiAuthError}
                   onBusyChange={handleAttemptBusyChange}
-                  onConfigurationBusyChange={setConfigurationBusy}
                   onPreferenceReadyChange={setAttemptPreferenceReady}
                   onAuthRequired={handleApiAuthRequired}
                   onReturnToEditor={returnToEditor}
@@ -1049,7 +1046,7 @@ export function App({
                         configurationAvailable={editorReadySubject === session.identity.sub}
                         accessState={accessState}
                         paused={renewing || phase !== 'account' || apiAuthError}
-                        locked={attemptBusy || configurationBusy || !attemptPreferenceReady}
+                        locked={attemptBusy || !attemptPreferenceReady}
                         onAuthRequired={handleApiAuthRequired}
                       />
                     ) : null

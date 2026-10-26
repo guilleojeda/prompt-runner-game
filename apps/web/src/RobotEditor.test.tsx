@@ -64,6 +64,27 @@ function api(overrides: Partial<DraftApi> = {}): DraftApi {
   };
 }
 
+function applyWithSignal(
+  editor: RobotEditorHandle,
+  source: RobotDraft | ((signal: AbortSignal) => Promise<RobotDraft>),
+  signal: AbortSignal,
+): Promise<boolean> {
+  return editor.applyDraft(source, { signal });
+}
+
+function observeApplication(promise: Promise<boolean>): {
+  isSettled(): boolean;
+  result(): boolean | undefined;
+} {
+  let settled = false;
+  let result: boolean | undefined;
+  void promise.then((value) => {
+    settled = true;
+    result = value;
+  });
+  return { isSettled: () => settled, result: () => result };
+}
+
 async function settleEditorPromises(): Promise<void> {
   await act(async () => {
     await Promise.resolve();
@@ -361,16 +382,27 @@ describe('RobotEditor', () => {
     expect(model.textContent).toBe('Claude Sonnet 4.6');
   });
 
-  it('blocks Probar while a recovered configuration is applying but keeps editing available', async () => {
-    render(<RobotEditor api={api()} session={session()} onTry={vi.fn()} tryLocked />);
+  it('keeps Probar and editing available while a configuration application waits', async () => {
+    const editorRef = createRef<RobotEditorHandle>();
+    let resolveSource!: (value: RobotDraft) => void;
+    const pendingSource = new Promise<RobotDraft>((resolve) => {
+      resolveSource = resolve;
+    });
+    render(<RobotEditor ref={editorRef} api={api()} session={session()} onTry={vi.fn()} />);
     await screen.findByLabelText('Qué debe tener en cuenta el robot');
+    const applying = editorRef.current!.applyDraft(() => pendingSource);
+    await settleEditorPromises();
 
     expect((screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement).disabled).toBe(
-      true,
+      false,
     );
     expect(
       (screen.getByLabelText('Qué debe tener en cuenta el robot') as HTMLTextAreaElement).disabled,
     ).toBe(false);
+    editorRef.current!.cancelApplication();
+    await expect(applying).resolves.toBe(false);
+    await act(async () => resolveSource({ ...createDefaultDraft(), instructions: 'Tardío' }));
+    expect(screen.queryByDisplayValue('Tardío')).toBeNull();
   });
 
   it('captures the visible default and persists version zero before returning the attempt snapshot', async () => {
@@ -591,7 +623,7 @@ describe('RobotEditor', () => {
     expect(screen.getByText('Guardado')).toBeTruthy();
   });
 
-  it('does not import a failed candidate when its uncertain write is later confirmed', async () => {
+  it('does not import a cancelled candidate when its uncertain write is later confirmed', async () => {
     vi.useFakeTimers();
     const previous = createDefaultDraft();
     const recovered = { ...previous, instructions: 'Configuración recuperada' };
@@ -608,15 +640,19 @@ describe('RobotEditor', () => {
     await settleEditorPromises();
     expect(screen.getByDisplayValue(previous.instructions)).toBeTruthy();
 
-    await act(async () => {
-      expect(await editorRef.current?.applyDraft(recovered)).toBe(false);
-    });
+    const controller = new AbortController();
+    const applying = applyWithSignal(editorRef.current!, recovered, controller.signal);
+    const application = observeApplication(applying);
+    await settleEditorPromises();
     expect(getDraft).toHaveBeenCalledOnce();
     expect(putDraft).toHaveBeenCalledOnce();
     expect(putDraft.mock.calls[0]?.slice(0, 2)).toEqual([1, recovered]);
+    expect(application.isSettled()).toBe(false);
     expect(editorRef.current?.hasUnconfirmedChanges()).toBe(true);
     expect(screen.getByDisplayValue(previous.instructions)).toBeTruthy();
     expect(screen.queryByDisplayValue(recovered.instructions)).toBeNull();
+    controller.abort();
+    await expect(applying).resolves.toBe(false);
     await advanceEditorTime(59_999);
     expect(getDraft).toHaveBeenCalledOnce();
     await advanceEditorTime(1);
@@ -630,7 +666,7 @@ describe('RobotEditor', () => {
     expect(editorRef.current?.hasUnconfirmedChanges()).toBe(false);
   });
 
-  it('keeps the previous draft and exposes a third-party conflict when checking a failed candidate', async () => {
+  it('ends a candidate after minute reconciliation finds a third-party conflict', async () => {
     vi.useFakeTimers();
     const previous = createDefaultDraft();
     const recovered = { ...previous, instructions: 'Configuración recuperada' };
@@ -647,15 +683,19 @@ describe('RobotEditor', () => {
     await settleEditorPromises();
     expect(screen.getByDisplayValue(previous.instructions)).toBeTruthy();
 
-    await act(async () => {
-      expect(await editorRef.current?.applyDraft(recovered)).toBe(false);
-    });
+    const applying = editorRef.current!.applyDraft(recovered);
+    const application = observeApplication(applying);
+    await settleEditorPromises();
     expect(getDraft).toHaveBeenCalledOnce();
+    expect(application.isSettled()).toBe(false);
     expect(editorRef.current?.hasUnconfirmedChanges()).toBe(true);
     expect(screen.getByDisplayValue(previous.instructions)).toBeTruthy();
     expect(screen.queryByDisplayValue(recovered.instructions)).toBeNull();
     await advanceEditorTime(60_000);
+    await settleEditorPromises();
 
+    expect(application.isSettled()).toBe(true);
+    expect(application.result()).toBe(false);
     expect(getDraft).toHaveBeenCalledTimes(2);
     expect(putDraft).toHaveBeenCalledOnce();
     expect(screen.getByDisplayValue(previous.instructions)).toBeTruthy();
@@ -692,12 +732,17 @@ describe('RobotEditor', () => {
     });
     const instructions = screen.getByLabelText('Qué debe tener en cuenta el robot');
     const applying = editorRef.current?.applyDraft(recovered);
+    if (!applying) throw new Error('The editor handle was not ready.');
+    const application = observeApplication(applying);
     await act(async () => {
       await Promise.resolve();
       await Promise.resolve();
     });
     expect(putDraft).toHaveBeenCalledOnce();
     fireEvent.change(instructions, { target: { value: later.instructions } });
+    await settleEditorPromises();
+    expect(application.isSettled()).toBe(true);
+    expect(application.result()).toBe(false);
 
     await act(async () => {
       resolveReplacement(snapshot(2, recovered));
@@ -739,41 +784,46 @@ describe('RobotEditor', () => {
     expect(screen.queryByDisplayValue(recovered.instructions)).toBeNull();
   });
 
-  it('keeps local content when a pending save cannot be reconciled before applying a configuration', async () => {
+  it('retains a configuration application while its prior visible save recovers', async () => {
     vi.useFakeTimers();
     let rejectSave!: (error: DraftApiFailure) => void;
-    const putDraft = vi.fn().mockReturnValue(
-      new Promise<never>((_resolve, reject) => {
-        rejectSave = reject;
-      }),
-    );
+    const pendingSave = new Promise<DraftSnapshot>((_resolve, reject) => {
+      rejectSave = reject;
+    });
+    const putDraft = vi
+      .fn<DraftApi['putDraft']>()
+      .mockReturnValueOnce(pendingSave)
+      .mockImplementation(async (version, draft) => snapshot(version + 1, draft));
     const editorRef = createRef<RobotEditorHandle>();
     render(<RobotEditor ref={editorRef} api={api({ putDraft })} session={session()} />);
-    await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    await settleEditorPromises();
     fireEvent.change(screen.getByLabelText('Qué debe tener en cuenta el robot'), {
       target: { value: 'Edición local pendiente' },
     });
-    await act(async () => {
-      vi.advanceTimersByTime(600);
-    });
+    await advanceEditorTime(600);
     expect(putDraft).toHaveBeenCalledOnce();
-
-    let result: boolean | undefined;
-    const applying = editorRef.current?.applyDraft({
-      ...createDefaultDraft(),
-      instructions: 'No debe reemplazar',
-    });
+    const candidate = { ...createDefaultDraft(), instructions: 'Configuración elegida' };
+    const applying = editorRef.current!.applyDraft(candidate);
+    const application = observeApplication(applying);
     await act(async () => {
       rejectSave(
         new DraftApiFailure('network', 'No se pudo guardar.', undefined, undefined, false),
       );
-      result = await applying;
+      await settleEditorPromises();
     });
-    expect(result).toBe(false);
+    expect(application.isSettled()).toBe(false);
     expect(screen.getByDisplayValue('Edición local pendiente')).toBeTruthy();
+    expect(screen.queryByDisplayValue(candidate.instructions)).toBeNull();
+    await advanceEditorTime(59_999);
+    expect(putDraft).toHaveBeenCalledOnce();
+    await advanceEditorTime(1);
+    await expect(applying).resolves.toBe(true);
+    expect(putDraft.mock.calls.map(([version, draft]) => [version, draft.instructions])).toEqual([
+      [0, 'Edición local pendiente'],
+      [0, 'Edición local pendiente'],
+      [1, candidate.instructions],
+    ]);
+    expect(screen.getByDisplayValue(candidate.instructions)).toBeTruthy();
   });
 
   it('preserves the local draft and reports a cross-tab conflict while applying', async () => {
@@ -842,7 +892,12 @@ describe('RobotEditor', () => {
       ...createDefaultDraft(),
       instructions: 'Configuración antigua',
     });
+    if (!applying) throw new Error('The editor handle was not ready.');
+    const application = observeApplication(applying);
     fireEvent.change(instructions, { target: { value: 'Edición escrita durante la espera' } });
+    await settleEditorPromises();
+    expect(application.isSettled()).toBe(true);
+    expect(application.result()).toBe(false);
     await act(async () => {
       resolveSave(snapshot(1, { ...createDefaultDraft(), instructions: 'Antes de aplicar' }));
       expect(await applying).toBe(false);
@@ -850,6 +905,12 @@ describe('RobotEditor', () => {
 
     expect(screen.getByDisplayValue('Edición escrita durante la espera')).toBeTruthy();
     expect(screen.queryByDisplayValue('Configuración antigua')).toBeNull();
+    await advanceEditorTime(600);
+    expect(putDraft).toHaveBeenCalledTimes(2);
+    expect(putDraft.mock.calls[1]?.[0]).toBe(1);
+    expect(putDraft.mock.calls[1]?.[1]).toMatchObject({
+      instructions: 'Edición escrita durante la espera',
+    });
   });
 
   it.each([false, true])(
@@ -872,6 +933,8 @@ describe('RobotEditor', () => {
       expect(screen.getByDisplayValue(createDefaultDraft().instructions)).toBeTruthy();
 
       const applying = editorRef.current?.applyDraft(() => pendingLoad);
+      if (!applying) throw new Error('The editor handle was not ready.');
+      const application = observeApplication(applying);
       if (returnsToBase) {
         fireEvent.change(screen.getByLabelText('Qué debe tener en cuenta el robot'), {
           target: { value: 'Edición transitoria' },
@@ -880,11 +943,15 @@ describe('RobotEditor', () => {
       fireEvent.change(screen.getByLabelText('Qué debe tener en cuenta el robot'), {
         target: { value: localDraft.instructions },
       });
+      await settleEditorPromises();
+      const cancelledPromptly = application.isSettled();
       await act(async () => {
         resolveLoad(loadedDraft);
-        expect(await applying).toBe(false);
+        await settleEditorPromises();
       });
 
+      expect(cancelledPromptly).toBe(true);
+      expect(application.result()).toBe(false);
       expect(screen.getByDisplayValue(localDraft.instructions)).toBeTruthy();
       expect(screen.queryByDisplayValue(loadedDraft.instructions)).toBeNull();
       await advanceEditorTime(600);
@@ -931,16 +998,19 @@ describe('RobotEditor', () => {
     expect(putDraft).toHaveBeenCalledOnce();
 
     const applying = editorRef.current?.applyDraft(() => pendingLoad);
+    if (!applying) throw new Error('The editor handle was not ready.');
+    const application = observeApplication(applying);
     await act(async () => {
       rejectSave(new DraftApiFailure('conflict', 'conflict', 409, remote));
-      await Promise.resolve();
-      await Promise.resolve();
+      await settleEditorPromises();
     });
     expect(screen.getByText('Conflicto de edición')).toBeTruthy();
+    expect(application.isSettled()).toBe(true);
+    expect(application.result()).toBe(false);
 
     await act(async () => {
       resolveLoad(remoteDraft);
-      expect(await applying).toBe(false);
+      await settleEditorPromises();
     });
     expect(putDraft).toHaveBeenCalledOnce();
     expect(screen.getByDisplayValue(localDraft.instructions)).toBeTruthy();

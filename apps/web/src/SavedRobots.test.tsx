@@ -68,18 +68,26 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+type ApplyCandidate = RobotDraft | ((signal?: AbortSignal) => Promise<RobotDraft>);
+type ApplyOptions = { signal?: AbortSignal };
+type ApplyDraftMock = (candidate: ApplyCandidate, options?: ApplyOptions) => Promise<boolean>;
+
+interface PendingApplication {
+  readonly draft: RobotDraft;
+  readonly signal?: AbortSignal;
+  readonly resolve: (applied: boolean) => void;
+}
+
 function editor(
   snapshot: RobotDraft = createDefaultDraft(),
 ): React.RefObject<RobotEditorHandle | null> {
-  return {
+  const ref = {
     current: {
       captureSnapshot: vi.fn().mockResolvedValue({ version: 1, draft: snapshot }),
-      applyDraft: vi
-        .fn()
-        .mockImplementation(async (value: RobotDraft | (() => Promise<RobotDraft>)) => {
-          if (typeof value === 'function') await value();
-          return true;
-        }),
+      applyDraft: vi.fn<ApplyDraftMock>().mockImplementation(async (candidate, options) => {
+        if (typeof candidate === 'function') await candidate(options?.signal);
+        return true;
+      }),
       hasUnconfirmedChanges: vi.fn().mockReturnValue(false),
       discardPending: vi.fn(),
       flushPending: vi.fn().mockResolvedValue(true),
@@ -87,6 +95,29 @@ function editor(
       releaseAttemptLock: vi.fn(),
     },
   };
+  return ref as unknown as React.RefObject<RobotEditorHandle | null>;
+}
+
+function applicationEditor(snapshot: RobotDraft = createDefaultDraft()) {
+  const pendingApplications: PendingApplication[] = [];
+  const applyDraft = vi.fn<ApplyDraftMock>().mockImplementation(async (candidate, options) => {
+    const draft = typeof candidate === 'function' ? await candidate(options?.signal) : candidate;
+    return await new Promise<boolean>((resolve) => {
+      pendingApplications.push({ draft, signal: options?.signal, resolve });
+    });
+  });
+  const editorRef = {
+    current: {
+      captureSnapshot: vi.fn().mockResolvedValue({ version: 1, draft: snapshot }),
+      applyDraft,
+      hasUnconfirmedChanges: vi.fn().mockReturnValue(false),
+      discardPending: vi.fn(),
+      flushPending: vi.fn().mockResolvedValue(true),
+      waitForConfirmed: vi.fn().mockResolvedValue(true),
+      releaseAttemptLock: vi.fn(),
+    },
+  } as unknown as React.RefObject<RobotEditorHandle | null>;
+  return { editorRef, applyDraft, pendingApplications };
 }
 
 function api(overrides: Partial<SavedRobotApi> = {}): SavedRobotApi {
@@ -122,7 +153,10 @@ describe('SavedRobots', () => {
     expect(screen.getByRole('button', { name: /Explorador.*Cargar/ })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /Explorador.*Cargar/ }));
     await waitFor(() =>
-      expect(editorRef.current?.applyDraft).toHaveBeenCalledWith(expect.any(Function)),
+      expect(editorRef.current?.applyDraft).toHaveBeenCalledWith(
+        expect.any(Function),
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      ),
     );
     expect(screen.getByText('Seleccionado:')).toBeTruthy();
 
@@ -143,6 +177,157 @@ describe('SavedRobots', () => {
     expect(await screen.findByText('Guardaste «Defensa» como robot nuevo.')).toBeTruthy();
   });
 
+  it('replaces a pending copy application when another copy is chosen', async () => {
+    const first = savedRobot({
+      id: 'robot-first',
+      name: 'Primero',
+      draft: { ...createDefaultDraft(), instructions: 'Primera copia.' },
+    });
+    const second = savedRobot({
+      id: 'robot-second',
+      name: 'Segunda',
+      draft: { ...createDefaultDraft(), instructions: 'Segunda copia.' },
+    });
+    const firstLoad = deferred<SavedRobot>();
+    const secondLoad = deferred<SavedRobot>();
+    const getRobot = vi
+      .fn<SavedRobotApi['getRobot']>()
+      .mockImplementation((id) => (id === first.id ? firstLoad.promise : secondLoad.promise));
+    const savedApi = api({
+      listRobots: vi
+        .fn()
+        .mockResolvedValue({ robots: [robotSummary(first), robotSummary(second)] }),
+      getRobot,
+    });
+    const { editorRef, applyDraft, pendingApplications } = applicationEditor();
+    render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
+
+    const firstButton = await screen.findByRole('button', { name: /Primero.*Cargar/ });
+    const secondButton = await screen.findByRole('button', { name: /Segunda.*Cargar/ });
+    firstButton.focus();
+    fireEvent.click(firstButton);
+    await waitFor(() => expect(getRobot).toHaveBeenCalledOnce());
+
+    expect(applyDraft).toHaveBeenCalledWith(
+      expect.any(Function),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    const firstSignal = applyDraft.mock.calls[0]?.[1]?.signal;
+    expect(firstSignal).toBeInstanceOf(AbortSignal);
+    expect(getRobot.mock.calls[0]?.[1]).toBe(firstSignal);
+    expect((secondButton as HTMLButtonElement).disabled).toBe(false);
+
+    secondButton.focus();
+    fireEvent.click(secondButton);
+    await waitFor(() => expect(getRobot).toHaveBeenCalledTimes(2));
+    expect(firstSignal?.aborted).toBe(true);
+    const secondSignal = applyDraft.mock.calls[1]?.[1]?.signal;
+    expect(secondSignal).toBeInstanceOf(AbortSignal);
+    expect(getRobot.mock.calls[1]?.[1]).toBe(secondSignal);
+
+    await act(async () => {
+      secondLoad.resolve(second);
+      await Promise.resolve();
+    });
+    await waitFor(() =>
+      expect(
+        pendingApplications.some(
+          (application) => application.draft.instructions === 'Segunda copia.',
+        ),
+      ).toBe(true),
+    );
+    await act(async () => {
+      pendingApplications
+        .find((application) => application.draft.instructions === 'Segunda copia.')!
+        .resolve(true);
+      await Promise.resolve();
+    });
+    expect(await screen.findByText('Cargaste «Segunda».')).toBeTruthy();
+    expect(document.querySelector('.saved-robots-selected')?.textContent).toContain('Segunda');
+    const activeAfterSecondApplication = document.activeElement;
+
+    await act(async () => {
+      firstLoad.resolve(first);
+      await Promise.resolve();
+    });
+    await waitFor(() =>
+      expect(
+        pendingApplications.some(
+          (application) => application.draft.instructions === 'Primera copia.',
+        ),
+      ).toBe(true),
+    );
+    await act(async () => {
+      pendingApplications
+        .find((application) => application.draft.instructions === 'Primera copia.')!
+        .resolve(true);
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText('Cargaste «Primero».')).toBeNull();
+    expect(document.querySelector('.saved-robots-selected')?.textContent).toContain('Segunda');
+    expect(document.activeElement).toBe(activeAfterSecondApplication);
+  });
+
+  it.each(['pause', 'unmount'] as const)(
+    'cancels a pending saved-copy application on %s and ignores its late result',
+    async (abandonment) => {
+      const robot = savedRobot({
+        id: `robot-${abandonment}`,
+        name: 'Copia pausada',
+        draft: { ...createDefaultDraft(), instructions: 'No aplicar después de abandonar.' },
+      });
+      const load = deferred<SavedRobot>();
+      const getRobot = vi.fn<SavedRobotApi['getRobot']>().mockReturnValue(load.promise);
+      const savedApi = api({
+        listRobots: vi.fn().mockResolvedValue({ robots: [robotSummary(robot)] }),
+        getRobot,
+      });
+      const { editorRef, applyDraft, pendingApplications } = applicationEditor();
+      const view = render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
+
+      fireEvent.click(await screen.findByRole('button', { name: /Copia pausada.*Cargar/ }));
+      await waitFor(() => expect(getRobot).toHaveBeenCalledOnce());
+      expect(applyDraft).toHaveBeenCalledWith(
+        expect.any(Function),
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      );
+      const signal = applyDraft.mock.calls[0]?.[1]?.signal;
+      expect(signal).toBeInstanceOf(AbortSignal);
+      expect(getRobot.mock.calls[0]?.[1]).toBe(signal);
+
+      if (abandonment === 'pause') {
+        view.rerender(
+          <SavedRobots
+            api={savedApi}
+            editor={editorRef}
+            session={session()}
+            paused
+            accessState="required"
+          />,
+        );
+      } else {
+        view.unmount();
+      }
+      expect(signal?.aborted).toBe(true);
+
+      await act(async () => {
+        load.resolve(robot);
+        await Promise.resolve();
+      });
+      await waitFor(() => expect(pendingApplications).toHaveLength(1));
+      await act(async () => {
+        pendingApplications[0]!.resolve(true);
+        await Promise.resolve();
+      });
+
+      if (abandonment === 'pause') {
+        expect(screen.queryByText(`Cargaste «${robot.name}».`)).toBeNull();
+        expect(screen.queryByText('Seleccionado:')).toBeNull();
+      }
+    },
+  );
+
   it('keeps the editor unchanged and reports auth when a copy load is rejected', async () => {
     const onAuthRequired = vi.fn();
     const savedApi = api({
@@ -151,6 +336,19 @@ describe('SavedRobots', () => {
         .mockRejectedValue(new SavedRobotApiFailure('authentication', 'Volvé a ingresar.', 401)),
     });
     const editorRef = editor();
+    editorRef.current!.applyDraft = vi
+      .fn<ApplyDraftMock>()
+      .mockImplementation(async (candidate, options) => {
+        try {
+          if (typeof candidate === 'function') await candidate(options?.signal);
+          return true;
+        } catch (error) {
+          if (error instanceof SavedRobotApiFailure && error.code === 'authentication') {
+            onAuthRequired(error.authContext);
+          }
+          throw error;
+        }
+      });
     render(
       <SavedRobots
         api={savedApi}
@@ -889,12 +1087,76 @@ describe('SavedRobots', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Cargar versión remota' }));
     await waitFor(() =>
-      expect(editorRef.current?.applyDraft).toHaveBeenLastCalledWith(remoteDraft),
+      expect(editorRef.current?.applyDraft).toHaveBeenLastCalledWith(
+        remoteDraft,
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      ),
     );
     fireEvent.click(screen.getByRole('button', { name: /^Guardar$/ }));
     await waitFor(() => expect(saveRobot).toHaveBeenCalledTimes(2));
     expect(saveRobot.mock.calls[1]?.[0]).toBe('robot-a');
     expect(saveRobot.mock.calls[1]?.[1]).toBe(2);
+  });
+
+  it('aborts a saved conflict application on pause and ignores its late result', async () => {
+    const localDraft = { ...createDefaultDraft(), instructions: 'Borrador local.' };
+    const remote = savedRobot({
+      name: 'Explorador remoto',
+      version: 2,
+      draft: { ...createDefaultDraft(), instructions: 'Versión remota.' },
+    });
+    const saveRobot = vi
+      .fn()
+      .mockRejectedValue(new SavedRobotApiFailure('conflict', 'stale', 409, remote));
+    const savedApi = api({ saveRobot });
+    const { editorRef, applyDraft, pendingApplications } = applicationEditor(localDraft);
+    const view = render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /Explorador.*Cargar/ }));
+    await waitFor(() => expect(pendingApplications).toHaveLength(1));
+    await act(async () => {
+      pendingApplications[0]!.resolve(true);
+      await Promise.resolve();
+    });
+    await waitFor(() =>
+      expect(document.querySelector('.saved-robots-selected')?.textContent).toContain('Explorador'),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /^Guardar$/ }));
+    await screen.findByRole('button', { name: 'Cargar versión remota' });
+    fireEvent.click(screen.getByRole('button', { name: 'Cargar versión remota' }));
+    expect(applyDraft).toHaveBeenLastCalledWith(
+      remote.draft,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    const signal = applyDraft.mock.calls[1]?.[1]?.signal;
+    expect(signal).toBeInstanceOf(AbortSignal);
+
+    view.rerender(
+      <SavedRobots
+        api={savedApi}
+        editor={editorRef}
+        session={session()}
+        paused
+        accessState="required"
+      />,
+    );
+    expect(signal?.aborted).toBe(true);
+    const focusAfterPause = document.activeElement;
+    await act(async () => {
+      pendingApplications[1]!.resolve(false);
+      await Promise.resolve();
+    });
+
+    expect(document.querySelector('.saved-robots-selected')?.textContent).toContain('Explorador');
+    expect(document.querySelector('.saved-robots-selected')?.textContent).not.toContain(
+      'Explorador remoto',
+    );
+    expect(screen.queryByText('Cargaste «Explorador remoto».')).toBeNull();
+    expect(
+      screen.queryByText('No se pudo cargar la versión remota porque hay cambios pendientes.'),
+    ).toBeNull();
+    expect(document.activeElement).toBe(focusAfterPause);
   });
 
   it('accepts a complete matching 409 current as a selected save result', async () => {
