@@ -692,7 +692,7 @@ export function DecisionInspector({
                         className="secondary-button"
                         type="button"
                         onClick={() => {
-                          detailContainerRef.current?.focus({ preventScroll: true });
+                          navigateToDetail();
                           setDetailRetry((value) => value + 1);
                         }}
                       >
