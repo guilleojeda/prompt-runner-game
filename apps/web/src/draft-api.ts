@@ -3,7 +3,14 @@ import type { AuthConfig } from './auth.js';
 import { API_ACCESS_REJECTED_MESSAGE, resolveApiToken, type ApiTokenProvider } from './api-auth.js';
 
 export type DraftApiFailureCode =
-  'authentication' | 'conflict' | 'invalid' | 'too_large' | 'rate_limited' | 'network' | 'server';
+  | 'authentication'
+  | 'conflict'
+  | 'incompatible'
+  | 'invalid'
+  | 'too_large'
+  | 'rate_limited'
+  | 'network'
+  | 'server';
 
 export class DraftApiFailure extends Error {
   public constructor(
@@ -210,6 +217,13 @@ export class DraftApiClient implements DraftApi {
         { authContext },
       );
     }
+    if (isRecord(parsed) && parsed.code === 'stored_draft_incompatible') {
+      throw new DraftApiFailure(
+        'incompatible',
+        errorMessage(parsed, 'La configuración guardada no es compatible con esta versión.'),
+        response.status,
+      );
+    }
     if (response.status === 409) {
       const current = isRecord(parsed)
         ? (parseDraftSnapshot(parsed.current) ?? undefined)
@@ -240,8 +254,8 @@ export class DraftApiClient implements DraftApi {
       errorMessage(
         parsed,
         method === 'PUT'
-          ? 'No se confirmó el guardado. Podés reintentar sin perder tus cambios.'
-          : 'No se pudo cargar la configuración. Podés reintentar.',
+          ? 'No se confirmó el guardado. Se comprobará automáticamente sin perder tus cambios.'
+          : 'No se pudo cargar la configuración. Se volverá a intentar automáticamente.',
       ),
       response.status,
       undefined,

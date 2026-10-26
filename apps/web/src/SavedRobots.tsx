@@ -64,6 +64,7 @@ export interface SavedRobotsProps {
   session: AuthSession;
   configurationAvailable?: boolean;
   paused?: boolean;
+  accessState?: 'ready' | 'checking' | 'required';
   locked?: boolean;
   onAuthRequired?: ApiAuthRequired;
 }
@@ -159,6 +160,7 @@ export function SavedRobots({
   session,
   configurationAvailable = true,
   paused = false,
+  accessState = 'checking',
   locked = false,
   onAuthRequired,
 }: SavedRobotsProps) {
@@ -822,7 +824,9 @@ export function SavedRobots({
 
       {paused && (
         <p className="editor-paused" role="status">
-          Verificando tu sesión… Tus robots guardados siguen protegidos.
+          {accessState === 'required'
+            ? 'El acceso a tu cuenta fue rechazado. Volvé a ingresar para continuar. Tus robots guardados siguen protegidos.'
+            : 'Verificando tu sesión… Tus robots guardados siguen protegidos.'}
         </p>
       )}
       {error &&

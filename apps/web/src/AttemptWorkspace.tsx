@@ -128,6 +128,7 @@ interface AttemptWorkspaceProps {
   readonly session: AuthSession;
   readonly configurationAvailable?: boolean;
   readonly authPaused?: boolean;
+  readonly accessState?: 'ready' | 'checking' | 'required';
   readonly onBusyChange?: (busy: boolean) => void;
   readonly onConfigurationBusyChange?: (busy: boolean) => void;
   readonly onPreferenceReadyChange?: (ready: boolean) => void;
@@ -917,6 +918,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       session,
       configurationAvailable = true,
       authPaused = false,
+      accessState = 'checking',
       onBusyChange,
       onConfigurationBusyChange,
       onPreferenceReadyChange,
@@ -3052,7 +3054,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
                   {mode === 'canceling' || attempt.cancelRequested
                     ? 'Cancelando…'
                     : authPaused
-                      ? 'Esperando sesión…'
+                      ? accessState === 'required'
+                        ? 'Acceso rechazado'
+                        : 'Esperando sesión…'
                       : 'Cancelar'}
                 </button>
               </section>

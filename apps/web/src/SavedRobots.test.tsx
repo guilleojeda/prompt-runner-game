@@ -83,6 +83,7 @@ function editor(
       hasUnconfirmedChanges: vi.fn().mockReturnValue(false),
       discardPending: vi.fn(),
       flushPending: vi.fn().mockResolvedValue(true),
+      waitForConfirmed: vi.fn().mockResolvedValue(true),
       releaseAttemptLock: vi.fn(),
     },
   };

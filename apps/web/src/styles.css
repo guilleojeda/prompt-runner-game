@@ -1641,14 +1641,16 @@ h1 {
 }
 
 .save-state {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  max-width: 100%;
   padding: 0.45rem 0.65rem;
   border: 1px solid rgba(216, 179, 106, 0.5);
   border-radius: 999px;
   color: #f2c879;
   font-size: 0.84rem;
   font-weight: 700;
-  white-space: nowrap;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .save-state-clean {
@@ -1844,39 +1846,82 @@ h1 {
   background: rgba(118, 47, 42, 0.22);
 }
 
-.conflict-card {
+.editor-access-status {
+  margin: 0 0 1rem;
+  color: #ead6a7;
+  line-height: 1.5;
+}
+
+.editor-conflict-trigger {
+  margin-bottom: 1rem;
+}
+
+.editor-conflict-comparison {
   margin-top: 1.25rem;
   padding: 1rem;
   border: 1px solid rgba(237, 146, 128, 0.55);
   border-radius: 0.7rem;
-  background: rgba(118, 47, 42, 0.2);
+  background: #24251f;
 }
 
-.conflict-card h3 {
+.editor-conflict-comparison [tabindex='-1']:focus {
+  outline: 3px solid #f2c879;
+  outline-offset: 3px;
+}
+
+.editor-conflict-comparison h3 {
   margin: 0 0 0.4rem;
   color: #f7f1e1;
 }
 
-.conflict-card p {
+.editor-conflict-comparison p {
   color: #d4c9bc;
   line-height: 1.5;
 }
 
-.conflict-preview {
-  overflow-wrap: anywhere;
-  margin: 0.8rem 0 1rem;
+.editor-conflict-fields {
+  display: grid;
+  gap: 1rem;
+  margin: 1rem 0;
+  padding: 0;
+  list-style: none;
+}
+
+.editor-conflict-field {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem;
+  min-width: 0;
+}
+
+.editor-conflict-field > h4 {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: #f7f1e1;
+}
+
+.editor-conflict-side {
+  min-width: 0;
   padding: 0.7rem;
-  border-left: 3px solid #d8b36a;
+  border: 1px solid rgba(242, 239, 232, 0.16);
+  border-radius: 0.45rem;
   background: rgba(20, 19, 15, 0.35);
+  overflow-wrap: anywhere;
 }
 
-.conflict-preview p {
-  margin: 0.35rem 0 0;
+.editor-conflict-side pre {
+  margin: 0.5rem 0 0;
+  color: #f2efe8;
+  font: inherit;
+  line-height: 1.5;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
-.conflict-preview li {
-  white-space: pre-wrap;
+.editor-conflict-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
 }
 
 .editor-actions {
@@ -1899,6 +1944,11 @@ h1 {
   margin: 0 0 0.4rem;
   color: #f7f1e1;
   font-size: 1.15rem;
+}
+
+.logout-prompt h2:focus {
+  outline: 3px solid #f2c879;
+  outline-offset: 3px;
 }
 
 .logout-prompt p {
@@ -2239,6 +2289,14 @@ button:disabled {
 
   .editor-form fieldset {
     padding: 0.75rem;
+  }
+
+  .editor-conflict-comparison {
+    padding: 0.75rem;
+  }
+
+  .editor-conflict-field {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .skill-card {

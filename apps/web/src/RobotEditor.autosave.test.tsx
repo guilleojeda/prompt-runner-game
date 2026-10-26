@@ -513,6 +513,54 @@ describe('RobotEditor phase 6 autosave acceptance', () => {
     expect(screen.getByText('Guardado')).toBeTruthy();
   });
 
+  it('keeps A uncertain when B’s conditional write is definitively rejected', async () => {
+    vi.useFakeTimers();
+    const base = createDefaultDraft();
+    const sentA = { ...base, instructions: 'A incierto' };
+    const visibleB = { ...base, instructions: 'B rechazado' };
+    const corrected = { ...base, instructions: 'B corregido' };
+    const getDraft = vi
+      .fn<DraftApi['getDraft']>()
+      .mockResolvedValueOnce(snapshot())
+      .mockResolvedValueOnce(snapshot())
+      .mockResolvedValueOnce(snapshot(1, sentA));
+    const putDraft = vi
+      .fn<DraftApi['putDraft']>()
+      .mockRejectedValueOnce(
+        new DraftApiFailure('network', 'Respuesta incierta', undefined, undefined, true),
+      )
+      .mockRejectedValueOnce(new DraftApiFailure('invalid', 'El servidor rechazó B.', 400))
+      .mockImplementationOnce(async (version, draft) => snapshot(version + 1, draft));
+    const draftApi = api({ getDraft, putDraft });
+    await renderReady(draftApi);
+
+    editInstructions(sentA.instructions);
+    await advance(600);
+    editInstructions(visibleB.instructions);
+    await advance(600);
+    expect(putDraft).toHaveBeenCalledOnce();
+
+    await advance(59_400);
+    expect(getDraft).toHaveBeenCalledTimes(2);
+    expect(putDraft).toHaveBeenCalledTimes(2);
+    expect(putDraft.mock.calls[1]?.[0]).toBe(0);
+    expect(putDraft.mock.calls[1]?.[1]).toMatchObject({ instructions: visibleB.instructions });
+    expect(screen.getByText('El servidor rechazó B.')).toBeTruthy();
+
+    await advance(60_000);
+    expect(getDraft).toHaveBeenCalledTimes(3);
+    expect(putDraft).toHaveBeenCalledTimes(2);
+    expect(instructionValue()).toBe(visibleB.instructions);
+    expect(screen.getByText('El servidor rechazó B.')).toBeTruthy();
+
+    editInstructions(corrected.instructions);
+    await advance(600);
+    expect(putDraft).toHaveBeenCalledTimes(3);
+    expect(putDraft.mock.calls[2]?.[0]).toBe(1);
+    expect(putDraft.mock.calls[2]?.[1]).toMatchObject({ instructions: corrected.instructions });
+    expect(screen.getByText('Guardado')).toBeTruthy();
+  });
+
   it.each([
     ['same-version', 2],
     ['lower-version', 1],
