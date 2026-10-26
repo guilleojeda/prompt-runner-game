@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { Component, useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import {
   AuthFailure,
   type AuthClient,
@@ -191,6 +191,46 @@ function PendingConfirmationCard({
   );
 }
 
+type AccountFocusBoundaryProps = {
+  children: ReactNode;
+  disabled: boolean;
+  focusRef: { current: HTMLElement | null };
+  menuRef: { current: HTMLDivElement | null };
+};
+
+class AccountFocusBoundary extends Component<
+  AccountFocusBoundaryProps,
+  Record<string, never>,
+  boolean
+> {
+  // Capture focus before the lock hides or disables the focused account control.
+  getSnapshotBeforeUpdate(previousProps: Readonly<AccountFocusBoundaryProps>): boolean {
+    if (previousProps.disabled || !this.props.disabled) {
+      return false;
+    }
+
+    const focusedElement = document.activeElement;
+    return (
+      focusedElement instanceof Node &&
+      this.props.menuRef.current?.contains(focusedElement) === true
+    );
+  }
+
+  componentDidUpdate(
+    _previousProps: Readonly<AccountFocusBoundaryProps>,
+    _previousState: Readonly<Record<string, never>>,
+    focusWasInsideMenu: boolean,
+  ): void {
+    if (focusWasInsideMenu) {
+      this.props.focusRef.current?.focus();
+    }
+  }
+
+  render(): ReactNode {
+    return this.props.children;
+  }
+}
+
 function AccountHeader({
   email,
   onLogout,
@@ -205,6 +245,7 @@ function AccountHeader({
   const panelId = useId();
   const [menuState, setMenuState] = useState({ disabled, open: false });
   const menuRef = useRef<HTMLDivElement>(null);
+  const headerRef = useRef<HTMLElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
   if (menuState.disabled !== disabled) {
@@ -243,32 +284,39 @@ function AccountHeader({
   }, [expanded]);
 
   return (
-    <header className="game-header">
-      <AuthBrand linkDisabled={homeLinkDisabled} />
-      <div className="account-menu" ref={menuRef}>
-        <button
-          ref={triggerRef}
-          className="account-trigger"
-          type="button"
-          aria-label="Cuenta"
-          aria-controls={panelId}
-          aria-expanded={expanded}
-          disabled={disabled}
-          onClick={() => setMenuState((current) => ({ ...current, open: !current.open }))}
-        >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <circle cx="12" cy="8" r="3.5" />
-            <path d="M5 20c.7-3.4 3-5 7-5s6.3 1.6 7 5" />
-          </svg>
-        </button>
-        <div id={panelId} className="account-panel" hidden={!expanded}>
-          <p className="account-email">{email}</p>
-          <button className="secondary-button" type="button" onClick={onLogout} disabled={disabled}>
-            Cerrar sesión
+    <AccountFocusBoundary disabled={disabled} focusRef={headerRef} menuRef={menuRef}>
+      <header ref={headerRef} className="game-header" tabIndex={-1}>
+        <AuthBrand linkDisabled={homeLinkDisabled} />
+        <div className="account-menu" ref={menuRef}>
+          <button
+            ref={triggerRef}
+            className="account-trigger"
+            type="button"
+            aria-label="Cuenta"
+            aria-controls={panelId}
+            aria-expanded={expanded}
+            disabled={disabled}
+            onClick={() => setMenuState((current) => ({ ...current, open: !current.open }))}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="8" r="3.5" />
+              <path d="M5 20c.7-3.4 3-5 7-5s6.3 1.6 7 5" />
+            </svg>
           </button>
+          <div id={panelId} className="account-panel" hidden={!expanded}>
+            <p className="account-email">{email}</p>
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={onLogout}
+              disabled={disabled}
+            >
+              Cerrar sesión
+            </button>
+          </div>
         </div>
-      </div>
-    </header>
+      </header>
+    </AccountFocusBoundary>
   );
 }
 
