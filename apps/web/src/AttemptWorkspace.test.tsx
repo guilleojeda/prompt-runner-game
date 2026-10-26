@@ -4093,10 +4093,10 @@ describe('AttemptWorkspace', () => {
     render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
 
     const history = await screen.findByRole('heading', { name: 'Historial' });
-    const configurationButtons = within(history.closest('section') as HTMLElement).getAllByRole(
-      'button',
-      { name: 'Ver configuración' },
-    );
+    const historyList = within(history.closest('section') as HTMLElement).getByRole('list');
+    const configurationButtons = within(historyList).getAllByRole('button', {
+      name: 'Ver configuración',
+    });
     const firstOpener = configurationButtons[0]!;
     const secondOpener = configurationButtons[1]!;
     fireEvent.click(firstOpener);

@@ -64,17 +64,12 @@ function api(overrides: Partial<DraftApi> = {}): DraftApi {
   };
 }
 
-type Phase7DraftSource = RobotDraft | (() => Promise<RobotDraft>);
-type Phase7RobotEditorHandle = Omit<RobotEditorHandle, 'applyDraft'> & {
-  applyDraft(source: Phase7DraftSource, options?: { signal?: AbortSignal }): Promise<boolean>;
-};
-
 function applyWithSignal(
   editor: RobotEditorHandle,
-  source: Phase7DraftSource,
+  source: RobotDraft | ((signal: AbortSignal) => Promise<RobotDraft>),
   signal: AbortSignal,
 ): Promise<boolean> {
-  return (editor as unknown as Phase7RobotEditorHandle).applyDraft(source, { signal });
+  return editor.applyDraft(source, { signal });
 }
 
 function observeApplication(promise: Promise<boolean>): {
@@ -387,16 +382,27 @@ describe('RobotEditor', () => {
     expect(model.textContent).toBe('Claude Sonnet 4.6');
   });
 
-  it('blocks Probar while a recovered configuration is applying but keeps editing available', async () => {
-    render(<RobotEditor api={api()} session={session()} onTry={vi.fn()} tryLocked />);
+  it('keeps Probar and editing available while a configuration application waits', async () => {
+    const editorRef = createRef<RobotEditorHandle>();
+    let resolveSource!: (value: RobotDraft) => void;
+    const pendingSource = new Promise<RobotDraft>((resolve) => {
+      resolveSource = resolve;
+    });
+    render(<RobotEditor ref={editorRef} api={api()} session={session()} onTry={vi.fn()} />);
     await screen.findByLabelText('Qué debe tener en cuenta el robot');
+    const applying = editorRef.current!.applyDraft(() => pendingSource);
+    await settleEditorPromises();
 
     expect((screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement).disabled).toBe(
-      true,
+      false,
     );
     expect(
       (screen.getByLabelText('Qué debe tener en cuenta el robot') as HTMLTextAreaElement).disabled,
     ).toBe(false);
+    editorRef.current!.cancelApplication();
+    await expect(applying).resolves.toBe(false);
+    await act(async () => resolveSource({ ...createDefaultDraft(), instructions: 'Tardío' }));
+    expect(screen.queryByDisplayValue('Tardío')).toBeNull();
   });
 
   it('captures the visible default and persists version zero before returning the attempt snapshot', async () => {
@@ -778,41 +784,46 @@ describe('RobotEditor', () => {
     expect(screen.queryByDisplayValue(recovered.instructions)).toBeNull();
   });
 
-  it('keeps local content when a pending save cannot be reconciled before applying a configuration', async () => {
+  it('retains a configuration application while its prior visible save recovers', async () => {
     vi.useFakeTimers();
     let rejectSave!: (error: DraftApiFailure) => void;
-    const putDraft = vi.fn().mockReturnValue(
-      new Promise<never>((_resolve, reject) => {
-        rejectSave = reject;
-      }),
-    );
+    const pendingSave = new Promise<DraftSnapshot>((_resolve, reject) => {
+      rejectSave = reject;
+    });
+    const putDraft = vi
+      .fn<DraftApi['putDraft']>()
+      .mockReturnValueOnce(pendingSave)
+      .mockImplementation(async (version, draft) => snapshot(version + 1, draft));
     const editorRef = createRef<RobotEditorHandle>();
     render(<RobotEditor ref={editorRef} api={api({ putDraft })} session={session()} />);
-    await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    await settleEditorPromises();
     fireEvent.change(screen.getByLabelText('Qué debe tener en cuenta el robot'), {
       target: { value: 'Edición local pendiente' },
     });
-    await act(async () => {
-      vi.advanceTimersByTime(600);
-    });
+    await advanceEditorTime(600);
     expect(putDraft).toHaveBeenCalledOnce();
-
-    let result: boolean | undefined;
-    const applying = editorRef.current?.applyDraft({
-      ...createDefaultDraft(),
-      instructions: 'No debe reemplazar',
-    });
+    const candidate = { ...createDefaultDraft(), instructions: 'Configuración elegida' };
+    const applying = editorRef.current!.applyDraft(candidate);
+    const application = observeApplication(applying);
     await act(async () => {
       rejectSave(
         new DraftApiFailure('network', 'No se pudo guardar.', undefined, undefined, false),
       );
-      result = await applying;
+      await settleEditorPromises();
     });
-    expect(result).toBe(false);
+    expect(application.isSettled()).toBe(false);
     expect(screen.getByDisplayValue('Edición local pendiente')).toBeTruthy();
+    expect(screen.queryByDisplayValue(candidate.instructions)).toBeNull();
+    await advanceEditorTime(59_999);
+    expect(putDraft).toHaveBeenCalledOnce();
+    await advanceEditorTime(1);
+    await expect(applying).resolves.toBe(true);
+    expect(putDraft.mock.calls.map(([version, draft]) => [version, draft.instructions])).toEqual([
+      [0, 'Edición local pendiente'],
+      [0, 'Edición local pendiente'],
+      [1, candidate.instructions],
+    ]);
+    expect(screen.getByDisplayValue(candidate.instructions)).toBeTruthy();
   });
 
   it('preserves the local draft and reports a cross-tab conflict while applying', async () => {

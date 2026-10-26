@@ -336,6 +336,19 @@ describe('SavedRobots', () => {
         .mockRejectedValue(new SavedRobotApiFailure('authentication', 'Volvé a ingresar.', 401)),
     });
     const editorRef = editor();
+    editorRef.current!.applyDraft = vi
+      .fn<ApplyDraftMock>()
+      .mockImplementation(async (candidate, options) => {
+        try {
+          if (typeof candidate === 'function') await candidate(options?.signal);
+          return true;
+        } catch (error) {
+          if (error instanceof SavedRobotApiFailure && error.code === 'authentication') {
+            onAuthRequired(error.authContext);
+          }
+          throw error;
+        }
+      });
     render(
       <SavedRobots
         api={savedApi}
