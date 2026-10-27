@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { AttemptSummary } from './attempt-api.js';
 import { renderResultImage, shareResult, shareText, type ShareResult } from './result-sharing.js';
 
@@ -14,13 +14,15 @@ function canShareFile(file: File): boolean {
 
 function SharePanel({ result, onClose }: { result: ShareResult; onClose: () => void }) {
   const heading = useRef<HTMLHeadingElement>(null);
+  // The parent keys this panel by the public result, so this snapshot lasts only for that payload.
+  const [resultSnapshot] = useState(result);
   const [image, setImage] = useState<{ url: string; file: File } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState('');
   const [sharing, setSharing] = useState(false);
   const [retry, setRetry] = useState(0);
   const url = new URL('/', window.location.origin).href;
-  const text = shareText(result, url);
+  const text = shareText(resultSnapshot, url);
 
   useEffect(() => {
     heading.current?.focus();
@@ -29,7 +31,7 @@ function SharePanel({ result, onClose }: { result: ShareResult; onClose: () => v
   useEffect(() => {
     let disposed = false;
     let objectUrl: string | undefined;
-    renderResultImage(result, window.location.origin).then(
+    renderResultImage(resultSnapshot, window.location.origin).then(
       (blob) => {
         if (disposed) return;
         objectUrl = URL.createObjectURL(blob);
@@ -47,7 +49,7 @@ function SharePanel({ result, onClose }: { result: ShareResult; onClose: () => v
       disposed = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [result, retry]);
+  }, [resultSnapshot, retry]);
 
   async function copyText() {
     try {
@@ -97,7 +99,7 @@ function SharePanel({ result, onClose }: { result: ShareResult; onClose: () => v
           src={image.url}
           alt={text.split('\n')[0]}
           width="1200"
-          height={result.kind === 'victory' ? 720 : 840}
+          height={resultSnapshot.kind === 'victory' ? 720 : 840}
         />
       ) : error ? (
         <div>
@@ -170,9 +172,9 @@ export function ResultSharing({
 }) {
   const [open, setOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
-  // Keep this model stable while the panel renders its own asynchronous states.
-  const result = useMemo(() => shareResult(attempt), [attempt]);
+  const result = shareResult(attempt);
   if (!result) return null;
+  const resultKey = JSON.stringify(result);
   return (
     <div className="result-sharing">
       <button
@@ -187,7 +189,7 @@ export function ResultSharing({
       </button>
       {open && (
         <SharePanel
-          key={JSON.stringify(result)}
+          key={resultKey}
           result={result}
           onClose={() => {
             setOpen(false);

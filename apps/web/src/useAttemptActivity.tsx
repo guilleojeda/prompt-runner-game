@@ -1883,12 +1883,19 @@ export function useAttemptActivity({
         {mode === 'result' && attempt && (
           <ResultCard
             attempt={attempt}
+            source={historyResultOpen ? 'history' : 'current'}
+            createdAt={attempt.createdAt}
             sharingVisible={configurationState === null && decisionInspectorTarget === null}
             onReplay={replayCurrentAttempt}
             onInspect={openDecisionInspectorForCurrent}
-            onConfiguration={() => void openConfiguration(attempt.id)}
-            onReturnToEditor={historyResultOpen ? returnToHistory : returnToEditor}
-            returnLabel={historyResultOpen ? 'Volver al historial' : 'Volver al editor'}
+            onConfiguration={() =>
+              void openConfiguration(attempt.id, true, {
+                source: historyResultOpen ? 'history' : 'current',
+                createdAt: attempt.createdAt,
+              })
+            }
+            onReturnToEditor={returnToEditor}
+            onReturnToHistory={historyResultOpen ? returnToHistory : undefined}
             configurationBusy={
               configurationState?.targetId === attempt.id && configurationState.status === 'loading'
             }
@@ -1917,7 +1924,13 @@ export function useAttemptActivity({
       busy={busy}
       configurationAvailable={configurationAvailable && !authPaused}
       onApply={() => void applyConfiguration()}
-      onRetry={() => void openConfiguration(configurationState.targetId, false)}
+      onRetry={() =>
+        void openConfiguration(
+          configurationState.targetId,
+          false,
+          configurationState.displayContext,
+        )
+      }
       onClose={closeConfiguration}
     />
   ) : null;
@@ -1943,7 +1956,13 @@ export function useAttemptActivity({
       onClose={closeResult}
       onReplay={(id) => void openReplayFromHistory(id)}
       onInspect={openHistoryDecisionInspector}
-      onConfiguration={(id) => void openConfiguration(id)}
+      onConfiguration={(target) =>
+        void openConfiguration(target.id, true, {
+          source: 'history',
+          createdAt: target.createdAt,
+        })
+      }
+      onReturnToEditor={returnToEditor}
       configurationBusy={
         configurationState?.targetId === resultQuery.targetId &&
         configurationState.status === 'loading'
@@ -1965,7 +1984,12 @@ export function useAttemptActivity({
         }
         onReplay={(id) => void openReplayFromHistory(id)}
         onInspect={(id, selection) => void openDecisionInspectorFromHistory(id, selection)}
-        onConfiguration={(id) => void openConfiguration(id)}
+        onConfiguration={(target) =>
+          void openConfiguration(target.id, true, {
+            source: 'history',
+            createdAt: target.createdAt,
+          })
+        }
         configurationBusyId={
           configurationState && configurationState.status === 'loading'
             ? configurationState.targetId

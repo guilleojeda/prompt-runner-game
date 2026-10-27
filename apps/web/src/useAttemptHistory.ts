@@ -8,11 +8,18 @@ import {
   type AttemptsPage,
 } from './attempt-api.js';
 import type { RobotEditorHandle } from './RobotEditor.js';
+import type { ResultSource } from './attempt-display.js';
+
+export interface AttemptDisplayContext {
+  readonly source: ResultSource;
+  readonly createdAt: string;
+}
 
 export type DecisionInitialSelection = 'first' | 'last-action-or-decision' | 'last-decision';
 
 export interface AttemptConfigurationState {
   readonly targetId: string;
+  readonly displayContext?: AttemptDisplayContext;
   readonly status: 'loading' | 'ready' | 'applying' | 'error';
   readonly configuration?: AttemptConfiguration;
   readonly message?: string;
@@ -31,9 +38,18 @@ export type ActivityTargetHandler = (
 ) => boolean | Promise<boolean>;
 
 export type AttemptResultQueryState =
-  | { readonly targetId: string; readonly status: 'loading' }
+  | {
+      readonly targetId: string;
+      readonly status: 'loading';
+      readonly contextAttempt?: AttemptSummary;
+    }
   | { readonly targetId: string; readonly status: 'ready'; readonly attempt: AttemptSummary }
-  | { readonly targetId: string; readonly status: 'error'; readonly message: string };
+  | {
+      readonly targetId: string;
+      readonly status: 'error';
+      readonly message: string;
+      readonly contextAttempt?: AttemptSummary;
+    };
 
 function isTerminal(status: AttemptSummary['status']): boolean {
   return status !== 'pending' && status !== 'running';
@@ -109,7 +125,11 @@ export interface AttemptHistoryController {
   loadMore(): Promise<void>;
   retryHistory(): void;
   updateSummaryById(summary: AttemptSummary): void;
-  openConfiguration(id: string, rememberTrigger?: boolean): Promise<void>;
+  openConfiguration(
+    id: string,
+    rememberTrigger?: boolean,
+    displayContext?: AttemptDisplayContext,
+  ): Promise<void>;
   applyConfiguration(): Promise<void>;
   retryConfiguration(): void;
   closeConfiguration(): void;
@@ -123,6 +143,7 @@ export interface AttemptHistoryController {
     handleActivityTarget: ActivityTargetHandler,
     rememberOrigin?: boolean,
     originAction?: string,
+    contextAttempt?: AttemptSummary,
   ): Promise<void>;
   retryResult(): void;
   closeResult(): void;
@@ -281,6 +302,7 @@ export function useAttemptHistory({
       handleActivityTarget: ActivityTargetHandler,
       rememberOrigin = true,
       originAction = 'result',
+      requestedContextAttempt?: AttemptSummary,
     ): Promise<void> => {
       if (activityBusy.current || surface !== 'historial') return;
       activityTargetHandlerRef.current = handleActivityTarget;
@@ -304,8 +326,12 @@ export function useAttemptHistory({
       const controller = new AbortController();
       resultQueryControllerRef.current = controller;
       const origin = resultOriginRef.current ?? { attemptId: id, action: originAction };
+      const contextAttempt =
+        requestedContextAttempt?.id === id
+          ? requestedContextAttempt
+          : history.find((item) => item.id === id);
       pendingResultQueryFocusRef.current = true;
-      setResultQuery({ targetId: id, status: 'loading' });
+      setResultQuery({ targetId: id, status: 'loading', contextAttempt });
       try {
         const target = await api.getAttempt(id, controller.signal);
         if (
@@ -338,7 +364,12 @@ export function useAttemptHistory({
           return;
         }
         notifyAuthenticationFailure(error, onAuthRequired);
-        setResultQuery({ targetId: id, status: 'error', message: errorMessage(error) });
+        setResultQuery({
+          targetId: id,
+          status: 'error',
+          message: errorMessage(error),
+          contextAttempt,
+        });
       } finally {
         if (resultQueryControllerRef.current === controller)
           resultQueryControllerRef.current = null;
@@ -352,6 +383,7 @@ export function useAttemptHistory({
       clearResultQuery,
       editor,
       identity,
+      history,
       onAuthRequired,
       surface,
       updateSummaryById,
@@ -361,8 +393,10 @@ export function useAttemptHistory({
   const retryResult = useCallback((): void => {
     const targetId = resultQuery?.targetId;
     const handler = activityTargetHandlerRef.current;
-    if (targetId && handler) void openResult(targetId, handler, false);
-  }, [openResult, resultQuery?.targetId]);
+    const contextAttempt =
+      resultQuery?.status === 'ready' ? resultQuery.attempt : resultQuery?.contextAttempt;
+    if (targetId && handler) void openResult(targetId, handler, false, 'result', contextAttempt);
+  }, [openResult, resultQuery]);
 
   const closeResult = useCallback((): void => {
     clearResultQuery(true);
@@ -416,8 +450,23 @@ export function useAttemptHistory({
   );
 
   const openConfiguration = useCallback(
-    async (id: string, rememberTrigger = true): Promise<void> => {
+    async (
+      id: string,
+      rememberTrigger = true,
+      requestedDisplayContext?: AttemptDisplayContext,
+    ): Promise<void> => {
       if (activityBusy.current || authPaused) return;
+      const contextAttempt =
+        history.find((item) => item.id === id) ??
+        (currentAttempt.current?.id === id ? currentAttempt.current : undefined);
+      const displayContext =
+        requestedDisplayContext ??
+        (contextAttempt
+          ? {
+              source: surface === 'preparar' ? 'current' : 'history',
+              createdAt: contextAttempt.createdAt,
+            }
+          : undefined);
       cancelConfigurationApplication();
       editor.current?.cancelApplication?.();
       pendingDecisionFocusRef.current = null;
@@ -430,7 +479,7 @@ export function useAttemptHistory({
       const controller = new AbortController();
       configurationControllerRef.current = controller;
       const operationSurface = surface;
-      setConfigurationState({ targetId: id, status: 'loading' });
+      setConfigurationState({ targetId: id, displayContext, status: 'loading' });
       try {
         const configuration = await api.getConfiguration(id, controller.signal);
         if (
@@ -447,7 +496,7 @@ export function useAttemptHistory({
             'La configuración recibida no coincide con el intento consultado.',
           );
         }
-        setConfigurationState({ targetId: id, status: 'ready', configuration });
+        setConfigurationState({ targetId: id, displayContext, status: 'ready', configuration });
       } catch (error) {
         if (
           controller.signal.aborted ||
@@ -458,7 +507,12 @@ export function useAttemptHistory({
           return;
         }
         notifyAuthenticationFailure(error, onAuthRequired);
-        setConfigurationState({ targetId: id, status: 'error', message: errorMessage(error) });
+        setConfigurationState({
+          targetId: id,
+          displayContext,
+          status: 'error',
+          message: errorMessage(error),
+        });
       } finally {
         if (configurationControllerRef.current === controller) {
           configurationControllerRef.current = null;
@@ -471,6 +525,7 @@ export function useAttemptHistory({
       authPaused,
       cancelConfigurationApplication,
       editor,
+      history,
       identity,
       onAuthRequired,
       surface,
@@ -558,12 +613,12 @@ export function useAttemptHistory({
 
   const retryConfiguration = useCallback((): void => {
     const targetId = configurationState?.targetId;
-    if (targetId) void openConfiguration(targetId, false);
-  }, [configurationState?.targetId, openConfiguration]);
+    if (targetId) void openConfiguration(targetId, false, configurationState?.displayContext);
+  }, [configurationState, openConfiguration]);
 
   const openDecisionInspector = useCallback(
     (target: AttemptSummary, selection: DecisionInitialSelection = 'first'): void => {
-      if (activityBusy.current || !isTerminal(target.status)) return;
+      if (activityBusy.current || !isTerminal(target.status) || !target.recordComplete) return;
       clearConfiguration();
       cancelConfigurationApplication();
       editor.current?.cancelApplication?.();
@@ -581,7 +636,14 @@ export function useAttemptHistory({
     (id: string, selection: DecisionInitialSelection = 'first'): void => {
       if (activityBusy.current) return;
       const target = history.find((item) => item.id === id);
-      if (!target || !isTerminal(target.status) || !target.presentationComplete) return;
+      if (
+        !target ||
+        !isTerminal(target.status) ||
+        !target.recordComplete ||
+        !target.presentationComplete
+      ) {
+        return;
+      }
       openDecisionInspector(target, selection);
     },
     [activityBusy, history, openDecisionInspector],
