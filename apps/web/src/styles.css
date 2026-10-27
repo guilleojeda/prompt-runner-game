@@ -81,6 +81,54 @@ button:focus-visible {
   min-width: 0;
 }
 
+.workspace-navigation {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+  width: min(100%, 62rem);
+  margin: 0 auto 1rem;
+}
+
+.workspace-navigation-button {
+  min-width: 0;
+  min-height: 2.75rem;
+  padding: 0.65rem 0.45rem;
+  border: 1px solid var(--game-line, rgba(232, 232, 211, 0.2));
+  border-radius: 0.6rem;
+  background: rgba(242, 239, 232, 0.06);
+  color: var(--game-cream, inherit);
+  font: inherit;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.workspace-navigation-button[aria-current='page'] {
+  border-color: var(--game-gold, #e4bd70);
+  background: rgba(228, 189, 112, 0.14);
+  color: var(--game-gold, #e4bd70);
+}
+
+.workspace-navigation-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
+.workspace-navigation-button:focus-visible {
+  outline: 2px solid var(--game-gold, #e4bd70);
+  outline-offset: 2px;
+}
+
+.workspace-activity-lock {
+  width: min(100%, 62rem);
+  margin: -0.4rem auto 1rem;
+  color: var(--game-muted, #a4a698);
+}
+
+.workspace-surface[hidden] {
+  display: none !important;
+}
+
 .sr-only {
   position: absolute;
   width: 1px;

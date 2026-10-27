@@ -23,6 +23,14 @@ El [registro de ejecución](registro-de-ejecucion.md) define estados y resolucio
 
 Esas responsabilidades son módulos TypeScript del mismo repositorio, no servicios por habilidad. El motor es una función determinista sin acceso a red. El catálogo tiene identidades internas, etiquetas humanas y herramientas opacas separadas. El adaptador de inferencia tiene una implementación Bedrock y un sustituto explícito para pruebas; no necesita una plataforma de proveedores intercambiables.
 
+### Composición y continuidad del frontend
+
+App conserva sesión, contexto de credenciales y salida protegida. Un workspace estable compone Preparar, Historial, Mis robots y la actividad o consulta actual. El editor mantiene su única autoridad sobre el borrador y su misma rama del DOM; la biblioteca conserva sus páginas, selección y mutaciones. Cuota y Animación llegan como contenido React al lugar único de Probar. El handle semántico del editor permite capturar, aplicar y enfocar sin transportar nodos de composición.
+
+Los controladores locales se separan por la vida de su trabajo: actividad conserva snapshot, clave de admisión, recuperación, polling, cancelación y presentación; historial conserva páginas, cursores y consultas que vencen al abandonar su destino; ACK conserva confirmaciones pendientes por identidad e intento. Esta separación permite cancelar una consulta sin perder una escritura enviada o una confirmación anterior. El descubrimiento inicial de activos pertenece a recuperación y es independiente de las páginas visibles del historial. Abandonar un resultado descarta su presentación local, conservando el intento y las confirmaciones pendientes. Una consulta anidada conserva el resultado que la abrió y sus controles de regreso, pero desmonta la vista previa de compartir para liberar sus imágenes y operaciones; ocultar el contenedor por sí solo no libera esos recursos.
+
+El workspace decide qué superficie se muestra y restaura su origen y foco. Los controladores comunican snapshots inmutables y actualizaciones por ID; actualizar una fila no inicia ni sustituye una actividad. Los mismos controladores y vistas se usan en la composición de producto y en sus pruebas. La navegación y los cambios de ancho conservan sus dueños montados; la interfaz oculta las superficies ajenas sin pausar el acceso. Los contratos de regreso, guardado y bloqueo se detallan en [experiencia](../intent/experiencia.md#composición-y-navegación).
+
 ## Alojamiento, loop y framework
 
 Runtime aloja un proceso TypeScript con el ejecutor del intento. Strands aporta el SDK de modelos, herramientas, eventos y hooks. La tarea de background permite seguir calculando sin navegador ni una Lambda esperando durante toda la partida. El motor, las transacciones y la cancelación conservan una única coordinación operativa.

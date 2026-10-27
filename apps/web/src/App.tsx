@@ -9,11 +9,9 @@ import {
 } from './auth.js';
 import { createDraftApiClient, type DraftApi } from './draft-api.js';
 import { createSavedRobotApiClient, type SavedRobotApi } from './saved-robot-api.js';
-import { SavedRobots } from './SavedRobots.js';
-import { RobotEditor, type RobotEditorHandle } from './RobotEditor.js';
+import { type RobotEditorHandle } from './RobotEditor.js';
 import { createAttemptApiClient, type AttemptApi } from './attempt-api.js';
-import { AttemptWorkspace, type AttemptWorkspaceHandle } from './AttemptWorkspace.js';
-import { CoursePreview } from './replay/ReplayScene.js';
+import { GameWorkspace, type GameWorkspaceHandle } from './GameWorkspace.js';
 import { clearAttemptRecovery } from './attempt-recovery.js';
 import { type ApiAccessSnapshot, type ApiAuthRequired, type ApiTokenProvider } from './api-auth.js';
 import {
@@ -413,9 +411,7 @@ export function App({
   const [runnerApi, setRunnerApi] = useState<AttemptApi | null>(attemptApi ?? null);
   const [editorConfig, setEditorConfig] = useState<AuthConfig | null>(null);
   const [attemptBusy, setAttemptBusy] = useState(false);
-  const [attemptAvailable, setAttemptAvailable] = useState(false);
   const [editorReadySubject, setEditorReadySubject] = useState<string | null>(null);
-  const [attemptControlsHost, setAttemptControlsHost] = useState<HTMLDivElement | null>(null);
   const clientRef = useRef<AuthClient | null>(authClient ?? null);
   const configRef = useRef<AuthConfig | null>(null);
   const draftApiRef = useRef<DraftApi | null>(draftApi ?? null);
@@ -426,7 +422,7 @@ export function App({
   const nextAuthContextRef = useRef(0);
   const apiAuthErrorContextRef = useRef<number | undefined>(undefined);
   const editorRef = useRef<RobotEditorHandle | null>(null);
-  const attemptWorkspaceRef = useRef<AttemptWorkspaceHandle | null>(null);
+  const attemptWorkspaceRef = useRef<GameWorkspaceHandle | null>(null);
   const logoutPromptHeadingRef = useRef<HTMLHeadingElement | null>(null);
   const loginDiscardHeadingRef = useRef<HTMLHeadingElement | null>(null);
   const logoutIntentIdRef = useRef(0);
@@ -860,12 +856,12 @@ export function App({
   const continueEditing = (): void => {
     invalidateLogoutIntent();
     setLogoutPrompt(false);
-    editorRef.current?.focusEditor?.();
+    attemptWorkspaceRef.current?.returnToEditor();
   };
 
   const cancelLoginDiscard = (): void => {
     setLoginDiscardPrompt(false);
-    editorRef.current?.focusEditor?.();
+    attemptWorkspaceRef.current?.returnToEditor();
   };
 
   const restoreSession = async () => {
@@ -926,22 +922,12 @@ export function App({
     return true;
   }, []);
 
-  const returnToEditor = useCallback((): void => {
-    editorRef.current?.focusEditor?.();
-  }, []);
-
   const accountDisabled = attemptBusy || renewing;
   const accessState: 'ready' | 'checking' | 'required' = apiAuthError
     ? 'required'
     : phase === 'account' && !renewing
       ? 'ready'
       : 'checking';
-  const editorPaused = accessState !== 'required' && (renewing || phase !== 'account');
-
-  const handleAttemptControlsHostChange = useCallback((node: HTMLDivElement | null): void => {
-    setAttemptControlsHost(node);
-  }, []);
-
   return (
     <main className={`shell${session ? ' shell-authenticated' : ' shell-auth'}`}>
       {session ? (
@@ -1002,58 +988,33 @@ export function App({
           phase === 'error' ||
           phase === 'signing-in') && (
           <>
-            {editorApi && editorConfig && session.user.scopes.includes(editorConfig.apiScope) && (
-              <div className="preparation-layout">
-                <CoursePreview locked={attemptBusy} />
-                <RobotEditor
-                  ref={editorRef}
-                  api={editorApi}
-                  session={session}
-                  accessState={accessState}
-                  paused={editorPaused}
-                  locked={attemptBusy}
-                  tryUnavailable={!attemptAvailable}
-                  onTry={runnerApi ? startAttempt : undefined}
-                  onAuthRequired={handleApiAuthRequired}
-                  onConfigurationAvailabilityChange={handleEditorAvailabilityChange}
-                  onAttemptControlsHostChange={handleAttemptControlsHostChange}
-                />
-              </div>
-            )}
-            {runnerApi &&
-              editorApi &&
+            {editorApi &&
               editorConfig &&
-              session.user.scopes.includes(editorConfig.apiScope) && (
-                <AttemptWorkspace
+              session.user.scopes.includes(editorConfig.apiScope) &&
+              (runnerApi ? (
+                <GameWorkspace
                   ref={attemptWorkspaceRef}
-                  api={runnerApi}
+                  attemptApi={runnerApi}
+                  draftApi={editorApi}
+                  savedRobotApi={savedApi}
                   editor={editorRef}
                   session={session}
                   configurationAvailable={editorReadySubject === session.identity.sub}
                   accessState={accessState}
                   authPaused={renewing || phase !== 'account' || apiAuthError}
                   onBusyChange={handleAttemptBusyChange}
-                  onTryAvailabilityChange={setAttemptAvailable}
                   onAuthRequired={handleApiAuthRequired}
-                  onReturnToEditor={returnToEditor}
-                  attemptControlsHost={attemptControlsHost}
-                  historySlot={
-                    savedApi ? (
-                      <SavedRobots
-                        key={session.identity.sub}
-                        api={savedApi}
-                        editor={editorRef}
-                        session={session}
-                        configurationAvailable={editorReadySubject === session.identity.sub}
-                        accessState={accessState}
-                        paused={renewing || phase !== 'account' || apiAuthError}
-                        locked={attemptBusy}
-                        onAuthRequired={handleApiAuthRequired}
-                      />
-                    ) : null
-                  }
+                  onTry={startAttempt}
+                  onConfigurationAvailabilityChange={handleEditorAvailabilityChange}
                 />
-              )}
+              ) : (
+                <div className="preparation-layout">
+                  <div className="notice" role="status">
+                    <h2>Prepará tu robot</h2>
+                    <p>La actividad estará disponible cuando se conecte el servicio de partidas.</p>
+                  </div>
+                </div>
+              ))}
             {editorApi && editorConfig && !session.user.scopes.includes(editorConfig.apiScope) && (
               <section className="notice error-notice" role="alert">
                 <p>Para guardar tu robot, necesitás volver a ingresar con tu cuenta.</p>

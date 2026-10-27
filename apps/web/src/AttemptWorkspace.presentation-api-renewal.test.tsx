@@ -8,7 +8,7 @@ import { LEVEL } from '../../../shared/game.js';
 import type { AttemptSummary, ReplayRecordView } from '../../../shared/attempt.js';
 import type { AuthSession } from './auth.js';
 import { AttemptApiClient } from './attempt-api.js';
-import { AttemptWorkspace } from './AttemptWorkspace.js';
+import { AttemptActivityHarness as AttemptActivity } from './AttemptActivity.test-support.js';
 import type { RobotEditorHandle } from './RobotEditor.js';
 import { writeAttemptRecovery } from './attempt-recovery.js';
 import { doorVictoryRecord } from './replay/replay.test-support.js';
@@ -143,7 +143,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('AttemptWorkspace API renewal with a pending presentation ACK', () => {
+describe('AttemptActivity API renewal with a pending presentation ACK', () => {
   it('uses the renewed API only at the existing reconciliation deadline', async () => {
     const pending = attempt();
     const oldFetch = vi.fn<typeof fetch>(async (input) => {
@@ -184,7 +184,7 @@ describe('AttemptWorkspace API renewal with a pending presentation ACK', () => {
     const editor = { current: null } as RefObject<RobotEditorHandle | null>;
     writeAttemptRecovery({ sub: ACCOUNT, attemptId: ATTEMPT_ID });
     const view = render(
-      <AttemptWorkspace api={oldClient} editor={editor} session={session()} accessState="ready" />,
+      <AttemptActivity api={oldClient} editor={editor} session={session()} accessState="ready" />,
     );
     await screen.findByRole('button', { name: 'Completar reproducción' });
     vi.useFakeTimers();
@@ -200,7 +200,7 @@ describe('AttemptWorkspace API renewal with a pending presentation ACK', () => {
 
     await act(async () => vi.advanceTimersByTimeAsync(20_000));
     view.rerender(
-      <AttemptWorkspace
+      <AttemptActivity
         api={renewedClient}
         editor={editor}
         session={session()}
@@ -213,7 +213,7 @@ describe('AttemptWorkspace API renewal with a pending presentation ACK', () => {
     expect(renewedTrace).toEqual([]);
 
     view.rerender(
-      <AttemptWorkspace
+      <AttemptActivity
         api={renewedClient}
         editor={editor}
         session={session()}

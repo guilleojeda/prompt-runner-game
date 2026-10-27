@@ -9,7 +9,8 @@ import { LEVEL } from '../../../shared/game.js';
 import type { AttemptSummary, DecisionIndex, ReplayRecordView } from '../../../shared/attempt.js';
 import type { AuthSession } from './auth.js';
 import { AttemptApiFailure, isTransientReadFailure, type AttemptApi } from './attempt-api.js';
-import { AttemptWorkspace, type AttemptWorkspaceHandle } from './AttemptWorkspace.js';
+import { AttemptActivityHarness as AttemptActivity } from './AttemptActivity.test-support.js';
+import type { AttemptActivityHandle } from './useAttemptActivity.js';
 import type { RobotEditorHandle } from './RobotEditor.js';
 import { writeAttemptRecovery } from './attempt-recovery.js';
 import { doorVictoryRecord } from './replay/replay.test-support.js';
@@ -191,7 +192,7 @@ async function mountAndFinish(
   apiClient: AttemptApi,
   pending: AttemptSummary,
   options: {
-    readonly ref?: RefObject<AttemptWorkspaceHandle | null>;
+    readonly ref?: RefObject<AttemptActivityHandle | null>;
     readonly editor?: RefObject<RobotEditorHandle | null>;
     readonly onAuthRequired?: (authContext?: number) => boolean | void;
     readonly authPaused?: boolean;
@@ -202,7 +203,7 @@ async function mountAndFinish(
   storeForegroundAttempt(pending.id);
   const editor = options.editor ?? ({ current: null } as RefObject<RobotEditorHandle | null>);
   const workspace = (
-    <AttemptWorkspace
+    <AttemptActivity
       ref={options.ref}
       api={apiClient}
       editor={editor}
@@ -233,7 +234,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('AttemptWorkspace presentation ACK recovery', () => {
+describe('AttemptActivity presentation ACK recovery', () => {
   it('retries a known transient POST rejection every minute without exhaustion or a manual retry', async () => {
     const pending = attempt('attempt-a');
     const completed = attempt('attempt-a', 'victory', true);
@@ -396,7 +397,7 @@ describe('AttemptWorkspace presentation ACK recovery', () => {
       session: session(),
       accessState: 'ready' as const,
     };
-    const view = render(<AttemptWorkspace {...props} />);
+    const view = render(<AttemptActivity {...props} />);
     await screen.findByRole('button', { name: 'Completar reproducción' });
     vi.useFakeTimers();
     fireEvent.click(screen.getByRole('button', { name: 'Recursos listos' }));
@@ -411,7 +412,7 @@ describe('AttemptWorkspace presentation ACK recovery', () => {
       window.dispatchEvent(new Event('focus'));
       window.dispatchEvent(new Event('resize'));
     });
-    view.rerender(<AttemptWorkspace {...props} />);
+    view.rerender(<AttemptActivity {...props} />);
     await settle();
     expect(getAttempt).toHaveBeenCalledTimes(2);
     expect(completePresentation).toHaveBeenCalledOnce();
@@ -602,7 +603,7 @@ describe('AttemptWorkspace presentation ACK recovery', () => {
         decisions: [],
       }),
     });
-    const ref = { current: null } as RefObject<AttemptWorkspaceHandle | null>;
+    const ref = { current: null } as RefObject<AttemptActivityHandle | null>;
     const editor = editorWithSnapshot();
     await mountAndFinish(attemptApi, pendingA, {
       ref,
@@ -720,7 +721,7 @@ describe('AttemptWorkspace presentation ACK recovery', () => {
     storeForegroundAttempt(pending.id);
     const editor = { current: null } as RefObject<RobotEditorHandle | null>;
     const view = render(
-      <AttemptWorkspace api={attemptApi} editor={editor} session={session()} accessState="ready" />,
+      <AttemptActivity api={attemptApi} editor={editor} session={session()} accessState="ready" />,
     );
     await screen.findByRole('button', { name: 'Completar reproducción' });
     vi.useFakeTimers();
@@ -732,7 +733,7 @@ describe('AttemptWorkspace presentation ACK recovery', () => {
     await act(async () => vi.advanceTimersByTimeAsync(20_000));
     const getCallsBeforePause = getAttempt.mock.calls.length;
     view.rerender(
-      <AttemptWorkspace
+      <AttemptActivity
         api={attemptApi}
         editor={editor}
         session={session()}
@@ -751,7 +752,7 @@ describe('AttemptWorkspace presentation ACK recovery', () => {
 
     readback = confirmed;
     view.rerender(
-      <AttemptWorkspace
+      <AttemptActivity
         api={attemptApi}
         editor={editor}
         session={session()}
@@ -803,7 +804,7 @@ describe('AttemptWorkspace presentation ACK recovery', () => {
     storeForegroundAttempt(pending.id);
     const editor = { current: null } as RefObject<RobotEditorHandle | null>;
     const view = render(
-      <AttemptWorkspace api={initialApi} editor={editor} session={session()} accessState="ready" />,
+      <AttemptActivity api={initialApi} editor={editor} session={session()} accessState="ready" />,
     );
     await screen.findByRole('button', { name: 'Completar reproducción' });
     fireEvent.click(screen.getByRole('button', { name: 'Recursos listos' }));
@@ -814,7 +815,7 @@ describe('AttemptWorkspace presentation ACK recovery', () => {
     expect(postSignals[0]).toBeInstanceOf(AbortSignal);
 
     view.rerender(
-      <AttemptWorkspace
+      <AttemptActivity
         api={resumedApi}
         editor={editor}
         session={session()}
@@ -828,7 +829,7 @@ describe('AttemptWorkspace presentation ACK recovery', () => {
     expect(resumedApi.completePresentation).not.toHaveBeenCalled();
 
     view.rerender(
-      <AttemptWorkspace
+      <AttemptActivity
         api={resumedApi}
         editor={editor}
         session={session()}
@@ -877,7 +878,7 @@ describe('AttemptWorkspace presentation ACK recovery', () => {
     storeForegroundAttempt(pending.id);
     const editor = { current: null } as RefObject<RobotEditorHandle | null>;
     const view = render(
-      <AttemptWorkspace api={attemptApi} editor={editor} session={session()} accessState="ready" />,
+      <AttemptActivity api={attemptApi} editor={editor} session={session()} accessState="ready" />,
     );
     await screen.findByRole('button', { name: 'Completar reproducción' });
     vi.useFakeTimers();
@@ -891,7 +892,7 @@ describe('AttemptWorkspace presentation ACK recovery', () => {
     expect(getSignals[0]).toBeInstanceOf(AbortSignal);
 
     view.rerender(
-      <AttemptWorkspace
+      <AttemptActivity
         api={attemptApi}
         editor={editor}
         session={session()}
@@ -906,7 +907,7 @@ describe('AttemptWorkspace presentation ACK recovery', () => {
     expect(completePresentation).toHaveBeenCalledOnce();
 
     view.rerender(
-      <AttemptWorkspace
+      <AttemptActivity
         api={attemptApi}
         editor={editor}
         session={session()}
@@ -1004,7 +1005,7 @@ describe('AttemptWorkspace presentation ACK recovery', () => {
       storeForegroundAttempt(pending.id);
       const editor = { current: null } as RefObject<RobotEditorHandle | null>;
       const view = render(
-        <AttemptWorkspace
+        <AttemptActivity
           api={attemptApi}
           editor={editor}
           session={session()}
@@ -1021,7 +1022,7 @@ describe('AttemptWorkspace presentation ACK recovery', () => {
 
       if (exit === 'identity change') {
         view.rerender(
-          <AttemptWorkspace
+          <AttemptActivity
             api={attemptApi}
             editor={editor}
             session={session('subject-b')}

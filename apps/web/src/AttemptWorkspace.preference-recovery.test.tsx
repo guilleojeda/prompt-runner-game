@@ -6,7 +6,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createDefaultDraft } from '../../../shared/robot.js';
 import type { AuthSession } from './auth.js';
 import { AttemptApiFailure, type AttemptApi, type QuotaSummary } from './attempt-api.js';
-import { AttemptWorkspace, type AttemptWorkspaceHandle } from './AttemptWorkspace.js';
+import { AttemptActivityHarness as AttemptActivity } from './AttemptActivity.test-support.js';
+import type { AttemptActivityHandle } from './useAttemptActivity.js';
 import type { RobotEditorHandle } from './RobotEditor.js';
 
 const MINUTE = 60_000;
@@ -111,11 +112,11 @@ function mount(
   const editor = {
     current: { captureSnapshot },
   } as unknown as { current: RobotEditorHandle | null };
-  const ref = { current: null } as { current: AttemptWorkspaceHandle | null };
+  const ref = { current: null } as { current: AttemptActivityHandle | null };
   const onTryAvailabilityChange = vi.fn();
   const onAuthRequired = options.onAuthRequired ?? vi.fn();
   const view = render(
-    <AttemptWorkspace
+    <AttemptActivity
       ref={ref}
       api={runner}
       editor={editor}
@@ -160,7 +161,7 @@ afterEach(() => {
   }
 });
 
-describe('AttemptWorkspace animation preference recovery acceptance', () => {
+describe('AttemptActivity animation preference recovery acceptance', () => {
   it('keeps the first read mixed until confirmed, then stops without healthy polling or focus refresh', async () => {
     vi.useFakeTimers();
     const initialRead = deferred<{ animationEnabled: boolean; version: number }>();
@@ -257,7 +258,7 @@ describe('AttemptWorkspace animation preference recovery acceptance', () => {
     await advance(30_000);
 
     harness.view.rerender(
-      <AttemptWorkspace
+      <AttemptActivity
         ref={harness.ref}
         api={runner}
         editor={harness.editor}
@@ -697,7 +698,7 @@ describe('AttemptWorkspace animation preference recovery acceptance', () => {
     expect(getAnimationPreference).toHaveBeenCalledOnce();
 
     harness.view.rerender(
-      <AttemptWorkspace
+      <AttemptActivity
         ref={harness.ref}
         api={runner}
         editor={harness.editor}
@@ -711,7 +712,7 @@ describe('AttemptWorkspace animation preference recovery acceptance', () => {
     await settle();
     expect(putAnimationPreference).toHaveBeenCalledOnce();
     harness.view.rerender(
-      <AttemptWorkspace
+      <AttemptActivity
         ref={harness.ref}
         api={runner}
         editor={harness.editor}
@@ -747,7 +748,7 @@ describe('AttemptWorkspace animation preference recovery acceptance', () => {
     await settle();
     expect(getAnimationPreference).toHaveBeenCalledTimes(2);
     harness.view.rerender(
-      <AttemptWorkspace
+      <AttemptActivity
         ref={harness.ref}
         api={runner}
         editor={harness.editor}
@@ -803,7 +804,7 @@ describe('AttemptWorkspace animation preference recovery acceptance', () => {
     expect(pausedReadSignal?.aborted).toBe(false);
 
     harness.view.rerender(
-      <AttemptWorkspace
+      <AttemptActivity
         ref={harness.ref}
         api={runner}
         editor={harness.editor}
@@ -825,7 +826,7 @@ describe('AttemptWorkspace animation preference recovery acceptance', () => {
     expect(putAnimationPreference).toHaveBeenCalledOnce();
 
     harness.view.rerender(
-      <AttemptWorkspace
+      <AttemptActivity
         ref={harness.ref}
         api={runner}
         editor={harness.editor}
@@ -865,7 +866,7 @@ describe('AttemptWorkspace animation preference recovery acceptance', () => {
     expect(putAnimationPreference).toHaveBeenCalledOnce();
 
     harness.view.rerender(
-      <AttemptWorkspace
+      <AttemptActivity
         ref={harness.ref}
         api={runner}
         editor={harness.editor}
@@ -887,7 +888,7 @@ describe('AttemptWorkspace animation preference recovery acceptance', () => {
     expect(putAnimationPreference).toHaveBeenCalledOnce();
 
     harness.view.rerender(
-      <AttemptWorkspace
+      <AttemptActivity
         ref={harness.ref}
         api={runner}
         editor={harness.editor}
@@ -926,7 +927,7 @@ describe('AttemptWorkspace animation preference recovery acceptance', () => {
     expect(putAnimationPreference).toHaveBeenCalledOnce();
 
     harness.view.rerender(
-      <AttemptWorkspace
+      <AttemptActivity
         ref={harness.ref}
         api={runner}
         editor={harness.editor}
@@ -942,7 +943,7 @@ describe('AttemptWorkspace animation preference recovery acceptance', () => {
     expect(getAnimationPreference).toHaveBeenCalledOnce();
 
     harness.view.rerender(
-      <AttemptWorkspace
+      <AttemptActivity
         ref={harness.ref}
         api={runner}
         editor={harness.editor}
@@ -979,7 +980,7 @@ describe('AttemptWorkspace animation preference recovery acceptance', () => {
     await settle();
     expect(putAnimationPreference).toHaveBeenCalledOnce();
     harness.view.rerender(
-      <AttemptWorkspace
+      <AttemptActivity
         ref={harness.ref}
         api={runner}
         editor={harness.editor}
@@ -993,7 +994,7 @@ describe('AttemptWorkspace animation preference recovery acceptance', () => {
     await advance(2 * MINUTE);
     expect(putAnimationPreference).toHaveBeenCalledOnce();
     harness.view.rerender(
-      <AttemptWorkspace
+      <AttemptActivity
         ref={harness.ref}
         api={runner}
         editor={harness.editor}
@@ -1045,7 +1046,7 @@ describe('AttemptWorkspace animation preference recovery acceptance', () => {
       expect(harness.onTryAvailabilityChange).toHaveBeenLastCalledWith(false);
 
       harness.view.rerender(
-        <AttemptWorkspace
+        <AttemptActivity
           ref={harness.ref}
           api={runner}
           editor={harness.editor}
@@ -1058,7 +1059,7 @@ describe('AttemptWorkspace animation preference recovery acceptance', () => {
       );
       await settle();
       harness.view.rerender(
-        <AttemptWorkspace
+        <AttemptActivity
           ref={harness.ref}
           api={runner}
           editor={harness.editor}
@@ -1127,7 +1128,7 @@ describe('AttemptWorkspace animation preference recovery acceptance', () => {
     const staleReadSignal = getAnimationPreference.mock.calls[1]?.[0];
 
     harness.view.rerender(
-      <AttemptWorkspace
+      <AttemptActivity
         ref={harness.ref}
         api={runner}
         editor={harness.editor}

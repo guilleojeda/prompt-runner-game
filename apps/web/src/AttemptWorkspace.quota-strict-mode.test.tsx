@@ -6,7 +6,7 @@ import { User } from 'oidc-client-ts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AuthSession } from './auth.js';
 import type { AttemptApi, QuotaSummary } from './attempt-api.js';
-import { AttemptWorkspace } from './AttemptWorkspace.js';
+import { AttemptActivityHarness as AttemptActivity } from './AttemptActivity.test-support.js';
 import type { RobotEditorHandle } from './RobotEditor.js';
 
 const NOW = new Date('2026-10-27T12:00:00.000Z');
@@ -54,7 +54,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('AttemptWorkspace quota StrictMode lifecycle', () => {
+describe('AttemptActivity quota StrictMode lifecycle', () => {
   it('starts a replacement quota read after StrictMode replays effects', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
@@ -78,7 +78,7 @@ describe('AttemptWorkspace quota StrictMode lifecycle', () => {
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     render(
       <StrictMode>
-        <AttemptWorkspace api={runner} editor={editor} session={session()} accessState="ready" />
+        <AttemptActivity api={runner} editor={editor} session={session()} accessState="ready" />
       </StrictMode>,
     );
 

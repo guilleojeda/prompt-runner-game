@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createDefaultDraft } from '../../../shared/robot.js';
 import type { AuthSession } from './auth.js';
 import { AttemptApiFailure, type AttemptApi, type QuotaSummary } from './attempt-api.js';
-import { AttemptWorkspace } from './AttemptWorkspace.js';
+import { AttemptActivityHarness as AttemptActivity } from './AttemptActivity.test-support.js';
 import type { RobotEditorHandle } from './RobotEditor.js';
 
 const MINUTE = 60_000;
@@ -95,7 +95,7 @@ function mount(
   const onTryAvailabilityChange = vi.fn();
   const onAuthRequired = options.onAuthRequired ?? vi.fn(() => true);
   const view = render(
-    <AttemptWorkspace
+    <AttemptActivity
       api={runner}
       editor={editor}
       session={session()}
@@ -124,7 +124,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('AttemptWorkspace uncertain preference fence implementation', () => {
+describe('AttemptActivity uncertain preference fence implementation', () => {
   it('keeps the base→uncertain A→base fence through a definitive gateway 429', async () => {
     vi.useFakeTimers();
     const uncertainA = deferred<{ animationEnabled: boolean; version: number }>();
@@ -204,7 +204,7 @@ describe('AttemptWorkspace uncertain preference fence implementation', () => {
     expect(getAnimationPreference).toHaveBeenCalledTimes(2);
 
     harness.view.rerender(
-      <AttemptWorkspace
+      <AttemptActivity
         api={runner}
         editor={harness.editor}
         session={session()}
@@ -216,7 +216,7 @@ describe('AttemptWorkspace uncertain preference fence implementation', () => {
     );
     await settle();
     harness.view.rerender(
-      <AttemptWorkspace
+      <AttemptActivity
         api={runner}
         editor={harness.editor}
         session={session()}

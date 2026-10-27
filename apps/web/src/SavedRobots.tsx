@@ -1,6 +1,8 @@
 import {
+  forwardRef,
   useCallback,
   useEffect,
+  useImperativeHandle,
   useLayoutEffect,
   useRef,
   useState,
@@ -82,6 +84,11 @@ export interface SavedRobotsProps {
   accessState?: 'ready' | 'checking' | 'required';
   locked?: boolean;
   onAuthRequired?: ApiAuthRequired;
+  onReturnToEditor?: () => void;
+}
+
+export interface SavedRobotsHandle {
+  leaveSurface(): void;
 }
 
 function modelLabel(modelKey: string): string {
@@ -169,16 +176,20 @@ function sameSavedContent(robot: SavedRobot, id: string, name: string, draft: Ro
   return robot.id === id && robot.name === name && draftsEqual(robot.draft, draft);
 }
 
-export function SavedRobots({
-  api,
-  editor,
-  session,
-  configurationAvailable = true,
-  paused = false,
-  accessState = 'checking',
-  locked = false,
-  onAuthRequired,
-}: SavedRobotsProps) {
+export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(function SavedRobots(
+  {
+    api,
+    editor,
+    session,
+    configurationAvailable = true,
+    paused = false,
+    accessState = 'checking',
+    locked = false,
+    onAuthRequired,
+    onReturnToEditor,
+  },
+  ref,
+) {
   const [robots, setRobots] = useState<SavedRobotSummary[]>([]);
   const [selected, setSelected] = useState<SavedRobot | null>(null);
   const [nextCursor, setNextCursor] = useState<string | undefined>();
@@ -205,6 +216,7 @@ export function SavedRobots({
   const operationTokenRef = useRef(0);
   const operationOwnerRef = useRef<number | null>(null);
   const inspectionOperationRef = useRef<number | null>(null);
+  const inspectionControllerRef = useRef<AbortController | null>(null);
   const inspectionHeadingRef = useRef<HTMLHeadingElement | null>(null);
   const inspectionTriggerRef = useRef<HTMLButtonElement | null>(null);
   const inspectionOpeningRef = useRef(false);
@@ -269,11 +281,11 @@ export function SavedRobots({
     return token;
   };
 
-  const finishOperation = (token: number): void => {
+  const finishOperation = useCallback((token: number): void => {
     if (operationOwnerRef.current !== token) return;
     operationOwnerRef.current = null;
     setOperation(null);
-  };
+  }, []);
 
   useEffect(() => {
     if (
@@ -332,6 +344,9 @@ export function SavedRobots({
       const current = applicationRef.current;
       applicationRef.current = null;
       current?.controller.abort();
+      inspectionRequestRef.current += 1;
+      inspectionControllerRef.current?.abort();
+      inspectionControllerRef.current = null;
     },
     [],
   );
@@ -371,15 +386,26 @@ export function SavedRobots({
     }
   };
 
+  const invalidateInspection = useCallback((): {
+    readonly operationToken: number | null;
+    readonly hadPendingRequest: boolean;
+  } => {
+    const operationToken = inspectionOperationRef.current;
+    const hadPendingRequest = inspectionControllerRef.current !== null;
+    inspectionRequestRef.current += 1;
+    inspectionControllerRef.current?.abort();
+    inspectionControllerRef.current = null;
+    inspectionOperationRef.current = null;
+    inspectionOpeningRef.current = false;
+    return { operationToken, hadPendingRequest };
+  }, []);
+
   const clearInspection = (returnFocus: boolean): void => {
     cancelApplication();
-    inspectionRequestRef.current += 1;
-    const inspectionOperation = inspectionOperationRef.current;
-    inspectionOperationRef.current = null;
-    if (inspectionOperation !== null) finishOperation(inspectionOperation);
+    const { operationToken } = invalidateInspection();
+    if (operationToken !== null) finishOperation(operationToken);
     const trigger = inspectionTriggerRef.current;
     inspectionTriggerRef.current = null;
-    inspectionOpeningRef.current = false;
     setInspection(null);
     setInspectionLoadingId(null);
     setInspectionError(null);
@@ -392,6 +418,17 @@ export function SavedRobots({
     }
   };
 
+  const leaveSurface = useCallback((): void => {
+    const hadApplication = applicationRef.current !== null;
+    cancelApplication();
+    if (hadApplication) editor.current?.cancelApplication?.();
+    const { operationToken, hadPendingRequest } = invalidateInspection();
+    if (operationToken !== null) finishOperation(operationToken);
+    if (hadPendingRequest) setInspectionLoadingId(null);
+  }, [cancelApplication, editor, finishOperation, invalidateInspection]);
+
+  useImperativeHandle(ref, () => ({ leaveSurface }), [leaveSurface]);
+
   const handleInspect = async (
     summary: SavedRobotSummary,
     trigger: HTMLButtonElement,
@@ -402,6 +439,9 @@ export function SavedRobots({
     inspectionTriggerRef.current = trigger;
     inspectionOpeningRef.current = true;
     const operationToken = beginOperation('load');
+    const controller = new AbortController();
+    inspectionControllerRef.current?.abort();
+    inspectionControllerRef.current = controller;
     inspectionOperationRef.current = operationToken;
     setInspection(null);
     setInspectionLoadingId(summary.id);
@@ -411,11 +451,21 @@ export function SavedRobots({
     setErrorKind(null);
     const generation = generationRef.current;
     try {
-      const robot = await api.getRobot(summary.id);
-      if (!isCurrent(generation) || inspectionRequestRef.current !== requestId) return;
+      const robot = await api.getRobot(summary.id, controller.signal);
+      if (
+        controller.signal.aborted ||
+        !isCurrent(generation) ||
+        inspectionRequestRef.current !== requestId
+      )
+        return;
       setInspection(robot);
     } catch (loadError) {
-      if (!isCurrent(generation) || inspectionRequestRef.current !== requestId) return;
+      if (
+        controller.signal.aborted ||
+        !isCurrent(generation) ||
+        inspectionRequestRef.current !== requestId
+      )
+        return;
       setInspectionError(apiErrorMessage(loadError, 'No se pudo consultar esta copia.'));
       if (isAuthError(loadError)) onAuthRequired?.(loadError.authContext);
     } finally {
@@ -426,6 +476,7 @@ export function SavedRobots({
         }
         finishOperation(operationToken);
       }
+      if (inspectionControllerRef.current === controller) inspectionControllerRef.current = null;
     }
   };
 
@@ -464,7 +515,9 @@ export function SavedRobots({
       setSelected(robot);
       setName(robot.name);
       setMessage(`Cargaste «${robot.name}».`);
-      editor.current?.focusEditor?.();
+      finishApplication(intent);
+      if (onReturnToEditor) onReturnToEditor();
+      else editor.current?.focusEditor?.();
     } catch (loadError) {
       if (!isCurrentApplication(intent, generation)) return;
       if (loadError instanceof OversizedSavedDraft) {
@@ -869,7 +922,9 @@ export function SavedRobots({
       updateListWith(selectedConflict);
       setConflict(null);
       setMessage(`Cargaste la versión remota de «${selectedConflict.name}».`);
-      editor.current?.focusEditor?.();
+      finishApplication(intent);
+      if (onReturnToEditor) onReturnToEditor();
+      else editor.current?.focusEditor?.();
     } catch (loadError) {
       if (isCurrentApplication(intent, generation)) {
         setError(apiErrorMessage(loadError, 'No se pudo cargar la versión remota.'));
@@ -898,7 +953,9 @@ export function SavedRobots({
       <div className="saved-robots-heading">
         <div>
           <p className="card-kicker">Copias guardadas</p>
-          <h2 id="saved-robots-title">Tus robots</h2>
+          <h2 id="saved-robots-title" tabIndex={-1}>
+            Tus robots
+          </h2>
           <p className="saved-robots-intro">
             Guardá configuraciones con nombre para volver a cargarlas cuando quieras. Editar la
             configuración actual no cambia una copia hasta que pulses «Guardar».
@@ -1255,4 +1312,6 @@ export function SavedRobots({
       )}
     </section>
   );
-}
+});
+
+SavedRobots.displayName = 'SavedRobots';

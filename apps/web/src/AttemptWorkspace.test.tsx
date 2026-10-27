@@ -382,7 +382,7 @@ describe('AttemptActivity', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: 'Cerrar inspección' }));
     fireEvent.click(
-      within(history.closest('section') as HTMLElement).getByRole('button', {
+      await within(history.closest('section') as HTMLElement).findByRole('button', {
         name: 'Ver resultado',
       }),
     );
@@ -445,7 +445,7 @@ describe('AttemptActivity', () => {
 
     const history = await screen.findByRole('heading', { name: 'Historial' });
     fireEvent.click(
-      within(history.closest('section') as HTMLElement).getByRole('button', {
+      await within(history.closest('section') as HTMLElement).findByRole('button', {
         name: 'Ver resultado',
       }),
     );
@@ -515,16 +515,16 @@ describe('AttemptActivity', () => {
 
     const history = await screen.findByRole('heading', { name: 'Historial' });
     const historySection = history.closest('section') as HTMLElement;
-    fireEvent.click(within(historySection).getByRole('button', { name: 'Ver último paso' }));
+    fireEvent.click(await within(historySection).findByRole('button', { name: 'Ver último paso' }));
     expect(await screen.findByRole('heading', { name: 'Decisión 2, casilla 4' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Cerrar inspección' }));
     fireEvent.click(
-      within(historySection).getByRole('button', { name: 'Inspeccionar decisiones' }),
+      await within(historySection).findByRole('button', { name: 'Inspeccionar decisiones' }),
     );
     expect(await screen.findByRole('heading', { name: 'Decisión 1, casilla 3' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Cerrar inspección' }));
     fireEvent.click(
-      within(historySection).getByRole('button', {
+      await within(historySection).findByRole('button', {
         name: 'Ver resultado',
       }),
     );
@@ -591,7 +591,7 @@ describe('AttemptActivity', () => {
 
     const history = screen.getByRole('heading', { name: 'Historial' }).closest('section');
     expect(history).not.toBeNull();
-    const historyRows = within(history as HTMLElement).getAllByRole('listitem');
+    const historyRows = await within(history as HTMLElement).findAllByRole('listitem');
     fireEvent.click(
       within(historyRows[1] as HTMLElement).getByRole('button', {
         name: 'Inspeccionar decisiones',
@@ -736,7 +736,7 @@ describe('AttemptActivity', () => {
 
     const history = await screen.findByRole('heading', { name: 'Historial' });
     fireEvent.click(
-      within(history.closest('section') as HTMLElement).getByRole('button', {
+      await within(history.closest('section') as HTMLElement).findByRole('button', {
         name: 'Inspeccionar decisiones',
       }),
     );
@@ -746,7 +746,7 @@ describe('AttemptActivity', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cerrar inspección' }));
 
     fireEvent.click(
-      within(history.closest('section') as HTMLElement).getByRole('button', {
+      await within(history.closest('section') as HTMLElement).findByRole('button', {
         name: 'Ver resultado',
       }),
     );
@@ -821,7 +821,7 @@ describe('AttemptActivity', () => {
 
     const history = await screen.findByRole('heading', { name: 'Historial' });
     fireEvent.click(
-      within(history.closest('section') as HTMLElement).getByRole('button', {
+      await within(history.closest('section') as HTMLElement).findByRole('button', {
         name: 'Inspeccionar decisiones',
       }),
     );
@@ -862,7 +862,7 @@ describe('AttemptActivity', () => {
 
     const history = await screen.findByRole('heading', { name: 'Historial' });
     fireEvent.click(
-      within(history.closest('section') as HTMLElement).getByRole('button', {
+      await within(history.closest('section') as HTMLElement).findByRole('button', {
         name: 'Ver resultado',
       }),
     );
@@ -1527,7 +1527,9 @@ describe('AttemptActivity', () => {
     ).toBeTruthy();
     expect(within(history as HTMLElement).queryByText(/Puntaje:/)).toBeNull();
 
-    fireEvent.click(within(history as HTMLElement).getByRole('button', { name: 'Ver resultado' }));
+    fireEvent.click(
+      await within(history as HTMLElement).findByRole('button', { name: 'Ver resultado' }),
+    );
     await screen.findByRole('heading', { name: 'Derrota' });
     expect(screen.getByText('Avance máximo').nextElementSibling?.textContent).toBe('40%');
     expect(screen.getByText('Recompensa').nextElementSibling?.textContent).toBe(
@@ -1574,7 +1576,9 @@ describe('AttemptActivity', () => {
     expect(within(history as HTMLElement).getByText(/Puntaje: 935,13/)).toBeTruthy();
     expect(getReplay).not.toHaveBeenCalled();
 
-    fireEvent.click(within(history as HTMLElement).getByRole('button', { name: 'Ver resultado' }));
+    fireEvent.click(
+      await within(history as HTMLElement).findByRole('button', { name: 'Ver resultado' }),
+    );
     expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
     expect(screen.queryByText('Avance máximo')).toBeNull();
     expect(screen.getByText('Turnos').nextElementSibling?.textContent).toBe('8 / 24');
@@ -1624,7 +1628,7 @@ describe('AttemptActivity', () => {
 
     const history = await screen.findByRole('heading', { name: 'Historial' });
     fireEvent.click(
-      within(history.closest('section') as HTMLElement).getByRole('button', {
+      await within(history.closest('section') as HTMLElement).findByRole('button', {
         name: 'Ver resultado',
       }),
     );
@@ -2037,7 +2041,9 @@ describe('AttemptActivity', () => {
     await waitFor(() => expect(completePresentation).toHaveBeenCalledOnce());
     const history = screen.getByRole('heading', { name: 'Historial' }).closest('section');
     expect(history).not.toBeNull();
-    fireEvent.click(within(history as HTMLElement).getByRole('button', { name: 'Ver de nuevo' }));
+    fireEvent.click(
+      await within(history as HTMLElement).findByRole('button', { name: 'Ver de nuevo' }),
+    );
     expect(await screen.findByRole('heading', { name: 'Reproducción del intento' })).toBeTruthy();
     expect(screen.queryByRole('heading', { name: 'Victoria' })).toBeNull();
     expect(await screen.findByRole('heading', { name: 'Reproducción del intento' })).toBeTruthy();
@@ -2099,7 +2105,7 @@ describe('AttemptActivity', () => {
     await waitFor(() => expect(completePresentation).toHaveBeenCalledOnce());
     const history = screen.getByRole('heading', { name: 'Historial' }).closest('section');
     expect(history).not.toBeNull();
-    const rows = within(history as HTMLElement).getAllByRole('listitem');
+    const rows = await within(history as HTMLElement).findAllByRole('listitem');
     fireEvent.click(within(rows[1] as HTMLElement).getByRole('button', { name: 'Ver de nuevo' }));
     expect(await screen.findByRole('heading', { name: 'Ver de nuevo' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Completar reproducción' }));
@@ -2107,7 +2113,7 @@ describe('AttemptActivity', () => {
 
     const historyAfterB = screen.getByRole('heading', { name: 'Historial' }).closest('section');
     expect(historyAfterB).not.toBeNull();
-    const rowsAfterB = within(historyAfterB as HTMLElement).getAllByRole('listitem');
+    const rowsAfterB = await within(historyAfterB as HTMLElement).findAllByRole('listitem');
     fireEvent.click(
       within(rowsAfterB[0] as HTMLElement).getByRole('button', { name: 'Ver resultado' }),
     );
@@ -2291,7 +2297,7 @@ describe('AttemptActivity', () => {
     render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
     await screen.findByText('Historial');
     expect(screen.queryByRole('button', { name: 'Inspeccionar decisiones' })).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Ver resultado' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Ver resultado' }));
     expect(await screen.findByRole('button', { name: 'Completar reproducción' })).toBeTruthy();
     expect(getReplay).toHaveBeenCalledWith(pending.id);
     expect(completePresentation).not.toHaveBeenCalled();
@@ -3847,7 +3853,7 @@ describe('AttemptActivity', () => {
 
     const history = await screen.findByRole('heading', { name: 'Historial' });
     const historySection = history.closest('section') as HTMLElement;
-    const loadMore = within(historySection).getByRole('button', { name: 'Cargar 20 más' });
+    const loadMore = await within(historySection).findByRole('button', { name: 'Cargar 20 más' });
     fireEvent.click(loadMore);
     await waitFor(() =>
       expect(listAttempts).toHaveBeenCalledWith('cursor-old', expect.any(AbortSignal)),
@@ -3887,7 +3893,9 @@ describe('AttemptActivity', () => {
     );
     expect(within(historySection).getAllByRole('listitem')).toHaveLength(2);
     expect(historySection.querySelector('[data-history-attempt-id="history-old-2"]')).toBeNull();
-    expect(within(historySection).getByRole('button', { name: 'Cargar 20 más' })).toBeTruthy();
+    expect(
+      await within(historySection).findByRole('button', { name: 'Cargar 20 más' }),
+    ).toBeTruthy();
     expect(screen.getByText('2 cargados, hay más intentos para consultar')).toBeTruthy();
     expect(attemptApi.createAttempt).toHaveBeenCalledOnce();
     view.rerender(
@@ -3900,7 +3908,7 @@ describe('AttemptActivity', () => {
       />,
     );
     await waitFor(() => expect((loadMore as HTMLButtonElement).disabled).toBe(false));
-    fireEvent.click(within(historySection).getByRole('button', { name: 'Cargar 20 más' }));
+    fireEvent.click(await within(historySection).findByRole('button', { name: 'Cargar 20 más' }));
     await waitFor(() => expect(within(historySection).getAllByRole('listitem')).toHaveLength(3));
     expect(screen.getByText('3 cargados, todo el historial disponible está visible')).toBeTruthy();
   });
@@ -3951,7 +3959,7 @@ describe('AttemptActivity', () => {
 
     const history = await screen.findByRole('heading', { name: 'Historial' });
     const historySection = history.closest('section') as HTMLElement;
-    fireEvent.click(within(historySection).getByRole('button', { name: 'Cargar 20 más' }));
+    fireEvent.click(await within(historySection).findByRole('button', { name: 'Cargar 20 más' }));
     await waitFor(() => expect(cursorCalls).toBe(2));
     await waitFor(() => expect(screen.queryByText('Cargando preferencia guardada…')).toBeNull());
     await act(async () => {
@@ -3965,10 +3973,12 @@ describe('AttemptActivity', () => {
     await act(async () => rejectOlderPage(new Error('old history request failed')));
     await waitFor(() => expect(screen.queryByText('old history request failed')).toBeNull());
     expect(within(historySection).getAllByRole('listitem')).toHaveLength(2);
-    expect(within(historySection).getByRole('button', { name: 'Cargar 20 más' })).toBeTruthy();
+    expect(
+      await within(historySection).findByRole('button', { name: 'Cargar 20 más' }),
+    ).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Reintentar consultas' })).toBeNull();
 
-    fireEvent.click(within(historySection).getByRole('button', { name: 'Cargar 20 más' }));
+    fireEvent.click(await within(historySection).findByRole('button', { name: 'Cargar 20 más' }));
     expect(await screen.findByRole('button', { name: /Reintentar historial/i })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /Reintentar historial/i }));
     await waitFor(() =>
@@ -4016,10 +4026,9 @@ describe('AttemptActivity', () => {
     const view = render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     const history = await screen.findByRole('heading', { name: 'Historial' });
-    const configurationButtons = within(history.closest('section') as HTMLElement).getAllByRole(
-      'button',
-      { name: 'Ver configuración' },
-    );
+    const configurationButtons = await within(
+      history.closest('section') as HTMLElement,
+    ).findAllByRole('button', { name: 'Ver configuración' });
     fireEvent.click(configurationButtons[0]!);
     expect(await screen.findByRole('heading', { name: 'Configuración del intento' })).toBeTruthy();
     expect(getConfiguration).toHaveBeenCalledWith(terminal.id, expect.any(AbortSignal));
@@ -4069,9 +4078,11 @@ describe('AttemptActivity', () => {
     render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     const history = await screen.findByRole('heading', { name: 'Historial' });
-    const opener = within(history.closest('section') as HTMLElement).getAllByRole('button', {
-      name: 'Ver configuración',
-    })[0]!;
+    const opener = (
+      await within(history.closest('section') as HTMLElement).findAllByRole('button', {
+        name: 'Ver configuración',
+      })
+    )[0]!;
     opener.focus();
     fireEvent.click(opener);
     await screen.findByText('Candidato de historial.');
@@ -4126,8 +4137,8 @@ describe('AttemptActivity', () => {
     render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     const history = await screen.findByRole('heading', { name: 'Historial' });
-    const historyList = within(history.closest('section') as HTMLElement).getByRole('list');
-    const configurationButtons = within(historyList).getAllByRole('button', {
+    const historyList = await within(history.closest('section') as HTMLElement).findByRole('list');
+    const configurationButtons = await within(historyList).findAllByRole('button', {
       name: 'Ver configuración',
     });
     const firstOpener = configurationButtons[0]!;
@@ -4183,9 +4194,11 @@ describe('AttemptActivity', () => {
 
       const history = await screen.findByRole('heading', { name: 'Historial' });
       fireEvent.click(
-        within(history.closest('section') as HTMLElement).getAllByRole('button', {
-          name: 'Ver configuración',
-        })[0]!,
+        (
+          await within(history.closest('section') as HTMLElement).findAllByRole('button', {
+            name: 'Ver configuración',
+          })
+        )[0]!,
       );
       await screen.findByText('Aplicación cancelada.');
       fireEvent.click(screen.getByRole('button', { name: 'Usar esta configuración' }));
@@ -4238,9 +4251,11 @@ describe('AttemptActivity', () => {
 
     const history = await screen.findByRole('heading', { name: 'Historial' });
     fireEvent.click(
-      within(history.closest('section') as HTMLElement).getAllByRole('button', {
-        name: 'Ver configuración',
-      })[0]!,
+      (
+        await within(history.closest('section') as HTMLElement).findAllByRole('button', {
+          name: 'Ver configuración',
+        })
+      )[0]!,
     );
     expect(await screen.findByText('Snapshot consultable')).toBeTruthy();
     const applyButton = screen.getByRole('button', { name: 'Usar esta configuración' });
@@ -4268,9 +4283,11 @@ describe('AttemptActivity', () => {
     render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     const history = await screen.findByRole('heading', { name: 'Historial' });
-    const opener = within(history.closest('section') as HTMLElement).getAllByRole('button', {
-      name: 'Ver configuración',
-    })[0]!;
+    const opener = (
+      await within(history.closest('section') as HTMLElement).findAllByRole('button', {
+        name: 'Ver configuración',
+      })
+    )[0]!;
     opener.focus();
     fireEvent.click(opener);
     const heading = await screen.findByRole('heading', { name: 'Configuración del intento' });
@@ -4278,7 +4295,9 @@ describe('AttemptActivity', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cerrar' }));
     expect(document.activeElement).toBe(opener);
 
-    const row = within(history.closest('section') as HTMLElement).getAllByRole('listitem')[0]!;
+    const row = (
+      await within(history.closest('section') as HTMLElement).findAllByRole('listitem')
+    )[0]!;
     fireEvent.click(within(row).getByRole('button', { name: 'Ver resultado' }));
     const result = await screen.findByRole('heading', { name: 'Victoria' });
     const resultOpener = within(result.closest('section') as HTMLElement).getByRole('button', {
@@ -4312,9 +4331,11 @@ describe('AttemptActivity', () => {
     render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     const history = await screen.findByRole('heading', { name: 'Historial' });
-    const opener = within(history.closest('section') as HTMLElement).getAllByRole('button', {
-      name: 'Ver configuración',
-    })[0]!;
+    const opener = (
+      await within(history.closest('section') as HTMLElement).findAllByRole('button', {
+        name: 'Ver configuración',
+      })
+    )[0]!;
     opener.focus();
     fireEvent.click(opener);
     const heading = await screen.findByRole('heading', { name: 'Configuración del intento' });
@@ -4352,9 +4373,11 @@ describe('AttemptActivity', () => {
 
     const history = await screen.findByRole('heading', { name: 'Historial' });
     fireEvent.click(
-      within(history.closest('section') as HTMLElement).getAllByRole('button', {
-        name: 'Ver configuración',
-      })[0]!,
+      (
+        await within(history.closest('section') as HTMLElement).findAllByRole('button', {
+          name: 'Ver configuración',
+        })
+      )[0]!,
     );
     fireEvent.click(await screen.findByRole('button', { name: 'Usar esta configuración' }));
     await waitFor(() => expect(applyDraft).toHaveBeenCalled());
@@ -4399,11 +4422,13 @@ describe('AttemptActivity', () => {
     render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
     const history = await screen.findByRole('heading', { name: 'Historial' });
     fireEvent.click(
-      within(history.closest('section') as HTMLElement).getAllByRole('button', {
-        name: 'Ver configuración',
-      })[0]!,
+      (
+        await within(history.closest('section') as HTMLElement).findAllByRole('button', {
+          name: 'Ver configuración',
+        })
+      )[0]!,
     );
-    const rows = within(history.closest('section') as HTMLElement).getAllByRole('listitem');
+    const rows = await within(history.closest('section') as HTMLElement).findAllByRole('listitem');
     fireEvent.click(within(rows[1]!).getByRole('button', { name: 'Ver resultado' }));
     resolveConfiguration({ attemptId: first.id, draft: createDefaultDraft() });
     await act(async () => {
@@ -4439,9 +4464,11 @@ describe('AttemptActivity', () => {
     const view = render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
     const history = await screen.findByRole('heading', { name: 'Historial' });
     fireEvent.click(
-      within(history.closest('section') as HTMLElement).getAllByRole('button', {
-        name: 'Ver configuración',
-      })[0]!,
+      (
+        await within(history.closest('section') as HTMLElement).findAllByRole('button', {
+          name: 'Ver configuración',
+        })
+      )[0]!,
     );
     view.rerender(
       <AttemptActivity
@@ -4487,9 +4514,11 @@ describe('AttemptActivity', () => {
     const view = render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
     const openFromHistory = async (): Promise<void> => {
       const history = await screen.findByRole('heading', { name: 'Historial' });
-      const button = within(history.closest('section') as HTMLElement).getAllByRole('button', {
-        name: 'Ver configuración',
-      })[0] as HTMLButtonElement;
+      const button = (
+        await within(history.closest('section') as HTMLElement).findAllByRole('button', {
+          name: 'Ver configuración',
+        })
+      )[0] as HTMLButtonElement;
       await waitFor(() => expect(button.disabled).toBe(false));
       fireEvent.click(button);
       fireEvent.click(await screen.findByRole('button', { name: 'Usar esta configuración' }));
