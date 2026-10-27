@@ -114,6 +114,55 @@ function clickLogout(): void {
   fireEvent.click(getLogoutButton());
 }
 
+type GameSurface = 'Preparar' | 'Historial' | 'Mis robots';
+
+function navigate(surface: GameSurface): HTMLButtonElement {
+  const navigation = screen.getByRole('navigation', { name: 'Navegación principal' });
+  const button = within(navigation).getByRole('button', { name: surface }) as HTMLButtonElement;
+  const current = button.getAttribute('aria-current');
+  if (!current || current === 'false') fireEvent.click(button);
+  return button;
+}
+
+function expectNavigationBlocked(): void {
+  const navigation = screen.getByRole('navigation', { name: 'Navegación principal' });
+  for (const surface of ['Preparar', 'Historial', 'Mis robots'] as const) {
+    const button = within(navigation).getByRole('button', { name: surface }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    const description = button.getAttribute('aria-describedby');
+    const reasonIds = description?.split(/\s+/).filter(Boolean) ?? [];
+    const reasons = reasonIds
+      .map((id) => document.getElementById(id))
+      .filter((reason): reason is HTMLElement => reason instanceof HTMLElement);
+    expect(
+      reasons.some((reason) => {
+        const style = getComputedStyle(reason);
+        return (
+          reason.isConnected &&
+          Boolean(reason.textContent?.trim()) &&
+          !reason.hidden &&
+          reason.closest('[hidden]') === null &&
+          reason.getAttribute('aria-hidden') !== 'true' &&
+          style.display !== 'none' &&
+          style.visibility !== 'hidden'
+        );
+      }),
+    ).toBe(true);
+  }
+}
+
+function findPreparationHeading(): HTMLElement {
+  const heading = Array.from(document.querySelectorAll('h1, h2, h3, h4')).find(
+    (node) => node.textContent?.trim() === 'Prepará tu robot',
+  );
+  if (!heading) throw new Error('No está montada la superficie Preparar.');
+  return heading as HTMLElement;
+}
+
+function expectPreparationHidden(): void {
+  expect(findPreparationHeading().closest('[hidden]')).not.toBeNull();
+}
+
 function expectAccountTriggerLocked(): void {
   expect(getAccountTrigger().disabled).toBe(true);
   const logoutButton = screen.queryByRole('button', { name: 'Cerrar sesión' });
@@ -272,16 +321,13 @@ describe('access screen', () => {
       />,
     );
 
-    const controls = await waitFor(() => {
-      const host = document.querySelector('#attempt-controls-slot');
-      if (!host) throw new Error('Todavía no existe el pie del editor.');
-      return host as HTMLElement;
-    });
+    const controls = (await screen.findByRole('group', {
+      name: 'Controles de prueba y animación',
+    })) as HTMLElement;
     expect(within(controls).getByRole('checkbox', { name: 'Animación' })).toBeTruthy();
     const tryButton = within(controls).getByRole('button', { name: 'Probar' }) as HTMLButtonElement;
     expect(tryButton.disabled).toBe(true);
 
-    await screen.findByText('Todavía no hay intentos guardados.');
     await within(controls).findByText('de 100 intentos disponibles');
     expect(
       (within(controls).getByRole('checkbox', { name: 'Animación' }) as HTMLInputElement).checked,
@@ -293,13 +339,19 @@ describe('access screen', () => {
     expect(screen.getAllByRole('button', { name: 'Probar' })).toHaveLength(1);
     expect(screen.getAllByRole('checkbox', { name: 'Animación' })).toHaveLength(1);
     expect(screen.getAllByLabelText('Cuota: 100 de 100 intentos disponibles')).toHaveLength(1);
-    expect(document.querySelector('#attempt-controls-slot')).toBe(controls);
     expect(controls.isConnected).toBe(true);
     expect(within(controls).getByRole('checkbox', { name: 'Animación' })).toBeTruthy();
     expect(tryButton.disabled).toBe(true);
 
     releaseDraft({ version: 0, draft: createDefaultDraft() });
     await waitFor(() => expect(tryButton.disabled).toBe(false));
+    const instructions = screen.getByLabelText('Qué debe tener en cuenta el robot');
+    expect(instructions.compareDocumentPosition(controls) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    expect(screen.getAllByRole('group', { name: 'Controles de prueba y animación' })[0]).toBe(
+      controls,
+    );
   });
 
   it('keeps one focused editor and its draft when App rerenders', async () => {
@@ -313,7 +365,8 @@ describe('access screen', () => {
     const props = { authClient, draftApi, attemptApi, configLoader };
     const view = render(<App {...props} />);
 
-    await screen.findByRole('heading', { name: 'Historial' });
+    await screen.findByRole('heading', { name: 'Prepará tu robot' });
+    navigate('Preparar');
     const instructions = (await screen.findByLabelText(
       'Qué debe tener en cuenta el robot',
     )) as HTMLTextAreaElement;
@@ -386,6 +439,8 @@ describe('access screen', () => {
     );
 
     await act(flushAuthMicrotasks);
+    expect(screen.getByRole('heading', { name: 'Prepará tu robot' })).toBeTruthy();
+    navigate('Mis robots');
     const savedSection = screen
       .getByRole('heading', { name: 'Tus robots' })
       .closest('section') as HTMLElement;
@@ -413,16 +468,17 @@ describe('access screen', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1);
     });
-    expect(screen.getByDisplayValue(createDefaultDraft().instructions)).toBeTruthy();
+    expect((document.querySelector('#robot-instructions') as HTMLTextAreaElement).value).toBe(
+      createDefaultDraft().instructions,
+    );
     expect((copyButton as HTMLButtonElement).disabled).toBe(false);
     expect(createButton.disabled).toBe(false);
     expect(getDraft).toHaveBeenCalledTimes(2);
     expect(listRobots).toHaveBeenCalledTimes(2);
   });
 
-  it('cancels a saved-copy application on edit and applies only after choosing it again', async () => {
+  it('cancels a saved-copy application when leaving Mis robots and applies only after choosing again', async () => {
     const loadedDraft = { ...createDefaultDraft(), instructions: 'Copia guardada.' };
-    const localDraft = { ...createDefaultDraft(), instructions: 'Edición posterior.' };
     const savedCopy: SavedRobot = {
       id: 'saved-copy-late',
       name: 'Explorador tardío',
@@ -440,7 +496,7 @@ describe('access screen', () => {
     );
     const putDraft = vi
       .fn()
-      .mockImplementation(async (version: number, draft: typeof localDraft) => ({
+      .mockImplementation(async (version: number, draft: typeof loadedDraft) => ({
         version: version + 1,
         draft,
       }));
@@ -479,28 +535,22 @@ describe('access screen', () => {
     await waitFor(() =>
       expect((instructions.closest('fieldset') as HTMLFieldSetElement).disabled).toBe(false),
     );
-    const copyButton = await screen.findByRole('button', {
-      name: /Explorador tardío.*Cargar/,
-    });
+    navigate('Mis robots');
+    const copyButton = await screen.findByRole('button', { name: /Explorador tardío.*Cargar/ });
     await waitFor(() => expect((copyButton as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(copyButton);
     await waitFor(() => expect(getRobot).toHaveBeenCalledOnce());
     const firstSignal = getRobot.mock.calls[0]?.[1];
     expect(firstSignal).toBeInstanceOf(AbortSignal);
-    fireEvent.change(instructions, { target: { value: localDraft.instructions } });
+    navigate('Preparar');
     expect(firstSignal?.aborted).toBe(true);
     await act(async () => {
       resolveRobot(savedCopy);
       await Promise.resolve();
     });
 
-    await waitFor(() => expect(screen.getByDisplayValue(localDraft.instructions)).toBeTruthy());
-    expect(screen.queryByDisplayValue(loadedDraft.instructions)).toBeNull();
-    await waitFor(() => expect(putDraft).toHaveBeenCalledOnce(), { timeout: 2_000 });
-    expect(putDraft.mock.calls[0]?.[1]).toMatchObject({ instructions: localDraft.instructions });
-    expect(putDraft.mock.calls[0]?.[1]).not.toMatchObject({
-      instructions: loadedDraft.instructions,
-    });
+    expect((instructions as HTMLTextAreaElement).value).toBe(createDefaultDraft().instructions);
+    expect(putDraft).not.toHaveBeenCalled();
     expect(screen.queryByText(`Cargaste «${savedCopy.name}».`)).toBeNull();
     expect(
       screen.queryByText(
@@ -508,15 +558,20 @@ describe('access screen', () => {
       ),
     ).toBeNull();
 
+    navigate('Mis robots');
     getRobot.mockResolvedValueOnce(savedCopy);
-    fireEvent.click(copyButton);
+    const secondCopyButton = await screen.findByRole('button', {
+      name: /Explorador tardío.*Cargar/,
+    });
+    fireEvent.click(secondCopyButton);
     await waitFor(() => expect(screen.getByDisplayValue(loadedDraft.instructions)).toBeTruthy());
     expect(await screen.findByText(`Cargaste «${savedCopy.name}».`)).toBeTruthy();
     expect(getRobot).toHaveBeenCalledTimes(2);
     expect(getRobot.mock.calls[1]?.[1]).toBeInstanceOf(AbortSignal);
+    expect(putDraft).toHaveBeenCalledWith(0, loadedDraft, expect.any(AbortSignal));
   });
 
-  it('rejects a saved-copy response that arrives after Probar starts', async () => {
+  it('ignores a saved-copy response after navigation abandons its application and Probar starts', async () => {
     const loadedDraft = { ...createDefaultDraft(), instructions: 'No debe entrar.' };
     const savedCopy: SavedRobot = {
       id: 'saved-copy-locked',
@@ -569,14 +624,17 @@ describe('access screen', () => {
       />,
     );
 
-    const instructions = await screen.findByLabelText('Qué debe tener en cuenta el robot');
+    await screen.findByLabelText('Qué debe tener en cuenta el robot');
+    navigate('Mis robots');
     fireEvent.click(await screen.findByRole('button', { name: /Explorador bloqueado.*Cargar/ }));
+    await waitFor(() => expect(getRobot).toHaveBeenCalledOnce());
+    navigate('Preparar');
+    expect(getRobot.mock.calls[0]?.[1]?.aborted).toBe(true);
     const tryButton = await screen.findByRole('button', { name: 'Probar' });
     await waitFor(() => expect((tryButton as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(tryButton);
-    await waitFor(() =>
-      expect((instructions.closest('fieldset') as HTMLFieldSetElement).disabled).toBe(true),
-    );
+    await waitFor(() => expect(findPreparationHeading().closest('[hidden]')).not.toBeNull());
+    expectNavigationBlocked();
     expect(createAttempt).toHaveBeenCalledWith(
       expect.any(String),
       1,
@@ -588,10 +646,9 @@ describe('access screen', () => {
       resolveRobot(savedCopy);
       await Promise.resolve();
     });
-    await waitFor(() =>
-      expect(screen.getByDisplayValue(createDefaultDraft().instructions)).toBeTruthy(),
+    expect((document.querySelector('#robot-instructions') as HTMLTextAreaElement).value).toBe(
+      createDefaultDraft().instructions,
     );
-    expect(screen.queryByDisplayValue(loadedDraft.instructions)).toBeNull();
     expect(
       putDraft.mock.calls.every((call) => call[1]?.instructions !== loadedDraft.instructions),
     ).toBe(true);
@@ -711,7 +768,9 @@ describe('access screen', () => {
     );
 
     await act(flushAuthMicrotasks);
-    const history = screen.getByRole('heading', { name: 'Historial' });
+    expect(screen.getByRole('heading', { name: 'Prepará tu robot' })).toBeTruthy();
+    navigate('Historial');
+    const history = await screen.findByRole('heading', { name: 'Historial' });
     const openConfiguration = () =>
       fireEvent.click(
         within(history.closest('section') as HTMLElement).getAllByRole('button', {
@@ -743,7 +802,9 @@ describe('access screen', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1);
     });
-    expect(screen.getByDisplayValue(createDefaultDraft().instructions)).toBeTruthy();
+    expect((document.querySelector('#robot-instructions') as HTMLTextAreaElement).value).toBe(
+      createDefaultDraft().instructions,
+    );
     expect(
       (screen.getByRole('button', { name: 'Usar esta configuración' }) as HTMLButtonElement)
         .disabled,
@@ -828,14 +889,21 @@ describe('access screen', () => {
       />,
     );
 
+    await screen.findByRole('heading', { name: 'Prepará tu robot' });
+    navigate('Historial');
     await screen.findByRole('heading', { name: 'Historial' });
     const history = screen
       .getByRole('heading', { name: 'Historial' })
       .closest('section') as HTMLElement;
     fireEvent.click(within(history).getByRole('button', { name: 'Ver configuración' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Usar esta configuración' }));
+    await waitFor(() => expect(putDraft).toHaveBeenCalledOnce());
+    await act(flushAuthMicrotasks);
 
-    expect(await screen.findByRole('button', { name: 'Comparar versiones' })).toBeTruthy();
+    const navigation = screen.getByRole('navigation', { name: 'Navegación principal' });
+    expect(
+      within(navigation).getByRole('button', { name: 'Historial' }).getAttribute('aria-current'),
+    ).toBe('page');
     expect(
       screen.queryByText(
         'No se pudo aplicar la configuración. Revisá el estado del editor y volvé a intentarlo.',
@@ -844,10 +912,13 @@ describe('access screen', () => {
     expect(
       screen.queryByText('Configuración cargada en el editor. Se guarda como una edición normal.'),
     ).toBeNull();
-    expect(screen.getByDisplayValue(previous.instructions)).toBeTruthy();
-    expect(screen.queryByDisplayValue(recovered.instructions)).toBeNull();
-    const compare = screen.queryByRole('button', { name: 'Comparar versiones' });
-    if (compare) fireEvent.click(compare);
+    expect((document.querySelector('#robot-instructions') as HTMLTextAreaElement).value).toBe(
+      previous.instructions,
+    );
+    expect(screen.queryByRole('button', { name: 'Comparar versiones' })).toBeNull();
+    navigate('Preparar');
+    const compare = screen.getByRole('button', { name: 'Comparar versiones' });
+    fireEvent.click(compare);
     expect(screen.getByText(remote.instructions)).toBeTruthy();
     expect(putDraft).toHaveBeenCalledWith(
       1,
@@ -1803,7 +1874,9 @@ describe('access screen', () => {
       />,
     );
 
-    await screen.findByLabelText('Qué debe tener en cuenta el robot');
+    const instructions = (await screen.findByLabelText(
+      'Qué debe tener en cuenta el robot',
+    )) as HTMLTextAreaElement;
     const tryButton = await screen.findByRole('button', { name: 'Probar' });
     const animation = (await screen.findByRole('checkbox', {
       name: 'Animación',
@@ -1814,13 +1887,10 @@ describe('access screen', () => {
     expectAccountTriggerLocked();
     expect((tryButton as HTMLButtonElement).disabled).toBe(true);
     expect(animation.disabled).toBe(true);
-    expect(
-      (
-        screen
-          .getByLabelText('Qué debe tener en cuenta el robot')
-          .closest('fieldset') as HTMLFieldSetElement
-      ).disabled,
-    ).toBe(true);
+    expectPreparationHidden();
+    expectNavigationBlocked();
+    expect(screen.queryByRole('button', { name: 'Probar' })).toBeNull();
+    expect((instructions.closest('fieldset') as HTMLFieldSetElement).disabled).toBe(true);
     const cancelButton = await screen.findByRole('button', { name: 'Cancelar' });
     expectAccountTriggerLocked();
     expect((cancelButton as HTMLButtonElement).disabled).toBe(false);
@@ -1828,7 +1898,7 @@ describe('access screen', () => {
     await waitFor(() => expect(cancelAttempt).toHaveBeenCalledOnce());
   });
 
-  it('locks editor, history, and logout through automatic replay, then releases them at the result', async () => {
+  it('hides preparation and blocks navigation through automatic replay, then unlocks at the result', async () => {
     window.sessionStorage.clear();
     const authClient = client({ initialize: vi.fn().mockResolvedValue(session()) });
     const draftApi: DraftApi = {
@@ -1884,19 +1954,45 @@ describe('access screen', () => {
     );
 
     fireEvent.click(await screen.findByRole('button', { name: 'Escena lista' }));
-    expect((screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement).disabled).toBe(
-      true,
+    expectPreparationHidden();
+    expectNavigationBlocked();
+    const hiddenPreparation = findPreparationHeading().closest('[hidden]') as HTMLElement;
+    const tryButton = Array.from(hiddenPreparation.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Probar',
     );
-    expect((screen.getByRole('checkbox', { name: 'Animación' }) as HTMLInputElement).disabled).toBe(
-      true,
-    );
+    const animation = Array.from(
+      hiddenPreparation.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
+    ).find((input) => input.parentElement?.textContent?.includes('Animación'));
+    expect(tryButton?.disabled).toBe(true);
+    expect(animation?.disabled).toBe(true);
+    expect(
+      (hiddenPreparation.querySelector('#robot-instructions') as HTMLTextAreaElement).disabled,
+    ).toBe(true);
     expectAccountTriggerLocked();
     expect(screen.queryByRole('heading', { name: 'Historial' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Tus robots' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Vista completa del terreno' })).toBeNull();
     expect(screen.queryByRole('heading', { name: 'Victoria' })).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: 'Terminar escena' }));
     expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
     await waitFor(() => expect(getAccountTrigger().disabled).toBe(false));
+    const navigation = screen.getByRole('navigation', { name: 'Navegación principal' });
+    for (const surface of ['Preparar', 'Historial', 'Mis robots'] as const) {
+      expect(
+        (within(navigation).getByRole('button', { name: surface }) as HTMLButtonElement).disabled,
+      ).toBe(false);
+    }
+    expect(screen.queryByRole('heading', { name: 'Historial' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Volver al editor' }));
+    expect(
+      within(navigation).getByRole('button', { name: 'Preparar' }).getAttribute('aria-current'),
+    ).toBe('page');
+    expect(screen.getByRole('button', { name: 'Probar' })).toBeTruthy();
+    navigate('Historial');
+    expect(
+      within(navigation).getByRole('button', { name: 'Historial' }).getAttribute('aria-current'),
+    ).toBe('page');
     expect(screen.getByRole('heading', { name: 'Historial' })).toBeTruthy();
     expect(attemptApi.createAttempt).not.toHaveBeenCalled();
   });
@@ -1927,7 +2023,8 @@ describe('access screen', () => {
     );
 
     await act(async () => flushAuthMicrotasks());
-    expect(screen.getByRole('heading', { name: 'Historial' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Prepará tu robot' })).toBeTruthy();
+    navigate('Preparar');
     const tryButton = screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement;
     expect(tryButton.disabled).toBe(true);
     const instructions = screen.getByLabelText(
@@ -1976,8 +2073,9 @@ describe('access screen', () => {
       />,
     );
 
-    expect(await screen.findByRole('heading', { name: 'Historial' })).toBeTruthy();
     await waitFor(() => expect(listAttempts).toHaveBeenCalledTimes(2));
+    await screen.findByRole('button', { name: 'Cuenta' });
+    navigate('Preparar');
     await waitFor(() => {
       expect((screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement).disabled).toBe(
         false,
@@ -2039,18 +2137,21 @@ describe('access screen', () => {
     );
 
     await screen.findByRole('button', { name: 'Cuenta' });
+    navigate('Historial');
     fireEvent.click(await screen.findByRole('button', { name: 'Ver resultado' }));
     expect(await screen.findByText('La sesión ya no está autorizada.')).toBeTruthy();
     expect(screen.getByText(/La sesión dejó de tener acceso a esta cuenta/)).toBeTruthy();
-    expect(
-      (screen.getByLabelText('Qué debe tener en cuenta el robot') as HTMLTextAreaElement).readOnly,
-    ).toBe(true);
-    expect((screen.getByRole('checkbox', { name: 'Avanzar' }) as HTMLInputElement).disabled).toBe(
-      true,
+    const retainedInstructions = document.querySelector<HTMLTextAreaElement>('#robot-instructions');
+    expect(retainedInstructions?.readOnly).toBe(true);
+    const retainedEditor = findPreparationHeading().closest('[hidden]') ?? document.body;
+    const advance = Array.from(
+      retainedEditor.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
+    ).find((input) => input.parentElement?.textContent?.includes('Avanzar'));
+    const tryButton = Array.from(retainedEditor.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Probar',
     );
-    expect((screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement).disabled).toBe(
-      true,
-    );
+    expect(advance?.disabled).toBe(true);
+    expect(tryButton?.disabled).toBe(true);
     await waitFor(() => expect(getLogoutButton().disabled).toBe(false));
     expect(openAccountPanel().getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByText('a@example.com')).toBeTruthy();
@@ -2386,7 +2487,8 @@ describe('access screen', () => {
       />,
     );
 
-    await screen.findByRole('heading', { name: 'Historial' });
+    await screen.findByRole('button', { name: 'Cuenta' });
+    navigate('Preparar');
     const animation = screen.getByRole('checkbox', { name: 'Animación' }) as HTMLInputElement;
     await waitFor(() => expect(animation.disabled).toBe(false));
     fireEvent.click(animation);
@@ -2492,6 +2594,8 @@ describe('access screen', () => {
       />,
     );
 
+    await screen.findByRole('button', { name: 'Cuenta' });
+    navigate('Historial');
     expect(await screen.findByRole('heading', { name: 'Historial' })).toBeTruthy();
     const history = screen
       .getByRole('heading', { name: 'Historial' })

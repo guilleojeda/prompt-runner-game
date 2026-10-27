@@ -154,6 +154,16 @@ function renderApp(runner: AttemptApi, editorApi = draftApi(), copies = savedRob
   );
 }
 
+function navigate(surface: 'Preparar' | 'Historial' | 'Mis robots'): HTMLButtonElement {
+  const navigation = screen.getByRole('navigation', { name: 'Navegación principal' });
+  const destination = within(navigation).getByRole('button', {
+    name: surface,
+  }) as HTMLButtonElement;
+  const current = destination.getAttribute('aria-current');
+  if (!current || current === 'false') fireEvent.click(destination);
+  return destination;
+}
+
 async function settlePreparationPromises(): Promise<void> {
   await act(async () => {
     for (let index = 0; index < 16; index += 1) await Promise.resolve();
@@ -221,6 +231,8 @@ describe('preparation availability integration', () => {
     expect((helpSummary.closest('details') as HTMLDetailsElement).open).toBe(true);
     expect(screen.getByText('Qué recibe el agente')).toBeTruthy();
 
+    expect(screen.queryByRole('button', { name: /Explorador disponible.*Cargar/ })).toBeNull();
+    navigate('Mis robots');
     const loadCopy = screen.getByRole('button', {
       name: /Explorador disponible.*Cargar/,
     });
@@ -228,6 +240,10 @@ describe('preparation availability integration', () => {
     fireEvent.click(loadCopy);
     await settlePreparationPromises();
     expect(copies.getRobot).toHaveBeenCalledOnce();
+    const navigation = screen.getByRole('navigation', { name: 'Navegación principal' });
+    expect(
+      within(navigation).getByRole('button', { name: 'Preparar' }).getAttribute('aria-current'),
+    ).toBe('page');
     expect(screen.getByDisplayValue(savedDraft.instructions)).toBeTruthy();
     expect(runner.createAttempt).not.toHaveBeenCalled();
 
