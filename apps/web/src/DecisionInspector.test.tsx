@@ -205,6 +205,7 @@ describe('DecisionInspector', () => {
     render(<DecisionInspector api={api} attemptId="attempt-1" onClose={vi.fn()} />);
 
     expect(await screen.findByRole('heading', { name: 'Decisión 1, casilla 2' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Observación' })).toBeTruthy();
     expect(screen.getAllByRole('link', { name: 'Ver ficha seleccionada' })).toHaveLength(2);
 
     fireEvent.click(
