@@ -1901,7 +1901,9 @@ describe('access screen', () => {
     expect(attemptApi.createAttempt).not.toHaveBeenCalled();
   });
 
-  it('keeps preparation available after preference loading fails and restores the server value on retry', async () => {
+  it('keeps preparation available after preference loading fails and restores the server value automatically', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-26T12:00:00.000Z'));
     const authClient = client({ initialize: vi.fn().mockResolvedValue(session()) });
     const draftApi: DraftApi = {
       getDraft: vi.fn().mockResolvedValue({ version: 0, draft: createDefaultDraft() }),
@@ -1924,7 +1926,8 @@ describe('access screen', () => {
       />,
     );
 
-    expect(await screen.findByRole('heading', { name: 'Historial' })).toBeTruthy();
+    await act(async () => flushAuthMicrotasks());
+    expect(screen.getByRole('heading', { name: 'Historial' })).toBeTruthy();
     const tryButton = screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement;
     expect(tryButton.disabled).toBe(true);
     const instructions = screen.getByLabelText(
@@ -1935,14 +1938,23 @@ describe('access screen', () => {
     expect((screen.getByRole('checkbox', { name: 'Avanzar' }) as HTMLInputElement).disabled).toBe(
       false,
     );
-    await waitFor(() => expect(getLogoutButton().disabled).toBe(false));
+    await act(async () => flushAuthMicrotasks());
+    expect(getLogoutButton().disabled).toBe(false);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Reintentar preferencia' }));
-    await waitFor(() => expect(getAnimationPreference).toHaveBeenCalledTimes(2));
+    expect(getAnimationPreference).toHaveBeenCalledOnce();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(59_999);
+    });
+    expect(getAnimationPreference).toHaveBeenCalledOnce();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    await act(async () => flushAuthMicrotasks());
+    expect(getAnimationPreference).toHaveBeenCalledTimes(2);
     expect((screen.getByRole('checkbox', { name: 'Animación' }) as HTMLInputElement).checked).toBe(
       false,
     );
-    await waitFor(() => expect(tryButton.disabled).toBe(false));
+    expect(tryButton.disabled).toBe(false);
   });
 
   it('settles attempt discovery when the authenticated App rerenders for workspace busy state', async () => {
@@ -2380,7 +2392,8 @@ describe('access screen', () => {
     fireEvent.click(animation);
 
     await waitFor(() => expect(putAnimationPreference).toHaveBeenCalledOnce());
-    await waitFor(() => expect(getAnimationPreference).toHaveBeenCalledTimes(2));
+    expect(getAnimationPreference).toHaveBeenCalledOnce();
+    expect(animation.checked).toBe(false);
     expect(await screen.findByRole('button', { name: 'Volver a ingresar' })).toBeTruthy();
     expect(openAccountPanel().getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByText('a@example.com')).toBeTruthy();

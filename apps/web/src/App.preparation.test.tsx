@@ -154,6 +154,12 @@ function renderApp(runner: AttemptApi, editorApi = draftApi(), copies = savedRob
   );
 }
 
+async function settlePreparationPromises(): Promise<void> {
+  await act(async () => {
+    for (let index = 0; index < 16; index += 1) await Promise.resolve();
+  });
+}
+
 afterEach(() => {
   cleanup();
   window.sessionStorage.clear();
@@ -162,6 +168,8 @@ afterEach(() => {
 
 describe('preparation availability integration', () => {
   it('keeps editing, help, and saved copies available after a preference read fails', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-26T12:00:00.000Z'));
     const savedDraft = { ...createDefaultDraft(), instructions: 'Copia para usar mientras carga.' };
     const savedCopy: SavedRobot = {
       id: 'saved-copy-availability',
@@ -183,9 +191,10 @@ describe('preparation availability integration', () => {
     const editorApi = draftApi();
     renderApp(runner, editorApi, copies);
 
-    const instructions = (await screen.findByLabelText(
+    await settlePreparationPromises();
+    const instructions = screen.getByLabelText(
       'Qué debe tener en cuenta el robot',
-    )) as HTMLTextAreaElement;
+    ) as HTMLTextAreaElement;
     const tryButton = screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement;
     const controls = screen.getByRole('group', { name: 'Controles de prueba y animación' });
     expect(screen.getAllByRole('group', { name: 'Controles de prueba y animación' })).toHaveLength(
@@ -212,25 +221,35 @@ describe('preparation availability integration', () => {
     expect((helpSummary.closest('details') as HTMLDetailsElement).open).toBe(true);
     expect(screen.getByText('Qué recibe el agente')).toBeTruthy();
 
-    const loadCopy = await screen.findByRole('button', {
+    const loadCopy = screen.getByRole('button', {
       name: /Explorador disponible.*Cargar/,
     });
     expect((loadCopy as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(loadCopy);
-    await waitFor(() => expect(copies.getRobot).toHaveBeenCalledOnce());
-    expect(await screen.findByDisplayValue(savedDraft.instructions)).toBeTruthy();
+    await settlePreparationPromises();
+    expect(copies.getRobot).toHaveBeenCalledOnce();
+    expect(screen.getByDisplayValue(savedDraft.instructions)).toBeTruthy();
     expect(runner.createAttempt).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Reintentar preferencia' }));
-    await waitFor(() => expect(getAnimationPreference).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(tryButton.disabled).toBe(false));
+    expect(getAnimationPreference).toHaveBeenCalledOnce();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(59_999);
+    });
+    expect(getAnimationPreference).toHaveBeenCalledOnce();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    await settlePreparationPromises();
+    expect(getAnimationPreference).toHaveBeenCalledTimes(2);
+    expect(tryButton.disabled).toBe(false);
     expect((screen.getByRole('checkbox', { name: 'Animación' }) as HTMLInputElement).checked).toBe(
       false,
     );
     expect(runner.createAttempt).not.toHaveBeenCalled();
 
     fireEvent.click(tryButton);
-    await waitFor(() => expect(runner.createAttempt).toHaveBeenCalledOnce());
+    await settlePreparationPromises();
+    expect(runner.createAttempt).toHaveBeenCalledOnce();
     expect(runner.createAttempt).toHaveBeenCalledWith(
       expect.any(String),
       expect.any(Number),

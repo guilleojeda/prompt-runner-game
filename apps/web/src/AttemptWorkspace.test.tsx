@@ -85,6 +85,12 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+async function settleWorkspacePromises(): Promise<void> {
+  await act(async () => {
+    for (let index = 0; index < 16; index += 1) await Promise.resolve();
+  });
+}
+
 type ApplyOptions = { signal: AbortSignal };
 type ApplyDraftMock = (draft: RobotDraft, options: ApplyOptions) => Promise<boolean>;
 
@@ -1122,11 +1128,12 @@ describe('AttemptWorkspace', () => {
     expect(screen.queryByRole('button', { name: 'Guardar mi selección' })).toBeNull();
   });
 
-  it('clears a stale focus read error after a conflicted preference is retried', async () => {
+  it('retries a failed preference conflict comparison after a minute without repeating the PUT', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-26T12:00:00.000Z'));
     const getAnimationPreference = vi
       .fn()
       .mockResolvedValueOnce({ animationEnabled: true, version: 2 })
-      .mockResolvedValueOnce({ animationEnabled: true, version: 3 })
       .mockRejectedValueOnce(
         new AttemptApiFailure('network', 'No se pudo consultar la preferencia de animación.'),
       )
@@ -1138,113 +1145,152 @@ describe('AttemptWorkspace', () => {
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
 
-    await screen.findByText('Historial');
+    await settleWorkspacePromises();
+    expect(screen.getByRole('heading', { name: 'Historial' })).toBeTruthy();
     const animation = screen.getByRole('checkbox', { name: 'Animación' }) as HTMLInputElement;
     fireEvent.click(animation);
-    await screen.findByRole('button', { name: 'Guardar mi selección' });
+    await settleWorkspacePromises();
+    expect(screen.queryByRole('button', { name: 'Guardar mi selección' })).toBeNull();
     expect(animation.checked).toBe(false);
 
-    act(() => window.dispatchEvent(new Event('focus')));
-    await waitFor(() => expect(getAnimationPreference).toHaveBeenCalledTimes(3));
-    expect(await screen.findByRole('button', { name: 'Reintentar preferencia' })).toBeTruthy();
+    expect(getAnimationPreference).toHaveBeenCalledTimes(2);
     expect(screen.getByText('No se pudo consultar la preferencia de animación.')).toBeTruthy();
+    expect(putAnimationPreference).toHaveBeenCalledOnce();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Reintentar preferencia' }));
-    await waitFor(() => expect(getAnimationPreference).toHaveBeenCalledTimes(4));
-    await waitFor(() =>
-      expect(screen.queryByRole('button', { name: 'Reintentar preferencia' })).toBeNull(),
-    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(59_999);
+    });
+    expect(getAnimationPreference).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    await settleWorkspacePromises();
+    expect(getAnimationPreference).toHaveBeenCalledTimes(3);
     expect(screen.queryByText('No se pudo consultar la preferencia de animación.')).toBeNull();
     expect(screen.getByRole('button', { name: 'Guardar mi selección' })).toBeTruthy();
     expect(animation.checked).toBe(false);
+    expect(putAnimationPreference).toHaveBeenCalledOnce();
   });
 
-  it('ignores an older focus read that resolves after this tab saves a newer preference', async () => {
-    let finishFocusRead!: (value: { animationEnabled: boolean; version: number }) => void;
-    const delayedFocusRead = new Promise<{ animationEnabled: boolean; version: number }>(
+  it('keeps a newer local choice in conflict when comparison GET finds a remote change', async () => {
+    let finishComparisonRead!: (value: { animationEnabled: boolean; version: number }) => void;
+    const delayedComparisonRead = new Promise<{ animationEnabled: boolean; version: number }>(
       (resolve) => {
-        finishFocusRead = resolve;
+        finishComparisonRead = resolve;
       },
     );
     const getAnimationPreference = vi
       .fn()
       .mockResolvedValueOnce({ animationEnabled: true, version: 0 })
-      .mockReturnValueOnce(delayedFocusRead);
+      .mockReturnValueOnce(delayedComparisonRead);
     const putAnimationPreference = vi
       .fn()
-      .mockResolvedValue({ animationEnabled: false, version: 1 });
+      .mockRejectedValueOnce(new AttemptApiFailure('conflict', 'Version conflict.', 409))
+      .mockResolvedValueOnce({ animationEnabled: true, version: 2 });
     const attemptApi = api({ getAnimationPreference, putAnimationPreference });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
     await screen.findByText('Historial');
 
-    act(() => window.dispatchEvent(new Event('focus')));
-    await waitFor(() => expect(getAnimationPreference).toHaveBeenCalledTimes(2));
     const animation = screen.getByRole('checkbox', { name: 'Animación' }) as HTMLInputElement;
     fireEvent.click(animation);
-    await waitFor(() =>
-      expect(putAnimationPreference).toHaveBeenCalledWith(false, 0, expect.any(AbortSignal)),
-    );
-    await waitFor(() => expect(screen.queryByText('Guardando preferencia…')).toBeNull());
+    await waitFor(() => expect(putAnimationPreference).toHaveBeenCalledOnce());
+    await waitFor(() => expect(getAnimationPreference).toHaveBeenCalledTimes(2));
+    fireEvent.click(animation);
+    expect(animation.checked).toBe(true);
 
     await act(async () => {
-      finishFocusRead({ animationEnabled: true, version: 0 });
+      finishComparisonRead({ animationEnabled: false, version: 1 });
       await Promise.resolve();
     });
+    expect(screen.getByRole('button', { name: 'Guardar mi selección' })).toBeTruthy();
+    expect(screen.getByText(/Valor guardado en el servidor: desactivado/)).toBeTruthy();
+    expect(putAnimationPreference).toHaveBeenCalledOnce();
+    expect(animation.checked).toBe(true);
 
-    expect(animation.checked).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar mi selección' }));
+    await waitFor(() => expect(putAnimationPreference).toHaveBeenCalledTimes(2));
+
+    expect(putAnimationPreference.mock.calls.map(([value, version]) => [value, version])).toEqual([
+      [false, 0],
+      [true, 1],
+    ]);
+    expect(animation.checked).toBe(true);
+    expect(screen.queryByRole('button', { name: 'Guardar mi selección' })).toBeNull();
   });
 
-  it('ignores an older focus read error after this tab saves a newer preference', async () => {
-    let rejectFocusRead!: (error: unknown) => void;
-    const delayedFocusRead = new Promise<never>((_, reject) => {
-      rejectFocusRead = reject;
-    });
+  it('keeps the newer choice blocked after a failed conflict comparison until recovery confirms it', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-26T12:00:00.000Z'));
     const getAnimationPreference = vi
       .fn()
       .mockResolvedValueOnce({ animationEnabled: true, version: 0 })
-      .mockReturnValueOnce(delayedFocusRead);
+      .mockRejectedValueOnce(
+        new AttemptApiFailure('network', 'No se pudo consultar la preferencia de animación.'),
+      )
+      .mockResolvedValueOnce({ animationEnabled: true, version: 1 });
     const putAnimationPreference = vi
       .fn()
-      .mockResolvedValue({ animationEnabled: false, version: 1 });
+      .mockRejectedValueOnce(new AttemptApiFailure('conflict', 'Version conflict.', 409));
     const attemptApi = api({ getAnimationPreference, putAnimationPreference });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
-
-    await screen.findByText('Historial');
-    await waitFor(() =>
-      expect(
-        (screen.getByRole('checkbox', { name: 'Animación' }) as HTMLInputElement).disabled,
-      ).toBe(false),
+    const onTryAvailabilityChange = vi.fn();
+    render(
+      <AttemptWorkspace
+        api={attemptApi}
+        editor={editor}
+        session={session()}
+        onTryAvailabilityChange={onTryAvailabilityChange}
+      />,
     );
-    act(() => window.dispatchEvent(new Event('focus')));
-    await waitFor(() => expect(getAnimationPreference).toHaveBeenCalledTimes(2));
-
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Animación' }));
-    await waitFor(() =>
-      expect(putAnimationPreference).toHaveBeenCalledWith(false, 0, expect.any(AbortSignal)),
-    );
-    await waitFor(() => expect(screen.queryByText('Guardando preferencia…')).toBeNull());
+    await settleWorkspacePromises();
+    expect(screen.getByRole('heading', { name: 'Historial' })).toBeTruthy();
+    const animation = screen.getByRole('checkbox', { name: 'Animación' }) as HTMLInputElement;
+    fireEvent.click(animation);
+    await settleWorkspacePromises();
+    expect(putAnimationPreference).toHaveBeenCalledOnce();
+    expect(getAnimationPreference).toHaveBeenCalledTimes(2);
+    expect(screen.getByText('No se pudo consultar la preferencia de animación.')).toBeTruthy();
+    fireEvent.click(animation);
+    expect(animation.checked).toBe(true);
+    await settleWorkspacePromises();
+    expect(onTryAvailabilityChange).toHaveBeenLastCalledWith(false);
+    expect(putAnimationPreference).toHaveBeenCalledOnce();
+    expect(getAnimationPreference).toHaveBeenCalledTimes(2);
 
     await act(async () => {
-      rejectFocusRead(
-        new AttemptApiFailure('network', 'No se pudo consultar la preferencia de animación.'),
-      );
-      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(59_999);
     });
+    expect(getAnimationPreference).toHaveBeenCalledTimes(2);
+    expect(putAnimationPreference).toHaveBeenCalledOnce();
+    expect(animation.checked).toBe(true);
+    expect(onTryAvailabilityChange).toHaveBeenLastCalledWith(false);
+    expect(screen.getByText('No se pudo consultar la preferencia de animación.')).toBeTruthy();
 
-    expect((screen.getByRole('checkbox', { name: 'Animación' }) as HTMLInputElement).checked).toBe(
-      false,
-    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    await settleWorkspacePromises();
+
+    expect(getAnimationPreference).toHaveBeenCalledTimes(3);
+    expect(putAnimationPreference).toHaveBeenCalledOnce();
+    expect(animation.checked).toBe(true);
     expect(screen.queryByText('No se pudo consultar la preferencia de animación.')).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Reintentar preferencia' })).toBeNull();
+    expect(onTryAvailabilityChange).toHaveBeenLastCalledWith(true);
   });
 
-  it('notifies auth recovery when saving the animation preference is rejected', async () => {
-    const authError = new AttemptApiFailure('authentication', 'Tu sesión dejó de ser válida.', 401);
+  it('stops a definite preference write auth rejection without a readback', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-26T12:00:00.000Z'));
+    const authError = new AttemptApiFailure(
+      'authentication',
+      'Tu sesión dejó de ser válida.',
+      401,
+      false,
+      { authContext: 73 },
+    );
     const getAnimationPreference = vi
       .fn()
-      .mockResolvedValueOnce({ animationEnabled: true, version: 0 })
       .mockResolvedValueOnce({ animationEnabled: true, version: 0 });
     const putAnimationPreference = vi.fn().mockRejectedValue(authError);
     const onAuthRequired = vi.fn();
@@ -1259,20 +1305,35 @@ describe('AttemptWorkspace', () => {
       />,
     );
 
-    await screen.findByText('Historial');
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Animación' }));
-    await waitFor(() => expect(putAnimationPreference).toHaveBeenCalledOnce());
-    await waitFor(() => expect(getAnimationPreference).toHaveBeenCalledTimes(2));
+    await settleWorkspacePromises();
+    expect(screen.getByRole('heading', { name: 'Historial' })).toBeTruthy();
+    const animation = screen.getByRole('checkbox', { name: 'Animación' }) as HTMLInputElement;
+    fireEvent.click(animation);
+    await settleWorkspacePromises();
+    expect(putAnimationPreference).toHaveBeenCalledOnce();
+    expect(screen.queryByText('Guardando preferencia…')).toBeNull();
     expect(onAuthRequired).toHaveBeenCalledOnce();
-    expect(
-      screen.getByText(
-        /No se guardó tu cambio porque la preferencia del servidor ahora está activada/,
-      ),
-    ).toBeTruthy();
+    expect(onAuthRequired).toHaveBeenCalledWith(73);
+    expect(getAnimationPreference).toHaveBeenCalledOnce();
+    expect(animation.checked).toBe(false);
+    expect(screen.getByText('Tu sesión dejó de ser válida.')).toBeTruthy();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3 * 60_000);
+    });
+    expect(getAnimationPreference).toHaveBeenCalledOnce();
+    expect(putAnimationPreference).toHaveBeenCalledOnce();
   });
 
   it('notifies auth recovery when preference readback is rejected', async () => {
-    const authError = new AttemptApiFailure('authentication', 'Tu sesión dejó de ser válida.', 401);
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-26T12:00:00.000Z'));
+    const authError = new AttemptApiFailure(
+      'authentication',
+      'Tu sesión dejó de ser válida.',
+      401,
+      false,
+      { authContext: 74 },
+    );
     const getAnimationPreference = vi
       .fn()
       .mockResolvedValueOnce({ animationEnabled: true, version: 0 })
@@ -1292,12 +1353,24 @@ describe('AttemptWorkspace', () => {
       />,
     );
 
-    await screen.findByText('Historial');
+    await settleWorkspacePromises();
+    expect(screen.getByRole('heading', { name: 'Historial' })).toBeTruthy();
     fireEvent.click(screen.getByRole('checkbox', { name: 'Animación' }));
-    await waitFor(() => expect(putAnimationPreference).toHaveBeenCalledOnce());
-    await waitFor(() => expect(getAnimationPreference).toHaveBeenCalledTimes(2));
+    await settleWorkspacePromises();
+    expect(putAnimationPreference).toHaveBeenCalledOnce();
+    expect(getAnimationPreference).toHaveBeenCalledTimes(2);
     expect(onAuthRequired).toHaveBeenCalledOnce();
-    expect(screen.getByText('version conflict')).toBeTruthy();
+    expect(onAuthRequired).toHaveBeenCalledWith(74);
+    expect(screen.getByText('Tu sesión dejó de ser válida.')).toBeTruthy();
+    expect(screen.queryByText('version conflict')).toBeNull();
+    expect((screen.getByRole('checkbox', { name: 'Animación' }) as HTMLInputElement).checked).toBe(
+      false,
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3 * 60_000);
+    });
+    expect(getAnimationPreference).toHaveBeenCalledTimes(2);
+    expect(putAnimationPreference).toHaveBeenCalledOnce();
   });
 
   it('ignores a late auth readback rejection after the account generation changes', async () => {
@@ -1346,8 +1419,12 @@ describe('AttemptWorkspace', () => {
     expect(onAuthRequired).not.toHaveBeenCalled();
   });
 
-  it('blocks new preference writes while auth is paused', async () => {
+  it('reconciles the latest preference choice before writing after same-account auth resume', async () => {
     let finishPreferenceSave!: (value: { animationEnabled: boolean; version: number }) => void;
+    const getAnimationPreference = vi
+      .fn()
+      .mockResolvedValueOnce({ animationEnabled: true, version: 0 })
+      .mockResolvedValueOnce({ animationEnabled: false, version: 1 });
     const putAnimationPreference = vi
       .fn()
       .mockImplementationOnce(
@@ -1357,7 +1434,7 @@ describe('AttemptWorkspace', () => {
           }),
       )
       .mockResolvedValueOnce({ animationEnabled: true, version: 2 });
-    const attemptApi = api({ putAnimationPreference });
+    const attemptApi = api({ getAnimationPreference, putAnimationPreference });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     const view = render(
       <AttemptWorkspace api={attemptApi} editor={editor} session={session()} authPaused={false} />,
@@ -1370,12 +1447,14 @@ describe('AttemptWorkspace', () => {
     fireEvent.click(animation);
     expect(animation.checked).toBe(true);
     expect(putAnimationPreference).toHaveBeenCalledOnce();
+    const sentSignal = putAnimationPreference.mock.calls[0]?.[2];
     view.rerender(
       <AttemptWorkspace api={attemptApi} editor={editor} session={session()} authPaused />,
     );
 
     expect(animation.disabled).toBe(true);
     expect(animation.checked).toBe(true);
+    expect(sentSignal?.aborted).toBe(true);
     await act(async () => {
       finishPreferenceSave({ animationEnabled: false, version: 1 });
       await Promise.resolve();
@@ -1384,12 +1463,17 @@ describe('AttemptWorkspace', () => {
       true,
     );
     expect(putAnimationPreference).toHaveBeenCalledOnce();
+    expect(getAnimationPreference).toHaveBeenCalledOnce();
 
     view.rerender(
       <AttemptWorkspace api={attemptApi} editor={editor} session={session()} authPaused={false} />,
     );
     await waitFor(() =>
       expect(putAnimationPreference).toHaveBeenCalledWith(true, 1, expect.any(AbortSignal)),
+    );
+    expect(getAnimationPreference).toHaveBeenCalledTimes(2);
+    expect(getAnimationPreference.mock.invocationCallOrder[1]).toBeLessThan(
+      putAnimationPreference.mock.invocationCallOrder[1]!,
     );
     expect((screen.getByRole('checkbox', { name: 'Animación' }) as HTMLInputElement).checked).toBe(
       true,
