@@ -88,6 +88,7 @@ export interface RobotEditorProps {
   paused?: boolean;
   accessState?: 'ready' | 'checking' | 'required';
   locked?: boolean;
+  tryUnavailable?: boolean;
   onTry?: () => void;
   onAuthRequired?: ApiAuthRequired;
   onConfigurationAvailabilityChange?: (available: boolean) => void;
@@ -150,6 +151,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     paused = false,
     accessState = 'ready',
     locked = false,
+    tryUnavailable = false,
     onTry,
     onAuthRequired,
     onConfigurationAvailabilityChange,
@@ -164,6 +166,9 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
   const [comparisonOpen, setComparisonOpen] = useState(false);
   const [conflictActionPending, setConflictActionPending] = useState(false);
   const [attemptClickLocked, setAttemptClickLocked] = useState(false);
+  const [openSkillDisclosures, setOpenSkillDisclosures] = useState<ReadonlySet<RobotSkillId>>(
+    () => new Set(),
+  );
   const epochRef = useRef(0);
   const ownerRef = useRef('');
   const mountedRef = useRef(false);
@@ -198,6 +203,8 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
   const editorHeadingRef = useRef<HTMLHeadingElement | null>(null);
   const comparisonHeadingRef = useRef<HTMLHeadingElement | null>(null);
   const conflictTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const pendingDescriptionFocusRef = useRef<RobotSkillId | null>(null);
+  const initialDisclosurePendingRef = useRef(true);
 
   pausedRef.current = paused;
   accessStateRef.current = accessState;
@@ -502,6 +509,12 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
 
   const setLoadedSnapshot = (snapshot: DraftSnapshot): void => {
     const copy = cloneSnapshot(snapshot);
+    if (initialDisclosurePendingRef.current) {
+      initialDisclosurePendingRef.current = false;
+      setOpenSkillDisclosures(
+        new Set(copy.draft.skills.filter((skill) => skill.enabled).map((skill) => skill.id)),
+      );
+    }
     confirmedRef.current = copy;
     draftRef.current = cloneDraft(copy.draft);
     targetRef.current = null;
@@ -515,6 +528,16 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     setMessage(null);
     setStatus('clean');
     notifyWaiters();
+  };
+
+  const setSkillDisclosureOpen = (id: RobotSkillId, open: boolean): void => {
+    setOpenSkillDisclosures((current) => {
+      if (current.has(id) === open) return current;
+      const next = new Set(current);
+      if (open) next.add(id);
+      else next.delete(id);
+      return next;
+    });
   };
 
   const markConflict = (snapshot: DraftSnapshot): void => {
@@ -1567,6 +1590,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     mountedRef.current = true;
     cancelApplication();
     const sub = session.identity.sub;
+    initialDisclosurePendingRef.current = true;
     epochRef.current += 1;
     ownerRef.current = sub;
     authBlockedRef.current = false;
@@ -1662,6 +1686,13 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [comparisonOpen]);
 
+  useLayoutEffect(() => {
+    const id = pendingDescriptionFocusRef.current;
+    if (!id || !openSkillDisclosures.has(id)) return;
+    document.getElementById(`skill-description-${id}`)?.focus();
+    pendingDescriptionFocusRef.current = null;
+  }, [openSkillDisclosures]);
+
   const resolveUseStored = async (): Promise<void> => {
     if (
       !canAccess() ||
@@ -1749,6 +1780,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
 
   const onSkillEnabledChange = (id: RobotSkillId, enabled: boolean): void => {
     if (!draft) return;
+    if (enabled) setSkillDisclosureOpen(id, true);
     updateDraft({
       ...draft,
       skills: draft.skills.map((skill) => (skill.id === id ? { ...skill, enabled } : skill)),
@@ -1792,7 +1824,6 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     >
       <div className="editor-heading">
         <div>
-          <p className="card-kicker">Configuración persistida</p>
           <div className="editor-title-line">
             <h2 id="robot-editor-title" ref={editorHeadingRef} tabIndex={-1}>
               Prepará tu robot
@@ -1807,12 +1838,14 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
               </span>
             )}
           </div>
-          <p className="editor-intro">
-            Elegí sus habilidades y escribí las instrucciones que recibirá. Los cambios se guardan
-            automáticamente. Al probarlo, se fija exactamente lo que estás viendo.
-          </p>
           <details className="editor-help">
-            <summary>Ayuda para empezar</summary>
+            <summary
+              aria-disabled={fieldsetDisabled}
+              tabIndex={fieldsetDisabled ? -1 : 0}
+              onClick={fieldsetDisabled ? (event) => event.preventDefault() : undefined}
+            >
+              Ayuda para empezar
+            </summary>
             <div className="editor-help-copy">
               <p>
                 La configuración inicial es limitada a propósito: sólo Avanzar viene habilitada y
@@ -1861,8 +1894,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
       )}
       {locked && !paused && accessState === 'ready' && (
         <p className="editor-paused" role="status">
-          Conservamos esta configuración mientras preparamos o reproducimos el intento, o cargamos
-          la preferencia de animación.
+          Conservamos esta configuración mientras preparamos o reproducimos el intento.
         </p>
       )}
       {limitMessage && (
@@ -1880,11 +1912,13 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
         <p className="editor-loading">Recuperando tu configuración guardada…</p>
       )}
 
-      {draft && (
-        <form className="editor-form" onSubmit={(event) => event.preventDefault()}>
+      <form className="editor-form" onSubmit={(event) => event.preventDefault()}>
+        {draft && (
           <fieldset disabled={fieldsetDisabled}>
             <legend>Instrucciones generales</legend>
-            <label htmlFor="robot-instructions">Qué debe tener en cuenta el robot</label>
+            <label className="sr-only" htmlFor="robot-instructions">
+              Qué debe tener en cuenta el robot
+            </label>
             <textarea
               id="robot-instructions"
               value={draft.instructions}
@@ -1898,20 +1932,53 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
               {formatCharacterCount(draft.instructions, MAX_INSTRUCTIONS_CHARACTERS)}
             </p>
           </fieldset>
+        )}
 
-          <fieldset disabled={fieldsetDisabled}>
-            <legend>Habilidades disponibles</legend>
-            <p className="field-help">
-              Las descripciones se envían literalmente al agente. La ayuda de cada tarjeta no se
-              agrega al texto.
-            </p>
-            <div className="skill-list">
-              {ROBOT_CATALOG.map((entry) => {
-                const skill = draft.skills.find((candidate) => candidate.id === entry.id);
-                if (!skill) return null;
-                return (
-                  <article className="skill-card" key={entry.id}>
-                    <div className="skill-card-heading">
+        <div
+          id="attempt-controls-slot"
+          className="editor-attempt-controls"
+          role="group"
+          aria-label="Controles de prueba y animación"
+          ref={onAttemptControlsHostChange}
+        >
+          {onTry && (
+            <div className="editor-actions attempt-action">
+              <button
+                className="primary-button"
+                type="button"
+                onClick={() => {
+                  attemptClickLockedRef.current = true;
+                  setAttemptClickLocked(true);
+                  onTry();
+                }}
+                disabled={
+                  disabled ||
+                  draft === null ||
+                  status === 'conflict' ||
+                  limitMessage !== null ||
+                  tryUnavailable
+                }
+                aria-describedby={tryUnavailable ? 'attempt-availability-status' : undefined}
+              >
+                Probar
+              </button>
+              <span className="field-help">
+                Al iniciar se consume un intento, incluso si cancelás o falla.
+              </span>
+            </div>
+          )}
+        </div>
+
+        {draft && (
+          <>
+            <fieldset disabled={fieldsetDisabled}>
+              <legend>Habilidades disponibles</legend>
+              <div className="skill-list">
+                {ROBOT_CATALOG.map((entry) => {
+                  const skill = draft.skills.find((candidate) => candidate.id === entry.id);
+                  if (!skill) return null;
+                  return (
+                    <article className="skill-card" key={entry.id}>
                       <label className="skill-toggle">
                         <input
                           type="checkbox"
@@ -1919,86 +1986,87 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
                           disabled={disabled}
                           onChange={(event) => onSkillEnabledChange(entry.id, event.target.checked)}
                         />
-                        <span>{entry.name}</span>
+                        <span className="sr-only">{entry.name}</span>
                       </label>
-                      <span className="skill-help">{entry.description}</span>
-                    </div>
-                    <label htmlFor={`skill-description-${entry.id}`}>
-                      Descripción de {entry.name} para el agente
-                    </label>
-                    <textarea
-                      id={`skill-description-${entry.id}`}
-                      value={skill.description ?? ''}
-                      onChange={(event) => onSkillDescriptionChange(entry.id, event.target.value)}
-                      readOnly={disabled}
-                      aria-describedby={`skill-description-count-${entry.id}`}
-                      aria-invalid={
-                        countCharacters(skill.description ?? '') > MAX_SKILL_DESCRIPTION_CHARACTERS
-                      }
-                      rows={3}
-                    />
-                    <p
-                      className="character-count"
-                      id={`skill-description-count-${entry.id}`}
-                      aria-live="polite"
-                    >
-                      {formatCharacterCount(
-                        skill.description ?? '',
-                        MAX_SKILL_DESCRIPTION_CHARACTERS,
-                      )}
-                    </p>
-                  </article>
-                );
-              })}
-            </div>
-          </fieldset>
+                      <details
+                        className="skill-disclosure"
+                        open={openSkillDisclosures.has(entry.id)}
+                        onToggle={(event) =>
+                          setSkillDisclosureOpen(entry.id, event.currentTarget.open)
+                        }
+                      >
+                        <summary
+                          aria-disabled={fieldsetDisabled}
+                          tabIndex={fieldsetDisabled ? -1 : 0}
+                          onClick={fieldsetDisabled ? (event) => event.preventDefault() : undefined}
+                        >
+                          <span>{entry.name}</span>
+                          <small>{skill.enabled ? 'Activa' : 'Inactiva'}</small>
+                        </summary>
+                        <label className="sr-only" htmlFor={`skill-description-${entry.id}`}>
+                          Descripción de {entry.name} para el agente
+                        </label>
+                        <textarea
+                          id={`skill-description-${entry.id}`}
+                          value={skill.description ?? ''}
+                          onChange={(event) =>
+                            onSkillDescriptionChange(entry.id, event.target.value)
+                          }
+                          readOnly={disabled}
+                          aria-describedby={`skill-description-count-${entry.id}`}
+                          aria-invalid={
+                            countCharacters(skill.description ?? '') >
+                            MAX_SKILL_DESCRIPTION_CHARACTERS
+                          }
+                          rows={3}
+                        />
+                        <p
+                          className="character-count"
+                          id={`skill-description-count-${entry.id}`}
+                          aria-live="polite"
+                        >
+                          {formatCharacterCount(
+                            skill.description ?? '',
+                            MAX_SKILL_DESCRIPTION_CHARACTERS,
+                          )}
+                        </p>
+                      </details>
+                      {!openSkillDisclosures.has(entry.id) &&
+                        countCharacters(skill.description ?? '') >
+                          MAX_SKILL_DESCRIPTION_CHARACTERS && (
+                          <button
+                            className="skill-description-review"
+                            type="button"
+                            onClick={() => {
+                              pendingDescriptionFocusRef.current = entry.id;
+                              setSkillDisclosureOpen(entry.id, true);
+                            }}
+                          >
+                            Revisar descripción de {entry.name}
+                          </button>
+                        )}
+                    </article>
+                  );
+                })}
+              </div>
+            </fieldset>
 
-          {draft.skills.every((skill) => !skill.enabled) && (
-            <p className="editor-hint" role="status">
-              Podés guardar esta configuración sin habilidades activas. Para ejecutar un recorrido
-              más adelante vas a necesitar al menos una.
-            </p>
-          )}
+            {draft.skills.every((skill) => !skill.enabled) && (
+              <p className="editor-hint" role="status">
+                Podés guardar esta configuración sin habilidades activas. Para ejecutar un recorrido
+                más adelante vas a necesitar al menos una.
+              </p>
+            )}
 
-          {shouldWarnAboutDraftSize && !limitMessage && (
-            <p className="configuration-size-warning">
-              La configuración está cerca del límite de tamaño. Si lo supera, no se va a poder
-              guardar.
-            </p>
-          )}
-        </form>
-      )}
-
-      <div
-        id="attempt-controls-slot"
-        className="editor-attempt-controls"
-        role="group"
-        aria-label="Controles de prueba y animación"
-        ref={onAttemptControlsHostChange}
-      >
-        {onTry && (
-          <div className="editor-actions attempt-action">
-            <button
-              className="primary-button"
-              type="button"
-              onClick={() => {
-                attemptClickLockedRef.current = true;
-                setAttemptClickLocked(true);
-                onTry();
-              }}
-              disabled={
-                disabled || draft === null || status === 'conflict' || limitMessage !== null
-              }
-            >
-              Probar
-            </button>
-            <span className="field-help">
-              Cada prueba admitida consume un intento de tu cuota diaria, aunque la canceles o
-              termine con un error.
-            </span>
-          </div>
+            {shouldWarnAboutDraftSize && !limitMessage && (
+              <p className="configuration-size-warning">
+                La configuración está cerca del límite de tamaño. Si lo supera, no se va a poder
+                guardar.
+              </p>
+            )}
+          </>
         )}
-      </div>
+      </form>
 
       {conflict && (
         <div className="editor-conflict" role="group" aria-label="Resolución del conflicto">

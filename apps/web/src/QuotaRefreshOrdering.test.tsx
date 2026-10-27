@@ -265,7 +265,13 @@ async function createRaceFixture({
   expect(screen.getByRole('alert').textContent).toContain('Error inicial de cuota.');
   const controls = document.querySelector('#attempt-controls-slot') as HTMLElement;
   const tryButton = within(controls).getByRole('button', { name: 'Probar' }) as HTMLButtonElement;
-  await within(controls).findByText('El resultado aparece después de la reproducción.');
+  await waitFor(() => {
+    const animation = within(controls).getByRole('checkbox', {
+      name: 'Animación',
+    }) as HTMLInputElement;
+    expect(animation.disabled).toBe(false);
+    expect(animation.checked).toBe(true);
+  });
   await waitFor(() => expect(tryButton.disabled).toBe(false));
   fireEvent.click(retry);
   await waitFor(() => expect(getQuota).toHaveBeenCalledTimes(2));
