@@ -1251,6 +1251,12 @@ h1 {
   margin-bottom: 0.65rem;
 }
 
+.attempt-result .attempt-result-history-return,
+.attempt-result-query .attempt-result-history-return {
+  min-height: 44px;
+  padding-block: 0.65rem;
+}
+
 .attempt-status {
   padding: 0.35rem 0.55rem;
   border: 1px solid rgba(155, 197, 158, 0.45);

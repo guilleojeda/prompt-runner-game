@@ -85,7 +85,7 @@ export function ResultCard({
           </div>
           {onReturnToHistory && (
             <button
-              className="text-button"
+              className="text-button attempt-result-history-return"
               type="button"
               onClick={onReturnToHistory}
               disabled={busy}
@@ -98,7 +98,12 @@ export function ResultCard({
       {!showHeading && showContext && <ResultContext source={source} createdAt={createdAt} />}
       {!showHeading && onReturnToHistory && (
         <div className="attempt-result-back">
-          <button className="text-button" type="button" onClick={onReturnToHistory} disabled={busy}>
+          <button
+            className="text-button attempt-result-history-return"
+            type="button"
+            onClick={onReturnToHistory}
+            disabled={busy}
+          >
             Volver al historial
           </button>
         </div>
@@ -342,7 +347,11 @@ export function HistoryResultQuery({
       )}
       {state.status !== 'ready' && (
         <div className="attempt-result-back">
-          <button className="text-button" type="button" onClick={onClose}>
+          <button
+            className="text-button attempt-result-history-return"
+            type="button"
+            onClick={onClose}
+          >
             Volver al historial
           </button>
         </div>

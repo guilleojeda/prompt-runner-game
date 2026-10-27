@@ -527,6 +527,7 @@ export function useAttemptHistory({
       editor,
       history,
       identity,
+      currentAttempt,
       onAuthRequired,
       surface,
     ],
