@@ -2819,9 +2819,13 @@ describe('AttemptWorkspace', () => {
       />,
     );
 
+    expect(await screen.findByRole('button', { name: 'Comprobar estado' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Comprobar estado' }));
     expect(await screen.findByRole('heading', { name: 'Preparando intento' })).toBeTruthy();
-    expect(getAttemptRequest).toHaveBeenCalledWith(currentKey, expect.anything());
-    expect(getAttempt).not.toHaveBeenCalledWith(oldAttempt.id, expect.anything());
+    expect(getAttemptRequest).toHaveBeenCalledOnce();
+    expect(getAttemptRequest).toHaveBeenCalledWith(currentKey);
+    expect(getAttempt).not.toHaveBeenCalled();
+    expect(createAttempt).toHaveBeenCalledOnce();
   });
 
   it('keeps the foreground recovery reference when snapshot confirmation fails', async () => {
