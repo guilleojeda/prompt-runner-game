@@ -221,6 +221,27 @@ afterEach(() => {
 });
 
 describe('AttemptActivity', () => {
+  it('uses Historial as the bootstrap-ready cue in the controller harness', async () => {
+    let finishBootstrap!: (page: { attempts: readonly AttemptSummary[] }) => void;
+    const bootstrap = new Promise<{ attempts: readonly AttemptSummary[] }>((resolve) => {
+      finishBootstrap = resolve;
+    });
+    const listAttempts = vi.fn().mockReturnValueOnce(bootstrap).mockResolvedValue({ attempts: [] });
+    const attemptApi = api({ listAttempts });
+    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
+
+    await waitFor(() => expect(listAttempts).toHaveBeenCalledOnce());
+    expect(screen.queryByRole('heading', { name: 'Historial' })).toBeNull();
+    expect(screen.getByRole('heading', { name: 'Probar al agente' })).toBeTruthy();
+
+    await act(async () => {
+      finishBootstrap({ attempts: [] });
+      await bootstrap;
+    });
+    expect(await screen.findByRole('heading', { name: 'Historial' })).toBeTruthy();
+  });
+
   it('leaves viewport positioning to the workspace during admission, replay, and background loading', async () => {
     const previousScroll = HTMLElement.prototype.scrollIntoView;
     const scroll = vi.fn();
