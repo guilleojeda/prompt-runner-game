@@ -131,7 +131,7 @@ interface AttemptWorkspaceProps {
   readonly authPaused?: boolean;
   readonly accessState?: 'ready' | 'checking' | 'required';
   readonly onBusyChange?: (busy: boolean) => void;
-  readonly onPreferenceReadyChange?: (ready: boolean) => void;
+  readonly onTryAvailabilityChange?: (available: boolean) => void;
   readonly onAuthRequired?: ApiAuthRequired;
   readonly onReturnToEditor?: () => void;
   readonly historySlot?: ReactNode;
@@ -920,7 +920,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       authPaused = false,
       accessState = 'checking',
       onBusyChange,
-      onPreferenceReadyChange,
+      onTryAvailabilityChange,
       onAuthRequired,
       onReturnToEditor,
       historySlot,
@@ -959,6 +959,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     const generationRef = useRef(0);
     const historyGenerationRef = useRef(0);
     const quotaGenerationRef = useRef(0);
+    const quotaRef = useRef<QuotaSummary | null>(null);
     const frozenRef = useRef<FrozenAdmission | null>(null);
     const attemptRef = useRef<AttemptSummary | null>(null);
     const modeRef = useRef(mode);
@@ -994,6 +995,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     const preferenceGenerationRef = useRef(0);
     const preferenceControllerRef = useRef<AbortController>(new AbortController());
     const preferenceChoiceRevisionRef = useRef(0);
+    const preferenceChoiceMadeRef = useRef(false);
     const preferenceWriteCountRef = useRef(0);
     const preferenceConflictRef = useRef(false);
     const preferenceQueueRef = useRef<Promise<void>>(Promise.resolve());
@@ -1110,10 +1112,13 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     useEffect(() => {
       const previousSub = sessionSubRef.current;
       if (previousSub !== sessionSub) {
+        quotaRef.current = null;
+        setQuota(null);
         preferenceControllerRef.current.abort();
         preferenceControllerRef.current = new AbortController();
         preferenceGenerationRef.current += 1;
         preferenceChoiceRevisionRef.current += 1;
+        preferenceChoiceMadeRef.current = false;
         preferenceQueueRef.current = Promise.resolve();
         frozenRef.current = null;
         attemptRef.current = null;
@@ -1180,6 +1185,30 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       mode === 'preparing-replay' ||
       mode === 'replaying';
 
+    const tryAvailable =
+      preferenceReady && !preferenceSaving && preferenceConflict === null && quota?.remaining !== 0;
+    const animationPreferenceUnknown = !preferenceReady && !preferenceChoiceMadeRef.current;
+    const tryAvailabilityMessage = preferenceSaving
+      ? 'Confirmando tu preferencia de animación. Podés seguir preparando el robot.'
+      : !preferenceReady
+        ? 'Estamos recuperando tu preferencia de animación. Podés seguir preparando el robot.'
+        : preferenceConflict !== null
+          ? ''
+          : quota?.remaining === 0
+            ? 'No quedan partidas disponibles.'
+            : quota === null
+              ? 'Disponibilidad sin confirmar. La comprobamos al iniciar.'
+              : '';
+
+    const isTryAvailableNow = useCallback(
+      (): boolean =>
+        preferenceReadyRef.current &&
+        preferenceWriteCountRef.current === 0 &&
+        !preferenceConflictRef.current &&
+        quotaRef.current?.remaining !== 0,
+      [],
+    );
+
     useEffect(() => {
       onBusyChange?.(busy);
       if (!busy) {
@@ -1188,8 +1217,8 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     }, [busy, onBusyChange]);
 
     useEffect(() => {
-      onPreferenceReadyChange?.(preferenceReady);
-    }, [onPreferenceReadyChange, preferenceReady]);
+      onTryAvailabilityChange?.(tryAvailable);
+    }, [onTryAvailabilityChange, tryAvailable]);
 
     const refreshAnimationPreference = useCallback(
       async (signal?: AbortSignal, initial = false): Promise<void> => {
@@ -1226,6 +1255,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
               `Otra pestaña guardó la animación ${preference.animationEnabled ? 'activada' : 'desactivada'}. Tu selección sigue visible; guardala para usarla como preferencia.`,
             );
           } else if (preferenceWriteCountRef.current === 0 && !preferenceConflictRef.current) {
+            preferenceChoiceMadeRef.current = false;
             animationEnabledRef.current = preference.animationEnabled;
             setAnimationEnabled(preference.animationEnabled);
             preferenceConflictRef.current = false;
@@ -1266,6 +1296,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         const revision = ++preferenceChoiceRevisionRef.current;
         const preferenceGeneration = preferenceGenerationRef.current;
         const requestSignal = preferenceControllerRef.current.signal;
+        preferenceChoiceMadeRef.current = true;
+        preferenceReadyRef.current = false;
+        setPreferenceReady(false);
         preferenceWriteCountRef.current += 1;
         setPreferenceSaving(true);
         setPreferenceError(null);
@@ -1311,6 +1344,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
               preferenceReadyRef.current = true;
               setPreferenceReady(true);
               if (revision === preferenceChoiceRevisionRef.current) {
+                preferenceChoiceMadeRef.current = false;
                 animationEnabledRef.current = saved.animationEnabled;
                 setAnimationEnabled(saved.animationEnabled);
                 setPreferenceConflict(null);
@@ -1340,6 +1374,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
                 setPreferenceReady(true);
                 if (current.animationEnabled === value) {
                   if (revision === preferenceChoiceRevisionRef.current) {
+                    preferenceChoiceMadeRef.current = false;
                     animationEnabledRef.current = current.animationEnabled;
                     setAnimationEnabled(current.animationEnabled);
                     preferenceConflictRef.current = false;
@@ -1734,6 +1769,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             generationRef.current === operationGeneration &&
             quotaGenerationRef.current === quotaGeneration
           ) {
+            quotaRef.current = nextQuota;
             setQuota(nextQuota);
           }
         } catch (quotaError) {
@@ -1953,11 +1989,9 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           setAttempt(null);
           setActiveCandidates([]);
           setError(null);
-          await Promise.all([
-            refreshQuota(controller.signal),
-            refreshHistory(controller.signal),
-            refreshAnimationPreference(controller.signal, true),
-          ]);
+          void refreshQuota(controller.signal);
+          void refreshAnimationPreference(controller.signal, true);
+          await refreshHistory(controller.signal);
           if (await recoverKnownAttempt(controller.signal)) return;
           await discoverActiveAttempts(controller.signal);
         } catch (initialError) {
@@ -2027,12 +2061,14 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     }, [startServerAttempt]);
 
     const start = useCallback(async (): Promise<void> => {
-      clearConfiguration();
-      editor.current?.cancelApplication?.();
-      if (!preferenceReadyRef.current) {
-        setPreferenceError('Cargá la preferencia de animación antes de probar el robot.');
+      if (!isTryAvailableNow()) {
+        if (!busy && !startLockRef.current && modeRef.current !== 'admitting') {
+          editor.current?.releaseAttemptLock?.();
+        }
         return;
       }
+      clearConfiguration();
+      editor.current?.cancelApplication?.();
       if (
         startLockRef.current ||
         busy ||
@@ -2078,6 +2114,12 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         generationRef.current !== operationGeneration ||
         operationEpochRef.current !== operationEpoch
       ) {
+        return;
+      }
+      if (!isTryAvailableNow()) {
+        setMode('idle');
+        startLockRef.current = false;
+        editor.current?.releaseAttemptLock?.();
         return;
       }
       frozenRef.current = {
@@ -2160,6 +2202,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       clearDecisionInspector,
       editor,
       clearConfiguration,
+      isTryAvailableNow,
       onAuthRequired,
       sessionSub,
       startServerAttempt,
@@ -2943,26 +2986,37 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             <input
               id="animation-enabled"
               type="checkbox"
-              checked={animationEnabled}
+              ref={(input) => {
+                if (input) input.indeterminate = animationPreferenceUnknown;
+              }}
+              checked={animationPreferenceUnknown ? false : animationEnabled}
+              aria-checked={animationPreferenceUnknown ? 'mixed' : animationEnabled}
               disabled={authPaused || busy || preferenceLoading}
               onChange={(event) => chooseAnimationPreference(event.currentTarget.checked)}
             />
             <span>Animación</span>
           </label>
-          <span className="animation-preference-detail">
-            {preferenceLoading
-              ? 'Cargando preferencia guardada…'
-              : preferenceSaving
-                ? 'Guardando preferencia…'
-                : animationEnabled
-                  ? 'El resultado aparece después de la reproducción.'
-                  : 'El resultado aparece directamente.'}
-          </span>
+          {(preferenceLoading || preferenceSaving) && (
+            <span className="animation-preference-detail">
+              {preferenceLoading ? 'Cargando preferencia guardada…' : 'Guardando preferencia…'}
+            </span>
+          )}
         </div>
+
+        {preferenceConflict === null && (
+          <span
+            id="attempt-availability-status"
+            className="attempt-availability-status"
+            role="status"
+            aria-live="polite"
+          >
+            {tryAvailabilityMessage}
+          </span>
+        )}
 
         {preferenceConflict && (
           <div className="attempt-preference-conflict" role="status">
-            <p>
+            <p id="attempt-availability-status">
               {preferenceConflict}
               {preferenceRemoteValue === null
                 ? ''

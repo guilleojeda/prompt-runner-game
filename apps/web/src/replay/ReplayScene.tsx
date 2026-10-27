@@ -26,7 +26,7 @@ export interface ReplaySceneProps {
 
 const MIN_VIEW_WIDTH = 360;
 const MAX_VIEW_WIDTH = 760;
-const PREVIEW_HEIGHT = 360;
+const PREVIEW_HEIGHT = 390;
 const VIEW_HEIGHT = 330;
 const GROUND_Y = 250;
 const ROBOT_SCALE = 0.62;
@@ -469,7 +469,7 @@ const CourseTileNumbers = () => (
     data-replay-layer="course-tile-numbers"
     aria-hidden="true"
     fontFamily="system-ui, sans-serif"
-    fontSize="15"
+    fontSize="20"
     fontWeight="700"
     textAnchor="middle"
   >
@@ -482,6 +482,11 @@ const CourseTileNumbers = () => (
           <text x={x} y="338" fill="#23445b">
             {tile}
           </text>
+          {(tile === 0 || tile === LEVEL.exit.support) && (
+            <text x={x} y="374" fill="#23445b" fontSize="24">
+              {tile === 0 ? 'Inicio' : 'Meta'}
+            </text>
+          )}
         </g>
       );
     })}
@@ -493,7 +498,7 @@ export const CoursePreview = ({ locked = false }: { readonly locked?: boolean })
   <section className="course-preview" aria-labelledby="course-preview-title">
     <div className="course-preview__heading">
       <div>
-        <p className="course-preview__kicker">Mapa del recorrido</p>
+        <p className="course-preview__kicker">Llegá a la salida</p>
         <h2 id="course-preview-title">Vista completa del terreno</h2>
       </div>
       <span className="course-preview__phase">Fase inicial</span>
@@ -514,7 +519,10 @@ export const CoursePreview = ({ locked = false }: { readonly locked?: boolean })
         data-world-width={REPLAY_WORLD_WIDTH}
       >
         <title>Vista completa del terreno en la fase inicial</title>
-        <desc>Las barreras y la plataforma cambian de fase después de cada acción.</desc>
+        <desc>
+          El recorrido empieza en la casilla 0 y su meta está en la 10. Las barreras y la plataforma
+          cambian de fase después de cada acción.
+        </desc>
         <Backdrop width={REPLAY_WORLD_WIDTH} />
         <TerrainBack sample={initialCourseSample} />
         <Objects sample={initialCourseSample} />
@@ -522,11 +530,6 @@ export const CoursePreview = ({ locked = false }: { readonly locked?: boolean })
         <CourseTileNumbers />
       </svg>
     </div>
-    <p className="course-preview__description">
-      Las barreras y la plataforma cambian de fase después de cada acción. En la casilla 2 hay una
-      recompensa opcional de 25 puntos. La llave de la casilla 6 abre la puerta de la casilla 9. La
-      salida está en la casilla 10. Hay hasta 24 acciones para llegar.
-    </p>
     <details
       className="course-preview__help"
       aria-disabled={locked}
@@ -534,6 +537,44 @@ export const CoursePreview = ({ locked = false }: { readonly locked?: boolean })
     >
       <summary tabIndex={locked ? -1 : 0}>Reglas del recorrido</summary>
       <div className="course-preview__help-copy">
+        <p>
+          Empezás en la casilla 0, mirando a la derecha. La meta está en la casilla 10. Tenés hasta
+          24 acciones para llegar.
+        </p>
+        <dl className="course-preview__rules">
+          <div>
+            <dt>Avanzar y Retroceder</dt>
+            <dd>
+              Caminan un tramo a derecha e izquierda, respectivamente. Un pozo causa caída; una rama
+              o una barrera producen un choque.
+            </dd>
+          </div>
+          <div>
+            <dt>Saltar</dt>
+            <dd>
+              Un tramo hacia izquierda o derecha. Supera pozos y barreras bajas; choca con ramas y
+              barreras altas.
+            </dd>
+          </div>
+          <div>
+            <dt>Agacharse y avanzar</dt>
+            <dd>
+              Un tramo hacia izquierda o derecha. Pasa ramas y barreras altas; cae en pozos y choca
+              con barreras bajas.
+            </dd>
+          </div>
+          <div>
+            <dt>Esperar y Nadar</dt>
+            <dd>
+              No desplazan al robot ni superan obstáculos. Consumen un turno y pueden cambiar el
+              terreno.
+            </dd>
+          </div>
+          <div>
+            <dt>Agarrar objeto</dt>
+            <dd>Intenta tomar el objeto de la casilla actual.</dd>
+          </div>
+        </dl>
         <p>
           En cada turno el agente recibe sólo la orientación actual, los objetos de su casilla y lo
           que tiene inmediatamente a izquierda y derecha. Cada decisión es independiente: no recibe
@@ -545,10 +586,14 @@ export const CoursePreview = ({ locked = false }: { readonly locked?: boolean })
           obstáculo presente; una descripción no cambia esas reglas.
         </p>
         <p>
+          La gema dorada marca la recompensa; la llave permite abrir la puerta de madera y el arco
+          verde señala la salida libre.
+        </p>
+        <p>
           Las barreras y la plataforma periódicas pueden cambiar después de cada acción. Agarrar
-          objeto sólo recoge un objeto que está en la casilla actual. La llave abre la puerta
-          cerrada; la salida queda después de la puerta. El recorrido tiene un límite de 24
-          acciones.
+          objeto permite recoger la recompensa opcional de 25 puntos en la casilla 2 y la llave de
+          la casilla 6. La llave abre la puerta de la casilla 9; la salida está después de la
+          puerta. Los objetos recogidos permanecen en el inventario.
         </p>
       </div>
     </details>

@@ -413,7 +413,7 @@ export function App({
   const [runnerApi, setRunnerApi] = useState<AttemptApi | null>(attemptApi ?? null);
   const [editorConfig, setEditorConfig] = useState<AuthConfig | null>(null);
   const [attemptBusy, setAttemptBusy] = useState(false);
-  const [attemptPreferenceReady, setAttemptPreferenceReady] = useState(false);
+  const [attemptAvailable, setAttemptAvailable] = useState(false);
   const [editorReadySubject, setEditorReadySubject] = useState<string | null>(null);
   const [attemptControlsHost, setAttemptControlsHost] = useState<HTMLDivElement | null>(null);
   const clientRef = useRef<AuthClient | null>(authClient ?? null);
@@ -1003,21 +1003,22 @@ export function App({
           phase === 'signing-in') && (
           <>
             {editorApi && editorConfig && session.user.scopes.includes(editorConfig.apiScope) && (
-              <CoursePreview locked={attemptBusy} />
-            )}
-            {editorApi && editorConfig && session.user.scopes.includes(editorConfig.apiScope) && (
-              <RobotEditor
-                ref={editorRef}
-                api={editorApi}
-                session={session}
-                accessState={accessState}
-                paused={editorPaused}
-                locked={attemptBusy || !attemptPreferenceReady}
-                onTry={runnerApi ? startAttempt : undefined}
-                onAuthRequired={handleApiAuthRequired}
-                onConfigurationAvailabilityChange={handleEditorAvailabilityChange}
-                onAttemptControlsHostChange={handleAttemptControlsHostChange}
-              />
+              <div className="preparation-layout">
+                <CoursePreview locked={attemptBusy} />
+                <RobotEditor
+                  ref={editorRef}
+                  api={editorApi}
+                  session={session}
+                  accessState={accessState}
+                  paused={editorPaused}
+                  locked={attemptBusy}
+                  tryUnavailable={!attemptAvailable}
+                  onTry={runnerApi ? startAttempt : undefined}
+                  onAuthRequired={handleApiAuthRequired}
+                  onConfigurationAvailabilityChange={handleEditorAvailabilityChange}
+                  onAttemptControlsHostChange={handleAttemptControlsHostChange}
+                />
+              </div>
             )}
             {runnerApi &&
               editorApi &&
@@ -1032,7 +1033,7 @@ export function App({
                   accessState={accessState}
                   authPaused={renewing || phase !== 'account' || apiAuthError}
                   onBusyChange={handleAttemptBusyChange}
-                  onPreferenceReadyChange={setAttemptPreferenceReady}
+                  onTryAvailabilityChange={setAttemptAvailable}
                   onAuthRequired={handleApiAuthRequired}
                   onReturnToEditor={returnToEditor}
                   attemptControlsHost={attemptControlsHost}
@@ -1046,7 +1047,7 @@ export function App({
                         configurationAvailable={editorReadySubject === session.identity.sub}
                         accessState={accessState}
                         paused={renewing || phase !== 'account' || apiAuthError}
-                        locked={attemptBusy || !attemptPreferenceReady}
+                        locked={attemptBusy}
                         onAuthRequired={handleApiAuthRequired}
                       />
                     ) : null

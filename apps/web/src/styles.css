@@ -63,8 +63,39 @@ button:focus-visible {
 }
 
 .shell-authenticated {
+  --game-panel: #20251c;
+  --game-line: rgba(232, 232, 211, 0.14);
+  --game-muted: #a4a698;
+  --game-cream: #f4efdc;
+  --game-gold: #e4bd70;
+  width: min(100% - 3rem, 72.5rem);
   align-content: start;
   padding: 1rem 0 5rem;
+}
+
+.preparation-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: 1.125rem;
+  min-width: 0;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (min-width: 64rem) {
+  .preparation-layout {
+    grid-template-columns: minmax(0, 0.78fr) minmax(0, 1.42fr);
+  }
 }
 
 .shell-auth {
@@ -291,17 +322,28 @@ h1 {
 }
 
 .editor-help {
-  margin-top: 1rem;
-  border: 1px solid rgba(155, 197, 158, 0.38);
-  border-radius: 0.6rem;
-  background: rgba(66, 104, 69, 0.12);
+  margin-top: 0.5rem;
+  border-top: 1px solid var(--game-line, rgba(232, 232, 211, 0.14));
 }
 
 .editor-help summary {
-  padding: 0.75rem 0.85rem;
-  color: #bde0bf;
-  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 2.75rem;
+  color: #c6cfb2;
+  font-size: 0.85rem;
   cursor: pointer;
+}
+
+.editor-help summary::after {
+  content: '+';
+  color: var(--game-gold, #e4bd70);
+  font-size: 1.25rem;
+}
+
+.editor-help[open] summary::after {
+  content: '−';
 }
 
 .editor-help summary:focus-visible {
@@ -310,8 +352,9 @@ h1 {
 }
 
 .editor-help-copy {
-  padding: 0 0.85rem 0.85rem;
-  color: #b9b4a8;
+  padding: 0 0 0.75rem;
+  color: var(--game-muted, #a4a698);
+  font-size: 0.875rem;
   line-height: 1.5;
 }
 
@@ -346,12 +389,12 @@ h1 {
 }
 
 .robot-editor {
-  width: min(100%, 62rem);
-  padding: 1.5rem;
-  border: 1px solid rgba(242, 239, 232, 0.14);
+  min-width: 0;
+  padding: 1.25rem;
+  border: 1px solid var(--game-line, rgba(232, 232, 211, 0.14));
   border-radius: 1rem;
-  background: rgba(242, 239, 232, 0.07);
-  box-shadow: 0 1.5rem 4rem rgba(0, 0, 0, 0.22);
+  background: var(--game-panel, #20251c);
+  box-shadow: 0 1rem 3rem rgba(0, 0, 0, 0.13);
 }
 
 .saved-robots {
@@ -636,22 +679,24 @@ h1 {
 
 .editor-attempt-controls {
   display: grid;
-  gap: 0.8rem;
-  margin-top: 1.25rem;
-  padding-top: 1rem;
-  border-top: 1px solid rgba(242, 239, 232, 0.14);
+  gap: 0.75rem;
+  padding-block: 1rem;
+  border-block: 1px solid var(--game-line, rgba(232, 232, 211, 0.14));
 }
 
 .attempt-controls {
-  display: grid;
-  grid-template-columns: minmax(10rem, auto) minmax(0, 1fr);
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 0.8rem;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  min-width: 0;
 }
 
 .attempt-controls .attempt-preference-conflict,
+.attempt-controls .attempt-availability-status,
 .attempt-controls .attempt-error {
-  grid-column: 1 / -1;
+  flex-basis: 100%;
   margin-top: 0;
 }
 
@@ -672,12 +717,8 @@ h1 {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 0.8rem;
-  margin: 0.8rem 0 1rem;
-  padding: 0.75rem 0.9rem;
-  border: 1px solid rgba(242, 239, 232, 0.14);
-  border-radius: 0.65rem;
-  background: rgba(20, 19, 15, 0.28);
+  gap: 0.5rem;
+  min-width: 0;
 }
 
 .animation-preference label {
@@ -687,7 +728,7 @@ h1 {
   gap: 0.55rem;
   padding-inline: 0.25rem;
   color: #f7f1e1;
-  font-weight: 700;
+  font-weight: 500;
 }
 
 .animation-preference input {
@@ -741,19 +782,16 @@ h1 {
 
 .quota-badge {
   display: grid;
-  flex: 0 0 auto;
-  gap: 0.1rem;
-  min-width: 10rem;
-  padding: 0.7rem 0.8rem;
-  border: 1px solid rgba(155, 197, 158, 0.45);
-  border-radius: 0.6rem;
-  background: rgba(66, 104, 69, 0.2);
-  text-align: right;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.15rem 0.35rem;
+  min-width: 0;
+  color: #d6d8ca;
 }
 
 .quota-badge strong {
-  color: #bde0bf;
-  font-size: 1.35rem;
+  color: #c6cfb2;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.9rem;
 }
 
 .quota-badge span,
@@ -764,9 +802,10 @@ h1 {
 }
 
 .quota-badge small {
-  color: #d4e1cf;
-  font-size: 0.72rem;
-  line-height: 1.35;
+  grid-column: 1 / -1;
+  color: var(--game-muted, #a4a698);
+  font-size: 0.75rem;
+  line-height: 1.4;
 }
 
 .attempt-message,
@@ -1509,21 +1548,22 @@ h1 {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 1.5rem;
-  margin-bottom: 1.4rem;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
 }
 
 .editor-heading h2 {
   margin-bottom: 0.45rem;
-  color: #f7f1e1;
-  font-size: clamp(1.5rem, 3vw, 2rem);
+  color: var(--game-cream, #f4efdc);
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: clamp(1.7rem, 3vw, 2.25rem);
+  font-weight: 400;
+  letter-spacing: -0.035em;
 }
 
 .editor-title-line {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0.35rem 0.9rem;
+  display: grid;
+  gap: 0.4rem;
 }
 
 .editor-title-line h2 {
@@ -1531,8 +1571,8 @@ h1 {
 }
 
 .editor-model-meta {
-  color: #b9b4a8;
-  font-size: 0.88rem;
+  color: var(--game-muted, #a4a698);
+  font-size: 0.8rem;
   line-height: 1.4;
 }
 
@@ -1541,7 +1581,6 @@ h1 {
   font-weight: 700;
 }
 
-.editor-intro,
 .field-help,
 .editor-hint,
 .editor-loading,
@@ -1549,11 +1588,6 @@ h1 {
 .editor-paused {
   color: #b9b4a8;
   line-height: 1.5;
-}
-
-.editor-intro {
-  max-width: 42rem;
-  margin-bottom: 0;
 }
 
 .attempt-result-actions {
@@ -1666,21 +1700,21 @@ h1 {
 
 .editor-form {
   display: grid;
-  gap: 1.25rem;
+  gap: 1.125rem;
 }
 
 .editor-form fieldset {
   min-width: 0;
   margin: 0;
-  padding: 1rem;
-  border: 1px solid rgba(242, 239, 232, 0.16);
-  border-radius: 0.7rem;
+  padding: 0;
+  border: 0;
 }
 
 .editor-form legend {
-  padding: 0 0.4rem;
-  color: #f7f1e1;
-  font-weight: 700;
+  padding: 0;
+  margin-bottom: 0.65rem;
+  color: var(--game-cream, #f4efdc);
+  font-weight: 600;
 }
 
 .editor-form label {
@@ -1745,34 +1779,29 @@ h1 {
 
 .skill-list {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.8rem;
+  gap: 0.5rem;
 }
 
 .skill-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 0 0.5rem;
   min-width: 0;
-  padding: 0.85rem;
-  border: 1px solid rgba(242, 239, 232, 0.12);
-  border-radius: 0.6rem;
-  background: rgba(20, 19, 15, 0.3);
-}
-
-.skill-card-heading {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 0.8rem;
-  margin-bottom: 0.7rem;
+  padding: 0.25rem 0.65rem;
+  border: 1px solid var(--game-line, rgba(232, 232, 211, 0.14));
+  border-radius: 0.65rem;
+  background: rgba(255, 255, 255, 0.025);
 }
 
 .skill-toggle {
   display: inline-flex !important;
+  min-width: 2.75rem;
   min-height: 2.75rem;
   align-items: center;
-  gap: 0.55rem;
+  justify-content: center;
   margin: 0 !important;
-  padding: 0.25rem;
-  font-size: 1rem !important;
+  cursor: pointer;
 }
 
 .skill-toggle input {
@@ -1782,15 +1811,65 @@ h1 {
   accent-color: #d8b36a;
 }
 
-.skill-toggle span {
+.skill-disclosure {
   min-width: 0;
 }
 
-.skill-help {
-  color: #8f8b81;
-  font-size: 0.78rem;
-  line-height: 1.35;
-  text-align: right;
+.skill-disclosure summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  min-height: 2.75rem;
+  color: var(--game-cream, #f4efdc);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.skill-disclosure summary small {
+  margin-left: auto;
+  color: var(--game-muted, #a4a698);
+  font-size: 0.75rem;
+  font-weight: 400;
+}
+
+.skill-disclosure summary::after {
+  content: '+';
+  color: var(--game-gold, #e4bd70);
+  font-size: 1.25rem;
+}
+
+.skill-disclosure[open] summary::after {
+  content: '−';
+}
+
+.skill-disclosure summary:focus-visible {
+  outline: 3px solid #f2c879;
+  outline-offset: 2px;
+}
+
+.skill-disclosure[open] {
+  padding-bottom: 0.5rem;
+}
+
+.skill-description-review {
+  grid-column: 1 / -1;
+  min-height: 2.75rem;
+  margin-bottom: 0.25rem;
+  padding: 0.4rem;
+  border: 1px solid #dc8978;
+  border-radius: 0.4rem;
+  color: #f0b0a1;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.attempt-availability-status {
+  margin: 0;
+  color: #d8c99e;
+  font-size: 0.875rem;
+  line-height: 1.5;
 }
 
 .character-count {
@@ -2283,34 +2362,12 @@ button:disabled {
     margin-top: 0.8rem;
   }
 
-  .skill-list {
-    grid-template-columns: 1fr;
-  }
-
-  .editor-form fieldset {
-    padding: 0.75rem;
-  }
-
   .editor-conflict-comparison {
     padding: 0.75rem;
   }
 
   .editor-conflict-field {
     grid-template-columns: minmax(0, 1fr);
-  }
-
-  .skill-card {
-    padding: 0.75rem;
-  }
-
-  .skill-card-heading {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    gap: 0.15rem;
-  }
-
-  .skill-help {
-    text-align: left;
   }
 
   .attempt-heading,
@@ -2320,15 +2377,6 @@ button:disabled {
   .history-list li,
   .history-ranking-card {
     display: block;
-  }
-
-  .quota-badge {
-    margin-top: 0.8rem;
-    text-align: left;
-  }
-
-  .attempt-controls {
-    grid-template-columns: 1fr;
   }
 
   .attempt-running .secondary-button {
