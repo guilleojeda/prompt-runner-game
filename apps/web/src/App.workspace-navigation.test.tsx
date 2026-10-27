@@ -780,7 +780,7 @@ describe('App workspace navigation acceptance', () => {
     });
     await readyForPreparation();
     selectTab('Historial');
-    await historyButton('Ver configuración');
+    await within(historySection()).findAllByRole('button', { name: 'Ver configuración' });
     const configButtons = within(historySection()).getAllByRole('button', {
       name: 'Ver configuración',
     });
@@ -1029,7 +1029,8 @@ describe('App workspace navigation acceptance', () => {
     expect(tab('Preparar').disabled).toBe(true);
     expect(createAttempt).toHaveBeenCalledOnce();
     expect(getAttemptRequest).toHaveBeenCalledOnce();
-    expect(app.runner.startAttempt).not.toHaveBeenCalled();
+    expect(app.runner.startAttempt).toHaveBeenCalledOnce();
+    expect(app.runner.startAttempt).toHaveBeenCalledWith(active.id, expect.any(AbortSignal));
   });
 
   it('keeps active-attempt selection in the activity surface instead of exposing the other tabs', async () => {
