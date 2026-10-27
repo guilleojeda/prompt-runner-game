@@ -1154,7 +1154,10 @@ describe('AttemptWorkspace', () => {
     expect(animation.checked).toBe(false);
 
     expect(getAnimationPreference).toHaveBeenCalledTimes(2);
-    expect(screen.getByText('No se pudo consultar la preferencia de animación.')).toBeTruthy();
+    expect(document.getElementById('attempt-availability-status')?.textContent).toMatch(
+      /(?:recuperando|confirmando) tu preferencia/i,
+    );
+    expect(screen.queryByRole('alert')).toBeNull();
     expect(putAnimationPreference).toHaveBeenCalledOnce();
 
     await act(async () => {
@@ -1166,7 +1169,9 @@ describe('AttemptWorkspace', () => {
     });
     await settleWorkspacePromises();
     expect(getAnimationPreference).toHaveBeenCalledTimes(3);
-    expect(screen.queryByText('No se pudo consultar la preferencia de animación.')).toBeNull();
+    expect(document.getElementById('attempt-availability-status')?.textContent).not.toMatch(
+      /(?:recuperando|confirmando) tu preferencia/i,
+    );
     expect(screen.getByRole('button', { name: 'Guardar mi selección' })).toBeTruthy();
     expect(animation.checked).toBe(false);
     expect(putAnimationPreference).toHaveBeenCalledOnce();
@@ -1250,7 +1255,10 @@ describe('AttemptWorkspace', () => {
     await settleWorkspacePromises();
     expect(putAnimationPreference).toHaveBeenCalledOnce();
     expect(getAnimationPreference).toHaveBeenCalledTimes(2);
-    expect(screen.getByText('No se pudo consultar la preferencia de animación.')).toBeTruthy();
+    expect(document.getElementById('attempt-availability-status')?.textContent).toMatch(
+      /(?:recuperando|confirmando) tu preferencia/i,
+    );
+    expect(screen.queryByRole('alert')).toBeNull();
     fireEvent.click(animation);
     expect(animation.checked).toBe(true);
     await settleWorkspacePromises();
@@ -1265,7 +1273,10 @@ describe('AttemptWorkspace', () => {
     expect(putAnimationPreference).toHaveBeenCalledOnce();
     expect(animation.checked).toBe(true);
     expect(onTryAvailabilityChange).toHaveBeenLastCalledWith(false);
-    expect(screen.getByText('No se pudo consultar la preferencia de animación.')).toBeTruthy();
+    expect(document.getElementById('attempt-availability-status')?.textContent).toMatch(
+      /(?:recuperando|confirmando) tu preferencia/i,
+    );
+    expect(screen.queryByRole('alert')).toBeNull();
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1);
@@ -1275,7 +1286,9 @@ describe('AttemptWorkspace', () => {
     expect(getAnimationPreference).toHaveBeenCalledTimes(3);
     expect(putAnimationPreference).toHaveBeenCalledOnce();
     expect(animation.checked).toBe(true);
-    expect(screen.queryByText('No se pudo consultar la preferencia de animación.')).toBeNull();
+    expect(document.getElementById('attempt-availability-status')?.textContent).not.toMatch(
+      /(?:recuperando|confirmando) tu preferencia/i,
+    );
     expect(onTryAvailabilityChange).toHaveBeenLastCalledWith(true);
   });
 

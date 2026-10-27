@@ -392,7 +392,9 @@ describe('preparation availability integration', () => {
       );
     const putAnimationPreference = vi
       .fn()
-      .mockRejectedValueOnce(new AttemptApiFailure('network', 'Write response lost.'));
+      .mockRejectedValueOnce(
+        new AttemptApiFailure('network', 'Write response lost.', undefined, true),
+      );
     const runner = attemptApi({ getAnimationPreference, putAnimationPreference });
     renderApp(runner);
 
