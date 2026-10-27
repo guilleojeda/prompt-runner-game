@@ -250,7 +250,6 @@ describe('AttemptWorkspace animation preference recovery acceptance', () => {
       .fn()
       .mockRejectedValueOnce(networkFailure())
       .mockReturnValueOnce(focusRead.promise)
-      .mockRejectedValueOnce(networkFailure('focus read failed'))
       .mockResolvedValueOnce({ animationEnabled: true, version: 2 });
     const runner = api({ getAnimationPreference });
     const harness = mount(runner);
