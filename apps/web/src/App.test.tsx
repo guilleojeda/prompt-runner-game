@@ -147,7 +147,7 @@ function emptyAttemptApi(): AttemptApi {
       used: 0,
       limit: 100,
       remaining: 100,
-      resetsAt: '2026-09-22T03:00:00.000Z',
+      resetsAt: new Date(Date.now() + 60 * 60_000).toISOString(),
     }),
   };
 }

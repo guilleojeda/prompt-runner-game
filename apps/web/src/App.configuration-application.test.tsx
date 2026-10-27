@@ -185,7 +185,7 @@ async function mount(
       used: 0,
       limit: 100,
       remaining: 100,
-      resetsAt: '2026-10-27T03:00:00.000Z',
+      resetsAt: new Date(Date.now() + 60 * 60_000).toISOString(),
     }),
   };
   const auth: AuthClient = {

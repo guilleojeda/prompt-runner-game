@@ -204,7 +204,7 @@ function api(overrides: Partial<AttemptApi> = {}): AttemptApi {
       used: 0,
       limit: 100,
       remaining: 100,
-      resetsAt: '2026-09-22T03:00:00.000Z',
+      resetsAt: new Date(Date.now() + 60 * 60_000).toISOString(),
     }),
     ...overrides,
   };
@@ -301,198 +301,33 @@ describe('AttemptWorkspace', () => {
     expect(screen.queryByRole('button', { name: 'Reintentar consultas' })).toBeNull();
   });
 
-  it('offers the quota and history refresh after a history query error', async () => {
+  it('offers a history-only manual retry after a history query error', async () => {
     const listAttempts = vi
       .fn()
       .mockRejectedValueOnce(new AttemptApiFailure('network', 'No se pudo cargar el historial.'))
       .mockResolvedValue({ attempts: [] });
-    const attemptApi = api({ listAttempts });
-    const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
-
-    expect(await screen.findByRole('button', { name: 'Reintentar consultas' })).toBeTruthy();
-    expect(
-      screen.getByText('Reintentar consultas vuelve a consultar cuota e historial.'),
-    ).toBeTruthy();
-    const callsBeforeRetry = listAttempts.mock.calls.length;
-    fireEvent.click(screen.getByRole('button', { name: 'Reintentar consultas' }));
-    await waitFor(() => expect(listAttempts.mock.calls.length).toBeGreaterThan(callsBeforeRetry));
-    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
-    expect(screen.queryByRole('button', { name: 'Reintentar consultas' })).toBeNull();
-  });
-
-  it('removes a quota error after both queries recover', async () => {
-    const getQuota = vi
-      .fn()
-      .mockRejectedValueOnce(new AttemptApiFailure('network', 'No se pudo consultar la cuota.'))
-      .mockResolvedValue({
-        day: '2026-09-21',
-        used: 0,
-        limit: 100,
-        remaining: 100,
-        resetsAt: '2026-09-22T03:00:00.000Z',
-      });
-    const attemptApi = api({ getQuota });
-    const editor = { current: null } as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Reintentar consultas' }));
-
-    expect(await screen.findByLabelText('Cuota: 100 de 100 intentos disponibles')).toBeTruthy();
-    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
-    expect(screen.queryByRole('button', { name: 'Reintentar consultas' })).toBeNull();
-    expect(attemptApi.createAttempt).not.toHaveBeenCalled();
-  });
-
-  it('ignores a deferred quota read after the account changes', async () => {
-    const oldQuota = {
+    const getQuota = vi.fn().mockResolvedValue({
       day: '2026-09-21',
       used: 0,
       limit: 100,
       remaining: 100,
-      resetsAt: '2026-09-22T03:00:00.000Z',
-    };
-    const newAccountQuota = { ...oldQuota, used: 93, remaining: 7 };
-    let finishOldRead!: (value: typeof oldQuota) => void;
-    const oldRead = new Promise<typeof oldQuota>((resolve) => {
-      finishOldRead = resolve;
+      resetsAt: new Date(Date.now() + 60 * 60_000).toISOString(),
     });
-    const getQuota = vi
-      .fn()
-      .mockRejectedValueOnce(new AttemptApiFailure('network', 'Error inicial de cuota.'))
-      .mockReturnValueOnce(oldRead)
-      .mockResolvedValueOnce(newAccountQuota);
-    const attemptApi = api({ getQuota });
+    const attemptApi = api({ getQuota, listAttempts });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    const view = render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Reintentar consultas' }));
-    await waitFor(() => expect(getQuota).toHaveBeenCalledTimes(2));
-    const otherSession = session(
-      'b@example.com',
-      Math.floor(Date.now() / 1000) + 600,
-      'token-b',
-      'subject-b',
-    );
-    view.rerender(<AttemptWorkspace api={attemptApi} editor={editor} session={otherSession} />);
-
-    expect(await screen.findByLabelText('Cuota: 7 de 100 intentos disponibles')).toBeTruthy();
-    await act(async () => {
-      finishOldRead(oldQuota);
-      await oldRead;
-    });
-    expect(screen.getByLabelText('Cuota: 7 de 100 intentos disponibles')).toBeTruthy();
+    const retry = await screen.findByRole('button', { name: /Reintentar historial/i });
+    expect(screen.queryByRole('button', { name: 'Reintentar consultas' })).toBeNull();
+    expect(getQuota).toHaveBeenCalledOnce();
+    const callsBeforeRetry = listAttempts.mock.calls.length;
+    fireEvent.click(retry);
+    await waitFor(() => expect(listAttempts.mock.calls.length).toBeGreaterThan(callsBeforeRetry));
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(screen.queryByRole('button', { name: 'Reintentar consultas' })).toBeNull();
+    expect(getQuota).toHaveBeenCalledOnce();
+    expect(attemptApi.createAttempt).not.toHaveBeenCalled();
   });
-
-  it('forwards a current auth rejection from a superseded quota read with its auth context', async () => {
-    let rejectOldRead!: (error: AttemptApiFailure) => void;
-    const oldRead = new Promise<never>((_resolve, reject) => {
-      rejectOldRead = reject;
-    });
-    const getQuota = vi
-      .fn()
-      .mockRejectedValueOnce(new AttemptApiFailure('network', 'Error inicial de cuota.'))
-      .mockReturnValueOnce(oldRead)
-      .mockResolvedValueOnce({
-        day: '2026-09-21',
-        used: 1,
-        limit: 100,
-        remaining: 99,
-        resetsAt: '2026-09-22T03:00:00.000Z',
-      });
-    const attemptApi = api({ getQuota });
-    const editor = {
-      current: {
-        captureSnapshot: vi.fn().mockResolvedValue({ version: 9, draft: createDefaultDraft() }),
-      },
-    } as unknown as { current: RobotEditorHandle | null };
-    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
-    const onAuthRequired = vi.fn();
-    render(
-      <AttemptWorkspace
-        ref={ref}
-        api={attemptApi}
-        editor={editor}
-        session={session()}
-        onAuthRequired={onAuthRequired}
-      />,
-    );
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Reintentar consultas' }));
-    await waitFor(() => expect(getQuota).toHaveBeenCalledTimes(2));
-    await act(async () => {
-      ref.current!.start();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    expect(await screen.findByLabelText('Cuota: 99 de 100 intentos disponibles')).toBeTruthy();
-    await waitFor(() => expect(getQuota).toHaveBeenCalledTimes(3));
-
-    await act(async () => {
-      rejectOldRead(
-        new AttemptApiFailure('authentication', 'La sesión venció.', 401, false, {
-          authContext: 73,
-        }),
-      );
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    await waitFor(() => expect(onAuthRequired).toHaveBeenCalledOnce());
-    expect(onAuthRequired).toHaveBeenCalledWith(73);
-    expect(screen.getByLabelText('Cuota: 99 de 100 intentos disponibles')).toBeTruthy();
-    expect(screen.queryByText('La sesión venció.')).toBeNull();
-  });
-
-  it.each(['quota', 'history'] as const)(
-    'keeps a new %s failure visible when the other retry query succeeds later',
-    async (failedQuery) => {
-      const quota = {
-        day: '2026-09-21',
-        used: 0,
-        limit: 100,
-        remaining: 100,
-        resetsAt: '2026-09-22T03:00:00.000Z',
-      };
-      const getQuota = vi
-        .fn()
-        .mockRejectedValueOnce(new AttemptApiFailure('network', 'Error anterior de consulta.'))
-        .mockResolvedValue(quota);
-      const listAttempts = vi.fn().mockResolvedValue({ attempts: [] });
-      const attemptApi = api({ getQuota, listAttempts });
-      const editor = { current: null } as { current: RobotEditorHandle | null };
-      render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
-
-      const retry = await screen.findByRole('button', { name: 'Reintentar consultas' });
-      const newMessage = `Nuevo error de ${failedQuery}.`;
-      let finishSuccessfulQuery!: () => void;
-      if (failedQuery === 'quota') {
-        getQuota.mockRejectedValueOnce(new AttemptApiFailure('network', newMessage));
-        listAttempts.mockImplementationOnce(
-          () =>
-            new Promise((resolve) => {
-              finishSuccessfulQuery = () => resolve({ attempts: [] });
-            }),
-        );
-      } else {
-        listAttempts.mockRejectedValueOnce(new AttemptApiFailure('network', newMessage));
-        getQuota.mockImplementationOnce(
-          () =>
-            new Promise((resolve) => {
-              finishSuccessfulQuery = () => resolve(quota);
-            }),
-        );
-      }
-      fireEvent.click(retry);
-      expect(await screen.findByText(newMessage)).toBeTruthy();
-
-      await act(async () => finishSuccessfulQuery());
-
-      expect(screen.getByRole('alert').textContent).toContain(newMessage);
-      expect(screen.queryByText('Error anterior de consulta.')).toBeNull();
-      expect(screen.getByRole('button', { name: 'Reintentar consultas' })).toBeTruthy();
-      expect(attemptApi.createAttempt).not.toHaveBeenCalled();
-    },
-  );
 
   it('opens decision inspection from history and from the visible result', async () => {
     const terminal = {
@@ -3167,7 +3002,7 @@ describe('AttemptWorkspace', () => {
       used: 1,
       limit: 100,
       remaining: 99,
-      resetsAt: '2026-09-22T03:00:00.000Z',
+      resetsAt: new Date(Date.now() + 60 * 60_000).toISOString(),
     });
     const attemptApi = api({ createAttempt, getAttemptRequest, startAttempt, getQuota });
     const editor = {
@@ -3469,7 +3304,7 @@ describe('AttemptWorkspace', () => {
       used: 0,
       limit: 100,
       remaining: 100,
-      resetsAt: '2026-09-22T03:00:00.000Z',
+      resetsAt: new Date(Date.now() + 60 * 60_000).toISOString(),
     });
     const listAttempts = vi.fn().mockResolvedValue({ attempts: [] });
     const attemptApi = api({ createAttempt, getAttemptRequest, getQuota, listAttempts });
@@ -4035,6 +3870,7 @@ describe('AttemptWorkspace', () => {
     });
     await waitFor(() => expect(unpagedCalls).toBe(3));
     await waitFor(() => expect(within(historySection).getAllByRole('listitem')).toHaveLength(2));
+    const quotaReadsBeforeHistoryRetry = vi.mocked(attemptApi.getQuota).mock.calls.length;
 
     await act(async () => rejectOlderPage(new Error('old history request failed')));
     await waitFor(() => expect(screen.queryByText('old history request failed')).toBeNull());
@@ -4043,12 +3879,13 @@ describe('AttemptWorkspace', () => {
     expect(screen.queryByRole('button', { name: 'Reintentar consultas' })).toBeNull();
 
     fireEvent.click(within(historySection).getByRole('button', { name: 'Cargar 20 más' }));
-    expect(await screen.findByRole('button', { name: 'Reintentar consultas' })).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Reintentar consultas' }));
+    expect(await screen.findByRole('button', { name: /Reintentar historial/i })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /Reintentar historial/i }));
     await waitFor(() =>
-      expect(screen.queryByRole('button', { name: 'Reintentar consultas' })).toBeNull(),
+      expect(screen.queryByRole('button', { name: /Reintentar historial/i })).toBeNull(),
     );
     expect(within(historySection).getAllByRole('listitem')).toHaveLength(2);
+    expect(attemptApi.getQuota).toHaveBeenCalledTimes(quotaReadsBeforeHistoryRetry);
   });
 
   it('explains an empty history and an empty comparable set without starting inference', async () => {

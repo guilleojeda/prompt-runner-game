@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { User } from 'oidc-client-ts';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { App, type AppProps } from './App.js';
@@ -111,6 +111,12 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+async function settlePromises(): Promise<void> {
+  await act(async () => {
+    for (let turn = 0; turn < 32; turn += 1) await Promise.resolve();
+  });
+}
+
 function response(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
     status,
@@ -206,6 +212,8 @@ async function createRaceFixture({
   oldQuotaResponse,
   currentAdmissionQuotaFails = false,
 }: RaceFixtureOptions) {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-10-14T10:00:00.000Z'));
   const ledger = { remaining: 100 };
   let quotaReadCount = 0;
   let startTransitionCount = 0;
@@ -256,34 +264,35 @@ async function createRaceFixture({
   };
 
   const { attemptApiRef, draftApi } = renderApp(fetchFixture);
-
-  const retry = await screen.findByRole('button', { name: 'Reintentar consultas' });
-  await waitFor(() => expect(attemptApiRef.current).not.toBeNull());
+  await settlePromises();
+  expect(attemptApiRef.current).not.toBeNull();
   const attemptApi = attemptApiRef.current!;
   const getQuota = vi.mocked(attemptApi.getQuota);
   const createAttempt = vi.mocked(attemptApi.createAttempt);
-  expect(screen.getByRole('alert').textContent).toContain('Error inicial de cuota.');
   const controls = document.querySelector('#attempt-controls-slot') as HTMLElement;
   const tryButton = within(controls).getByRole('button', { name: 'Probar' }) as HTMLButtonElement;
-  await waitFor(() => {
-    const animation = within(controls).getByRole('checkbox', {
-      name: 'Animación',
-    }) as HTMLInputElement;
-    expect(animation.disabled).toBe(false);
-    expect(animation.checked).toBe(true);
+  const animation = within(controls).getByRole('checkbox', {
+    name: 'Animación',
+  }) as HTMLInputElement;
+  expect(animation.disabled).toBe(false);
+  expect(animation.checked).toBe(true);
+  expect(tryButton.disabled).toBe(false);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(60_000);
   });
-  await waitFor(() => expect(tryButton.disabled).toBe(false));
-  fireEvent.click(retry);
-  await waitFor(() => expect(getQuota).toHaveBeenCalledTimes(2));
+  await settlePromises();
+  expect(getQuota).toHaveBeenCalledTimes(2);
   expect(tryButton.disabled).toBe(false);
 
   fireEvent.click(tryButton);
-  await waitFor(() => expect(createAttempt).toHaveBeenCalledTimes(1));
+  await settlePromises();
+  expect(createAttempt).toHaveBeenCalledTimes(1);
   expect(ledger.remaining).toBe(99);
   expect(admissionRequest).not.toBeNull();
-  await waitFor(() => expect(getQuota).toHaveBeenCalledTimes(3));
+  await settlePromises();
+  expect(getQuota).toHaveBeenCalledTimes(3);
   if (!currentAdmissionQuotaFails) {
-    await screen.findByLabelText('Cuota: 99 de 100 intentos disponibles');
+    expect(screen.getByLabelText('Cuota: 99 de 100 intentos disponibles')).toBeTruthy();
   }
 
   const [requestKey, expectedVersion, draft] = createAttempt.mock.calls[0]!;
@@ -303,9 +312,7 @@ async function createRaceFixture({
     modelId: modelByKey(createDefaultDraft().modelKey)?.modelId,
     presentationComplete: false,
   });
-  expect(
-    await screen.findByRole('heading', { name: 'Intento recibido, esperando inicio' }),
-  ).toBeTruthy();
+  expect(screen.getByRole('heading', { name: 'Intento recibido, esperando inicio' })).toBeTruthy();
 
   return {
     getQuota,
@@ -321,6 +328,7 @@ afterEach(() => {
   cleanup();
   window.sessionStorage.clear();
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 describe('quota refresh ordering', () => {
@@ -342,21 +350,31 @@ describe('quota refresh ordering', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
-  it('ignores an older retry failure after the post-admission quota read', async () => {
-    const oldQuotaRead = deferred<Response>();
-    const { getQuota, createAttempt } = await createRaceFixture({
-      oldQuotaResponse: oldQuotaRead,
-    });
-    const oldRequest = getQuota.mock.results[1]!.value;
-    await act(async () => {
-      oldQuotaRead.resolve(response({ message: 'Error de cuota anterior.' }, 503));
-      await oldRequest.catch(() => undefined);
-    });
-    expect(screen.queryByText('Error de cuota anterior.')).toBeNull();
+  it.each([
+    ['temporary server failure', { message: 'Error de cuota anterior.' }, 503],
+    [
+      'auxiliary gateway rate limit',
+      { code: 'attempt_unavailable', message: 'Quota gateway rate limited.' },
+      429,
+    ],
+  ] as const)(
+    'ignores an older retry %s after the post-admission quota read',
+    async (_failureKind, body, status) => {
+      const oldQuotaRead = deferred<Response>();
+      const { getQuota, createAttempt } = await createRaceFixture({
+        oldQuotaResponse: oldQuotaRead,
+      });
+      const oldRequest = getQuota.mock.results[1]!.value;
+      await act(async () => {
+        oldQuotaRead.resolve(response(body, status));
+        await oldRequest.catch(() => undefined);
+      });
+      expect(screen.queryByText(body.message)).toBeNull();
 
-    expect(screen.getByLabelText('Cuota: 99 de 100 intentos disponibles')).toBeTruthy();
-    expect(createAttempt).toHaveBeenCalledTimes(1);
-  });
+      expect(screen.getByLabelText('Cuota: 99 de 100 intentos disponibles')).toBeTruthy();
+      expect(createAttempt).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it('keeps the current admission refresh failure and ignores an older success', async () => {
     const oldQuotaRead = deferred<Response>();
@@ -364,8 +382,9 @@ describe('quota refresh ordering', () => {
       oldQuotaResponse: oldQuotaRead,
       currentAdmissionQuotaFails: true,
     });
-    await waitFor(() => expect(getQuota).toHaveBeenCalledTimes(3));
-    expect(await screen.findByText('Error actual de admisión.')).toBeTruthy();
+    await settlePromises();
+    expect(getQuota).toHaveBeenCalledTimes(3);
+    expect(screen.getByText('Error actual de admisión.')).toBeTruthy();
 
     const oldRequest = getQuota.mock.results[1]!.value;
     await act(async () => {
@@ -373,7 +392,7 @@ describe('quota refresh ordering', () => {
       await oldRequest;
     });
     expect(screen.queryByLabelText('Cuota: 100 de 100 intentos disponibles')).toBeNull();
-    expect(screen.getByRole('alert').textContent).toContain('Error actual de admisión.');
+    expect(screen.getByText('Error actual de admisión.')).toBeTruthy();
   });
 
   it('forwards a current-account auth rejection from a superseded quota read', async () => {
@@ -391,7 +410,7 @@ describe('quota refresh ordering', () => {
 
     expect(capturedOldQuota.remaining).toBe(100);
     expect(
-      await screen.findByText(
+      screen.getByText(
         'La sesión dejó de tener acceso a esta cuenta. Volvé a ingresar para continuar.',
       ),
     ).toBeTruthy();

@@ -240,6 +240,49 @@ describe('AttemptApiClient', () => {
     );
   });
 
+  it('accepts a valid quota reset timestamp and rejects a malformed one from a successful GET', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            day: '2026-10-26',
+            used: 3,
+            limit: 100,
+            remaining: 97,
+            resetsAt: 'not-a-date',
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            day: '2026-10-26',
+            used: 3,
+            limit: 100,
+            remaining: 97,
+            resetsAt: '2026-10-27T03:00:00.000Z',
+          }),
+          { status: 200 },
+        ),
+      );
+    const client = new AttemptApiClient(config, { tokenProvider: () => 'token', fetch: fetchImpl });
+
+    await expect(client.getQuota()).rejects.toMatchObject({
+      code: 'server',
+      status: 200,
+      ambiguous: false,
+    });
+    await expect(client.getQuota()).resolves.toEqual({
+      day: '2026-10-26',
+      used: 3,
+      limit: 100,
+      remaining: 97,
+      resetsAt: '2026-10-27T03:00:00.000Z',
+    });
+  });
+
   it('does not mistake the API Gateway 429 response for exhausted attempt quota', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()

@@ -515,4 +515,65 @@ describe('preparation availability integration', () => {
     ).toBe(false);
     expect(runner.createAttempt).not.toHaveBeenCalled();
   });
+
+  it('lets the user make an explicit attempt after a zero balance expires and its refresh fails', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-26T12:00:00.000Z'));
+    const resetsAt = new Date(Date.now() + 60_000).toISOString();
+    const createAttempt = vi
+      .fn()
+      .mockRejectedValue(
+        new AttemptApiFailure('attempt_unavailable', 'No se puede iniciar por ahora.', 429),
+      );
+    const getQuota = vi
+      .fn()
+      .mockResolvedValueOnce({
+        day: '2026-10-26',
+        used: 100,
+        limit: 100,
+        remaining: 0,
+        resetsAt,
+      })
+      .mockRejectedValueOnce(new AttemptApiFailure('network', 'Quota refresh unavailable.'))
+      .mockResolvedValue({
+        day: '2026-10-27',
+        used: 0,
+        limit: 100,
+        remaining: 100,
+        resetsAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      });
+    const listAttempts = vi.fn().mockResolvedValue({ attempts: [] });
+    const runner = attemptApi({ createAttempt, getQuota, listAttempts });
+    renderApp(runner);
+
+    await settlePreparationPromises();
+    const tryButton = screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement;
+    expect(tryButton.disabled).toBe(true);
+    expect(screen.getByText(/^No quedan partidas disponibles\.?$/)).toBeTruthy();
+    expect(getQuota).toHaveBeenCalledOnce();
+    expect(createAttempt).not.toHaveBeenCalled();
+    const historyCallsBeforeExpiry = listAttempts.mock.calls.length;
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    await settlePreparationPromises();
+    expect(getQuota).toHaveBeenCalledTimes(2);
+    expect(tryButton.disabled).toBe(false);
+    expect(
+      screen.getByText(/^Disponibilidad sin confirmar\. La comprobamos al iniciar\.?$/),
+    ).toBeTruthy();
+    expect(screen.queryByText(/^No quedan partidas disponibles\.?$/)).toBeNull();
+    expect(screen.getByLabelText(/0 de 100 intentos disponibles/i).textContent).toMatch(
+      /anterior|previa|no confirmada/i,
+    );
+    expect(createAttempt).not.toHaveBeenCalled();
+    expect(listAttempts).toHaveBeenCalledTimes(historyCallsBeforeExpiry);
+
+    fireEvent.click(tryButton);
+    await settlePreparationPromises();
+    expect(createAttempt).toHaveBeenCalledOnce();
+    expect(getQuota).toHaveBeenCalledTimes(2);
+    expect(screen.getByText('No se puede iniciar por ahora.')).toBeTruthy();
+  });
 });
