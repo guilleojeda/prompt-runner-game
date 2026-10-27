@@ -52,6 +52,12 @@ export function formatDateTime(value: string): string {
   return date.toLocaleString('es-AR', { dateStyle: 'medium', timeStyle: 'short' });
 }
 
+export type ResultSource = 'current' | 'history';
+
+export function resultSourceLabel(source: ResultSource): string {
+  return source === 'history' ? 'Historial' : 'Esta partida';
+}
+
 export function formatProgress(value: number): string {
   const percent = value >= 0 && value <= 1 ? value * 100 : value;
   return `${Math.round(percent)}%`;

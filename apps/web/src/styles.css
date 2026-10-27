@@ -1221,6 +1221,7 @@ h1 {
 }
 
 .attempt-result-heading {
+  flex-wrap: wrap;
   align-items: center;
   margin-bottom: 0.8rem;
 }
@@ -1228,6 +1229,32 @@ h1 {
 .attempt-result-heading h3 {
   margin-bottom: 0;
   font-size: 1.55rem;
+}
+
+.attempt-result-heading > div {
+  min-width: 0;
+}
+
+.attempt-result-context {
+  margin: 0.3rem 0 0.65rem;
+  color: #b9b4a8;
+  font-size: 0.9rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.attempt-result-heading .attempt-result-context {
+  margin-bottom: 0;
+}
+
+.attempt-result-back {
+  margin-bottom: 0.65rem;
+}
+
+.attempt-result .attempt-result-history-return,
+.attempt-result-query .attempt-result-history-return {
+  min-height: 44px;
+  padding-block: 0.65rem;
 }
 
 .attempt-status {
@@ -1307,11 +1334,27 @@ h1 {
 
 .attempt-score-breakdown {
   margin: 1.25rem 0;
+  padding: 0.55rem 0.8rem;
+  border: 1px solid rgba(242, 239, 232, 0.14);
+  border-radius: 0.55rem;
+  background: rgba(20, 19, 15, 0.2);
 }
 
-.attempt-score-breakdown h4 {
-  margin: 0 0 0.65rem;
+.attempt-score-breakdown summary {
+  min-height: 2.75rem;
+  padding-block: 0.45rem;
   color: #f7f1e1;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.attempt-score-breakdown summary:focus-visible {
+  outline: 3px solid #f2c879;
+  outline-offset: 4px;
+}
+
+.attempt-score-breakdown[open] summary {
+  margin-bottom: 0.65rem;
 }
 
 .attempt-score-breakdown dl {

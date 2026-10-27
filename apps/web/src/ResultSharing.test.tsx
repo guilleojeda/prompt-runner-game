@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AttemptSummary } from './attempt-api.js';
 import { ResultSharing } from './ResultSharing.js';
@@ -68,6 +68,14 @@ async function open(attempt: AttemptSummary = victory) {
   render(<ResultSharing attempt={attempt} disabled={false} />);
   fireEvent.click(screen.getByRole('button', { name: 'Compartir resultado' }));
   await screen.findByRole('link', { name: 'Descargar imagen' });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }
 
 describe('result sharing', () => {
@@ -184,5 +192,106 @@ describe('result sharing', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Reintentar tarjeta' }));
     await screen.findByRole('link', { name: 'Descargar imagen' });
     expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('keeps the same preview and focus when an acknowledgement updates non-public attempt fields', async () => {
+    const initialRender = deferred<Blob>();
+    const unexpectedRender = deferred<Blob>();
+    vi.mocked(renderResultImage)
+      .mockReturnValueOnce(initialRender.promise)
+      .mockReturnValueOnce(unexpectedRender.promise);
+    const createUrl = vi.fn().mockReturnValue('blob:ack-preview');
+    const revokeUrl = vi.fn();
+    vi.stubGlobal(
+      'URL',
+      class extends URL {
+        static createObjectURL = createUrl;
+        static revokeObjectURL = revokeUrl;
+      },
+    );
+    const attemptBeforeAcknowledgement = { ...victory, presentationComplete: false };
+    const view = render(<ResultSharing attempt={attemptBeforeAcknowledgement} disabled={false} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Compartir resultado' }));
+    await act(async () => {
+      initialRender.resolve(new Blob(['first image'], { type: 'image/png' }));
+      await initialRender.promise;
+    });
+
+    const image = await screen.findByRole('img');
+    const download = screen.getByRole('link', { name: 'Descargar imagen' });
+    const close = screen.getByRole('button', { name: 'Cerrar' });
+    close.focus();
+    view.rerender(
+      <ResultSharing
+        attempt={{
+          ...attemptBeforeAcknowledgement,
+          updatedAt: '2026-10-04T00:00:01Z',
+          presentationComplete: true,
+        }}
+        disabled={false}
+      />,
+    );
+
+    expect.soft(revokeUrl).not.toHaveBeenCalled();
+    expect.soft(screen.getByRole('img')).toBe(image);
+    expect.soft(screen.getByRole('link', { name: 'Descargar imagen' })).toBe(download);
+    expect.soft(image.getAttribute('src')).toBe('blob:ack-preview');
+    expect.soft(download.getAttribute('href')).toBe('blob:ack-preview');
+    expect.soft(document.activeElement).toBe(close);
+    expect.soft(renderResultImage).toHaveBeenCalledOnce();
+    expect.soft(createUrl).toHaveBeenCalledOnce();
+  });
+
+  it('invalidates the old preview and renders a changed public result payload', async () => {
+    const initialRender = deferred<Blob>();
+    const updatedRender = deferred<Blob>();
+    vi.mocked(renderResultImage)
+      .mockReturnValueOnce(initialRender.promise)
+      .mockReturnValueOnce(updatedRender.promise);
+    const createUrl = vi
+      .fn()
+      .mockReturnValueOnce('blob:original-result')
+      .mockReturnValueOnce('blob:updated-result');
+    const revokeUrl = vi.fn();
+    vi.stubGlobal(
+      'URL',
+      class extends URL {
+        static createObjectURL = createUrl;
+        static revokeObjectURL = revokeUrl;
+      },
+    );
+    const view = render(<ResultSharing attempt={victory} disabled={false} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Compartir resultado' }));
+    await act(async () => {
+      initialRender.resolve(new Blob(['original image'], { type: 'image/png' }));
+      await initialRender.promise;
+    });
+    await screen.findByRole('img');
+
+    view.rerender(
+      <ResultSharing attempt={{ ...victory, score: 750.25, turnsUsed: 19 }} disabled={false} />,
+    );
+
+    expect((screen.getByLabelText('Texto para compartir') as HTMLTextAreaElement).value).toBe(
+      `Hice 750,25 puntos. ¿Me ganás?\nRobot Runner: A puro prompt\n${window.location.origin}/`,
+    );
+    expect(renderResultImage).toHaveBeenCalledTimes(2);
+    expect(renderResultImage).toHaveBeenLastCalledWith(
+      { kind: 'victory', score: 750.25, turns: 19, reward: true },
+      window.location.origin,
+    );
+    expect(revokeUrl).toHaveBeenCalledWith('blob:original-result');
+
+    await act(async () => {
+      updatedRender.resolve(new Blob(['updated image'], { type: 'image/png' }));
+      await updatedRender.promise;
+    });
+    const image = await screen.findByRole('img');
+    const download = screen.getByRole('link', { name: 'Descargar imagen' });
+    expect(image.getAttribute('src')).toBe('blob:updated-result');
+    expect(download.getAttribute('href')).toBe('blob:updated-result');
+    expect((screen.getByLabelText('Texto para compartir') as HTMLTextAreaElement).value).toBe(
+      `Hice 750,25 puntos. ¿Me ganás?\nRobot Runner: A puro prompt\n${window.location.origin}/`,
+    );
   });
 });

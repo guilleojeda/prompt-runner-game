@@ -726,21 +726,23 @@ describe('AttemptActivity', () => {
     expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toBeNull();
   });
 
-  it('keeps inspection available for an incomplete terminal record and hides it after auth loss', async () => {
-    const incomplete = {
+  it('keeps inspection available for a complete terminal record through query failures and hides it after auth loss', async () => {
+    const completeTerminalRecord = {
       ...summary('victory'),
       turnsUsed: 1,
       animationEnabled: false,
-      recordComplete: false,
+      recordComplete: true,
     };
     const getDecisionIndex = vi
       .fn()
-      .mockRejectedValueOnce(new AttemptApiFailure('server', 'El registro está incompleto.', 500))
+      .mockRejectedValueOnce(
+        new AttemptApiFailure('server', 'No se pudo consultar el índice de decisiones.', 500),
+      )
       .mockRejectedValueOnce(new AttemptApiFailure('authentication', 'La sesión venció.', 401));
     const onAuthRequired = vi.fn();
     const attemptApi = api({
-      listAttempts: vi.fn().mockResolvedValue({ attempts: [incomplete] }),
-      getAttempt: vi.fn().mockResolvedValue(incomplete),
+      listAttempts: vi.fn().mockResolvedValue({ attempts: [completeTerminalRecord] }),
+      getAttempt: vi.fn().mockResolvedValue(completeTerminalRecord),
       getAnimationPreference: vi.fn().mockResolvedValue({ animationEnabled: false, version: 0 }),
       getDecisionIndex,
     });
@@ -1601,6 +1603,11 @@ describe('AttemptActivity', () => {
       await within(history as HTMLElement).findByRole('button', { name: 'Ver resultado' }),
     );
     expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
+    const scoreBreakdown = screen.getByText('Desglose del puntaje').closest('details');
+    expect(scoreBreakdown).not.toBeNull();
+    expect((scoreBreakdown as HTMLDetailsElement).open).toBe(false);
+    fireEvent.click(within(scoreBreakdown as HTMLElement).getByText('Desglose del puntaje'));
+    expect((scoreBreakdown as HTMLDetailsElement).open).toBe(true);
     expect(screen.queryByText('Avance máximo')).toBeNull();
     expect(screen.getByText('Turnos').nextElementSibling?.textContent).toBe('8 / 24');
     expect(screen.getByText('Recompensa').nextElementSibling?.textContent).toBe(
@@ -1610,7 +1617,6 @@ describe('AttemptActivity', () => {
     const score = screen.getByLabelText('Puntaje de la victoria');
     expect(within(score).getByText('Puntaje')).toBeTruthy();
     expect(within(score).getByText('935,13')).toBeTruthy();
-    expect(screen.getByRole('heading', { name: 'Desglose del puntaje' })).toBeTruthy();
     expect(screen.getByText('Objetos recogidos').nextElementSibling?.textContent).toBe(
       '+25 puntos',
     );
@@ -1654,6 +1660,11 @@ describe('AttemptActivity', () => {
       }),
     );
     await screen.findByRole('heading', { name: 'Victoria' });
+    const scoreBreakdown = screen.getByText('Desglose del puntaje').closest('details');
+    expect(scoreBreakdown).not.toBeNull();
+    expect((scoreBreakdown as HTMLDetailsElement).open).toBe(false);
+    fireEvent.click(within(scoreBreakdown as HTMLElement).getByText('Desglose del puntaje'));
+    expect((scoreBreakdown as HTMLDetailsElement).open).toBe(true);
     expect(
       within(screen.getByLabelText('Puntaje de la victoria')).getByText('-37,20'),
     ).toBeTruthy();

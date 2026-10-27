@@ -4,10 +4,15 @@ import { DEFAULT_SCORE_RULES, LEVEL } from '../../../shared/game.js';
 import { ROBOT_CATALOG } from '../../../shared/robot.js';
 import { ResultSharing } from './ResultSharing.js';
 import { formatScore } from './result-sharing.js';
-import type { DecisionInitialSelection, AttemptResultQueryState } from './useAttemptHistory.js';
+import type {
+  AttemptDisplayContext,
+  DecisionInitialSelection,
+  AttemptResultQueryState,
+} from './useAttemptHistory.js';
 import {
   comparableVictories,
   formatHistoryScope,
+  formatDateTime,
   formatMetric,
   formatProgress,
   historyComparisonMetrics,
@@ -15,13 +20,25 @@ import {
   modelLabel,
   objectCollectionStatus,
   rankFor,
+  resultSourceLabel,
   statusLabel,
   technicalReasonLabel,
   isTerminal,
+  type ResultSource,
 } from './attempt-display.js';
+
+function ResultContext({ source, createdAt }: { source: ResultSource; createdAt: string }) {
+  return (
+    <p className="attempt-result-context">
+      {resultSourceLabel(source)}, {formatDateTime(createdAt)}
+    </p>
+  );
+}
 
 export function ResultCard({
   attempt,
+  source,
+  createdAt,
   sharingVisible,
   onReplay,
   onInspect,
@@ -29,27 +46,32 @@ export function ResultCard({
   configurationBusy,
   busy,
   onReturnToEditor,
-  returnLabel = 'Volver al editor',
+  onReturnToHistory,
   headingId = 'attempt-result-title',
   showHeading = true,
+  showContext = true,
 }: {
   attempt: AttemptSummary;
+  source: ResultSource;
+  createdAt: string;
   sharingVisible: boolean;
   onReplay: () => void;
   onInspect?: (initialSelection: DecisionInitialSelection) => void;
   onConfiguration: () => void;
   configurationBusy: boolean;
   busy: boolean;
-  onReturnToEditor?: () => void;
-  returnLabel?: string;
+  onReturnToEditor: () => void;
+  onReturnToHistory?: () => void;
   headingId?: string;
   showHeading?: boolean;
+  showContext?: boolean;
 }) {
   const technicalError = attempt.reason ? technicalReasonLabel(attempt.reason) : null;
   const tokenPenalty =
     attempt.gameTokens === null
       ? null
       : DEFAULT_SCORE_RULES.tokenWeight * (attempt.gameTokens / DEFAULT_SCORE_RULES.tokenUnit);
+  const inspect = attempt.recordComplete ? onInspect : undefined;
   return (
     <section className="attempt-result" aria-labelledby={headingId}>
       {showHeading && (
@@ -59,7 +81,31 @@ export function ResultCard({
             <h3 id={headingId} tabIndex={-1}>
               {statusLabel(attempt.status)}
             </h3>
+            {showContext && <ResultContext source={source} createdAt={createdAt} />}
           </div>
+          {onReturnToHistory && (
+            <button
+              className="text-button attempt-result-history-return"
+              type="button"
+              onClick={onReturnToHistory}
+              disabled={busy}
+            >
+              Volver al historial
+            </button>
+          )}
+        </div>
+      )}
+      {!showHeading && showContext && <ResultContext source={source} createdAt={createdAt} />}
+      {!showHeading && onReturnToHistory && (
+        <div className="attempt-result-back">
+          <button
+            className="text-button attempt-result-history-return"
+            type="button"
+            onClick={onReturnToHistory}
+            disabled={busy}
+          >
+            Volver al historial
+          </button>
         </div>
       )}
       {attempt.status === 'victory' && (
@@ -102,12 +148,59 @@ export function ResultCard({
           );
         })}
       </dl>
+      <div className="attempt-result-actions">
+        {isTerminal(attempt.status) && (
+          <button
+            className="primary-button"
+            type="button"
+            onClick={onReturnToEditor}
+            disabled={busy}
+          >
+            Volver al editor
+          </button>
+        )}
+        {attempt.recordComplete && attempt.turnsUsed > 0 && (
+          <button className="secondary-button" type="button" onClick={onReplay} disabled={busy}>
+            Ver de nuevo
+          </button>
+        )}
+        {inspect && (
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={() => inspect('first')}
+            disabled={busy}
+          >
+            Inspeccionar decisiones
+          </button>
+        )}
+        {inspect && attempt.status !== 'victory' && (
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={() =>
+              inspect(attempt.status === 'defeat' ? 'last-action-or-decision' : 'last-decision')
+            }
+            disabled={busy}
+          >
+            {attempt.status === 'defeat' ? 'Ir a la última acción' : 'Ver último paso'}
+          </button>
+        )}
+        {isTerminal(attempt.status) && (
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={onConfiguration}
+            disabled={busy || configurationBusy}
+          >
+            {configurationBusy ? 'Cargando configuración…' : 'Ver configuración'}
+          </button>
+        )}
+      </div>
+      {sharingVisible && <ResultSharing key={attempt.id} attempt={attempt} disabled={busy} />}
       {attempt.status === 'victory' && (
-        <section
-          className="attempt-score-breakdown"
-          aria-labelledby="attempt-score-breakdown-title"
-        >
-          <h4 id="attempt-score-breakdown-title">Desglose del puntaje</h4>
+        <details className="attempt-score-breakdown">
+          <summary>Desglose del puntaje</summary>
           <dl>
             <div>
               <dt>Base</dt>
@@ -150,58 +243,8 @@ export function ResultCard({
           <p className="attempt-score-rounding-note">
             El total guardado se expresa con {DEFAULT_SCORE_RULES.decimalPlaces} decimales.
           </p>
-        </section>
+        </details>
       )}
-      <div className="attempt-result-actions">
-        {onReturnToEditor && isTerminal(attempt.status) && (
-          <button
-            className="primary-button"
-            type="button"
-            onClick={onReturnToEditor}
-            disabled={busy}
-          >
-            {returnLabel}
-          </button>
-        )}
-        {attempt.recordComplete && attempt.turnsUsed > 0 && (
-          <button className="secondary-button" type="button" onClick={onReplay} disabled={busy}>
-            Ver de nuevo
-          </button>
-        )}
-        {onInspect && (
-          <button
-            className="secondary-button"
-            type="button"
-            onClick={() => onInspect('first')}
-            disabled={busy}
-          >
-            Inspeccionar decisiones
-          </button>
-        )}
-        {onInspect && attempt.status !== 'victory' && (
-          <button
-            className="secondary-button"
-            type="button"
-            onClick={() =>
-              onInspect(attempt.status === 'defeat' ? 'last-action-or-decision' : 'last-decision')
-            }
-            disabled={busy}
-          >
-            {attempt.status === 'defeat' ? 'Ir a la última acción' : 'Ver último paso'}
-          </button>
-        )}
-        {isTerminal(attempt.status) && (
-          <button
-            className="secondary-button"
-            type="button"
-            onClick={onConfiguration}
-            disabled={busy || configurationBusy}
-          >
-            {configurationBusy ? 'Cargando configuración…' : 'Ver configuración'}
-          </button>
-        )}
-      </div>
-      {sharingVisible && <ResultSharing key={attempt.id} attempt={attempt} disabled={busy} />}
       <details className="attempt-agent-details">
         <summary>Detalles del agente</summary>
         <p className="attempt-status" data-status={attempt.status}>
@@ -265,6 +308,7 @@ export function HistoryResultQuery({
   sharingVisible,
   onRetry,
   onClose,
+  onReturnToEditor,
   onReplay,
   onInspect,
   onConfiguration,
@@ -275,9 +319,10 @@ export function HistoryResultQuery({
   sharingVisible: boolean;
   onRetry: () => void;
   onClose: () => void;
+  onReturnToEditor: () => void;
   onReplay: (attemptId: string) => void;
   onInspect: (attempt: AttemptSummary, selection: DecisionInitialSelection) => void;
-  onConfiguration: (attemptId: string) => void;
+  onConfiguration: (attempt: AttemptSummary) => void;
   configurationBusy: boolean;
   busy: boolean;
 }) {
@@ -293,6 +338,24 @@ export function HistoryResultQuery({
       <h3 id="history-result-loading-title" tabIndex={-1}>
         {title}
       </h3>
+      {state.status === 'ready' ? (
+        <ResultContext source="history" createdAt={state.attempt.createdAt} />
+      ) : (
+        state.contextAttempt && (
+          <ResultContext source="history" createdAt={state.contextAttempt.createdAt} />
+        )
+      )}
+      {state.status !== 'ready' && (
+        <div className="attempt-result-back">
+          <button
+            className="text-button attempt-result-history-return"
+            type="button"
+            onClick={onClose}
+          >
+            Volver al historial
+          </button>
+        </div>
+      )}
       {state.status === 'loading' && (
         <p className="attempt-message" role="status">
           Cargando el intento seleccionado del historial.
@@ -304,24 +367,24 @@ export function HistoryResultQuery({
           <button className="secondary-button" type="button" onClick={onRetry}>
             Reintentar consulta
           </button>
-          <button className="text-button" type="button" onClick={onClose}>
-            Volver al historial
-          </button>
         </div>
       )}
       {state.status === 'ready' && (
         <ResultCard
           attempt={state.attempt}
           sharingVisible={sharingVisible}
+          source="history"
+          createdAt={state.attempt.createdAt}
           onReplay={() => onReplay(state.attempt.id)}
           onInspect={(selection) => onInspect(state.attempt, selection)}
-          onConfiguration={() => onConfiguration(state.attempt.id)}
-          onReturnToEditor={onClose}
-          returnLabel="Volver al historial"
+          onConfiguration={() => onConfiguration(state.attempt)}
+          onReturnToEditor={onReturnToEditor}
+          onReturnToHistory={onClose}
           configurationBusy={configurationBusy}
           busy={busy}
           headingId="history-result-loading-title"
           showHeading={false}
+          showContext={false}
         />
       )}
     </section>
@@ -350,7 +413,7 @@ export function HistoryList({
   onOpen: (id: string, action: 'result' | 'ranking-result') => void;
   onReplay: (id: string) => void;
   onInspect?: (id: string, initialSelection: DecisionInitialSelection) => void;
-  onConfiguration: (id: string) => void;
+  onConfiguration: (attempt: AttemptSummary) => void;
   configurationBusyId: string | null;
   onMore: () => void;
   onRetry: () => void;
@@ -423,7 +486,7 @@ export function HistoryList({
                   <button
                     className="secondary-button"
                     type="button"
-                    onClick={() => onConfiguration(item.id)}
+                    onClick={() => onConfiguration(item)}
                     disabled={busy || configurationBusyId === item.id}
                   >
                     {configurationBusyId === item.id
@@ -513,38 +576,43 @@ export function HistoryList({
                     Ver de nuevo
                   </button>
                 )}
-                {isTerminal(item.status) && item.presentationComplete && onInspect && (
-                  <>
-                    <button
-                      className="secondary-button"
-                      type="button"
-                      onClick={() => onInspect(item.id, 'first')}
-                      disabled={busy}
-                    >
-                      Inspeccionar decisiones
-                    </button>
-                    {item.status !== 'victory' && (
+                {isTerminal(item.status) &&
+                  item.recordComplete &&
+                  item.presentationComplete &&
+                  onInspect && (
+                    <>
                       <button
                         className="secondary-button"
                         type="button"
-                        onClick={() =>
-                          onInspect(
-                            item.id,
-                            item.status === 'defeat' ? 'last-action-or-decision' : 'last-decision',
-                          )
-                        }
+                        onClick={() => onInspect(item.id, 'first')}
                         disabled={busy}
                       >
-                        {item.status === 'defeat' ? 'Ir a la última acción' : 'Ver último paso'}
+                        Inspeccionar decisiones
                       </button>
-                    )}
-                  </>
-                )}
+                      {item.status !== 'victory' && (
+                        <button
+                          className="secondary-button"
+                          type="button"
+                          onClick={() =>
+                            onInspect(
+                              item.id,
+                              item.status === 'defeat'
+                                ? 'last-action-or-decision'
+                                : 'last-decision',
+                            )
+                          }
+                          disabled={busy}
+                        >
+                          {item.status === 'defeat' ? 'Ir a la última acción' : 'Ver último paso'}
+                        </button>
+                      )}
+                    </>
+                  )}
                 {isTerminal(item.status) && (
                   <button
                     className="secondary-button"
                     type="button"
-                    onClick={() => onConfiguration(item.id)}
+                    onClick={() => onConfiguration(item)}
                     disabled={busy || configurationBusyId === item.id}
                   >
                     {configurationBusyId === item.id
@@ -576,6 +644,7 @@ export function ConfigurationPreview({
 }: {
   state: {
     readonly targetId: string;
+    readonly displayContext?: AttemptDisplayContext;
     readonly status: 'loading' | 'ready' | 'applying' | 'error';
     readonly configuration?: AttemptConfiguration;
     readonly message?: string;
@@ -604,6 +673,12 @@ export function ConfigurationPreview({
           Cerrar
         </button>
       </div>
+      {state.displayContext && (
+        <ResultContext
+          source={state.displayContext.source}
+          createdAt={state.displayContext.createdAt}
+        />
+      )}
       <p className="configuration-attempt-id">Intento: {state.targetId}</p>
       {state.status === 'loading' && (
         <p className="attempt-message" role="status">
