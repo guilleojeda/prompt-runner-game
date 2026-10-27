@@ -275,7 +275,7 @@ describe('preparation availability integration', () => {
     await waitFor(() => expect(runner.createAttempt).toHaveBeenCalledOnce());
     expect(runner.createAttempt).toHaveBeenCalledWith(
       expect.any(String),
-      0,
+      1,
       createDefaultDraft(),
       false,
     );
@@ -354,7 +354,7 @@ describe('preparation availability integration', () => {
     await waitFor(() => expect(runner.createAttempt).toHaveBeenCalledOnce());
     expect(runner.createAttempt).toHaveBeenCalledWith(
       expect.any(String),
-      0,
+      1,
       createDefaultDraft(),
       false,
     );
@@ -404,7 +404,7 @@ describe('preparation availability integration', () => {
     await waitFor(() => expect(runner.createAttempt).toHaveBeenCalledOnce());
     expect(runner.createAttempt).toHaveBeenCalledWith(
       expect.any(String),
-      0,
+      1,
       createDefaultDraft(),
       false,
     );
@@ -446,7 +446,7 @@ describe('preparation availability integration', () => {
 
       fireEvent.click(tryButton);
       await waitFor(() => expect(createAttempt).toHaveBeenCalledOnce());
-      expect(createAttempt).toHaveBeenCalledWith(expect.any(String), 0, createDefaultDraft(), true);
+      expect(createAttempt).toHaveBeenCalledWith(expect.any(String), 1, createDefaultDraft(), true);
       expect(await screen.findByText('No quedan partidas.')).toBeTruthy();
 
       if (quotaState === 'pending') {
