@@ -16,6 +16,7 @@ import { App } from './App.js';
 import { type AuthClient, type AuthConfig, type AuthSession } from './auth.js';
 import { AttemptApiFailure, type AttemptApi, type AttemptSummary } from './attempt-api.js';
 import { type DraftApi } from './draft-api.js';
+import { formatDateTime } from './attempt-display.js';
 import { renderResultImage } from './result-sharing.js';
 import { SavedRobotApiFailure, type SavedRobotApi } from './saved-robot-api.js';
 
@@ -1107,5 +1108,491 @@ describe('Phase 12 independent accessible query diagnostics', () => {
     });
     expect(createAttempt).toHaveBeenCalledOnce();
     expect(document.activeElement).toBe(cancelButton);
+  });
+});
+
+describe('Phase 13 result acceptance', () => {
+  const resultDate = '2026-10-27T12:00:00.000Z';
+  const savedInstructions = 'Instrucciones guardadas sin cambios.';
+  const summaryForResult = (id: string, overrides: Partial<AttemptSummary> = {}) =>
+    summary(id, 'victory', {
+      createdAt: resultDate,
+      updatedAt: '2026-10-27T12:04:00.000Z',
+      turnsUsed: replayRecord(id).actions.length,
+      score: 321.47,
+      gameTokens: 9_868,
+      collectedObjectIds: ['recompensa-1', 'llave-1'],
+      objectPoints: 25,
+      animationEnabled: false,
+      presentationComplete: true,
+      recordComplete: true,
+      ...overrides,
+    });
+
+  function precedes(before: Element, after: Element): boolean {
+    return Boolean(before.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING);
+  }
+
+  function activitySurface(source: 'current' | 'history' | 'history-replay'): HTMLElement {
+    const name =
+      source === 'current'
+        ? 'Actividad del intento'
+        : source === 'history'
+          ? 'Resultado consultado'
+          : 'Historial y actividad';
+    return screen.getByRole('region', { name });
+  }
+
+  function resultContextElement(
+    surface: HTMLElement,
+    origin: string,
+    createdAt: string,
+  ): HTMLElement | undefined {
+    const expectedOrigin = origin.toLocaleLowerCase('es-AR');
+    const expectedDateTime = formatDateTime(createdAt)
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLocaleLowerCase('es-AR');
+    return [...surface.querySelectorAll<HTMLElement>('*')].find((element) => {
+      const content = (element.textContent ?? '').replace(/\s+/g, ' ').toLocaleLowerCase('es-AR');
+      const isHidden = element.closest('[hidden], [aria-hidden="true"], details:not([open])');
+      const containsResultContent = element.querySelector('dl, button');
+      const originIndex = content.indexOf(expectedOrigin);
+      const dateTimeIndex = content.indexOf(expectedDateTime);
+      const separator = content.slice(originIndex + expectedOrigin.length, dateTimeIndex);
+      const originAndDateAreTogether =
+        originIndex >= 0 && dateTimeIndex > originIndex && /^[\s,:]*$/.test(separator);
+      return originAndDateAreTogether && !isHidden && !containsResultContent;
+    });
+  }
+
+  function expectResultContext(surface: HTMLElement, origin: string, createdAt: string): void {
+    const context = resultContextElement(surface, origin, createdAt);
+    const resultSummary = within(surface).getByText('Turnos').closest('dl');
+    expect.soft(context).toBeTruthy();
+    if (context && resultSummary) expect.soft(precedes(context, resultSummary)).toBe(true);
+    expect(within(surface).getByRole('heading', { name: 'Victoria' })).toBeTruthy();
+  }
+
+  function expectActionsBeforeClosedDetails(
+    surface: HTMLElement,
+    source: 'current' | 'history',
+  ): void {
+    const resultSummary = within(surface).getByText('Turnos').closest('dl') as HTMLElement;
+    const editorButton = within(surface).queryByRole('button', { name: 'Volver al editor' });
+    const historyButton = within(surface).queryByRole('button', { name: 'Volver al historial' });
+    const replayButton = within(surface).getByRole('button', { name: 'Ver de nuevo' });
+    const inspectButton = within(surface).getByRole('button', {
+      name: 'Inspeccionar decisiones',
+    });
+    const shareButton = within(surface).getByRole('button', { name: 'Compartir resultado' });
+    const configurationButton = within(surface).getByRole('button', {
+      name: 'Ver configuración',
+    });
+    const secondaryButtons = [replayButton, inspectButton, shareButton, configurationButton];
+    const scoreDetails = within(surface).getByText('Desglose del puntaje').closest('details');
+    const agentDetails = within(surface).getByText('Detalles del agente').closest('details');
+
+    expect.soft(editorButton).not.toBeNull();
+    if (editorButton) {
+      expect(precedes(resultSummary, editorButton)).toBe(true);
+      for (const action of secondaryButtons) expect(precedes(editorButton, action)).toBe(true);
+    }
+    if (source === 'history') {
+      expect.soft(historyButton).not.toBeNull();
+    } else {
+      expect(historyButton).toBeNull();
+    }
+    expect.soft(scoreDetails).not.toBeNull();
+    expect.soft(agentDetails).not.toBeNull();
+    if (!scoreDetails || !agentDetails) return;
+    expect((scoreDetails as HTMLDetailsElement).open).toBe(false);
+    expect((agentDetails as HTMLDetailsElement).open).toBe(false);
+    expect(precedes(scoreDetails, agentDetails)).toBe(true);
+    for (const action of [...secondaryButtons, ...(historyButton ? [historyButton] : [])]) {
+      expect(precedes(action, scoreDetails)).toBe(true);
+    }
+
+    fireEvent.click(within(scoreDetails as HTMLElement).getByText('Desglose del puntaje'));
+    expect((scoreDetails as HTMLDetailsElement).open).toBe(true);
+    expect(
+      within(scoreDetails as HTMLElement).getByText('Total').nextElementSibling?.textContent,
+    ).toBe('321,47 puntos');
+  }
+
+  it.each([
+    ['current', 'Esta partida'],
+    ['history', 'Historial'],
+  ] as const)(
+    'shows the %s result context, stored score and action hierarchy',
+    async (source, origin) => {
+      const attemptId = `phase13-${source}-header`;
+      const terminal = summaryForResult(attemptId);
+      const createAttempt = vi
+        .fn()
+        .mockResolvedValue({ attempt: terminal, dispatchConfirmed: true });
+      const getAttempt = vi.fn().mockResolvedValue(terminal);
+      renderApp({
+        runner: attemptApi({
+          createAttempt,
+          listAttempts: vi.fn().mockResolvedValue({ attempts: [terminal] }),
+          getAttempt,
+        }),
+      });
+      await readyForPreparation();
+
+      if (source === 'current') {
+        fireEvent.click(screen.getByRole('button', { name: 'Probar' }));
+      } else {
+        selectTab('Historial');
+        fireEvent.click(await historyButton('Ver resultado'));
+      }
+
+      expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
+      const result = activitySurface(source);
+      expectResultContext(result, origin, resultDate);
+      expect(result.textContent).toContain('321,47');
+      expectActionsBeforeClosedDetails(result, source);
+      if (source === 'current') {
+        expect(createAttempt).toHaveBeenCalledOnce();
+        expect(getAttempt).not.toHaveBeenCalled();
+      } else {
+        expect(createAttempt).not.toHaveBeenCalled();
+        expect(getAttempt).toHaveBeenCalledOnce();
+      }
+    },
+  );
+
+  it.each([
+    ['current', 'Esta partida'],
+    ['history', 'Historial'],
+  ] as const)(
+    'shows the %s configuration date and origin before its ID without editing the draft',
+    async (source, origin) => {
+      const attemptId = `phase13-${source}-configuration`;
+      const terminal = summaryForResult(attemptId);
+      const createAttempt = vi
+        .fn()
+        .mockResolvedValue({ attempt: terminal, dispatchConfirmed: true });
+      const getAttempt = vi.fn().mockResolvedValue(terminal);
+      const getConfiguration = vi.fn().mockResolvedValue({
+        attemptId,
+        draft: { ...createDefaultDraft(), instructions: savedInstructions },
+      });
+      const putDraft = vi.fn(async (version: number, draft: RobotDraft) => ({
+        version: version + 1,
+        draft,
+      }));
+      renderApp({
+        draft: draftApi({ putDraft }),
+        runner: attemptApi({
+          createAttempt,
+          listAttempts: vi.fn().mockResolvedValue({ attempts: [terminal] }),
+          getAttempt,
+          getConfiguration,
+        }),
+      });
+      await readyForPreparation();
+
+      if (source === 'current') {
+        fireEvent.click(screen.getByRole('button', { name: 'Probar' }));
+      } else {
+        selectTab('Historial');
+        fireEvent.click(await historyButton('Ver resultado'));
+      }
+      const result = activitySurface(source);
+      await within(result).findByRole('heading', { name: 'Victoria' });
+      fireEvent.click(within(result).getByRole('button', { name: 'Ver configuración' }));
+      const configurationHeading = await screen.findByRole('heading', {
+        name: 'Configuración del intento',
+      });
+      const configuration = configurationHeading.closest('section') as HTMLElement;
+      const context = resultContextElement(configuration, origin, resultDate);
+      const technicalId = within(configuration).getByText(`Intento: ${attemptId}`);
+      expect.soft(context).toBeTruthy();
+      if (context) expect(precedes(context, technicalId)).toBe(true);
+      expect(within(configuration).getByText(savedInstructions)).toBeTruthy();
+      expect(within(configuration).queryByRole('textbox')).toBeNull();
+      expect(getConfiguration).toHaveBeenCalledOnce();
+      expect(getConfiguration).toHaveBeenCalledWith(attemptId, expect.any(AbortSignal));
+      expect(putDraft).not.toHaveBeenCalled();
+      expect(createAttempt).toHaveBeenCalledTimes(source === 'current' ? 1 : 0);
+      expect(getAttempt).toHaveBeenCalledTimes(source === 'history' ? 1 : 0);
+    },
+  );
+
+  it.each([
+    ['current', 'Esta partida'],
+    ['history', 'Historial'],
+  ] as const)('retains the %s context and date after manual replay', async (source, origin) => {
+    const attemptId = `phase13-${source}-replay`;
+    const terminal = summaryForResult(attemptId);
+    const createAttempt = vi.fn().mockResolvedValue({ attempt: terminal, dispatchConfirmed: true });
+    const getAttempt = vi.fn().mockResolvedValue(terminal);
+    const getReplay = vi.fn(async (id: string) => replayRecord(id));
+    renderApp({
+      runner: attemptApi({
+        createAttempt,
+        listAttempts: vi.fn().mockResolvedValue({ attempts: [terminal] }),
+        getAttempt,
+        getReplay,
+      }),
+    });
+    await readyForPreparation();
+
+    if (source === 'current') {
+      fireEvent.click(screen.getByRole('button', { name: 'Probar' }));
+    } else {
+      selectTab('Historial');
+      fireEvent.click(await historyButton('Ver resultado'));
+    }
+    const result = activitySurface(source);
+    await within(result).findByRole('heading', { name: 'Victoria' });
+    fireEvent.click(within(result).getByRole('button', { name: 'Ver de nuevo' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Escena lista' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Terminar escena' }));
+
+    const replayResult = activitySurface(source === 'current' ? 'current' : 'history-replay');
+    expectResultContext(replayResult, origin, resultDate);
+    expect(replayResult.textContent).toContain('321,47');
+    expect(getReplay).toHaveBeenCalledOnce();
+    expect(getReplay).toHaveBeenCalledWith(attemptId);
+    expect(createAttempt).toHaveBeenCalledTimes(source === 'current' ? 1 : 0);
+    expect(getAttempt).toHaveBeenCalledTimes(source === 'history' ? 1 : 0);
+    expect
+      .soft(within(replayResult).queryByRole('button', { name: 'Volver al editor' }))
+      .not.toBeNull();
+    if (source === 'history') {
+      expect
+        .soft(within(replayResult).queryByRole('button', { name: 'Volver al historial' }))
+        .not.toBeNull();
+    } else {
+      expect(
+        within(replayResult).queryByRole('button', { name: 'Volver al historial' }),
+      ).toBeNull();
+    }
+  });
+
+  it('keeps a current result and its actions available while ACK is pending; manual replay adds no ACK', async () => {
+    const attemptId = 'phase13-current-ack-pending';
+    const terminal = summaryForResult(attemptId, {
+      animationEnabled: true,
+      presentationComplete: false,
+    });
+    const acknowledgement = deferred<AttemptSummary>();
+    const createAttempt = vi.fn().mockResolvedValue({ attempt: terminal, dispatchConfirmed: true });
+    const getAttempt = vi.fn();
+    const getReplay = vi.fn(async (id: string) => replayRecord(id));
+    const completePresentation = vi.fn().mockReturnValue(acknowledgement.promise);
+    renderApp({
+      runner: attemptApi({ createAttempt, getAttempt, getReplay, completePresentation }),
+    });
+    await readyForPreparation();
+    fireEvent.click(screen.getByRole('button', { name: 'Probar' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Escena lista' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Terminar escena' }));
+    await screen.findByRole('heading', { name: 'Victoria' });
+    await waitFor(() => expect(completePresentation).toHaveBeenCalledOnce());
+
+    let result = activitySurface('current');
+    expectResultContext(result, 'Esta partida', resultDate);
+    expect(within(result).getByRole('button', { name: 'Ver de nuevo' })).toBeTruthy();
+    expect(within(result).getByRole('button', { name: 'Inspeccionar decisiones' })).toBeTruthy();
+    expect(getReplay).toHaveBeenCalledOnce();
+
+    fireEvent.click(within(result).getByRole('button', { name: 'Ver de nuevo' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Escena lista' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Terminar escena' }));
+    result = activitySurface('current');
+    expectResultContext(result, 'Esta partida', resultDate);
+    expect(getReplay).toHaveBeenCalledTimes(2);
+    expect(getReplay.mock.calls.map(([id]) => id)).toEqual([attemptId, attemptId]);
+    expect(createAttempt).toHaveBeenCalledOnce();
+    expect(getAttempt).not.toHaveBeenCalled();
+    expect(completePresentation).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      acknowledgement.resolve({
+        ...terminal,
+        updatedAt: '2026-10-27T12:05:00.000Z',
+        presentationComplete: true,
+      });
+      await acknowledgement.promise;
+    });
+    expectResultContext(activitySurface('current'), 'Esta partida', resultDate);
+  });
+
+  it.each([
+    {
+      label: 'incomplete defeat record',
+      status: 'defeat' as const,
+      recordComplete: false,
+      turnsUsed: 3,
+      inspectAvailable: false,
+      lastStepAvailable: false,
+    },
+    {
+      label: 'complete victory record with zero actions',
+      status: 'victory' as const,
+      recordComplete: true,
+      turnsUsed: 0,
+      inspectAvailable: true,
+      lastStepAvailable: false,
+    },
+  ])(
+    'shows only supported result actions for a $label',
+    async ({ status, recordComplete, turnsUsed, inspectAvailable, lastStepAvailable }) => {
+      const attemptId = `phase13-actions-${status}-${recordComplete}-${turnsUsed}`;
+      const terminal = summary(attemptId, status, {
+        createdAt: resultDate,
+        turnsUsed,
+        recordComplete,
+        presentationComplete: true,
+      });
+      renderApp({
+        runner: attemptApi({
+          listAttempts: vi.fn().mockResolvedValue({ attempts: [terminal] }),
+          getAttempt: vi.fn().mockResolvedValue(terminal),
+        }),
+      });
+      await readyForPreparation();
+      selectTab('Historial');
+      const row = screen.getByRole('region', { name: 'Historial de intentos' });
+      const rowInspector = within(row).queryByRole('button', { name: 'Inspeccionar decisiones' });
+      const rowReplay = within(row).queryByRole('button', { name: 'Ver de nuevo' });
+      expect.soft(Boolean(rowInspector)).toBe(inspectAvailable);
+      expect(rowReplay).toBeNull();
+
+      fireEvent.click(await historyButton('Ver resultado'));
+      const result = activitySurface('history');
+      await within(result).findByRole('heading', {
+        name: status === 'victory' ? 'Victoria' : 'Derrota',
+      });
+      expect
+        .soft(Boolean(within(result).queryByRole('button', { name: 'Inspeccionar decisiones' })))
+        .toBe(inspectAvailable);
+      expect
+        .soft(Boolean(within(result).queryByRole('button', { name: 'Ir a la última acción' })))
+        .toBe(lastStepAvailable);
+      expect(within(result).queryByRole('button', { name: 'Ver de nuevo' })).toBeNull();
+      expect(within(result).getByRole('button', { name: 'Compartir resultado' })).toBeTruthy();
+    },
+  );
+
+  it('keeps history-row inspection hidden until its presentation is complete', async () => {
+    const terminal = summary('phase13-presentation-incomplete-row', 'victory', {
+      presentationComplete: false,
+      recordComplete: true,
+      animationEnabled: true,
+      turnsUsed: replayRecord('phase13-presentation-incomplete-row').actions.length,
+    });
+    const getDecisionIndex = vi.fn();
+    renderApp({
+      runner: attemptApi({
+        listAttempts: vi.fn().mockResolvedValue({ attempts: [terminal] }),
+        getDecisionIndex,
+      }),
+    });
+    await readyForPreparation();
+    selectTab('Historial');
+    const row = screen.getByRole('region', { name: 'Historial de intentos' });
+    expect(within(row).queryByRole('button', { name: 'Inspeccionar decisiones' })).toBeNull();
+    expect(getDecisionIndex).not.toHaveBeenCalled();
+  });
+
+  it('returns to the existing editor from a history result without applying or saving its snapshot', async () => {
+    const historical = summary('phase13-history-return', 'defeat', {
+      createdAt: resultDate,
+      turnsUsed: 4,
+    });
+    const currentDraft = {
+      ...createDefaultDraft(),
+      instructions: 'Borrador vigente distinto de la configuración histórica.',
+    };
+    const getDraft = vi.fn().mockResolvedValue({ version: 7, draft: currentDraft });
+    const putDraft = vi.fn(async (version: number, draft: RobotDraft) => ({
+      version: version + 1,
+      draft,
+    }));
+    const getConfiguration = vi.fn().mockResolvedValue({
+      attemptId: historical.id,
+      draft: { ...createDefaultDraft(), instructions: 'Configuración histórica.' },
+    });
+    const getAttempt = vi.fn().mockResolvedValue(historical);
+    const createAttempt = vi.fn();
+    renderApp({
+      draft: draftApi({ getDraft, putDraft }),
+      runner: attemptApi({
+        listAttempts: vi.fn().mockResolvedValue({ attempts: [historical] }),
+        getAttempt,
+        getConfiguration,
+        createAttempt,
+      }),
+    });
+    await readyForPreparation();
+    selectTab('Historial');
+    fireEvent.click(await historyButton('Ver resultado'));
+    const result = activitySurface('history');
+    await within(result).findByRole('heading', { name: 'Derrota' });
+    const returnEditor = within(result).queryByRole('button', { name: 'Volver al editor' });
+    expect.soft(returnEditor).not.toBeNull();
+    expect(within(result).getByRole('button', { name: 'Volver al historial' })).toBeTruthy();
+    if (!returnEditor) return;
+
+    fireEvent.click(returnEditor);
+    const editorHeading = await screen.findByRole('heading', { name: 'Prepará tu robot' });
+    const instructions = (await screen.findByLabelText(
+      'Qué debe tener en cuenta el robot',
+    )) as HTMLTextAreaElement;
+    expect(instructions.value).toBe(currentDraft.instructions);
+    expect(document.activeElement).toBe(editorHeading);
+    expect(getDraft).toHaveBeenCalledOnce();
+    expect(putDraft).not.toHaveBeenCalled();
+    expect(getConfiguration).not.toHaveBeenCalled();
+    expect(getAttempt).toHaveBeenCalledOnce();
+    expect(createAttempt).not.toHaveBeenCalled();
+  });
+
+  it('keeps the current result context and date when an abandoned history query resolves late', async () => {
+    const abandoned = summary('phase13-history-a', 'defeat', {
+      createdAt: '2026-10-25T12:00:00.000Z',
+    });
+    const current = summaryForResult('phase13-current-b');
+    const abandonedQuery = deferred<AttemptSummary>();
+    const getAttempt = vi.fn().mockReturnValue(abandonedQuery.promise);
+    const createAttempt = vi.fn().mockResolvedValue({ attempt: current, dispatchConfirmed: true });
+    const completePresentation = vi.fn();
+    renderApp({
+      runner: attemptApi({
+        listAttempts: vi.fn().mockResolvedValue({ attempts: [abandoned] }),
+        getAttempt,
+        createAttempt,
+        completePresentation,
+      }),
+    });
+    await readyForPreparation();
+    selectTab('Historial');
+    fireEvent.click(await historyButton('Ver resultado'));
+    await screen.findByRole('heading', { name: 'Consultando el resultado guardado…' });
+
+    selectTab('Preparar');
+    fireEvent.click(screen.getByRole('button', { name: 'Probar' }));
+    await screen.findByRole('heading', { name: 'Victoria' });
+    let result = activitySurface('current');
+    expect(within(result).getByRole('heading', { name: 'Victoria' })).toBeTruthy();
+    expect(result.textContent).toContain('321,47');
+
+    await act(async () => {
+      abandonedQuery.resolve(abandoned);
+      await abandonedQuery.promise;
+    });
+    result = activitySurface('current');
+    expect(within(result).getByRole('heading', { name: 'Victoria' })).toBeTruthy();
+    expect(result.textContent).toContain('321,47');
+    expectResultContext(result, 'Esta partida', resultDate);
+    expect(result.textContent).not.toMatch(/25 oct 2026/);
+    expect(getAttempt).toHaveBeenCalledOnce();
+    expect(createAttempt).toHaveBeenCalledOnce();
+    expect(completePresentation).not.toHaveBeenCalled();
   });
 });
