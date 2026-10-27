@@ -250,7 +250,7 @@ export function useAttemptHistory({
     if (trigger.closest('[hidden]')) return;
     if (trigger instanceof HTMLButtonElement && trigger.disabled) return;
     pendingDecisionFocusRef.current = null;
-    trigger.focus({ preventScroll: true });
+    trigger.focus();
   }, [configurationState, decisionInspectorTarget, resultQuery, surface]);
 
   const updateSummaryById = useCallback((summary: AttemptSummary): void => {
@@ -401,7 +401,7 @@ export function useAttemptHistory({
             button.dataset.historyAction === origin.action,
         )
       : undefined;
-    (opener ?? document.getElementById('attempt-history-title'))?.focus({ preventScroll: true });
+    (opener ?? document.getElementById('attempt-history-title'))?.focus();
   }, [resultQuery, surface]);
 
   const isCurrentConfigurationApplication = useCallback(
