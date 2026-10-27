@@ -742,6 +742,7 @@ describe('Phase 12 independent accessible query diagnostics', () => {
 
     const backButtons = screen.getAllByRole('button', { name: 'Volver al historial' });
     expect(backButtons).toHaveLength(1);
+    const focusSpy = vi.spyOn(HTMLButtonElement.prototype, 'focus');
     fireEvent.click(backButtons[0]!);
 
     expect(await screen.findByRole('heading', { name: 'Historial' })).toBeTruthy();
@@ -753,6 +754,63 @@ describe('Phase 12 independent accessible query diagnostics', () => {
       name: 'Ver de nuevo',
     });
     expect(document.activeElement).toBe(restoredReplay);
+    expect(focusSpy.mock.calls).toEqual([[]]);
+  });
+
+  it('uses native scrolling focus when a history-result query returns to its row', async () => {
+    const terminal = summary('history-result-native-focus', 'defeat');
+    renderApp({
+      runner: attemptApi({
+        listAttempts: vi.fn().mockResolvedValue({ attempts: [terminal] }),
+        getAttempt: vi.fn().mockResolvedValue(terminal),
+      }),
+    });
+    await readyForPreparation();
+    selectTab('Historial');
+
+    const opener = await historyButton('Ver resultado');
+    opener.focus();
+    fireEvent.click(opener);
+    expect(await screen.findByRole('heading', { name: 'Derrota' })).toBeTruthy();
+
+    const focusSpy = vi.spyOn(HTMLButtonElement.prototype, 'focus');
+    fireEvent.click(await screen.findByRole('button', { name: 'Volver al historial' }));
+    const restored = await historyButton('Ver resultado');
+    await waitFor(() => expect(document.activeElement).toBe(restored));
+
+    expect(restored.dataset.historyAttemptId).toBe(terminal.id);
+    expect(restored.dataset.historyAction).toBe('result');
+    expect(focusSpy.mock.calls).toEqual([[]]);
+    act(() => window.dispatchEvent(new Event('resize')));
+    expect(focusSpy.mock.calls).toEqual([[]]);
+  });
+
+  it('uses native scrolling focus when a history inspector closes to its opener', async () => {
+    const terminal = summary('history-inspector-native-focus', 'defeat');
+    renderApp({
+      runner: attemptApi({
+        listAttempts: vi.fn().mockResolvedValue({ attempts: [terminal] }),
+        getDecisionIndex: vi.fn().mockResolvedValue({
+          attemptId: terminal.id,
+          levelId: LEVEL.id,
+          decisions: [],
+        }),
+      }),
+    });
+    await readyForPreparation();
+    selectTab('Historial');
+
+    const opener = await historyButton('Inspeccionar decisiones');
+    opener.focus();
+    fireEvent.click(opener);
+    expect(await screen.findByRole('heading', { name: 'Inspeccionar decisiones' })).toBeTruthy();
+
+    const focusSpy = vi.spyOn(HTMLButtonElement.prototype, 'focus');
+    fireEvent.click(await screen.findByRole('button', { name: 'Cerrar inspección' }));
+    await waitFor(() => expect(document.activeElement).toBe(opener));
+    expect(focusSpy.mock.calls).toEqual([[]]);
+    act(() => window.dispatchEvent(new Event('resize')));
+    expect(focusSpy.mock.calls).toEqual([[]]);
   });
 
   it('keeps the person’s focus when a delayed history result arrives', async () => {

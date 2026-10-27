@@ -355,7 +355,7 @@ export function useAttemptActivity({
             button.dataset.historyAction === target.action,
         )
       : undefined;
-    (opener ?? document.getElementById('attempt-history-title'))?.focus({ preventScroll: true });
+    (opener ?? document.getElementById('attempt-history-title'))?.focus();
   }, [historyResultOpen, mode]);
 
   const onPresentationConfirmed = useCallback(
