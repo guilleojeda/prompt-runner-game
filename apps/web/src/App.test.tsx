@@ -821,9 +821,11 @@ describe('access screen', () => {
       await flushAuthMicrotasks();
     });
     expect(screen.getByDisplayValue('Recuperada desde el historial')).toBeTruthy();
-    expect(
-      screen.getByText('Configuración cargada en el editor. Se guarda como una edición normal.'),
-    ).toBeTruthy();
+    expect(screen.getByRole('region', { name: 'Preparar' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Preparar' }).getAttribute('aria-current')).toBe(
+      'page',
+    );
+    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Prepará tu robot' }));
     expect(getDraft).toHaveBeenCalledTimes(2);
     expect(getAccountTrigger().disabled).toBe(false);
     expect(attemptApi.createAttempt).not.toHaveBeenCalled();
