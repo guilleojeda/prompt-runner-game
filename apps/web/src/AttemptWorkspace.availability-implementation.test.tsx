@@ -125,9 +125,16 @@ function RealPreparationHarness({
   );
 }
 
+async function settlePreparationPromises(): Promise<void> {
+  await act(async () => {
+    for (let index = 0; index < 16; index += 1) await Promise.resolve();
+  });
+}
+
 afterEach(() => {
   cleanup();
   window.sessionStorage.clear();
+  vi.useRealTimers();
 });
 
 describe('AttemptWorkspace availability implementation', () => {
@@ -478,6 +485,7 @@ describe('AttemptWorkspace availability implementation', () => {
   });
 
   it('shows unknown animation as mixed until the server confirms its false value', async () => {
+    vi.useFakeTimers();
     let rejectInitialPreference!: (error: unknown) => void;
     const getAnimationPreference = vi
       .fn()
@@ -512,11 +520,12 @@ describe('AttemptWorkspace availability implementation', () => {
       />,
     );
 
-    const animationCheckbox = (await screen.findByRole('checkbox', {
+    await settlePreparationPromises();
+    const animationCheckbox = screen.getByRole('checkbox', {
       name: 'Animación',
-    })) as HTMLInputElement;
+    }) as HTMLInputElement;
     const tryButton = screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement;
-    await waitFor(() => expect(getAnimationPreference).toHaveBeenCalledOnce());
+    expect(getAnimationPreference).toHaveBeenCalledOnce();
     expect(animationCheckbox.indeterminate).toBe(true);
     expect(animationCheckbox.getAttribute('aria-checked')).toBe('mixed');
     expect(tryButton.disabled).toBe(true);
@@ -525,14 +534,23 @@ describe('AttemptWorkspace availability implementation', () => {
       rejectInitialPreference(new AttemptApiFailure('server', 'Preferencia no disponible.', 503));
       await Promise.resolve();
     });
-    await screen.findByRole('button', { name: 'Reintentar preferencia' });
+    await settlePreparationPromises();
+    expect(animationCheckbox.disabled).toBe(false);
     expect(animationCheckbox.indeterminate).toBe(true);
     expect(animationCheckbox.getAttribute('aria-checked')).toBe('mixed');
     expect(tryButton.disabled).toBe(true);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Reintentar preferencia' }));
-    await waitFor(() => expect(getAnimationPreference).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(tryButton.disabled).toBe(false));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(59_999);
+    });
+    expect(getAnimationPreference).toHaveBeenCalledOnce();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    await settlePreparationPromises();
+    expect(getAnimationPreference).toHaveBeenCalledTimes(2);
+    await settlePreparationPromises();
+    expect(tryButton.disabled).toBe(false);
     expect(animationCheckbox.indeterminate).toBe(false);
     expect(animationCheckbox.checked).toBe(false);
     expect(animationCheckbox.getAttribute('aria-checked')).toBe('false');
@@ -540,10 +558,12 @@ describe('AttemptWorkspace availability implementation', () => {
   });
 
   it('turns a mixed preference into the explicit on choice while its save is pending', async () => {
+    vi.useFakeTimers();
     let finishPreferenceSave!: (value: { animationEnabled: boolean; version: number }) => void;
     const getAnimationPreference = vi
       .fn()
-      .mockRejectedValue(new AttemptApiFailure('server', 'Preferencia no disponible.', 503));
+      .mockRejectedValueOnce(new AttemptApiFailure('server', 'Preferencia no disponible.', 503))
+      .mockResolvedValue({ animationEnabled: false, version: 8 });
     const createAttempt = vi.fn();
     const runner = attemptApi({
       createAttempt,
@@ -577,33 +597,48 @@ describe('AttemptWorkspace availability implementation', () => {
       />,
     );
 
-    const animationCheckbox = (await screen.findByRole('checkbox', {
+    await settlePreparationPromises();
+    const animationCheckbox = screen.getByRole('checkbox', {
       name: 'Animación',
-    })) as HTMLInputElement;
+    }) as HTMLInputElement;
     const tryButton = screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement;
-    await screen.findByRole('button', { name: 'Reintentar preferencia' });
+    await settlePreparationPromises();
+    expect(animationCheckbox.disabled).toBe(false);
     expect(animationCheckbox.indeterminate).toBe(true);
     expect(animationCheckbox.getAttribute('aria-checked')).toBe('mixed');
 
     fireEvent.click(animationCheckbox);
-    await waitFor(() => expect(runner.putAnimationPreference).toHaveBeenCalledOnce());
-    expect(runner.putAnimationPreference).toHaveBeenCalledWith(true, 0, expect.any(AbortSignal));
+    expect(animationCheckbox.checked).toBe(true);
+    expect(animationCheckbox.indeterminate).toBe(false);
+    expect(runner.putAnimationPreference).not.toHaveBeenCalled();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(59_999);
+    });
+    expect(getAnimationPreference).toHaveBeenCalledOnce();
+    expect(runner.putAnimationPreference).not.toHaveBeenCalled();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    await settlePreparationPromises();
+    expect(runner.putAnimationPreference).toHaveBeenCalledOnce();
+    expect(runner.putAnimationPreference).toHaveBeenCalledWith(true, 8, expect.any(AbortSignal));
     expect(animationCheckbox.checked).toBe(true);
     expect(animationCheckbox.indeterminate).toBe(false);
     expect(animationCheckbox.getAttribute('aria-checked')).toBe('true');
     expect(tryButton.disabled).toBe(true);
     expect(
-      await screen.findByText(
+      screen.getByText(
         'Confirmando tu preferencia de animación. Podés seguir preparando el robot.',
       ),
     ).toBeTruthy();
     expect(createAttempt).not.toHaveBeenCalled();
 
     await act(async () => {
-      finishPreferenceSave({ animationEnabled: true, version: 1 });
+      finishPreferenceSave({ animationEnabled: true, version: 9 });
       await Promise.resolve();
     });
-    await waitFor(() => expect(tryButton.disabled).toBe(false));
+    await settlePreparationPromises();
+    expect(tryButton.disabled).toBe(false);
     expect(animationCheckbox.checked).toBe(true);
     expect(animationCheckbox.indeterminate).toBe(false);
     expect(createAttempt).not.toHaveBeenCalled();
