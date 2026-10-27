@@ -482,7 +482,12 @@ describe('AttemptApiClient', () => {
         metrics: source.metrics,
         score: source.score,
       };
-      const completedAttempt = { ...summary, animationEnabled: true, presentationComplete: true };
+      const completedAttempt = {
+        ...summary,
+        id: 'attempt / one',
+        animationEnabled: true,
+        presentationComplete: true,
+      };
       const fetchImpl = vi
         .fn<typeof fetch>()
         .mockResolvedValueOnce(new Response(JSON.stringify({ record }), { status: 200 }))
@@ -527,7 +532,7 @@ describe('AttemptApiClient', () => {
         after: { id: 'state-1' },
       });
       await expect(client.completePresentation('attempt / one')).resolves.toMatchObject({
-        id: 'attempt-1',
+        id: 'attempt / one',
         animationEnabled: true,
         presentationComplete: true,
       });
