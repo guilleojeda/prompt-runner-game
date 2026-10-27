@@ -30,13 +30,14 @@ import {
 } from './attempt-recovery.js';
 import type { RobotEditorHandle } from './RobotEditor.js';
 import { ROBOT_CATALOG, type RobotDraft } from '../../../shared/robot.js';
-import type { AnimationPreference, ReplayRecordView } from '../../../shared/attempt.js';
+import type { ReplayRecordView } from '../../../shared/attempt.js';
 import { DEFAULT_SCORE_RULES, LEVEL } from '../../../shared/game.js';
 import { MODEL_CATALOG } from '../../../shared/models.js';
 import { DecisionInspector } from './DecisionInspector.js';
 import { ReplayScene } from './replay/ReplayScene.js';
 import { ResultSharing } from './ResultSharing.js';
 import { formatScore } from './result-sharing.js';
+import { useAnimationPreference } from './useAnimationPreference.js';
 
 type WorkspaceMode =
   | 'loading'
@@ -937,13 +938,6 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     const [activeCandidates, setActiveCandidates] = useState<readonly AttemptSummary[]>([]);
     const [loadingHistory, setLoadingHistory] = useState(false);
     const [cancelBusy, setCancelBusy] = useState(false);
-    const [animationEnabled, setAnimationEnabled] = useState(true);
-    const [preferenceLoading, setPreferenceLoading] = useState(true);
-    const [preferenceReady, setPreferenceReady] = useState(false);
-    const [preferenceSaving, setPreferenceSaving] = useState(false);
-    const [preferenceError, setPreferenceError] = useState<string | null>(null);
-    const [preferenceConflict, setPreferenceConflict] = useState<string | null>(null);
-    const [preferenceRemoteValue, setPreferenceRemoteValue] = useState<boolean | null>(null);
     const [replayRecord, setReplayRecord] = useState<ReplayRecordView | null>(null);
     const [playbackKind, setPlaybackKind] = useState<PlaybackKind | null>(null);
     const [playbackReachedEnd, setPlaybackReachedEnd] = useState(false);
@@ -990,22 +984,15 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       readonly sessionSub: string;
     } | null>(null);
     const decisionInspectorTriggerRef = useRef<HTMLElement | null>(null);
-    const animationEnabledRef = useRef(true);
-    const preferenceVersionRef = useRef(0);
-    const preferenceGenerationRef = useRef(0);
-    const preferenceControllerRef = useRef<AbortController>(new AbortController());
-    const preferenceChoiceRevisionRef = useRef(0);
-    const preferenceChoiceMadeRef = useRef(false);
-    const preferenceWriteCountRef = useRef(0);
-    const preferenceConflictRef = useRef(false);
-    const preferenceQueueRef = useRef<Promise<void>>(Promise.resolve());
-    const preferenceReadyRef = useRef(false);
-    const deferredPreferenceSaveRef = useRef<{
-      readonly value: boolean;
-      readonly revision: number;
-      readonly generation: number;
-    } | null>(null);
     const sessionSub = session.identity.sub;
+    const animationPreference = useAnimationPreference({
+      api,
+      identity: sessionSub,
+      authPaused,
+      onAuthRequired,
+    });
+    const isPreferenceReadyNow = animationPreference.isReadyNow;
+    const confirmedAnimationValueNow = animationPreference.confirmedValueNow;
     const authPausedRef = useRef(authPaused);
     const currentSessionSubRef = useRef(sessionSub);
     useLayoutEffect(() => {
@@ -1114,12 +1101,6 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       if (previousSub !== sessionSub) {
         quotaRef.current = null;
         setQuota(null);
-        preferenceControllerRef.current.abort();
-        preferenceControllerRef.current = new AbortController();
-        preferenceGenerationRef.current += 1;
-        preferenceChoiceRevisionRef.current += 1;
-        preferenceChoiceMadeRef.current = false;
-        preferenceQueueRef.current = Promise.resolve();
         frozenRef.current = null;
         attemptRef.current = null;
         resetCancelBusy();
@@ -1129,19 +1110,6 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         completionOperationRef.current += 1;
         completionBusyRef.current = false;
         completionAttemptRef.current = null;
-        animationEnabledRef.current = true;
-        setAnimationEnabled(true);
-        preferenceVersionRef.current = 0;
-        setPreferenceLoading(true);
-        preferenceReadyRef.current = false;
-        deferredPreferenceSaveRef.current = null;
-        setPreferenceReady(false);
-        preferenceWriteCountRef.current = 0;
-        preferenceConflictRef.current = false;
-        setPreferenceSaving(false);
-        setPreferenceError(null);
-        setPreferenceConflict(null);
-        setPreferenceRemoteValue(null);
         setReplayRecord(null);
         setPlaybackKind(null);
         setPlaybackReachedEnd(false);
@@ -1185,12 +1153,19 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       mode === 'preparing-replay' ||
       mode === 'replaying';
 
-    const tryAvailable =
-      preferenceReady && !preferenceSaving && preferenceConflict === null && quota?.remaining !== 0;
-    const animationPreferenceUnknown = !preferenceReady && !preferenceChoiceMadeRef.current;
+    const preferenceReady = animationPreference.ready;
+    const preferenceLoading = animationPreference.loading;
+    const preferenceSaving = animationPreference.saving;
+    const preferenceRecovering = animationPreference.recovering;
+    const preferenceError = animationPreference.error;
+    const preferenceConflict = animationPreference.conflict;
+    const animationPreferenceUnknown = animationPreference.unknown;
+    const animationEnabled = animationPreference.value;
+    const preferenceRemoteValue = preferenceConflict?.remote.animationEnabled ?? null;
+    const tryAvailable = preferenceReady && quota?.remaining !== 0;
     const tryAvailabilityMessage = preferenceSaving
       ? 'Confirmando tu preferencia de animación. Podés seguir preparando el robot.'
-      : !preferenceReady
+      : !preferenceReady && (preferenceError === null || preferenceRecovering)
         ? 'Estamos recuperando tu preferencia de animación. Podés seguir preparando el robot.'
         : preferenceConflict !== null
           ? ''
@@ -1201,12 +1176,8 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
               : '';
 
     const isTryAvailableNow = useCallback(
-      (): boolean =>
-        preferenceReadyRef.current &&
-        preferenceWriteCountRef.current === 0 &&
-        !preferenceConflictRef.current &&
-        quotaRef.current?.remaining !== 0,
-      [],
+      (): boolean => isPreferenceReadyNow() && quotaRef.current?.remaining !== 0,
+      [isPreferenceReadyNow],
     );
 
     useEffect(() => {
@@ -1219,228 +1190,6 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     useEffect(() => {
       onTryAvailabilityChange?.(tryAvailable);
     }, [onTryAvailabilityChange, tryAvailable]);
-
-    const refreshAnimationPreference = useCallback(
-      async (signal?: AbortSignal, initial = false): Promise<void> => {
-        if (authPausedRef.current) return;
-        const requestSignal = signal ?? preferenceControllerRef.current.signal;
-        const preferenceGeneration = preferenceGenerationRef.current;
-        const choiceRevisionAtRequest = preferenceChoiceRevisionRef.current;
-        if (initial) {
-          setPreferenceLoading(true);
-        } else if (preferenceWriteCountRef.current > 0) {
-          return;
-        }
-        try {
-          const preference: AnimationPreference = await api.getAnimationPreference(requestSignal);
-          if (
-            requestSignal.aborted ||
-            preferenceGenerationRef.current !== preferenceGeneration ||
-            choiceRevisionAtRequest !== preferenceChoiceRevisionRef.current
-          ) {
-            return;
-          }
-          if (preference.version < preferenceVersionRef.current) {
-            return;
-          }
-          preferenceReadyRef.current = true;
-          setPreferenceReady(true);
-          setPreferenceError(null);
-          const hasNewerVersion = preference.version > preferenceVersionRef.current;
-          preferenceVersionRef.current = Math.max(preference.version, preferenceVersionRef.current);
-          if (hasNewerVersion && preferenceWriteCountRef.current > 0) {
-            preferenceConflictRef.current = true;
-            setPreferenceRemoteValue(preference.animationEnabled);
-            setPreferenceConflict(
-              `Otra pestaña guardó la animación ${preference.animationEnabled ? 'activada' : 'desactivada'}. Tu selección sigue visible; guardala para usarla como preferencia.`,
-            );
-          } else if (preferenceWriteCountRef.current === 0 && !preferenceConflictRef.current) {
-            preferenceChoiceMadeRef.current = false;
-            animationEnabledRef.current = preference.animationEnabled;
-            setAnimationEnabled(preference.animationEnabled);
-            preferenceConflictRef.current = false;
-            setPreferenceConflict(null);
-            setPreferenceRemoteValue(null);
-          }
-        } catch (preferenceFailure) {
-          if (
-            requestSignal.aborted ||
-            preferenceGenerationRef.current !== preferenceGeneration ||
-            choiceRevisionAtRequest !== preferenceChoiceRevisionRef.current
-          ) {
-            return;
-          }
-          if (initial) {
-            preferenceReadyRef.current = false;
-            setPreferenceReady(false);
-          }
-          if (isAuthenticationFailure(preferenceFailure)) {
-            onAuthRequired?.(preferenceFailure.authContext);
-          }
-          setPreferenceError(attemptErrorMessage(preferenceFailure));
-        } finally {
-          if (
-            initial &&
-            !requestSignal.aborted &&
-            preferenceGenerationRef.current === preferenceGeneration
-          ) {
-            setPreferenceLoading(false);
-          }
-        }
-      },
-      [api, onAuthRequired],
-    );
-
-    const queueAnimationPreferenceSave = useCallback(
-      (value: boolean): void => {
-        const revision = ++preferenceChoiceRevisionRef.current;
-        const preferenceGeneration = preferenceGenerationRef.current;
-        const requestSignal = preferenceControllerRef.current.signal;
-        preferenceChoiceMadeRef.current = true;
-        preferenceReadyRef.current = false;
-        setPreferenceReady(false);
-        preferenceWriteCountRef.current += 1;
-        setPreferenceSaving(true);
-        setPreferenceError(null);
-        const queued = preferenceQueueRef.current
-          .catch(() => undefined)
-          .then(async () => {
-            try {
-              if (
-                requestSignal.aborted ||
-                preferenceGenerationRef.current !== preferenceGeneration ||
-                revision < preferenceChoiceRevisionRef.current ||
-                preferenceConflictRef.current
-              ) {
-                return;
-              }
-              if (authPausedRef.current) {
-                if (revision === preferenceChoiceRevisionRef.current) {
-                  deferredPreferenceSaveRef.current = {
-                    value,
-                    revision,
-                    generation: preferenceGeneration,
-                  };
-                  preferenceConflictRef.current = true;
-                  setPreferenceRemoteValue(null);
-                  setPreferenceConflict(
-                    'Tu selección quedó pendiente mientras se recupera el acceso.',
-                  );
-                }
-                return;
-              }
-              const saved = await api.putAnimationPreference(
-                value,
-                preferenceVersionRef.current,
-                requestSignal,
-              );
-              if (
-                requestSignal.aborted ||
-                preferenceGenerationRef.current !== preferenceGeneration
-              ) {
-                return;
-              }
-              preferenceVersionRef.current = saved.version;
-              preferenceReadyRef.current = true;
-              setPreferenceReady(true);
-              if (revision === preferenceChoiceRevisionRef.current) {
-                preferenceChoiceMadeRef.current = false;
-                animationEnabledRef.current = saved.animationEnabled;
-                setAnimationEnabled(saved.animationEnabled);
-                setPreferenceConflict(null);
-                setPreferenceRemoteValue(null);
-                preferenceConflictRef.current = false;
-              }
-            } catch (saveFailure) {
-              if (
-                requestSignal.aborted ||
-                preferenceGenerationRef.current !== preferenceGeneration
-              ) {
-                return;
-              }
-              if (isAuthenticationFailure(saveFailure)) {
-                onAuthRequired?.(saveFailure.authContext);
-              }
-              try {
-                const current = await api.getAnimationPreference(requestSignal);
-                if (
-                  requestSignal.aborted ||
-                  preferenceGenerationRef.current !== preferenceGeneration
-                ) {
-                  return;
-                }
-                preferenceVersionRef.current = current.version;
-                preferenceReadyRef.current = true;
-                setPreferenceReady(true);
-                if (current.animationEnabled === value) {
-                  if (revision === preferenceChoiceRevisionRef.current) {
-                    preferenceChoiceMadeRef.current = false;
-                    animationEnabledRef.current = current.animationEnabled;
-                    setAnimationEnabled(current.animationEnabled);
-                    preferenceConflictRef.current = false;
-                    setPreferenceRemoteValue(null);
-                    setPreferenceConflict(null);
-                  }
-                } else if (revision === preferenceChoiceRevisionRef.current) {
-                  preferenceConflictRef.current = true;
-                  setPreferenceRemoteValue(current.animationEnabled);
-                  setPreferenceConflict(
-                    `No se guardó tu cambio porque la preferencia del servidor ahora está ${current.animationEnabled ? 'activada' : 'desactivada'}. Tu selección sigue visible; elegí guardarla para resolver el conflicto.`,
-                  );
-                }
-              } catch (readbackFailure) {
-                if (
-                  requestSignal.aborted ||
-                  preferenceGenerationRef.current !== preferenceGeneration ||
-                  revision !== preferenceChoiceRevisionRef.current
-                ) {
-                  return;
-                }
-                if (isAuthenticationFailure(readbackFailure)) {
-                  onAuthRequired?.(readbackFailure.authContext);
-                }
-                setPreferenceError(attemptErrorMessage(saveFailure));
-              }
-            } finally {
-              preferenceWriteCountRef.current = Math.max(0, preferenceWriteCountRef.current - 1);
-              setPreferenceSaving(preferenceWriteCountRef.current > 0);
-            }
-          });
-        preferenceQueueRef.current = queued;
-      },
-      [api, onAuthRequired],
-    );
-
-    useEffect(() => {
-      if (authPaused) return;
-      const deferred = deferredPreferenceSaveRef.current;
-      if (!deferred) return;
-      deferredPreferenceSaveRef.current = null;
-      if (
-        deferred.generation !== preferenceGenerationRef.current ||
-        deferred.revision !== preferenceChoiceRevisionRef.current
-      ) {
-        return;
-      }
-      preferenceConflictRef.current = false;
-      setPreferenceConflict(null);
-      setPreferenceRemoteValue(null);
-      queueAnimationPreferenceSave(deferred.value);
-    }, [authPaused, queueAnimationPreferenceSave]);
-
-    const chooseAnimationPreference = useCallback(
-      (value: boolean): void => {
-        if (authPausedRef.current) return;
-        animationEnabledRef.current = value;
-        setAnimationEnabled(value);
-        setPreferenceError(null);
-        setPreferenceConflict(null);
-        setPreferenceRemoteValue(null);
-        preferenceConflictRef.current = false;
-        queueAnimationPreferenceSave(value);
-      },
-      [queueAnimationPreferenceSave],
-    );
 
     const beginReplay = useCallback(
       async (target: AttemptSummary, kind: PlaybackKind): Promise<void> => {
@@ -1506,20 +1255,6 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       },
       [api, clearConfiguration, clearDecisionInspector, editor, onAuthRequired],
     );
-
-    const refreshPreferenceOnFocus = useCallback((): void => {
-      if (document.visibilityState === 'hidden') return;
-      void refreshAnimationPreference();
-    }, [refreshAnimationPreference]);
-
-    useEffect(() => {
-      window.addEventListener('focus', refreshPreferenceOnFocus);
-      document.addEventListener('visibilitychange', refreshPreferenceOnFocus);
-      return () => {
-        window.removeEventListener('focus', refreshPreferenceOnFocus);
-        document.removeEventListener('visibilitychange', refreshPreferenceOnFocus);
-      };
-    }, [refreshPreferenceOnFocus]);
 
     const applyAttempt = useCallback(
       (next: AttemptSummary, options: { clearRequest?: boolean } = {}): void => {
@@ -1990,7 +1725,6 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           setActiveCandidates([]);
           setError(null);
           void refreshQuota(controller.signal);
-          void refreshAnimationPreference(controller.signal, true);
           await refreshHistory(controller.signal);
           if (await recoverKnownAttempt(controller.signal)) return;
           await discoverActiveAttempts(controller.signal);
@@ -2011,7 +1745,6 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       applyAttempt,
       discoverActiveAttempts,
       onAuthRequired,
-      refreshAnimationPreference,
       recoverKnownAttempt,
       refreshHistory,
       refreshQuota,
@@ -2083,7 +1816,12 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       completionBusyRef.current = false;
       completionAttemptRef.current = null;
       setCompletionBusy(false);
-      const frozenAnimationEnabled = animationEnabledRef.current;
+      const frozenAnimationEnabled = confirmedAnimationValueNow();
+      if (frozenAnimationEnabled === null) {
+        startLockRef.current = false;
+        editor.current?.releaseAttemptLock?.();
+        return;
+      }
       operationEpochRef.current += 1;
       const operationGeneration = generationRef.current;
       const operationEpoch = operationEpochRef.current;
@@ -2203,6 +1941,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       editor,
       clearConfiguration,
       isTryAvailableNow,
+      confirmedAnimationValueNow,
       onAuthRequired,
       sessionSub,
       startServerAttempt,
@@ -2992,7 +2731,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
               checked={animationPreferenceUnknown ? false : animationEnabled}
               aria-checked={animationPreferenceUnknown ? 'mixed' : animationEnabled}
               disabled={authPaused || busy || preferenceLoading}
-              onChange={(event) => chooseAnimationPreference(event.currentTarget.checked)}
+              onChange={(event) => animationPreference.choose(event.currentTarget.checked)}
             />
             <span>Animación</span>
           </label>
@@ -3017,15 +2756,13 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         {preferenceConflict && (
           <div className="attempt-preference-conflict" role="status">
             <p id="attempt-availability-status">
-              {preferenceConflict}
-              {preferenceRemoteValue === null
-                ? ''
-                : ` Valor guardado en el servidor: ${preferenceRemoteValue ? 'activado' : 'desactivado'}.`}
+              {preferenceConflict.message}
+              {` Valor guardado en el servidor: ${preferenceRemoteValue ? 'activado' : 'desactivado'}.`}
             </p>
             <button
               className="secondary-button"
               type="button"
-              onClick={() => chooseAnimationPreference(animationEnabledRef.current)}
+              onClick={animationPreference.saveSelection}
               disabled={authPaused || busy || preferenceSaving}
             >
               Guardar mi selección
@@ -3035,14 +2772,6 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         {preferenceError && (
           <div className="attempt-error" role="alert">
             <p>{preferenceError}</p>
-            <button
-              className="secondary-button"
-              type="button"
-              onClick={() => void refreshAnimationPreference(undefined, true)}
-              disabled={authPaused}
-            >
-              Reintentar preferencia
-            </button>
           </div>
         )}
       </div>

@@ -921,12 +921,13 @@ export class AttemptApiClient implements AttemptApi {
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       ...(signal === undefined ? {} : { signal }),
     };
+    const isMutation = method !== 'GET';
     let response: Response;
     try {
       response = await this.fetchImpl(`${this.baseUrl}${path}`, init);
     } catch (error) {
       if (signal?.aborted) throw error;
-      throw new AttemptApiFailure('network', invalidMessage, undefined, method === 'POST', {
+      throw new AttemptApiFailure('network', invalidMessage, undefined, isMutation, {
         cause: error,
       });
     }
@@ -993,12 +994,12 @@ export class AttemptApiClient implements AttemptApi {
         'server',
         errorMessage(parsed, invalidMessage),
         response.status,
-        method === 'POST',
+        isMutation,
       );
     }
     const result = parser(parsed);
     if (result === null) {
-      throw new AttemptApiFailure('server', invalidMessage, response.status, method === 'POST');
+      throw new AttemptApiFailure('server', invalidMessage, response.status, isMutation);
     }
     return result;
   }
