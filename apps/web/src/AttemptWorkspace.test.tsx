@@ -221,7 +221,7 @@ afterEach(() => {
 });
 
 describe('AttemptActivity', () => {
-  it('scrolls to admission and automatic replay, without scrolling for background loading', async () => {
+  it('leaves viewport positioning to the workspace during admission, replay, and background loading', async () => {
     const previousScroll = HTMLElement.prototype.scrollIntoView;
     const scroll = vi.fn();
     HTMLElement.prototype.scrollIntoView = scroll;
@@ -255,19 +255,18 @@ describe('AttemptActivity', () => {
       expect(scroll).not.toHaveBeenCalled();
       act(() => ref.current!.start());
       expect(screen.getByText('Guardando la configuración e iniciando el intento…')).toBeTruthy();
-      expect(scroll).toHaveBeenCalledOnce();
-      expect(scroll).toHaveBeenLastCalledWith({ block: 'start', behavior: 'smooth' });
+      expect(scroll).not.toHaveBeenCalled();
 
       await act(async () => finishCapture({ version: 1, draft: createDefaultDraft() }));
       await screen.findByRole('heading', { name: 'Preparando intento' });
-      expect(scroll).toHaveBeenCalledOnce();
+      expect(scroll).not.toHaveBeenCalled();
       await screen.findByRole('heading', { name: 'Reproducción del intento' }, { timeout: 4_000 });
-      expect(scroll).toHaveBeenCalledOnce();
+      expect(scroll).not.toHaveBeenCalled();
       fireEvent.click(screen.getByRole('button', { name: 'Recursos listos' }));
-      expect(scroll).toHaveBeenCalledTimes(2);
+      expect(scroll).not.toHaveBeenCalled();
       fireEvent.click(screen.getByRole('button', { name: 'Completar reproducción' }));
       await screen.findByRole('heading', { name: 'Victoria' });
-      expect(scroll).toHaveBeenCalledTimes(2);
+      expect(scroll).not.toHaveBeenCalled();
     } finally {
       if (previousScroll) HTMLElement.prototype.scrollIntoView = previousScroll;
       else Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
@@ -373,7 +372,7 @@ describe('AttemptActivity', () => {
 
     const history = await screen.findByRole('heading', { name: 'Historial' });
     fireEvent.click(
-      within(history.closest('section') as HTMLElement).getByRole('button', {
+      await within(history.closest('section') as HTMLElement).findByRole('button', {
         name: 'Inspeccionar decisiones',
       }),
     );
@@ -2544,8 +2543,17 @@ describe('AttemptActivity', () => {
       },
     } as unknown as { current: RobotEditorHandle | null };
     const ref = { current: null } as unknown as { current: AttemptActivityHandle | null };
-    render(<AttemptActivity ref={ref} api={attemptApi} editor={editor} session={session()} />);
-    await screen.findByText('Historial');
+    const onTryAvailabilityChange = vi.fn();
+    render(
+      <AttemptActivity
+        ref={ref}
+        api={attemptApi}
+        editor={editor}
+        session={session()}
+        onTryAvailabilityChange={onTryAvailabilityChange}
+      />,
+    );
+    await waitFor(() => expect(onTryAvailabilityChange).toHaveBeenLastCalledWith(true));
 
     await act(async () => {
       (ref.current as AttemptActivityHandle).start();
@@ -2761,7 +2769,9 @@ describe('AttemptActivity', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Comprobar estado' }));
     expect(await screen.findByRole('button', { name: 'Cancelar' })).toBeTruthy();
     expect(getAttemptRequest).toHaveBeenCalledWith(currentKey, expect.any(AbortSignal));
-    expect(getAttemptRequest.mock.calls.map(([attemptId]) => attemptId)).not.toContain(oldAttempt.id);
+    expect(getAttemptRequest.mock.calls.map(([attemptId]) => attemptId)).not.toContain(
+      oldAttempt.id,
+    );
     expect(createAttempt.mock.calls[1]?.[0]).toBe(currentKey);
   });
 
@@ -3839,7 +3849,9 @@ describe('AttemptActivity', () => {
     const historySection = history.closest('section') as HTMLElement;
     const loadMore = within(historySection).getByRole('button', { name: 'Cargar 20 más' });
     fireEvent.click(loadMore);
-    await waitFor(() => expect(listAttempts).toHaveBeenCalledWith('cursor-old'));
+    await waitFor(() =>
+      expect(listAttempts).toHaveBeenCalledWith('cursor-old', expect.any(AbortSignal)),
+    );
     await waitFor(() => expect((loadMore as HTMLButtonElement).disabled).toBe(true));
 
     await waitFor(() => expect(screen.queryByText('Cargando preferencia guardada…')).toBeNull());
