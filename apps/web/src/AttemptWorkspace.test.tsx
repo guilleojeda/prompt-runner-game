@@ -21,7 +21,8 @@ import {
   type DecisionDetail,
   type DecisionIndex,
 } from './attempt-api.js';
-import { AttemptWorkspace, type AttemptWorkspaceHandle } from './AttemptWorkspace.js';
+import { AttemptActivityHarness as AttemptActivity } from './AttemptActivity.test-support.js';
+import type { AttemptActivityHandle } from './useAttemptActivity.js';
 import { RobotEditor, type RobotEditorHandle } from './RobotEditor.js';
 import type { DraftApi } from './draft-api.js';
 import { doorVictoryRecord } from './replay/replay.test-support.js';
@@ -128,7 +129,7 @@ function summary(status: AttemptSummary['status'] = 'running'): AttemptSummary {
 }
 
 function replayRecord(id = 'attempt-1'): ReplayRecordView {
-  // AttemptWorkspace mocks ReplayScene; this 8-action transport fixture tests
+  // AttemptActivity mocks ReplayScene; this 8-action transport fixture tests
   // result/recovery plumbing, while semantic replay validation lives in replay tests.
   const source = doorVictoryRecord();
   const snapshots = source.snapshots.slice(0, 9);
@@ -219,7 +220,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('AttemptWorkspace', () => {
+describe('AttemptActivity', () => {
   it('scrolls to admission and automatic replay, without scrolling for background loading', async () => {
     const previousScroll = HTMLElement.prototype.scrollIntoView;
     const scroll = vi.fn();
@@ -246,8 +247,8 @@ describe('AttemptWorkspace', () => {
           ),
         },
       } as unknown as { current: RobotEditorHandle | null };
-      const ref = { current: null } as { current: AttemptWorkspaceHandle | null };
-      render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+      const ref = { current: null } as { current: AttemptActivityHandle | null };
+      render(<AttemptActivity ref={ref} api={attemptApi} editor={editor} session={session()} />);
 
       await screen.findByRole('heading', { name: 'Historial' });
       await waitFor(() => expect(screen.queryByText('Cargando preferencia guardada…')).toBeNull());
@@ -285,8 +286,8 @@ describe('AttemptWorkspace', () => {
         captureSnapshot: vi.fn().mockResolvedValue({ version: 1, draft: createDefaultDraft() }),
       },
     } as unknown as { current: RobotEditorHandle | null };
-    const ref = { current: null } as { current: AttemptWorkspaceHandle | null };
-    render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+    const ref = { current: null } as { current: AttemptActivityHandle | null };
+    render(<AttemptActivity ref={ref} api={attemptApi} editor={editor} session={session()} />);
 
     await screen.findByRole('heading', { name: 'Historial' });
     await waitFor(() => expect(screen.queryByText('Cargando preferencia guardada…')).toBeNull());
@@ -317,7 +318,7 @@ describe('AttemptWorkspace', () => {
     });
     const attemptApi = api({ getQuota, listAttempts });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     const retry = await screen.findByRole('button', { name: /Reintentar historial/i });
     expect(screen.queryByRole('button', { name: 'Reintentar consultas' })).toBeNull();
@@ -368,7 +369,7 @@ describe('AttemptWorkspace', () => {
       getDecision,
     });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     const history = await screen.findByRole('heading', { name: 'Historial' });
     fireEvent.click(
@@ -441,7 +442,7 @@ describe('AttemptWorkspace', () => {
       getDecision,
     });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     const history = await screen.findByRole('heading', { name: 'Historial' });
     fireEvent.click(
@@ -511,7 +512,7 @@ describe('AttemptWorkspace', () => {
         ),
     });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     const history = await screen.findByRole('heading', { name: 'Historial' });
     const historySection = history.closest('section') as HTMLElement;
@@ -580,7 +581,7 @@ describe('AttemptWorkspace', () => {
       getDecisionIndex,
     });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Recursos listos' }));
     fireEvent.click(screen.getByRole('button', { name: 'Completar reproducción' }));
@@ -658,7 +659,7 @@ describe('AttemptWorkspace', () => {
       getDecisionIndex,
     });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     await screen.findByRole('button', { name: 'Completar reproducción' });
     vi.useFakeTimers();
@@ -725,7 +726,7 @@ describe('AttemptWorkspace', () => {
     });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     const view = render(
-      <AttemptWorkspace
+      <AttemptActivity
         api={attemptApi}
         editor={editor}
         session={session()}
@@ -760,7 +761,7 @@ describe('AttemptWorkspace', () => {
     expect(screen.queryByRole('heading', { name: 'Inspeccionar decisiones' })).toBeNull();
 
     view.rerender(
-      <AttemptWorkspace
+      <AttemptActivity
         api={attemptApi}
         editor={editor}
         session={session()}
@@ -772,7 +773,7 @@ describe('AttemptWorkspace', () => {
       expect(screen.queryByRole('heading', { name: 'Inspeccionar decisiones' })).toBeNull(),
     );
     view.rerender(
-      <AttemptWorkspace
+      <AttemptActivity
         api={attemptApi}
         editor={editor}
         session={session()}
@@ -811,7 +812,7 @@ describe('AttemptWorkspace', () => {
     });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     render(
-      <AttemptWorkspace
+      <AttemptActivity
         api={attemptApi}
         editor={editor}
         session={session()}
@@ -857,8 +858,8 @@ describe('AttemptWorkspace', () => {
         captureSnapshot: vi.fn().mockResolvedValue({ version: 1, draft: createDefaultDraft() }),
       },
     } as unknown as { current: RobotEditorHandle | null };
-    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
-    render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+    const ref = { current: null } as unknown as { current: AttemptActivityHandle | null };
+    render(<AttemptActivity ref={ref} api={attemptApi} editor={editor} session={session()} />);
 
     const history = await screen.findByRole('heading', { name: 'Historial' });
     fireEvent.click(
@@ -874,7 +875,7 @@ describe('AttemptWorkspace', () => {
     );
     expect(await screen.findByRole('heading', { name: 'Inspeccionar decisiones' })).toBeTruthy();
 
-    act(() => (ref.current as AttemptWorkspaceHandle).start());
+    act(() => (ref.current as AttemptActivityHandle).start());
     await waitFor(() => expect(createAttempt).toHaveBeenCalledOnce());
     expect(screen.queryByRole('heading', { name: 'Inspeccionar decisiones' })).toBeNull();
     expect(await screen.findByRole('button', { name: 'Cancelar' })).toBeTruthy();
@@ -903,8 +904,8 @@ describe('AttemptWorkspace', () => {
         captureSnapshot: vi.fn().mockResolvedValue({ version: 2, draft: createDefaultDraft() }),
       },
     } as unknown as { current: RobotEditorHandle | null };
-    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
-    render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+    const ref = { current: null } as unknown as { current: AttemptActivityHandle | null };
+    render(<AttemptActivity ref={ref} api={attemptApi} editor={editor} session={session()} />);
 
     await screen.findByText('Historial');
     expect(screen.getByText('Terreno con recompensa y puerta')).toBeTruthy();
@@ -916,7 +917,7 @@ describe('AttemptWorkspace', () => {
     expect(await screen.findByText('Guardando preferencia…')).toBeTruthy();
 
     await act(async () => {
-      (ref.current as AttemptWorkspaceHandle).start();
+      (ref.current as AttemptActivityHandle).start();
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -932,7 +933,7 @@ describe('AttemptWorkspace', () => {
     expect(createAttempt).not.toHaveBeenCalled();
 
     await act(async () => {
-      (ref.current as AttemptWorkspaceHandle).start();
+      (ref.current as AttemptActivityHandle).start();
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -955,7 +956,7 @@ describe('AttemptWorkspace', () => {
       .mockResolvedValueOnce({ animationEnabled: false, version: 4 });
     const attemptApi = api({ getAnimationPreference, putAnimationPreference });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
     await screen.findByText('Historial');
 
     const animation = screen.getByRole('checkbox', { name: 'Animación' }) as HTMLInputElement;
@@ -989,7 +990,7 @@ describe('AttemptWorkspace', () => {
       .mockRejectedValueOnce(new AttemptApiFailure('conflict', 'version conflict', 409));
     const attemptApi = api({ getAnimationPreference, putAnimationPreference });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     await settleWorkspacePromises();
     expect(screen.getByRole('heading', { name: 'Historial' })).toBeTruthy();
@@ -1040,7 +1041,7 @@ describe('AttemptWorkspace', () => {
       .mockResolvedValueOnce({ animationEnabled: true, version: 2 });
     const attemptApi = api({ getAnimationPreference, putAnimationPreference });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
     await screen.findByText('Historial');
 
     const animation = screen.getByRole('checkbox', { name: 'Animación' }) as HTMLInputElement;
@@ -1087,7 +1088,7 @@ describe('AttemptWorkspace', () => {
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     const onTryAvailabilityChange = vi.fn();
     render(
-      <AttemptWorkspace
+      <AttemptActivity
         api={attemptApi}
         editor={editor}
         session={session()}
@@ -1156,7 +1157,7 @@ describe('AttemptWorkspace', () => {
     const attemptApi = api({ getAnimationPreference, putAnimationPreference });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     render(
-      <AttemptWorkspace
+      <AttemptActivity
         api={attemptApi}
         editor={editor}
         session={session()}
@@ -1204,7 +1205,7 @@ describe('AttemptWorkspace', () => {
     const attemptApi = api({ getAnimationPreference, putAnimationPreference });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     render(
-      <AttemptWorkspace
+      <AttemptActivity
         api={attemptApi}
         editor={editor}
         session={session()}
@@ -1249,7 +1250,7 @@ describe('AttemptWorkspace', () => {
     const attemptApi = api({ getAnimationPreference, putAnimationPreference });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     const view = render(
-      <AttemptWorkspace
+      <AttemptActivity
         api={attemptApi}
         editor={editor}
         session={session('a@example.com', undefined, 'token-a', 'subject-a')}
@@ -1263,7 +1264,7 @@ describe('AttemptWorkspace', () => {
     await waitFor(() => expect(getAnimationPreference).toHaveBeenCalledTimes(2));
 
     view.rerender(
-      <AttemptWorkspace
+      <AttemptActivity
         api={attemptApi}
         editor={editor}
         session={session('b@example.com', undefined, 'token-b', 'subject-b')}
@@ -1296,7 +1297,7 @@ describe('AttemptWorkspace', () => {
     const attemptApi = api({ getAnimationPreference, putAnimationPreference });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     const view = render(
-      <AttemptWorkspace api={attemptApi} editor={editor} session={session()} authPaused={false} />,
+      <AttemptActivity api={attemptApi} editor={editor} session={session()} authPaused={false} />,
     );
 
     await screen.findByText('Historial');
@@ -1308,7 +1309,7 @@ describe('AttemptWorkspace', () => {
     expect(putAnimationPreference).toHaveBeenCalledOnce();
     const sentSignal = putAnimationPreference.mock.calls[0]?.[2];
     view.rerender(
-      <AttemptWorkspace api={attemptApi} editor={editor} session={session()} authPaused />,
+      <AttemptActivity api={attemptApi} editor={editor} session={session()} authPaused />,
     );
 
     expect(animation.disabled).toBe(true);
@@ -1325,7 +1326,7 @@ describe('AttemptWorkspace', () => {
     expect(getAnimationPreference).toHaveBeenCalledOnce();
 
     view.rerender(
-      <AttemptWorkspace api={attemptApi} editor={editor} session={session()} authPaused={false} />,
+      <AttemptActivity api={attemptApi} editor={editor} session={session()} authPaused={false} />,
     );
     await waitFor(() =>
       expect(putAnimationPreference).toHaveBeenCalledWith(true, 1, expect.any(AbortSignal)),
@@ -1364,7 +1365,7 @@ describe('AttemptWorkspace', () => {
       createAttempt,
     });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     expect(await screen.findByRole('button', { name: 'Completar reproducción' })).toBeTruthy();
     expect(screen.queryByRole('heading', { name: 'Victoria' })).toBeNull();
@@ -1405,7 +1406,7 @@ describe('AttemptWorkspace', () => {
       getReplay,
     });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     expect(await screen.findByRole('button', { name: 'Cancelar' })).toBeTruthy();
     expect(getReplay).not.toHaveBeenCalled();
@@ -1432,7 +1433,7 @@ describe('AttemptWorkspace', () => {
     const getReplay = vi.fn().mockResolvedValue(replayRecord());
     const attemptApi = api({ getAttempt, getReplay });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     expect(await screen.findByText(/El registro está incompleto/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Reintentar reproducción' }));
@@ -1459,7 +1460,7 @@ describe('AttemptWorkspace', () => {
     const getReplay = vi.fn();
     const attemptApi = api({ getAttempt, getReplay });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     expect(await screen.findByText(/El registro está incompleto/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Reintentar reproducción' }));
@@ -1489,7 +1490,7 @@ describe('AttemptWorkspace', () => {
         getAttempt: vi.fn().mockResolvedValue(terminal),
       });
       const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-      render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+      render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
       const showResult = await screen.findByRole('button', { name: 'Ver resultado' });
       expect(screen.queryByRole('button', { name: 'Ver de nuevo' })).toBeNull();
@@ -1515,7 +1516,7 @@ describe('AttemptWorkspace', () => {
       getAttempt: vi.fn().mockResolvedValue(collected),
     });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     await screen.findByRole('heading', { name: 'Historial' });
     const history = screen.getByRole('heading', { name: 'Historial' }).closest('section');
@@ -1558,7 +1559,7 @@ describe('AttemptWorkspace', () => {
       getReplay,
     });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     await screen.findByRole('heading', { name: 'Historial' });
     expect((screen.getByRole('checkbox', { name: 'Animación' }) as HTMLInputElement).checked).toBe(
@@ -1620,7 +1621,7 @@ describe('AttemptWorkspace', () => {
       getAttempt: vi.fn().mockResolvedValue(collected),
     });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     const history = await screen.findByRole('heading', { name: 'Historial' });
     fireEvent.click(
@@ -1653,7 +1654,7 @@ describe('AttemptWorkspace', () => {
       completePresentation,
     });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Ver de nuevo' }));
     expect(await screen.findByRole('button', { name: 'Completar reproducción' })).toBeTruthy();
@@ -1690,7 +1691,7 @@ describe('AttemptWorkspace', () => {
       completePresentation,
     });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Fallar reproducción' }));
     expect(await screen.findByText('No se pudo preparar la reproducción.')).toBeTruthy();
@@ -1737,7 +1738,7 @@ describe('AttemptWorkspace', () => {
       completePresentation,
     });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     await screen.findByRole('button', { name: 'Completar reproducción' });
     vi.useFakeTimers();
@@ -1783,7 +1784,7 @@ describe('AttemptWorkspace', () => {
         completePresentation,
       });
       const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-      render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+      render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
       await screen.findByRole('button', { name: 'Completar reproducción' });
       vi.useFakeTimers();
@@ -1861,7 +1862,7 @@ describe('AttemptWorkspace', () => {
       completePresentation,
     });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Completar reproducción' }));
     const result = await screen.findByRole('heading', { name: 'Victoria' });
@@ -1919,7 +1920,7 @@ describe('AttemptWorkspace', () => {
       completePresentation,
     });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Completar reproducción' }));
     const result = await screen.findByRole('heading', { name: 'Victoria' });
@@ -1968,7 +1969,7 @@ describe('AttemptWorkspace', () => {
       completePresentation,
     });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     await screen.findByRole('button', { name: 'Completar reproducción' });
     vi.useFakeTimers();
@@ -2030,7 +2031,7 @@ describe('AttemptWorkspace', () => {
       completePresentation,
     });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Completar reproducción' }));
     await screen.findByRole('heading', { name: 'Victoria' });
@@ -2092,7 +2093,7 @@ describe('AttemptWorkspace', () => {
       completePresentation,
     });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Completar reproducción' }));
     await screen.findByRole('heading', { name: 'Victoria' });
@@ -2149,7 +2150,7 @@ describe('AttemptWorkspace', () => {
     });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     render(
-      <AttemptWorkspace
+      <AttemptActivity
         api={attemptApi}
         editor={editor}
         session={session()}
@@ -2193,7 +2194,7 @@ describe('AttemptWorkspace', () => {
     });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     const firstRender = render(
-      <AttemptWorkspace api={firstApi} editor={editor} session={session()} />,
+      <AttemptActivity api={firstApi} editor={editor} session={session()} />,
     );
 
     fireEvent.click(await screen.findByRole('button', { name: 'Completar reproducción' }));
@@ -2214,7 +2215,7 @@ describe('AttemptWorkspace', () => {
         completePresentation: retryMark,
       });
       const resumed = render(
-        <AttemptWorkspace api={resumedApi} editor={editor} session={session()} />,
+        <AttemptActivity api={resumedApi} editor={editor} session={session()} />,
       );
       expect(await screen.findByRole('button', { name: 'Completar reproducción' })).toBeTruthy();
       expect(screen.queryByRole('heading', { name: 'Victoria' })).toBeNull();
@@ -2254,7 +2255,7 @@ describe('AttemptWorkspace', () => {
     const completePresentation = vi.fn();
     const attemptApi = api({ getAttempt, getReplay, completePresentation });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     await waitFor(() =>
       expect(getAttempt).toHaveBeenCalledWith(pending.id, expect.any(AbortSignal)),
@@ -2288,7 +2289,7 @@ describe('AttemptWorkspace', () => {
       completePresentation,
     });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
     await screen.findByText('Historial');
     expect(screen.queryByRole('button', { name: 'Inspeccionar decisiones' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Ver resultado' }));
@@ -2330,16 +2331,16 @@ describe('AttemptWorkspace', () => {
         captureSnapshot: vi.fn().mockResolvedValue({ version: 3, draft: createDefaultDraft() }),
       },
     } as unknown as { current: RobotEditorHandle | null };
-    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
+    const ref = { current: null } as unknown as { current: AttemptActivityHandle | null };
     const firstRender = render(
-      <AttemptWorkspace ref={ref} api={firstApi} editor={editor} session={session()} />,
+      <AttemptActivity ref={ref} api={firstApi} editor={editor} session={session()} />,
     );
 
     fireEvent.click(await screen.findByRole('button', { name: 'Completar reproducción' }));
     expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
     expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toContain(attemptA.id);
 
-    act(() => (ref.current as AttemptWorkspaceHandle).start());
+    act(() => (ref.current as AttemptActivityHandle).start());
     await waitFor(() => expect(firstApi.createAttempt).toHaveBeenCalledOnce());
     await waitFor(() => {
       const recovery = JSON.parse(
@@ -2359,7 +2360,7 @@ describe('AttemptWorkspace', () => {
     });
 
     const secondRender = render(
-      <AttemptWorkspace api={resumedApi} editor={editor} session={session()} />,
+      <AttemptActivity api={resumedApi} editor={editor} session={session()} />,
     );
     expect(await screen.findByRole('button', { name: 'Cancelar' })).toBeTruthy();
     expect(resumedApi.getAttempt).toHaveBeenCalledWith(attemptB.id, expect.any(AbortSignal));
@@ -2376,7 +2377,7 @@ describe('AttemptWorkspace', () => {
       getReplay: vi.fn(),
       completePresentation,
     });
-    render(<AttemptWorkspace api={finalApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={finalApi} editor={editor} session={session()} />);
     expect(await screen.findByRole('button', { name: 'Cancelar' })).toBeTruthy();
     expect(finalApi.getReplay).not.toHaveBeenCalled();
     expect(completePresentation).not.toHaveBeenCalled();
@@ -2421,12 +2422,12 @@ describe('AttemptWorkspace', () => {
         captureSnapshot: vi.fn().mockResolvedValue({ version: 3, draft: createDefaultDraft() }),
       },
     } as unknown as { current: RobotEditorHandle | null };
-    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
-    render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+    const ref = { current: null } as unknown as { current: AttemptActivityHandle | null };
+    render(<AttemptActivity ref={ref} api={attemptApi} editor={editor} session={session()} />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Completar reproducción' }));
     expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
-    act(() => (ref.current as AttemptWorkspaceHandle).start());
+    act(() => (ref.current as AttemptActivityHandle).start());
     await waitFor(() => {
       const recovery = JSON.parse(
         window.sessionStorage.getItem('prompt-runner:attempt-recovery') ?? '{}',
@@ -2460,7 +2461,7 @@ describe('AttemptWorkspace', () => {
       getReplay,
     });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     expect(await screen.findByRole('button', { name: 'Completar reproducción' })).toBeTruthy();
     expect(screen.queryByRole('heading', { name: 'Victoria' })).toBeNull();
@@ -2497,7 +2498,7 @@ describe('AttemptWorkspace', () => {
       completePresentation,
     });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     const completePlayback = await screen.findByRole('button', { name: 'Completar reproducción' });
     vi.useFakeTimers();
@@ -2542,12 +2543,12 @@ describe('AttemptWorkspace', () => {
         captureSnapshot: vi.fn().mockResolvedValue({ version: 4, draft: selectedDraft }),
       },
     } as unknown as { current: RobotEditorHandle | null };
-    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
-    render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+    const ref = { current: null } as unknown as { current: AttemptActivityHandle | null };
+    render(<AttemptActivity ref={ref} api={attemptApi} editor={editor} session={session()} />);
     await screen.findByText('Historial');
 
     await act(async () => {
-      (ref.current as AttemptWorkspaceHandle).start();
+      (ref.current as AttemptActivityHandle).start();
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -2576,13 +2577,13 @@ describe('AttemptWorkspace', () => {
         captureSnapshot: vi.fn().mockResolvedValue({ version: 1, draft: createDefaultDraft() }),
       },
     } as unknown as { current: RobotEditorHandle | null };
-    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
-    render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+    const ref = { current: null } as unknown as { current: AttemptActivityHandle | null };
+    render(<AttemptActivity ref={ref} api={attemptApi} editor={editor} session={session()} />);
     await screen.findByText('Historial');
 
     await act(async () => {
-      (ref.current as AttemptWorkspaceHandle).start();
-      (ref.current as AttemptWorkspaceHandle).start();
+      (ref.current as AttemptActivityHandle).start();
+      (ref.current as AttemptActivityHandle).start();
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -2626,11 +2627,11 @@ describe('AttemptWorkspace', () => {
     });
     const attemptApi = api({ createAttempt });
     const editorRef = { current: null } as unknown as { current: RobotEditorHandle | null };
-    const workspaceRef = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
+    const workspaceRef = { current: null } as unknown as { current: AttemptActivityHandle | null };
     render(
       <>
         <RobotEditor ref={editorRef} api={draftApi} session={session()} />
-        <AttemptWorkspace
+        <AttemptActivity
           ref={workspaceRef}
           api={attemptApi}
           editor={editorRef}
@@ -2647,7 +2648,7 @@ describe('AttemptWorkspace', () => {
     });
     fireEvent.change(instructions, { target: { value: 'B' } });
     await act(async () => {
-      (workspaceRef.current as AttemptWorkspaceHandle).start();
+      (workspaceRef.current as AttemptActivityHandle).start();
       await Promise.resolve();
     });
     expect(putDraft).toHaveBeenCalledOnce();
@@ -2681,12 +2682,12 @@ describe('AttemptWorkspace', () => {
         captureSnapshot: vi.fn().mockResolvedValue({ version: 1, draft: createDefaultDraft() }),
       },
     } as unknown as { current: RobotEditorHandle | null };
-    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
-    render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+    const ref = { current: null } as unknown as { current: AttemptActivityHandle | null };
+    render(<AttemptActivity ref={ref} api={attemptApi} editor={editor} session={session()} />);
     await screen.findByText('Historial');
 
     await act(async () => {
-      (ref.current as AttemptWorkspaceHandle).start();
+      (ref.current as AttemptActivityHandle).start();
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -2711,12 +2712,12 @@ describe('AttemptWorkspace', () => {
         captureSnapshot: vi.fn().mockResolvedValue({ version: 1, draft: createDefaultDraft() }),
       },
     } as unknown as { current: RobotEditorHandle | null };
-    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
-    render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+    const ref = { current: null } as unknown as { current: AttemptActivityHandle | null };
+    render(<AttemptActivity ref={ref} api={attemptApi} editor={editor} session={session()} />);
     await screen.findByText('Historial');
 
     await act(async () => {
-      (ref.current as AttemptWorkspaceHandle).start();
+      (ref.current as AttemptActivityHandle).start();
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -2740,8 +2741,8 @@ describe('AttemptWorkspace', () => {
         captureSnapshot: vi.fn().mockResolvedValue({ version: 3, draft: createDefaultDraft() }),
       },
     } as unknown as { current: RobotEditorHandle | null };
-    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
-    render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+    const ref = { current: null } as unknown as { current: AttemptActivityHandle | null };
+    render(<AttemptActivity ref={ref} api={attemptApi} editor={editor} session={session()} />);
     await screen.findByText('Historial');
     setCurrentRecovery(
       'prompt-runner:attempt-recovery',
@@ -2752,15 +2753,15 @@ describe('AttemptWorkspace', () => {
     });
 
     await act(async () => {
-      (ref.current as AttemptWorkspaceHandle).start();
+      (ref.current as AttemptActivityHandle).start();
       await Promise.resolve();
       await Promise.resolve();
     });
     const currentKey = createAttempt.mock.calls[0]?.[0];
     fireEvent.click(await screen.findByRole('button', { name: 'Comprobar estado' }));
     expect(await screen.findByRole('button', { name: 'Cancelar' })).toBeTruthy();
-    expect(getAttemptRequest).toHaveBeenCalledWith(currentKey);
-    expect(getAttemptRequest).not.toHaveBeenCalledWith(oldAttempt.id);
+    expect(getAttemptRequest).toHaveBeenCalledWith(currentKey, expect.any(AbortSignal));
+    expect(getAttemptRequest.mock.calls.map(([attemptId]) => attemptId)).not.toContain(oldAttempt.id);
     expect(createAttempt.mock.calls[1]?.[0]).toBe(currentKey);
   });
 
@@ -2783,10 +2784,10 @@ describe('AttemptWorkspace', () => {
         captureSnapshot: vi.fn().mockResolvedValue({ version: 3, draft: createDefaultDraft() }),
       },
     } as unknown as { current: RobotEditorHandle | null };
-    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
+    const ref = { current: null } as unknown as { current: AttemptActivityHandle | null };
     const authA = vi.fn();
     const view = render(
-      <AttemptWorkspace
+      <AttemptActivity
         ref={ref}
         api={attemptApi}
         editor={editor}
@@ -2810,7 +2811,7 @@ describe('AttemptWorkspace', () => {
     });
     const currentKey = createAttempt.mock.calls[0]?.[0];
     view.rerender(
-      <AttemptWorkspace
+      <AttemptActivity
         ref={ref}
         api={attemptApi}
         editor={editor}
@@ -2823,7 +2824,7 @@ describe('AttemptWorkspace', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Comprobar estado' }));
     expect(await screen.findByRole('heading', { name: 'Preparando intento' })).toBeTruthy();
     expect(getAttemptRequest).toHaveBeenCalledOnce();
-    expect(getAttemptRequest).toHaveBeenCalledWith(currentKey);
+    expect(getAttemptRequest).toHaveBeenCalledWith(currentKey, expect.any(AbortSignal));
     expect(getAttempt).not.toHaveBeenCalled();
     expect(createAttempt).toHaveBeenCalledOnce();
   });
@@ -2845,8 +2846,8 @@ describe('AttemptWorkspace', () => {
         captureSnapshot: vi.fn().mockResolvedValue(null),
       },
     } as unknown as { current: RobotEditorHandle | null };
-    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
-    render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+    const ref = { current: null } as unknown as { current: AttemptActivityHandle | null };
+    render(<AttemptActivity ref={ref} api={attemptApi} editor={editor} session={session()} />);
 
     await screen.findByText('Historial');
     setCurrentRecovery(
@@ -2854,7 +2855,7 @@ describe('AttemptWorkspace', () => {
       JSON.stringify({ sub: 'subject-a', attemptId: foreground.id }),
     );
     await act(async () => {
-      (ref.current as AttemptWorkspaceHandle).start();
+      (ref.current as AttemptActivityHandle).start();
       await Promise.resolve();
     });
 
@@ -2880,8 +2881,8 @@ describe('AttemptWorkspace', () => {
         captureSnapshot: vi.fn().mockResolvedValue({ version: 2, draft: createDefaultDraft() }),
       },
     } as unknown as { current: RobotEditorHandle | null };
-    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
-    render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+    const ref = { current: null } as unknown as { current: AttemptActivityHandle | null };
+    render(<AttemptActivity ref={ref} api={attemptApi} editor={editor} session={session()} />);
 
     await screen.findByText('Historial');
     setCurrentRecovery(
@@ -2889,7 +2890,7 @@ describe('AttemptWorkspace', () => {
       JSON.stringify({ sub: 'subject-a', attemptId: foreground.id }),
     );
     await act(async () => {
-      (ref.current as AttemptWorkspaceHandle).start();
+      (ref.current as AttemptActivityHandle).start();
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -2916,7 +2917,7 @@ describe('AttemptWorkspace', () => {
       .mockResolvedValueOnce({ attempts: [active] });
     const attemptApi = api({ getAttempt, listAttempts });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     expect(await screen.findByRole('button', { name: 'Cancelar' })).toBeTruthy();
     expect(getAttempt).toHaveBeenCalledWith(missingId, expect.any(AbortSignal));
@@ -2936,7 +2937,7 @@ describe('AttemptWorkspace', () => {
       .mockResolvedValueOnce({ attempts: [active] });
     const attemptApi = api({ listAttempts });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     expect(
       await screen.findByText('Comprobar estado vuelve a consultar el servidor.'),
@@ -2954,7 +2955,7 @@ describe('AttemptWorkspace', () => {
     const startAttempt = vi.fn().mockResolvedValue({ attempt: running, dispatchConfirmed: true });
     const attemptApi = api({ listAttempts, startAttempt });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     expect(await screen.findByRole('button', { name: 'Cancelar' })).toBeTruthy();
     expect(startAttempt).toHaveBeenCalledOnce();
@@ -2987,7 +2988,7 @@ describe('AttemptWorkspace', () => {
     } as unknown as { current: RobotEditorHandle | null };
     render(
       <StrictMode>
-        <AttemptWorkspace api={attemptApi} editor={editor} session={session()} />
+        <AttemptActivity api={attemptApi} editor={editor} session={session()} />
       </StrictMode>,
     );
 
@@ -3010,7 +3011,7 @@ describe('AttemptWorkspace', () => {
       .mockRejectedValue(new AttemptApiFailure('not_found', 'not found', 404));
     const attemptApi = api({ createAttempt, getAttemptRequest });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     const checkButton = await screen.findByRole('button', { name: 'Comprobar estado' });
     fireEvent.click(checkButton);
@@ -3040,12 +3041,12 @@ describe('AttemptWorkspace', () => {
         captureSnapshot: vi.fn().mockResolvedValue({ version: 9, draft: createDefaultDraft() }),
       },
     } as unknown as { current: RobotEditorHandle | null };
-    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
-    render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+    const ref = { current: null } as unknown as { current: AttemptActivityHandle | null };
+    render(<AttemptActivity ref={ref} api={attemptApi} editor={editor} session={session()} />);
     await screen.findByText('Historial');
 
     await act(async () => {
-      (ref.current as AttemptWorkspaceHandle).start();
+      (ref.current as AttemptActivityHandle).start();
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -3078,12 +3079,12 @@ describe('AttemptWorkspace', () => {
         captureSnapshot: vi.fn().mockResolvedValue({ version: 9, draft: createDefaultDraft() }),
       },
     } as unknown as { current: RobotEditorHandle | null };
-    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
-    render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+    const ref = { current: null } as unknown as { current: AttemptActivityHandle | null };
+    render(<AttemptActivity ref={ref} api={attemptApi} editor={editor} session={session()} />);
     await screen.findByText('Historial');
 
     await act(async () => {
-      (ref.current as AttemptWorkspaceHandle).start();
+      (ref.current as AttemptActivityHandle).start();
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -3097,7 +3098,7 @@ describe('AttemptWorkspace', () => {
     expect(await screen.findByRole('button', { name: 'Cancelar' })).toBeTruthy();
     expect(startAttempt).toHaveBeenCalledTimes(3);
     expect(attemptApi.createAttempt).toHaveBeenCalledOnce();
-    expect(attemptApi.getAttempt).toHaveBeenCalledWith(pending.id);
+    expect(attemptApi.getAttempt).toHaveBeenCalledWith(pending.id, expect.any(AbortSignal));
   });
 
   it('does not re-admit when the lookup finds the attempt after reload', async () => {
@@ -3116,7 +3117,7 @@ describe('AttemptWorkspace', () => {
     const getAttemptRequest = vi.fn().mockResolvedValue(summary('running'));
     const attemptApi = api({ createAttempt, getAttemptRequest });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     expect(await screen.findByRole('heading', { name: 'Preparando intento' })).toBeTruthy();
     expect(createAttempt).not.toHaveBeenCalled();
@@ -3137,7 +3138,7 @@ describe('AttemptWorkspace', () => {
     const startAttempt = vi.fn().mockResolvedValue({ attempt: running, dispatchConfirmed: true });
     const attemptApi = api({ getAttempt, startAttempt });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     expect(await screen.findByRole('button', { name: 'Cancelar' })).toBeTruthy();
     expect(getAttempt).toHaveBeenCalledWith(pending.id, expect.anything());
@@ -3157,13 +3158,13 @@ describe('AttemptWorkspace', () => {
     const attemptApi = api({ getAttempt, startAttempt });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     const view = render(
-      <AttemptWorkspace api={attemptApi} editor={editor} session={session()} authPaused />,
+      <AttemptActivity api={attemptApi} editor={editor} session={session()} authPaused />,
     );
 
     expect(await screen.findByRole('button', { name: 'Comprobar estado' })).toBeTruthy();
     expect(startAttempt).not.toHaveBeenCalled();
     view.rerender(
-      <AttemptWorkspace api={attemptApi} editor={editor} session={session()} authPaused={false} />,
+      <AttemptActivity api={attemptApi} editor={editor} session={session()} authPaused={false} />,
     );
     fireEvent.click(await screen.findByRole('button', { name: 'Comprobar estado' }));
     expect(await screen.findByRole('button', { name: 'Cancelar' })).toBeTruthy();
@@ -3197,11 +3198,11 @@ describe('AttemptWorkspace', () => {
     const attemptApi = api({ createAttempt, getAttemptRequest });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     const view = render(
-      <AttemptWorkspace api={attemptApi} editor={editor} session={session()} authPaused={false} />,
+      <AttemptActivity api={attemptApi} editor={editor} session={session()} authPaused={false} />,
     );
     await waitFor(() => expect(getAttemptRequest).toHaveBeenCalledOnce());
     view.rerender(
-      <AttemptWorkspace api={attemptApi} editor={editor} session={session()} authPaused />,
+      <AttemptActivity api={attemptApi} editor={editor} session={session()} authPaused />,
     );
     await act(async () => {
       rejectLookup(new AttemptApiFailure('not_found', 'not found', 404));
@@ -3212,7 +3213,7 @@ describe('AttemptWorkspace', () => {
     expect(await screen.findByRole('button', { name: 'Comprobar estado' })).toBeTruthy();
 
     view.rerender(
-      <AttemptWorkspace api={attemptApi} editor={editor} session={session()} authPaused={false} />,
+      <AttemptActivity api={attemptApi} editor={editor} session={session()} authPaused={false} />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Comprobar estado' }));
     expect(await screen.findByRole('button', { name: 'Cancelar' })).toBeTruthy();
@@ -3229,7 +3230,7 @@ describe('AttemptWorkspace', () => {
     const attemptApi = api({ getAttempt });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
 
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     await screen.findByText('Historial');
     expect(getAttempt).not.toHaveBeenCalled();
@@ -3279,7 +3280,7 @@ describe('AttemptWorkspace', () => {
     const getAttemptRequest = vi.fn();
     const attemptApi = api({ createAttempt, getAttemptRequest });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     await screen.findByText('Historial');
     expect(createAttempt).not.toHaveBeenCalled();
@@ -3304,12 +3305,12 @@ describe('AttemptWorkspace', () => {
         captureSnapshot: vi.fn().mockResolvedValue({ version: 9, draft: createDefaultDraft() }),
       },
     } as unknown as { current: RobotEditorHandle | null };
-    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
-    render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+    const ref = { current: null } as unknown as { current: AttemptActivityHandle | null };
+    render(<AttemptActivity ref={ref} api={attemptApi} editor={editor} session={session()} />);
     await screen.findByText('Historial');
 
     await act(async () => {
-      (ref.current as AttemptWorkspaceHandle).start();
+      (ref.current as AttemptActivityHandle).start();
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -3343,12 +3344,12 @@ describe('AttemptWorkspace', () => {
         captureSnapshot: vi.fn().mockResolvedValue({ version: 9, draft: createDefaultDraft() }),
       },
     } as unknown as { current: RobotEditorHandle | null };
-    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
-    render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+    const ref = { current: null } as unknown as { current: AttemptActivityHandle | null };
+    render(<AttemptActivity ref={ref} api={attemptApi} editor={editor} session={session()} />);
     await screen.findByText('Historial');
 
     await act(async () => {
-      (ref.current as AttemptWorkspaceHandle).start();
+      (ref.current as AttemptActivityHandle).start();
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -3378,12 +3379,12 @@ describe('AttemptWorkspace', () => {
         captureSnapshot: vi.fn().mockResolvedValue({ version: 1, draft: createDefaultDraft() }),
       },
     } as unknown as { current: RobotEditorHandle | null };
-    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
-    render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+    const ref = { current: null } as unknown as { current: AttemptActivityHandle | null };
+    render(<AttemptActivity ref={ref} api={attemptApi} editor={editor} session={session()} />);
     await screen.findByText('Historial');
 
     await act(async () => {
-      (ref.current as AttemptWorkspaceHandle).start();
+      (ref.current as AttemptActivityHandle).start();
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -3391,7 +3392,7 @@ describe('AttemptWorkspace', () => {
     expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toBeNull();
 
     await act(async () => {
-      (ref.current as AttemptWorkspaceHandle).start();
+      (ref.current as AttemptActivityHandle).start();
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -3415,7 +3416,7 @@ describe('AttemptWorkspace', () => {
     const startAttempt = vi.fn();
     const attemptApi = api({ getAttempt, startAttempt });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     await waitFor(() => expect(getAttempt).toHaveBeenCalledWith(recovered.id, expect.anything()));
     expect(startAttempt).not.toHaveBeenCalled();
@@ -3437,12 +3438,12 @@ describe('AttemptWorkspace', () => {
         captureSnapshot: vi.fn().mockResolvedValue({ version: 1, draft: createDefaultDraft() }),
       },
     } as unknown as { current: RobotEditorHandle | null };
-    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
-    render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+    const ref = { current: null } as unknown as { current: AttemptActivityHandle | null };
+    render(<AttemptActivity ref={ref} api={attemptApi} editor={editor} session={session()} />);
     await screen.findByText('Historial');
 
     await act(async () => {
-      (ref.current as AttemptWorkspaceHandle).start();
+      (ref.current as AttemptActivityHandle).start();
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -3470,14 +3471,14 @@ describe('AttemptWorkspace', () => {
         captureSnapshot: vi.fn().mockResolvedValue({ version: 9, draft: createDefaultDraft() }),
       },
     } as unknown as { current: RobotEditorHandle | null };
-    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
+    const ref = { current: null } as unknown as { current: AttemptActivityHandle | null };
     const view = render(
-      <AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />,
+      <AttemptActivity ref={ref} api={attemptApi} editor={editor} session={session()} />,
     );
     await screen.findByText('Historial');
 
     await act(async () => {
-      (ref.current as AttemptWorkspaceHandle).start();
+      (ref.current as AttemptActivityHandle).start();
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -3489,7 +3490,7 @@ describe('AttemptWorkspace', () => {
       identity: { sub: 'subject-b', email: 'b@example.com' },
     };
     view.rerender(
-      <AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={otherSession} />,
+      <AttemptActivity ref={ref} api={attemptApi} editor={editor} session={otherSession} />,
     );
     await act(async () => {
       rejectRetry(new AttemptApiFailure('quota_exceeded', 'quota', 429));
@@ -3514,7 +3515,7 @@ describe('AttemptWorkspace', () => {
       .mockResolvedValue({ attempt: { ...second, status: 'running' }, dispatchConfirmed: true });
     const attemptApi = api({ listAttempts, startAttempt });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     expect(
       await screen.findByRole('heading', { name: 'Tenés varios intentos en curso' }),
@@ -3528,40 +3529,60 @@ describe('AttemptWorkspace', () => {
   });
 
   it('keeps a slow history result from racing with a new admission', async () => {
+    const historical = { ...summary('victory'), id: 'history-result-old' };
+    const started = { ...summary('running'), id: 'attempt-after-history' };
     let resolveHistory!: (value: AttemptSummary) => void;
-    const getAttempt = vi.fn(
-      () =>
-        new Promise<AttemptSummary>((resolve) => {
-          resolveHistory = resolve;
-        }),
-    );
-    const createAttempt = vi.fn().mockResolvedValue({
-      attempt: summary('running'),
-      dispatchConfirmed: true,
+    let resultSignal: AbortSignal | undefined;
+    const getAttempt = vi.fn((_id: string, signal?: AbortSignal) => {
+      resultSignal = signal;
+      return new Promise<AttemptSummary>((resolve) => {
+        resolveHistory = resolve;
+      });
     });
+    const createAttempt = vi.fn().mockResolvedValue({ attempt: started, dispatchConfirmed: true });
+    const startAttempt = vi.fn();
     const attemptApi = api({
       getAttempt,
       createAttempt,
-      listAttempts: vi.fn().mockResolvedValue({ attempts: [summary('victory')] }),
+      startAttempt,
+      listAttempts: vi.fn().mockResolvedValue({ attempts: [historical] }),
     });
     const editor = {
       current: {
         captureSnapshot: vi.fn().mockResolvedValue({ version: 1, draft: createDefaultDraft() }),
       },
     } as unknown as { current: RobotEditorHandle | null };
-    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
-    render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+    const ref = { current: null } as unknown as { current: AttemptActivityHandle | null };
+    const view = render(
+      <AttemptActivity ref={ref} api={attemptApi} editor={editor} session={session()} />,
+    );
     await screen.findByRole('button', { name: 'Ver resultado' });
 
     fireEvent.click(screen.getByRole('button', { name: 'Ver resultado' }));
+    await screen.findByRole('heading', { name: 'Consultando el resultado guardado…' });
+    view.rerender(
+      <AttemptActivity
+        ref={ref}
+        api={attemptApi}
+        editor={editor}
+        session={session()}
+        surface="preparar"
+      />,
+    );
+    await waitFor(() => expect(resultSignal?.aborted).toBe(true));
     await act(async () => {
-      (ref.current as AttemptWorkspaceHandle).start();
+      (ref.current as AttemptActivityHandle).start();
       await Promise.resolve();
     });
-    expect(createAttempt).not.toHaveBeenCalled();
+    expect(createAttempt).toHaveBeenCalledOnce();
+    expect(startAttempt).not.toHaveBeenCalled();
+    await screen.findByRole('heading', { name: 'Preparando intento' });
+    expect(screen.getByRole('button', { name: 'Cancelar' })).toBeTruthy();
 
-    resolveHistory(summary('victory'));
-    expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
+    await act(async () => resolveHistory(historical));
+    expect(screen.queryByRole('heading', { name: 'Victoria' })).toBeNull();
+    expect(screen.getByRole('heading', { name: 'Preparando intento' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Cancelar' })).toBeTruthy();
   });
 
   it('syncs the history row when polling changes a pending attempt to terminal', async () => {
@@ -3579,7 +3600,7 @@ describe('AttemptWorkspace', () => {
       .mockResolvedValueOnce({ attempts: [pending] });
     const attemptApi = api({ getAttempt, listAttempts });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     expect(await screen.findByRole('button', { name: 'Cancelar' })).toBeTruthy();
 
@@ -3647,12 +3668,12 @@ describe('AttemptWorkspace', () => {
         captureSnapshot: vi.fn().mockResolvedValue({ version: 1, draft: createDefaultDraft() }),
       },
     } as unknown as { current: RobotEditorHandle | null };
-    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
-    render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+    const ref = { current: null } as unknown as { current: AttemptActivityHandle | null };
+    render(<AttemptActivity ref={ref} api={attemptApi} editor={editor} session={session()} />);
     await screen.findByText('Historial');
 
     await act(async () => {
-      (ref.current as AttemptWorkspaceHandle).start();
+      (ref.current as AttemptActivityHandle).start();
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -3717,7 +3738,7 @@ describe('AttemptWorkspace', () => {
       .mockResolvedValueOnce({ attempts: [later] });
     const attemptApi = api({ listAttempts });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     const history = await screen.findByRole('heading', { name: 'Historial' });
     expect(
@@ -3779,13 +3800,15 @@ describe('AttemptWorkspace', () => {
     });
     let unpagedCalls = 0;
     let cursorCalls = 0;
-    const listAttempts = vi.fn((cursor?: string) => {
+    let olderPageSignal: AbortSignal | undefined;
+    const listAttempts = vi.fn((cursor?: string, signal?: AbortSignal) => {
       if (cursor === 'cursor-after-refresh') {
         return Promise.resolve({ attempts: [{ ...firstPage, id: 'history-old-2' }] });
       }
       if (cursor === 'cursor-old') {
         cursorCalls += 1;
         if (cursorCalls === 1) return Promise.resolve({ attempts: [] });
+        olderPageSignal = signal;
         return olderPage;
       }
       unpagedCalls += 1;
@@ -3807,8 +3830,10 @@ describe('AttemptWorkspace', () => {
         captureSnapshot: vi.fn().mockResolvedValue({ version: 1, draft: createDefaultDraft() }),
       },
     } as unknown as { current: RobotEditorHandle | null };
-    const ref = { current: null } as { current: AttemptWorkspaceHandle | null };
-    render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+    const ref = { current: null } as { current: AttemptActivityHandle | null };
+    const view = render(
+      <AttemptActivity ref={ref} api={attemptApi} editor={editor} session={session()} />,
+    );
 
     const history = await screen.findByRole('heading', { name: 'Historial' });
     const historySection = history.closest('section') as HTMLElement;
@@ -3818,6 +3843,17 @@ describe('AttemptWorkspace', () => {
     await waitFor(() => expect((loadMore as HTMLButtonElement).disabled).toBe(true));
 
     await waitFor(() => expect(screen.queryByText('Cargando preferencia guardada…')).toBeNull());
+    view.rerender(
+      <AttemptActivity
+        ref={ref}
+        api={attemptApi}
+        editor={editor}
+        session={session()}
+        surface="preparar"
+      />,
+    );
+    await waitFor(() => expect(olderPageSignal?.aborted).toBe(true));
+    await waitFor(() => expect((loadMore as HTMLButtonElement).disabled).toBe(false));
     await act(async () => {
       ref.current!.start();
       await Promise.resolve();
@@ -3827,6 +3863,7 @@ describe('AttemptWorkspace', () => {
 
     await act(async () => resolveOlderPage({ attempts: [{ ...firstPage, id: 'history-old-2' }] }));
     expect(within(historySection).getAllByRole('listitem')).toHaveLength(1);
+    expect(historySection.querySelector('[data-history-attempt-id="history-old-2"]')).toBeNull();
     expect((loadMore as HTMLButtonElement).disabled).toBe(true);
 
     await act(async () => resolveRefreshedPage(refreshedPage));
@@ -3837,9 +3874,20 @@ describe('AttemptWorkspace', () => {
       ).toBe(false),
     );
     expect(within(historySection).getAllByRole('listitem')).toHaveLength(2);
+    expect(historySection.querySelector('[data-history-attempt-id="history-old-2"]')).toBeNull();
     expect(within(historySection).getByRole('button', { name: 'Cargar 20 más' })).toBeTruthy();
     expect(screen.getByText('2 cargados, hay más intentos para consultar')).toBeTruthy();
     expect(attemptApi.createAttempt).toHaveBeenCalledOnce();
+    view.rerender(
+      <AttemptActivity
+        ref={ref}
+        api={attemptApi}
+        editor={editor}
+        session={session()}
+        surface="historial"
+      />,
+    );
+    await waitFor(() => expect((loadMore as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(within(historySection).getByRole('button', { name: 'Cargar 20 más' }));
     await waitFor(() => expect(within(historySection).getAllByRole('listitem')).toHaveLength(3));
     expect(screen.getByText('3 cargados, todo el historial disponible está visible')).toBeTruthy();
@@ -3886,8 +3934,8 @@ describe('AttemptWorkspace', () => {
         captureSnapshot: vi.fn().mockResolvedValue({ version: 1, draft: createDefaultDraft() }),
       },
     } as unknown as { current: RobotEditorHandle | null };
-    const ref = { current: null } as { current: AttemptWorkspaceHandle | null };
-    render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+    const ref = { current: null } as { current: AttemptActivityHandle | null };
+    render(<AttemptActivity ref={ref} api={attemptApi} editor={editor} session={session()} />);
 
     const history = await screen.findByRole('heading', { name: 'Historial' });
     const historySection = history.closest('section') as HTMLElement;
@@ -3921,7 +3969,7 @@ describe('AttemptWorkspace', () => {
   it('explains an empty history and an empty comparable set without starting inference', async () => {
     const attemptApi = api({ listAttempts: vi.fn().mockResolvedValue({ attempts: [] }) });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     expect(await screen.findByText('Todavía no hay intentos guardados.')).toBeTruthy();
     expect(screen.getByText('0 cargados, todo el historial disponible está visible')).toBeTruthy();
@@ -3953,7 +4001,7 @@ describe('AttemptWorkspace', () => {
       getConfiguration,
     });
     const editor = { current: { applyDraft } } as unknown as { current: RobotEditorHandle | null };
-    const view = render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    const view = render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     const history = await screen.findByRole('heading', { name: 'Historial' });
     const configurationButtons = within(history.closest('section') as HTMLElement).getAllByRole(
@@ -3976,13 +4024,13 @@ describe('AttemptWorkspace', () => {
     expect(configurationRows[1]?.textContent).toContain('no enviada al agente');
     expect(configurationRows[1]?.textContent).toContain('descripción: vacía');
     view.rerender(
-      <AttemptWorkspace api={attemptApi} editor={editor} session={session()} authPaused />,
+      <AttemptActivity api={attemptApi} editor={editor} session={session()} authPaused />,
     );
     const applyButton = screen.getByRole('button', { name: 'Usar esta configuración' });
     expect((applyButton as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(applyButton);
     expect(applyDraft).not.toHaveBeenCalled();
-    view.rerender(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    view.rerender(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Usar esta configuración' }));
     await waitFor(() =>
       expect(applyDraft).toHaveBeenCalledWith(
@@ -4006,7 +4054,7 @@ describe('AttemptWorkspace', () => {
       getConfiguration,
     });
     const editor = { current: { applyDraft } } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     const history = await screen.findByRole('heading', { name: 'Historial' });
     const opener = within(history.closest('section') as HTMLElement).getAllByRole('button', {
@@ -4063,7 +4111,7 @@ describe('AttemptWorkspace', () => {
       getConfiguration,
     });
     const editor = { current: { applyDraft } } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     const history = await screen.findByRole('heading', { name: 'Historial' });
     const historyList = within(history.closest('section') as HTMLElement).getByRole('list');
@@ -4119,9 +4167,7 @@ describe('AttemptWorkspace', () => {
       const editor = { current: { applyDraft } } as unknown as {
         current: RobotEditorHandle | null;
       };
-      const view = render(
-        <AttemptWorkspace api={attemptApi} editor={editor} session={session()} />,
-      );
+      const view = render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
       const history = await screen.findByRole('heading', { name: 'Historial' });
       fireEvent.click(
@@ -4136,7 +4182,7 @@ describe('AttemptWorkspace', () => {
 
       if (abandonment === 'pause') {
         view.rerender(
-          <AttemptWorkspace api={attemptApi} editor={editor} session={session()} authPaused />,
+          <AttemptActivity api={attemptApi} editor={editor} session={session()} authPaused />,
         );
       } else {
         view.unmount();
@@ -4170,7 +4216,7 @@ describe('AttemptWorkspace', () => {
     });
     const editor = { current: { applyDraft } } as unknown as { current: RobotEditorHandle | null };
     render(
-      <AttemptWorkspace
+      <AttemptActivity
         api={attemptApi}
         editor={editor}
         session={session()}
@@ -4207,7 +4253,7 @@ describe('AttemptWorkspace', () => {
         .mockResolvedValue({ attemptId: terminal.id, draft: createDefaultDraft() }),
     });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     const history = await screen.findByRole('heading', { name: 'Historial' });
     const opener = within(history.closest('section') as HTMLElement).getAllByRole('button', {
@@ -4251,7 +4297,7 @@ describe('AttemptWorkspace', () => {
       getConfiguration,
     });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     const history = await screen.findByRole('heading', { name: 'Historial' });
     const opener = within(history.closest('section') as HTMLElement).getAllByRole('button', {
@@ -4290,7 +4336,7 @@ describe('AttemptWorkspace', () => {
       getConfiguration: vi.fn().mockResolvedValue({ attemptId: terminal.id, draft: recovered }),
     });
     const editor = { current: { applyDraft } } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     const history = await screen.findByRole('heading', { name: 'Historial' });
     fireEvent.click(
@@ -4338,7 +4384,7 @@ describe('AttemptWorkspace', () => {
       getConfiguration,
     });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
     const history = await screen.findByRole('heading', { name: 'Historial' });
     fireEvent.click(
       within(history.closest('section') as HTMLElement).getAllByRole('button', {
@@ -4378,7 +4424,7 @@ describe('AttemptWorkspace', () => {
       getConfiguration,
     });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    const view = render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    const view = render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
     const history = await screen.findByRole('heading', { name: 'Historial' });
     fireEvent.click(
       within(history.closest('section') as HTMLElement).getAllByRole('button', {
@@ -4386,7 +4432,7 @@ describe('AttemptWorkspace', () => {
       })[0]!,
     );
     view.rerender(
-      <AttemptWorkspace
+      <AttemptActivity
         api={attemptApi}
         editor={editor}
         session={session(
@@ -4426,7 +4472,7 @@ describe('AttemptWorkspace', () => {
         .mockResolvedValue({ attemptId: terminal.id, draft: createDefaultDraft() }),
     });
     const editor = { current: { applyDraft } } as unknown as { current: RobotEditorHandle | null };
-    const view = render(<AttemptWorkspace api={attemptApi} editor={editor} session={session()} />);
+    const view = render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
     const openFromHistory = async (): Promise<void> => {
       const history = await screen.findByRole('heading', { name: 'Historial' });
       const button = within(history.closest('section') as HTMLElement).getAllByRole('button', {
@@ -4442,7 +4488,7 @@ describe('AttemptWorkspace', () => {
     const firstSignal = applyDraft.mock.calls[0]?.[1]?.signal;
     expect(firstSignal).toBeInstanceOf(AbortSignal);
     view.rerender(
-      <AttemptWorkspace
+      <AttemptActivity
         api={attemptApi}
         editor={editor}
         session={session(
@@ -4506,15 +4552,14 @@ describe('AttemptWorkspace', () => {
     const editor = {
       current: { applyDraft, captureSnapshot },
     } as unknown as { current: RobotEditorHandle | null };
-    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
-    render(<AttemptWorkspace ref={ref} api={attemptApi} editor={editor} session={session()} />);
+    const ref = { current: null } as unknown as { current: AttemptActivityHandle | null };
+    render(<AttemptActivity ref={ref} api={attemptApi} editor={editor} session={session()} />);
 
     const history = await screen.findByRole('heading', { name: 'Historial' });
-    fireEvent.click(
-      within(history.closest('section') as HTMLElement).getAllByRole('button', {
-        name: 'Ver configuración',
-      })[0]!,
-    );
+    const configurationButtons = await within(
+      history.closest('section') as HTMLElement,
+    ).findAllByRole('button', { name: 'Ver configuración' });
+    fireEvent.click(configurationButtons[0]!);
     fireEvent.click(await screen.findByRole('button', { name: 'Usar esta configuración' }));
     await waitFor(() =>
       expect(applyDraft).toHaveBeenCalledWith(
@@ -4527,7 +4572,7 @@ describe('AttemptWorkspace', () => {
         'Configuración cargada en el editor. Se guarda como una edición normal.',
       ),
     ).toBeTruthy();
-    (ref.current as AttemptWorkspaceHandle).start();
+    (ref.current as AttemptActivityHandle).start();
     await waitFor(() => expect(createAttempt).toHaveBeenCalledOnce());
     const [requestKey, expectedVersion, sentDraft] = createAttempt.mock.calls[0] ?? [];
     expect(requestKey).not.toBe(source.id);
