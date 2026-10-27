@@ -217,9 +217,11 @@ describe('preparation availability integration', () => {
     expect((screen.getByRole('checkbox', { name: 'Avanzar' }) as HTMLInputElement).disabled).toBe(
       false,
     );
+    navigate('Mis robots');
     expect(
       (screen.getByRole('button', { name: 'Guardar como nueva' }) as HTMLButtonElement).disabled,
     ).toBe(false);
+    navigate('Preparar');
     expect(
       screen.getByText(
         /^Estamos recuperando tu preferencia de animación\. Podés seguir preparando el robot\.?$/,
@@ -356,9 +358,11 @@ describe('preparation availability integration', () => {
     expect((screen.getByRole('checkbox', { name: 'Avanzar' }) as HTMLInputElement).disabled).toBe(
       false,
     );
+    navigate('Mis robots');
     expect(
       (screen.getByRole('button', { name: 'Guardar como nueva' }) as HTMLButtonElement).disabled,
     ).toBe(false);
+    navigate('Preparar');
     fireEvent.click(tryButton);
     expect(runner.createAttempt).not.toHaveBeenCalled();
 
@@ -526,9 +530,11 @@ describe('preparation availability integration', () => {
     expect((screen.getByRole('checkbox', { name: 'Animación' }) as HTMLInputElement).disabled).toBe(
       false,
     );
+    navigate('Mis robots');
     expect(
       (screen.getByRole('button', { name: 'Guardar como nueva' }) as HTMLButtonElement).disabled,
     ).toBe(false);
+    navigate('Preparar');
     expect(runner.createAttempt).not.toHaveBeenCalled();
   });
 

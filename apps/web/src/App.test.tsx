@@ -702,7 +702,7 @@ describe('access screen', () => {
       />,
     );
 
-    await screen.findByText('Todavía no hay intentos guardados.');
+    await screen.findByRole('heading', { name: 'Prepará tu robot' });
     const reloadedTryButton = await screen.findByRole('button', { name: 'Probar' });
     await waitFor(() => expect((reloadedTryButton as HTMLButtonElement).disabled).toBe(false));
     expect(screen.queryByRole('button', { name: 'Comprobar estado' })).toBeNull();
@@ -770,13 +770,15 @@ describe('access screen', () => {
     await act(flushAuthMicrotasks);
     expect(screen.getByRole('heading', { name: 'Prepará tu robot' })).toBeTruthy();
     navigate('Historial');
-    const history = await screen.findByRole('heading', { name: 'Historial' });
-    const openConfiguration = () =>
+    await act(flushAuthMicrotasks);
+    const openConfiguration = () => {
+      const history = screen.getByRole('heading', { name: 'Historial' });
       fireEvent.click(
         within(history.closest('section') as HTMLElement).getAllByRole('button', {
           name: 'Ver configuración',
         })[0]!,
       );
+    };
     openConfiguration();
     await act(flushAuthMicrotasks);
     expect(screen.getByText('Recuperada desde el historial')).toBeTruthy();
@@ -1966,7 +1968,9 @@ describe('access screen', () => {
     expect(tryButton?.disabled).toBe(true);
     expect(animation?.disabled).toBe(true);
     expect(
-      (hiddenPreparation.querySelector('#robot-instructions') as HTMLTextAreaElement).disabled,
+      (hiddenPreparation.querySelector('#robot-instructions') as HTMLTextAreaElement).matches(
+        ':disabled',
+      ),
     ).toBe(true);
     expectAccountTriggerLocked();
     expect(screen.queryByRole('heading', { name: 'Historial' })).toBeNull();
@@ -2225,6 +2229,7 @@ describe('access screen', () => {
     expect(screen.queryByText(/La sesión dejó de tener acceso/)).toBeNull();
     expect(screen.queryByRole('button', { name: 'Volver a ingresar' })).toBeNull();
 
+    navigate('Mis robots');
     fireEvent.click(await screen.findByRole('button', { name: 'Reintentar lista' }));
     await waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(2));
     expect(fetchImpl.mock.calls[1]?.[1]).toMatchObject({
@@ -2604,6 +2609,7 @@ describe('access screen', () => {
     fireEvent.click(within(sourceRow).getByRole('button', { name: 'Ver configuración' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Usar esta configuración' }));
     expect(await screen.findByDisplayValue('Desde la victoria')).toBeTruthy();
+    navigate('Mis robots');
 
     await waitFor(() => {
       expect(
@@ -2619,6 +2625,7 @@ describe('access screen', () => {
     expect((savedRobotApi.saveRobot as ReturnType<typeof vi.fn>).mock.calls[0]?.[3]).toEqual(
       recovered,
     );
+    navigate('Preparar');
 
     await waitFor(() => {
       expect((screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement).disabled).toBe(
