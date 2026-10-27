@@ -19,7 +19,8 @@ export const AttemptActivityHarness = forwardRef<AttemptActivityHandle, AttemptA
       <>
         {activity.controls}
         {activity.view}
-        {activity.historyView}
+        {/* Controller suites use Historial as a post-bootstrap readiness cue. The real App composes its loading history separately. */}
+        {!activity.busy && activity.historyView}
         {activity.historyResultView}
         {activity.configurationView}
         {activity.inspectorView}

@@ -324,6 +324,27 @@ function stubObjectUrls() {
 }
 
 describe('Phase 12 independent accessible query diagnostics', () => {
+  it('keeps the real App history loading view visible during activity bootstrap', async () => {
+    const bootstrap = deferred<{ attempts: readonly AttemptSummary[] }>();
+    const listAttempts = vi.fn().mockReturnValueOnce(bootstrap.promise).mockResolvedValue({
+      attempts: [],
+    });
+    renderApp({ runner: attemptApi({ listAttempts }) });
+    await readyForNavigation();
+    await waitFor(() => expect(listAttempts).toHaveBeenCalledOnce());
+
+    selectTab('Historial');
+    expect(await screen.findByRole('heading', { name: 'Historial' })).toBeTruthy();
+    const historySurface = screen.getByRole('region', { name: 'Historial de intentos' });
+    expect(await within(historySurface).findByText('Recuperando tus intentos…')).toBeTruthy();
+
+    await act(async () => {
+      bootstrap.resolve({ attempts: [] });
+      await bootstrap.promise;
+    });
+    expect(await screen.findByText('Todavía no hay intentos guardados.')).toBeTruthy();
+  });
+
   it('keeps the initial preparation at its natural focus and scroll position', async () => {
     const previousScroll = HTMLElement.prototype.scrollIntoView;
     const scrollIntoView = vi.fn();
