@@ -269,7 +269,7 @@ async function createRaceFixture({
   const attemptApi = attemptApiRef.current!;
   const getQuota = vi.mocked(attemptApi.getQuota);
   const createAttempt = vi.mocked(attemptApi.createAttempt);
-  const controls = document.querySelector('#attempt-controls-slot') as HTMLElement;
+  const controls = screen.getByRole('group', { name: 'Controles de prueba y animación' });
   const tryButton = within(controls).getByRole('button', { name: 'Probar' }) as HTMLButtonElement;
   const animation = within(controls).getByRole('checkbox', {
     name: 'Animación',

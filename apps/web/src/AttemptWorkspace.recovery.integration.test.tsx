@@ -7,7 +7,8 @@ import type { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from '
 import { createDefaultDraft, type DraftSnapshot } from '../../../shared/robot.js';
 import type { AuthSession } from './auth.js';
 import { AttemptApiClient } from './attempt-api.js';
-import { AttemptWorkspace, type AttemptWorkspaceHandle } from './AttemptWorkspace.js';
+import { AttemptActivityHarness as AttemptActivity } from './AttemptActivity.test-support.js';
+import type { AttemptActivityHandle } from './useAttemptActivity.js';
 import type { RobotEditorHandle } from './RobotEditor.js';
 import { MemoryAttemptStore } from '../../api/src/attempt-store.js';
 import { handleRequest } from '../../api/src/handler.js';
@@ -146,7 +147,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('AttemptWorkspace recovery integration', () => {
+describe('AttemptActivity recovery integration', () => {
   it('retries the existing start after a real handler admission response is lost', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -197,8 +198,8 @@ describe('AttemptWorkspace recovery integration', () => {
         captureSnapshot: vi.fn().mockResolvedValue({ version: 1, draft } satisfies DraftSnapshot),
       },
     } as unknown as { current: RobotEditorHandle | null };
-    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
-    render(<AttemptWorkspace ref={ref} api={client} editor={editor} session={session()} />);
+    const ref = { current: null } as unknown as { current: AttemptActivityHandle | null };
+    render(<AttemptActivity ref={ref} api={client} editor={editor} session={session()} />);
     await screen.findByText('Historial');
 
     await act(async () => {
@@ -262,7 +263,7 @@ describe('AttemptWorkspace recovery integration', () => {
     });
     const client = harness.clientFor();
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
-    render(<AttemptWorkspace api={client} editor={editor} session={session()} />);
+    render(<AttemptActivity api={client} editor={editor} session={session()} />);
     await screen.findByRole('button', { name: 'Cancelar' });
 
     fireEvent.click(await screen.findByRole('button', { name: 'Cancelar' }));
@@ -339,8 +340,8 @@ describe('AttemptWorkspace recovery integration', () => {
         captureSnapshot: vi.fn().mockResolvedValue({ version: 1, draft } satisfies DraftSnapshot),
       },
     } as unknown as { current: RobotEditorHandle | null };
-    const ref = { current: null } as unknown as { current: AttemptWorkspaceHandle | null };
-    render(<AttemptWorkspace ref={ref} api={client} editor={editor} session={session()} />);
+    const ref = { current: null } as unknown as { current: AttemptActivityHandle | null };
+    render(<AttemptActivity ref={ref} api={client} editor={editor} session={session()} />);
     await screen.findByRole('button', { name: 'Cancelar' });
 
     fireEvent.click(await screen.findByRole('button', { name: 'Cancelar' }));
@@ -428,7 +429,7 @@ describe('AttemptWorkspace recovery integration', () => {
     const secondClient = harness.clientFor('subject-b');
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     const view = render(
-      <AttemptWorkspace api={firstClient} editor={editor} session={session('subject-a')} />,
+      <AttemptActivity api={firstClient} editor={editor} session={session('subject-a')} />,
     );
     await screen.findByRole('button', { name: 'Cancelar' });
     fireEvent.click(await screen.findByRole('button', { name: 'Cancelar' }));
@@ -436,7 +437,7 @@ describe('AttemptWorkspace recovery integration', () => {
 
     writeAttemptRecovery({ sub: 'subject-b', attemptId: second.attempt.id });
     view.rerender(
-      <AttemptWorkspace api={secondClient} editor={editor} session={session('subject-b')} />,
+      <AttemptActivity api={secondClient} editor={editor} session={session('subject-b')} />,
     );
     await waitFor(() =>
       expect((screen.getByRole('button', { name: 'Cancelar' }) as HTMLButtonElement).disabled).toBe(

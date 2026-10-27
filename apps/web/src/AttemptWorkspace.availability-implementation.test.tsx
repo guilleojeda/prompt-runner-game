@@ -12,7 +12,8 @@ import {
 } from '../../../shared/robot.js';
 import type { AuthSession } from './auth.js';
 import { AttemptApiFailure, type AttemptApi, type QuotaSummary } from './attempt-api.js';
-import { AttemptWorkspace, type AttemptWorkspaceHandle } from './AttemptWorkspace.js';
+import { AttemptActivityHarness as AttemptActivity } from './AttemptActivity.test-support.js';
+import type { AttemptActivityHandle } from './useAttemptActivity.js';
 import { RobotEditor, type RobotEditorHandle } from './RobotEditor.js';
 import type { DraftApi } from './draft-api.js';
 import { SavedRobots } from './SavedRobots.js';
@@ -87,7 +88,7 @@ function RealPreparationHarness({
   onTryClick,
 }: RealPreparationHarnessProps) {
   const editor = useRef<RobotEditorHandle | null>(null);
-  const workspace = useRef<AttemptWorkspaceHandle | null>(null);
+  const workspace = useRef<AttemptActivityHandle | null>(null);
   const [busy, setBusy] = useState(false);
   const [tryAvailable, setTryAvailable] = useState(false);
 
@@ -104,22 +105,20 @@ function RealPreparationHarness({
           workspace.current?.start();
         }}
       />
-      <AttemptWorkspace
+      <AttemptActivity
         ref={workspace}
         api={runner}
         editor={editor}
         session={activeSession}
         onBusyChange={setBusy}
         onTryAvailabilityChange={setTryAvailable}
-        historySlot={
-          <SavedRobots
-            api={copiesApi}
-            editor={editor}
-            session={activeSession}
-            configurationAvailable
-            accessState="ready"
-          />
-        }
+      />
+      <SavedRobots
+        api={copiesApi}
+        editor={editor}
+        session={activeSession}
+        configurationAvailable
+        accessState="ready"
       />
     </>
   );
@@ -137,7 +136,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('AttemptWorkspace availability implementation', () => {
+describe('AttemptActivity availability implementation', () => {
   it('labels a pending preference write as confirmation and exposes conflict details as its cause', async () => {
     let rejectSave!: (error: unknown) => void;
     const getAnimationPreference = vi
@@ -154,7 +153,7 @@ describe('AttemptWorkspace availability implementation', () => {
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     const onTryAvailabilityChange = vi.fn();
     render(
-      <AttemptWorkspace
+      <AttemptActivity
         api={runner}
         editor={editor}
         session={session()}
@@ -208,10 +207,10 @@ describe('AttemptWorkspace availability implementation', () => {
     const editor = {
       current: { captureSnapshot },
     } as unknown as { current: RobotEditorHandle | null };
-    const ref = { current: null } as { current: AttemptWorkspaceHandle | null };
+    const ref = { current: null } as { current: AttemptActivityHandle | null };
     const onTryAvailabilityChange = vi.fn();
     render(
-      <AttemptWorkspace
+      <AttemptActivity
         ref={ref}
         api={runner}
         editor={editor}
@@ -269,11 +268,11 @@ describe('AttemptWorkspace availability implementation', () => {
     const editor = {
       current: { captureSnapshot },
     } as unknown as { current: RobotEditorHandle | null };
-    const ref = { current: null } as { current: AttemptWorkspaceHandle | null };
+    const ref = { current: null } as { current: AttemptActivityHandle | null };
     const onBusyChange = vi.fn();
     const onTryAvailabilityChange = vi.fn();
     render(
-      <AttemptWorkspace
+      <AttemptActivity
         ref={ref}
         api={runner}
         editor={editor}

@@ -13,7 +13,8 @@ import {
   type AttemptSummary,
   type QuotaSummary,
 } from './attempt-api.js';
-import { AttemptWorkspace, type AttemptWorkspaceHandle } from './AttemptWorkspace.js';
+import { AttemptActivityHarness as AttemptActivity } from './AttemptActivity.test-support.js';
+import type { AttemptActivityHandle } from './useAttemptActivity.js';
 import type { RobotEditorHandle } from './RobotEditor.js';
 
 const MINUTE = 60_000;
@@ -140,7 +141,7 @@ function mount(
 ) {
   const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
   return render(
-    <AttemptWorkspace
+    <AttemptActivity
       api={runner}
       editor={editor}
       session={options.activeSession ?? session()}
@@ -162,7 +163,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('AttemptWorkspace quota recovery', () => {
+describe('AttemptActivity quota recovery', () => {
   it('retries temporary quota failures every minute without a retry button or game side effects', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(TEST_NOW);
@@ -191,7 +192,7 @@ describe('AttemptWorkspace quota recovery', () => {
       current: RobotEditorHandle | null;
     };
     render(
-      <AttemptWorkspace api={runner} editor={editor} session={session()} accessState="ready" />,
+      <AttemptActivity api={runner} editor={editor} session={session()} accessState="ready" />,
     );
 
     await readyForAssertions();
@@ -234,7 +235,7 @@ describe('AttemptWorkspace quota recovery', () => {
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     const activeSession = session();
     const view = render(
-      <AttemptWorkspace api={runner} editor={editor} session={activeSession} accessState="ready" />,
+      <AttemptActivity api={runner} editor={editor} session={activeSession} accessState="ready" />,
     );
 
     await readyForAssertions();
@@ -262,7 +263,7 @@ describe('AttemptWorkspace quota recovery', () => {
 
     await advance(30_000);
     view.rerender(
-      <AttemptWorkspace api={runner} editor={editor} session={activeSession} accessState="ready" />,
+      <AttemptActivity api={runner} editor={editor} session={activeSession} accessState="ready" />,
     );
     act(() => window.dispatchEvent(new Event('resize')));
     act(() => window.dispatchEvent(new Event('focus')));
@@ -371,14 +372,14 @@ describe('AttemptWorkspace quota recovery', () => {
     const runner = api({ getQuota });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     const view = render(
-      <AttemptWorkspace api={runner} editor={editor} session={session()} accessState="ready" />,
+      <AttemptActivity api={runner} editor={editor} session={session()} accessState="ready" />,
     );
 
     await readyForAssertions();
     const oldSignal = getQuota.mock.calls[0]?.[0];
     expect(oldSignal).toBeInstanceOf(AbortSignal);
     view.rerender(
-      <AttemptWorkspace
+      <AttemptActivity
         api={runner}
         editor={editor}
         session={session('subject-b', 'token-subject-b')}
@@ -432,13 +433,13 @@ describe('AttemptWorkspace quota recovery', () => {
     const runner = api({ getQuota });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     const view = render(
-      <AttemptWorkspace api={runner} editor={editor} session={session()} accessState="ready" />,
+      <AttemptActivity api={runner} editor={editor} session={session()} accessState="ready" />,
     );
 
     await readyForAssertions();
     const firstSignal = getQuota.mock.calls[0]?.[0];
     view.rerender(
-      <AttemptWorkspace
+      <AttemptActivity
         api={runner}
         editor={editor}
         session={session()}
@@ -450,7 +451,7 @@ describe('AttemptWorkspace quota recovery', () => {
     expect(firstSignal?.aborted).toBe(true);
 
     view.rerender(
-      <AttemptWorkspace api={runner} editor={editor} session={session()} accessState="ready" />,
+      <AttemptActivity api={runner} editor={editor} session={session()} accessState="ready" />,
     );
     await settle();
     expect(getQuota).toHaveBeenCalledTimes(2);
@@ -472,12 +473,12 @@ describe('AttemptWorkspace quota recovery', () => {
     const runner = api({ getQuota });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     const view = render(
-      <AttemptWorkspace api={runner} editor={editor} session={session()} accessState="ready" />,
+      <AttemptActivity api={runner} editor={editor} session={session()} accessState="ready" />,
     );
     await readyForAssertions();
 
     view.rerender(
-      <AttemptWorkspace
+      <AttemptActivity
         api={runner}
         editor={editor}
         session={session()}
@@ -490,7 +491,7 @@ describe('AttemptWorkspace quota recovery', () => {
     expect(getQuota).toHaveBeenCalledOnce();
 
     view.rerender(
-      <AttemptWorkspace api={runner} editor={editor} session={session()} accessState="ready" />,
+      <AttemptActivity api={runner} editor={editor} session={session()} accessState="ready" />,
     );
     await settle();
     expect(getQuota).toHaveBeenCalledTimes(2);
@@ -509,7 +510,7 @@ describe('AttemptWorkspace quota recovery', () => {
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     const onTryAvailabilityChange = vi.fn();
     const view = render(
-      <AttemptWorkspace
+      <AttemptActivity
         api={runner}
         editor={editor}
         session={session()}
@@ -521,7 +522,7 @@ describe('AttemptWorkspace quota recovery', () => {
     expect(screen.getByText('No quedan partidas disponibles.')).toBeTruthy();
 
     view.rerender(
-      <AttemptWorkspace
+      <AttemptActivity
         api={runner}
         editor={editor}
         session={session()}
@@ -532,7 +533,7 @@ describe('AttemptWorkspace quota recovery', () => {
     );
     await settle();
     view.rerender(
-      <AttemptWorkspace
+      <AttemptActivity
         api={runner}
         editor={editor}
         session={session()}
@@ -573,7 +574,7 @@ describe('AttemptWorkspace quota recovery', () => {
     const runner = api({ getQuota });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     render(
-      <AttemptWorkspace
+      <AttemptActivity
         api={runner}
         editor={editor}
         session={session()}
@@ -612,7 +613,7 @@ describe('AttemptWorkspace quota recovery', () => {
     const runner = api({ getQuota });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     render(
-      <AttemptWorkspace
+      <AttemptActivity
         api={runner}
         editor={editor}
         session={session()}
@@ -654,9 +655,9 @@ describe('AttemptWorkspace quota recovery', () => {
     const editor = { current: { captureSnapshot } } as unknown as {
       current: RobotEditorHandle | null;
     };
-    const ref = { current: null } as { current: AttemptWorkspaceHandle | null };
+    const ref = { current: null } as { current: AttemptActivityHandle | null };
     render(
-      <AttemptWorkspace
+      <AttemptActivity
         ref={ref}
         api={runner}
         editor={editor}
@@ -773,9 +774,9 @@ describe('AttemptWorkspace quota recovery', () => {
     const editor = { current: { captureSnapshot } } as unknown as {
       current: RobotEditorHandle | null;
     };
-    const ref = { current: null } as { current: AttemptWorkspaceHandle | null };
+    const ref = { current: null } as { current: AttemptActivityHandle | null };
     render(
-      <AttemptWorkspace
+      <AttemptActivity
         ref={ref}
         api={runner}
         editor={editor}
@@ -827,9 +828,9 @@ describe('AttemptWorkspace quota recovery', () => {
     const editor = { current: { captureSnapshot } } as unknown as {
       current: RobotEditorHandle | null;
     };
-    const ref = { current: null } as { current: AttemptWorkspaceHandle | null };
+    const ref = { current: null } as { current: AttemptActivityHandle | null };
     render(
-      <AttemptWorkspace
+      <AttemptActivity
         ref={ref}
         api={runner}
         editor={editor}

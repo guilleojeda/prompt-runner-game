@@ -130,13 +130,23 @@ async function advance(milliseconds: number): Promise<void> {
 }
 
 function instructions(): HTMLTextAreaElement {
-  return screen.getByRole('textbox', {
-    name: 'Qué debe tener en cuenta el robot',
-  }) as HTMLTextAreaElement;
+  const field = document.querySelector<HTMLTextAreaElement>('#robot-instructions');
+  if (!field) throw new Error('No está montado el campo retenido del editor.');
+  return field;
 }
 
 function button(name: string): HTMLButtonElement {
   return screen.getByRole('button', { name }) as HTMLButtonElement;
+}
+
+function navigate(surface: 'Preparar' | 'Historial' | 'Mis robots'): HTMLButtonElement {
+  const navigation = screen.getByRole('navigation', { name: 'Navegación principal' });
+  const destination = within(navigation).getByRole('button', {
+    name: surface,
+  }) as HTMLButtonElement;
+  const current = destination.getAttribute('aria-current');
+  if (!current || current === 'false') fireEvent.click(destination);
+  return destination;
 }
 
 async function mount(
@@ -204,6 +214,7 @@ async function mount(
     />,
   );
   await settle();
+  expect(screen.getByRole('heading', { name: 'Prepará tu robot' })).toBeTruthy();
   expect(instructions().value).toBe(original.instructions);
   expect(button('Probar').disabled).toBe(false);
   return { draftApi, savedApi, runnerApi, auth, copies };
@@ -213,12 +224,14 @@ type Source = 'history' | 'saved copy';
 
 async function apply(source: Source): Promise<void> {
   if (source === 'history') {
+    navigate('Historial');
     const history = screen.getByRole('heading', { name: 'Historial' }).closest('section');
     expect(history).not.toBeNull();
     fireEvent.click(within(history!).getByRole('button', { name: 'Ver configuración' }));
     await settle();
     fireEvent.click(button('Usar esta configuración'));
   } else {
+    navigate('Mis robots');
     fireEvent.click(screen.getByRole('button', { name: /Copia A.*Cargar/ }));
   }
   await settle();
@@ -257,6 +270,10 @@ describe.each<Source>(['history', 'saved copy'])('configuration application from
     pending.resolve({ version: 5, draft: candidate });
     await settle();
     expect(instructions().value).toBe(candidate.instructions);
+    const navigation = screen.getByRole('navigation', { name: 'Navegación principal' });
+    expect(
+      within(navigation).getByRole('button', { name: 'Preparar' }).getAttribute('aria-current'),
+    ).toBe('page');
     expect(
       (
         screen.getByRole('textbox', {
@@ -267,7 +284,7 @@ describe.each<Source>(['history', 'saved copy'])('configuration application from
     expect(runnerApi.createAttempt).not.toHaveBeenCalled();
   });
 
-  it('recovers a definite transient rejection at the original minute while editing and cancellation stay usable', async () => {
+  it('recovers a definite transient rejection at the original minute without admitting', async () => {
     const pending = deferred<DraftSnapshot>();
     const putDraft = vi
       .fn<DraftApi['putDraft']>()
@@ -296,7 +313,7 @@ describe.each<Source>(['history', 'saved copy'])('configuration application from
     expect(runnerApi.startAttempt).not.toHaveBeenCalled();
   });
 
-  it('cancels the candidate when typing during recovery and saves the new visible text at the same deadline', async () => {
+  it('returns to preparation during recovery and saves the edited text at the original deadline', async () => {
     const edited = { ...original, instructions: 'Mi edición posterior 🌱\nNo importar la copia.' };
     const putDraft = vi
       .fn<DraftApi['putDraft']>()
@@ -305,6 +322,7 @@ describe.each<Source>(['history', 'saved copy'])('configuration application from
     const { runnerApi } = await mount({ draftApi: { putDraft } });
     await apply(source);
     await advance(20_000);
+    navigate('Preparar');
     expectEditable();
     fireEvent.change(instructions(), { target: { value: edited.instructions } });
     await settle();
@@ -324,6 +342,7 @@ describe.each<Source>(['history', 'saved copy'])('configuration application from
       .mockRejectedValue(new DraftApiFailure('rate_limited', 'Límite temporal.', 429));
     const { runnerApi } = await mount({ draftApi: { putDraft } });
     await apply(source);
+    navigate('Preparar');
     expect(button('Probar').disabled).toBe(false);
     fireEvent.click(button('Probar'));
     await settle();
@@ -352,6 +371,7 @@ describe.each<Source>(['history', 'saved copy'])('configuration application from
     expect(putDraft).toHaveBeenCalledOnce();
     const signal = putDraft.mock.calls[0]?.[2];
     expect(signal).toBeInstanceOf(AbortSignal);
+    navigate('Preparar');
     expect(button('Probar').disabled).toBe(false);
     fireEvent.click(button('Probar'));
     await settle();
@@ -454,7 +474,7 @@ describe('candidate source and history cancellation', () => {
     expect(runnerApi.createAttempt).not.toHaveBeenCalled();
   });
 
-  it('retries the active saved-copy loader after a minute, keeping edits available before the GET succeeds', async () => {
+  it('retries the active saved-copy loader every minute while the retained editor remains unlocked', async () => {
     const pending = deferred<SavedRobot>();
     const getRobot = vi
       .fn<SavedRobotApi['getRobot']>()
@@ -487,14 +507,18 @@ describe('candidate source and history cancellation', () => {
     expect(runnerApi.createAttempt).not.toHaveBeenCalled();
   });
 
-  it('protects a monotonic visible revision from before the saved-copy GET, including A to B to A', async () => {
+  it('abandons a saved-copy GET on return to Preparar and ignores its late response after A to B to A edits', async () => {
     const pending = deferred<SavedRobot>();
     const getRobot = vi.fn<SavedRobotApi['getRobot']>().mockReturnValue(pending.promise);
     const { copies, draftApi } = await mount({ savedApi: { getRobot } });
     await apply('saved copy');
     expectEditable();
-    fireEvent.change(instructions(), { target: { value: 'B durante GET' } });
-    fireEvent.change(instructions(), { target: { value: original.instructions } });
+    navigate('Preparar');
+    const visibleInstructions = screen.getByRole('textbox', {
+      name: 'Qué debe tener en cuenta el robot',
+    });
+    fireEvent.change(visibleInstructions, { target: { value: 'B después de abandonar GET' } });
+    fireEvent.change(visibleInstructions, { target: { value: original.instructions } });
     await settle();
     expect(getRobot.mock.calls[0]?.[1]).toBeInstanceOf(AbortSignal);
     expect(getRobot.mock.calls[0]?.[1]?.aborted).toBe(true);
@@ -527,6 +551,7 @@ describe('candidate source and history cancellation', () => {
     await settle();
     expect(screen.queryByRole('heading', { name: 'Configuración del intento' })).toBeNull();
     expect(putDraft.mock.calls[0]?.[2]?.aborted).toBe(true);
+    navigate('Preparar');
     const field = instructions();
     field.focus();
 

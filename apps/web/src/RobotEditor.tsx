@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type ReactNode,
 } from 'react';
 import {
   MAX_DRAFT_BYTES,
@@ -80,6 +81,7 @@ export interface RobotEditorHandle {
   cancelApplication(): void;
   releaseAttemptLock(): void;
   focusEditor?(): void;
+  openActiveSkillDescriptions?(): void;
 }
 
 export interface RobotEditorProps {
@@ -90,9 +92,9 @@ export interface RobotEditorProps {
   locked?: boolean;
   tryUnavailable?: boolean;
   onTry?: () => void;
+  attemptControls?: ReactNode;
   onAuthRequired?: ApiAuthRequired;
   onConfigurationAvailabilityChange?: (available: boolean) => void;
-  onAttemptControlsHostChange?: (node: HTMLDivElement | null) => void;
 }
 
 interface OperationResult<T> {
@@ -153,9 +155,9 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
     locked = false,
     tryUnavailable = false,
     onTry,
+    attemptControls,
     onAuthRequired,
     onConfigurationAvailabilityChange,
-    onAttemptControlsHostChange,
   },
   ref,
 ) {
@@ -1584,6 +1586,13 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
       });
       heading.focus();
     },
+    openActiveSkillDescriptions: () => {
+      const current = draftRef.current;
+      if (!current) return;
+      setOpenSkillDisclosures(
+        new Set(current.skills.filter((skill) => skill.enabled).map((skill) => skill.id)),
+      );
+    },
   }));
 
   useEffect(() => {
@@ -1935,11 +1944,9 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
         )}
 
         <div
-          id="attempt-controls-slot"
           className="editor-attempt-controls"
           role="group"
           aria-label="Controles de prueba y animación"
-          ref={onAttemptControlsHostChange}
         >
           {onTry && (
             <div className="editor-actions attempt-action">
@@ -1967,6 +1974,7 @@ export const RobotEditor = forwardRef<RobotEditorHandle, RobotEditorProps>(funct
               </span>
             </div>
           )}
+          {attemptControls}
         </div>
 
         {draft && (

@@ -8,7 +8,8 @@ import { LEVEL } from '../../../shared/game.js';
 import { modelByKey } from '../../../shared/models.js';
 import type { AuthSession } from './auth.js';
 import type { AttemptApi, AttemptSummary, QuotaSummary } from './attempt-api.js';
-import { AttemptWorkspace, type AttemptWorkspaceHandle } from './AttemptWorkspace.js';
+import { AttemptActivityHarness as AttemptActivity } from './AttemptActivity.test-support.js';
+import type { AttemptActivityHandle } from './useAttemptActivity.js';
 import type { RobotEditorHandle } from './RobotEditor.js';
 
 function session(sub: string): AuthSession {
@@ -119,7 +120,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('AttemptWorkspace quota admission lifecycle', () => {
+describe('AttemptActivity quota admission lifecycle', () => {
   it('does not continue the old admission refresh into history after identity changes', async () => {
     const pendingAdmissionQuota = deferred<QuotaSummary>();
     const listAttemptsA = vi.fn().mockResolvedValue({ attempts: [] });
@@ -148,9 +149,9 @@ describe('AttemptWorkspace quota admission lifecycle', () => {
     const editor = { current: { captureSnapshot } } as unknown as {
       current: RobotEditorHandle | null;
     };
-    const ref = { current: null } as { current: AttemptWorkspaceHandle | null };
+    const ref = { current: null } as { current: AttemptActivityHandle | null };
     const view = render(
-      <AttemptWorkspace
+      <AttemptActivity
         ref={ref}
         api={apiA}
         editor={editor}
@@ -171,7 +172,7 @@ describe('AttemptWorkspace quota admission lifecycle', () => {
     expect(admissionQuotaSignal).toBeInstanceOf(AbortSignal);
 
     view.rerender(
-      <AttemptWorkspace
+      <AttemptActivity
         ref={ref}
         api={apiB}
         editor={editor}

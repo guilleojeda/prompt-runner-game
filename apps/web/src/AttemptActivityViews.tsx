@@ -1,0 +1,686 @@
+import { useEffect, useRef } from 'react';
+import type { AttemptConfiguration, AttemptSummary } from './attempt-api.js';
+import { DEFAULT_SCORE_RULES, LEVEL } from '../../../shared/game.js';
+import { ROBOT_CATALOG } from '../../../shared/robot.js';
+import { ResultSharing } from './ResultSharing.js';
+import { formatScore } from './result-sharing.js';
+import type { DecisionInitialSelection, AttemptResultQueryState } from './useAttemptHistory.js';
+import {
+  comparableVictories,
+  formatHistoryScope,
+  formatMetric,
+  formatProgress,
+  historyComparisonMetrics,
+  historyDetailMetrics,
+  modelLabel,
+  objectCollectionStatus,
+  rankFor,
+  statusLabel,
+  technicalReasonLabel,
+  isTerminal,
+} from './attempt-display.js';
+
+export function ResultCard({
+  attempt,
+  sharingVisible,
+  onReplay,
+  onInspect,
+  onConfiguration,
+  configurationBusy,
+  busy,
+  onReturnToEditor,
+  returnLabel = 'Volver al editor',
+  headingId = 'attempt-result-title',
+  showHeading = true,
+}: {
+  attempt: AttemptSummary;
+  sharingVisible: boolean;
+  onReplay: () => void;
+  onInspect?: (initialSelection: DecisionInitialSelection) => void;
+  onConfiguration: () => void;
+  configurationBusy: boolean;
+  busy: boolean;
+  onReturnToEditor?: () => void;
+  returnLabel?: string;
+  headingId?: string;
+  showHeading?: boolean;
+}) {
+  const technicalError = attempt.reason ? technicalReasonLabel(attempt.reason) : null;
+  const tokenPenalty =
+    attempt.gameTokens === null
+      ? null
+      : DEFAULT_SCORE_RULES.tokenWeight * (attempt.gameTokens / DEFAULT_SCORE_RULES.tokenUnit);
+  return (
+    <section className="attempt-result" aria-labelledby={headingId}>
+      {showHeading && (
+        <div className="attempt-result-heading">
+          <div>
+            <p className="card-kicker">Resultado del recorrido</p>
+            <h3 id={headingId} tabIndex={-1}>
+              {statusLabel(attempt.status)}
+            </h3>
+          </div>
+        </div>
+      )}
+      {attempt.status === 'victory' && (
+        <div className="attempt-result-score" aria-label="Puntaje de la victoria">
+          <span>Puntaje</span>
+          <strong>{attempt.score === null ? 'Desconocido' : formatScore(attempt.score)}</strong>
+        </div>
+      )}
+      {attempt.status === 'error' && (
+        <p className="attempt-result-note">
+          <strong>Causa:</strong> {technicalError ?? 'el cálculo no pudo completarse.'}{' '}
+          <strong>Acción:</strong> Podés volver al editor y probar de nuevo; un nuevo intento
+          consume cuota.
+        </p>
+      )}
+      <dl className="attempt-result-summary">
+        {attempt.status !== 'victory' && (
+          <div>
+            <dt>Avance máximo</dt>
+            <dd>{formatProgress(attempt.progress)}</dd>
+          </div>
+        )}
+        <div>
+          <dt>Turnos</dt>
+          <dd>
+            {attempt.turnsUsed} / {attempt.maxTurns}
+          </dd>
+        </div>
+        {LEVEL.objects.map((object) => {
+          const collected = attempt.collectedObjectIds.includes(object.id);
+          const isKey = object.id === 'llave-1';
+          return (
+            <div key={object.id}>
+              <dt>{isKey ? 'Llave' : 'Recompensa'}</dt>
+              <dd>
+                {collected ? 'Recogida' : 'No recogida'}
+                {!isKey && `, ${object.scoreValue} puntos${!collected ? ' posibles' : ''}`}
+              </dd>
+            </div>
+          );
+        })}
+      </dl>
+      {attempt.status === 'victory' && (
+        <section
+          className="attempt-score-breakdown"
+          aria-labelledby="attempt-score-breakdown-title"
+        >
+          <h4 id="attempt-score-breakdown-title">Desglose del puntaje</h4>
+          <dl>
+            <div>
+              <dt>Base</dt>
+              <dd>+{DEFAULT_SCORE_RULES.base.toLocaleString('es-AR')} puntos</dd>
+            </div>
+            <div>
+              <dt>Objetos recogidos</dt>
+              <dd>+{attempt.objectPoints.toLocaleString('es-AR')} puntos</dd>
+            </div>
+            <div>
+              <dt>
+                Descuento por turnos ({attempt.turnsUsed} x {DEFAULT_SCORE_RULES.turnWeight})
+              </dt>
+              <dd>
+                -{(DEFAULT_SCORE_RULES.turnWeight * attempt.turnsUsed).toLocaleString('es-AR')}{' '}
+                puntos
+              </dd>
+            </div>
+            <div>
+              <dt>
+                Descuento por tokens (
+                {attempt.gameTokens === null
+                  ? 'desconocido'
+                  : `${attempt.gameTokens.toLocaleString('es-AR')} / ${DEFAULT_SCORE_RULES.tokenUnit.toLocaleString('es-AR')}`}
+                )
+              </dt>
+              <dd>
+                {tokenPenalty === null
+                  ? 'desconocido'
+                  : `-${tokenPenalty.toLocaleString('es-AR', { maximumFractionDigits: 3 })} puntos`}
+              </dd>
+            </div>
+            <div>
+              <dt>Total</dt>
+              <dd>
+                {attempt.score === null ? 'desconocido' : `${formatScore(attempt.score)} puntos`}
+              </dd>
+            </div>
+          </dl>
+          <p className="attempt-score-rounding-note">
+            El total guardado se expresa con {DEFAULT_SCORE_RULES.decimalPlaces} decimales.
+          </p>
+        </section>
+      )}
+      <div className="attempt-result-actions">
+        {onReturnToEditor && isTerminal(attempt.status) && (
+          <button
+            className="primary-button"
+            type="button"
+            onClick={onReturnToEditor}
+            disabled={busy}
+          >
+            {returnLabel}
+          </button>
+        )}
+        {attempt.recordComplete && attempt.turnsUsed > 0 && (
+          <button className="secondary-button" type="button" onClick={onReplay} disabled={busy}>
+            Ver de nuevo
+          </button>
+        )}
+        {onInspect && (
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={() => onInspect('first')}
+            disabled={busy}
+          >
+            Inspeccionar decisiones
+          </button>
+        )}
+        {onInspect && attempt.status !== 'victory' && (
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={() =>
+              onInspect(attempt.status === 'defeat' ? 'last-action-or-decision' : 'last-decision')
+            }
+            disabled={busy}
+          >
+            {attempt.status === 'defeat' ? 'Ir a la última acción' : 'Ver último paso'}
+          </button>
+        )}
+        {isTerminal(attempt.status) && (
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={onConfiguration}
+            disabled={busy || configurationBusy}
+          >
+            {configurationBusy ? 'Cargando configuración…' : 'Ver configuración'}
+          </button>
+        )}
+      </div>
+      {sharingVisible && <ResultSharing key={attempt.id} attempt={attempt} disabled={busy} />}
+      <details className="attempt-agent-details">
+        <summary>Detalles del agente</summary>
+        <p className="attempt-status" data-status={attempt.status}>
+          {attempt.recordComplete ? 'Registro completo' : 'Registro incompleto'}
+        </p>
+        <p className="attempt-token-help">
+          Tokens: unidades de texto procesadas por el modelo; pueden ser desconocidas según el
+          proveedor.
+        </p>
+        <dl className="attempt-metrics">
+          <div>
+            <dt>Modelo</dt>
+            <dd>{attempt.modelLabel}</dd>
+          </div>
+          <div>
+            <dt>Nivel</dt>
+            <dd>{attempt.levelId}</dd>
+          </div>
+          {technicalError && (
+            <div>
+              <dt>Error técnico</dt>
+              <dd>{technicalError}</dd>
+            </div>
+          )}
+          <div>
+            <dt>Llamadas</dt>
+            <dd>{attempt.calls}</dd>
+          </div>
+          <div>
+            <dt>Tokens usados para puntaje</dt>
+            <dd>{formatMetric(attempt.gameTokens)}</dd>
+          </div>
+          <div>
+            <dt>Entrada</dt>
+            <dd>{formatMetric(attempt.inputTokens)}</dd>
+          </div>
+          <div>
+            <dt>Salida</dt>
+            <dd>{formatMetric(attempt.outputTokens)}</dd>
+          </div>
+          <div>
+            <dt>Razonamiento (incluido en salida)</dt>
+            <dd>{formatMetric(attempt.reasoningTokens)}</dd>
+          </div>
+          <div>
+            <dt>Caché leída</dt>
+            <dd>{formatMetric(attempt.cacheReadTokens)}</dd>
+          </div>
+          <div>
+            <dt>Caché escrita</dt>
+            <dd>{formatMetric(attempt.cacheWriteTokens)}</dd>
+          </div>
+        </dl>
+      </details>
+    </section>
+  );
+}
+
+export function HistoryResultQuery({
+  state,
+  sharingVisible,
+  onRetry,
+  onClose,
+  onReplay,
+  onInspect,
+  onConfiguration,
+  configurationBusy,
+  busy,
+}: {
+  state: AttemptResultQueryState;
+  sharingVisible: boolean;
+  onRetry: () => void;
+  onClose: () => void;
+  onReplay: (attemptId: string) => void;
+  onInspect: (attempt: AttemptSummary, selection: DecisionInitialSelection) => void;
+  onConfiguration: (attemptId: string) => void;
+  configurationBusy: boolean;
+  busy: boolean;
+}) {
+  const title =
+    state.status === 'loading'
+      ? 'Consultando el resultado guardado…'
+      : state.status === 'error'
+        ? 'No se pudo abrir el resultado'
+        : statusLabel(state.attempt.status);
+
+  return (
+    <section className="attempt-result-query" aria-labelledby="history-result-loading-title">
+      <h3 id="history-result-loading-title" tabIndex={-1}>
+        {title}
+      </h3>
+      {state.status === 'loading' && (
+        <p className="attempt-message" role="status">
+          Cargando el intento seleccionado del historial.
+        </p>
+      )}
+      {state.status === 'error' && (
+        <div className="attempt-error" role="alert">
+          <p>{state.message}</p>
+          <button className="secondary-button" type="button" onClick={onRetry}>
+            Reintentar consulta
+          </button>
+          <button className="text-button" type="button" onClick={onClose}>
+            Volver al historial
+          </button>
+        </div>
+      )}
+      {state.status === 'ready' && (
+        <ResultCard
+          attempt={state.attempt}
+          sharingVisible={sharingVisible}
+          onReplay={() => onReplay(state.attempt.id)}
+          onInspect={(selection) => onInspect(state.attempt, selection)}
+          onConfiguration={() => onConfiguration(state.attempt.id)}
+          onReturnToEditor={onClose}
+          returnLabel="Volver al historial"
+          configurationBusy={configurationBusy}
+          busy={busy}
+          headingId="history-result-loading-title"
+          showHeading={false}
+        />
+      )}
+    </section>
+  );
+}
+
+export function HistoryList({
+  attempts,
+  nextCursor,
+  error,
+  loading,
+  busy,
+  onOpen,
+  onReplay,
+  onInspect,
+  onConfiguration,
+  configurationBusyId,
+  onMore,
+  onRetry,
+}: {
+  attempts: readonly AttemptSummary[];
+  nextCursor?: string;
+  error: string | null;
+  loading: boolean;
+  busy: boolean;
+  onOpen: (id: string, action: 'result' | 'ranking-result') => void;
+  onReplay: (id: string) => void;
+  onInspect?: (id: string, initialSelection: DecisionInitialSelection) => void;
+  onConfiguration: (id: string) => void;
+  configurationBusyId: string | null;
+  onMore: () => void;
+  onRetry: () => void;
+}) {
+  const ranked = comparableVictories(attempts);
+  const victoriesWithoutScore = attempts.filter(
+    (item) => item.status === 'victory' && item.score === null,
+  );
+  const victoriesWithoutCompleteRecord = attempts.filter(
+    (item) => item.status === 'victory' && item.score !== null && !item.recordComplete,
+  );
+  const nonVictories = attempts.filter((item) => item.status !== 'victory');
+  return (
+    <section className="attempt-history" aria-labelledby="attempt-history-title">
+      <div className="attempt-section-heading">
+        <div>
+          <p className="card-kicker">Tus recorridos</p>
+          <h3 id="attempt-history-title" tabIndex={-1}>
+            Historial
+          </h3>
+        </div>
+        <span className="history-count">
+          {formatHistoryScope(attempts.length, nextCursor !== undefined)}
+        </span>
+      </div>
+      {error && (
+        <div className="attempt-error" role="alert">
+          <p>{error}</p>
+          <button className="secondary-button" type="button" onClick={onRetry} disabled={busy}>
+            Reintentar historial
+          </button>
+        </div>
+      )}
+      <section className="history-ranking" aria-labelledby="history-ranking-title">
+        <div className="history-subheading">
+          <h4 id="history-ranking-title">Tus mejores soluciones</h4>
+          <span>{ranked.length} comparables</span>
+        </div>
+        <p>
+          Sólo incluye victorias con registro completo y puntaje conocido del nivel vigente. Los
+          puntos ordenan de mayor a menor; los empates conservan la misma posición. La comparación
+          usa los tokens de juego registrados, y cada modelo puede contar tokens con un tokenizador
+          distinto.
+        </p>
+        {ranked.length === 0 ? (
+          <p className="history-empty">
+            Todavía no hay victorias comparables entre los intentos cargados.
+          </p>
+        ) : (
+          <div className="history-ranking-list">
+            {ranked.map((item, index) => (
+              <article className="history-ranking-card" key={item.id}>
+                <div>
+                  <strong>
+                    #{rankFor(ranked, index)}, {item.score!.toLocaleString('es-AR')} puntos
+                  </strong>
+                  <span>{historyComparisonMetrics(item)}</span>
+                </div>
+                <div className="history-actions">
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    data-history-attempt-id={item.id}
+                    data-history-action="ranking-result"
+                    onClick={() => onOpen(item.id, 'ranking-result')}
+                    disabled={busy}
+                  >
+                    Abrir resultado
+                  </button>
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() => onConfiguration(item.id)}
+                    disabled={busy || configurationBusyId === item.id}
+                  >
+                    {configurationBusyId === item.id
+                      ? 'Cargando configuración…'
+                      : 'Ver configuración'}
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+      {(victoriesWithoutScore.length > 0 ||
+        victoriesWithoutCompleteRecord.length > 0 ||
+        nonVictories.length > 0) && (
+        <div className="history-exclusions">
+          {victoriesWithoutScore.length > 0 && (
+            <p>
+              <strong>Victorias sin puntaje exacto:</strong> {victoriesWithoutScore.length}. Se
+              conservan para consultar el resultado y la configuración.
+            </p>
+          )}
+          {victoriesWithoutCompleteRecord.length > 0 && (
+            <p>
+              <strong>Victorias con registro incompleto:</strong>{' '}
+              {victoriesWithoutCompleteRecord.length}. Se conservan fuera de la clasificación.
+            </p>
+          )}
+          {nonVictories.length > 0 && (
+            <p>
+              <strong>Otros resultados:</strong> {nonVictories.length}. Se conservan con su avance y
+              métricas, fuera de la clasificación.
+            </p>
+          )}
+        </div>
+      )}
+      {loading && attempts.length === 0 ? (
+        <p className="attempt-message" role="status">
+          Recuperando tus intentos…
+        </p>
+      ) : attempts.length === 0 ? (
+        <p className="history-empty">Todavía no hay intentos guardados.</p>
+      ) : (
+        <ul className="history-list">
+          {attempts.map((item) => (
+            <li key={item.id}>
+              <div className="history-metadata">
+                <strong>{statusLabel(item.status)}</strong>
+                <span>{historyDetailMetrics(item)}</span>
+                <span>{objectCollectionStatus(item)}</span>
+                {item.status === 'victory' && (
+                  <span>
+                    Puntaje:{' '}
+                    {item.score === null ? 'desconocido' : item.score.toLocaleString('es-AR')}
+                  </span>
+                )}
+                {item.status === 'victory' && item.score === null && (
+                  <span>Fuera de clasificación: puntaje exacto no disponible.</span>
+                )}
+                {item.status === 'victory' && item.score !== null && !item.recordComplete && (
+                  <span>Fuera de clasificación: registro incompleto.</span>
+                )}
+                {item.status !== 'victory' && (
+                  <span>Fuera de clasificación: {statusLabel(item.status)}.</span>
+                )}
+              </div>
+              <div className="history-actions">
+                <button
+                  className="secondary-button"
+                  type="button"
+                  data-history-attempt-id={item.id}
+                  data-history-action="result"
+                  onClick={() => onOpen(item.id, 'result')}
+                  disabled={busy}
+                >
+                  Ver resultado
+                </button>
+                {item.recordComplete && isTerminal(item.status) && item.turnsUsed > 0 && (
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    data-history-attempt-id={item.id}
+                    data-history-action="replay"
+                    onClick={() => onReplay(item.id)}
+                    disabled={busy}
+                  >
+                    Ver de nuevo
+                  </button>
+                )}
+                {isTerminal(item.status) && item.presentationComplete && onInspect && (
+                  <>
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      onClick={() => onInspect(item.id, 'first')}
+                      disabled={busy}
+                    >
+                      Inspeccionar decisiones
+                    </button>
+                    {item.status !== 'victory' && (
+                      <button
+                        className="secondary-button"
+                        type="button"
+                        onClick={() =>
+                          onInspect(
+                            item.id,
+                            item.status === 'defeat' ? 'last-action-or-decision' : 'last-decision',
+                          )
+                        }
+                        disabled={busy}
+                      >
+                        {item.status === 'defeat' ? 'Ir a la última acción' : 'Ver último paso'}
+                      </button>
+                    )}
+                  </>
+                )}
+                {isTerminal(item.status) && (
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() => onConfiguration(item.id)}
+                    disabled={busy || configurationBusyId === item.id}
+                  >
+                    {configurationBusyId === item.id
+                      ? 'Cargando configuración…'
+                      : 'Ver configuración'}
+                  </button>
+                )}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      {nextCursor && (
+        <button className="secondary-button" type="button" onClick={onMore} disabled={busy}>
+          Cargar 20 más
+        </button>
+      )}
+    </section>
+  );
+}
+
+export function ConfigurationPreview({
+  state,
+  busy,
+  configurationAvailable,
+  onApply,
+  onRetry,
+  onClose,
+}: {
+  state: {
+    readonly targetId: string;
+    readonly status: 'loading' | 'ready' | 'applying' | 'error';
+    readonly configuration?: AttemptConfiguration;
+    readonly message?: string;
+    readonly applied?: boolean;
+  };
+  busy: boolean;
+  configurationAvailable: boolean;
+  onApply: () => void;
+  onRetry: () => void;
+  onClose: () => void;
+}) {
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    if (state.status === 'loading') headingRef.current?.focus();
+  }, [state.status, state.targetId]);
+  return (
+    <section className="attempt-configuration" aria-labelledby="attempt-configuration-title">
+      <div className="attempt-section-heading">
+        <div>
+          <p className="card-kicker">Configuración fijada</p>
+          <h3 id="attempt-configuration-title" ref={headingRef} tabIndex={-1}>
+            Configuración del intento
+          </h3>
+        </div>
+        <button className="text-button" type="button" onClick={onClose} disabled={busy}>
+          Cerrar
+        </button>
+      </div>
+      <p className="configuration-attempt-id">Intento: {state.targetId}</p>
+      {state.status === 'loading' && (
+        <p className="attempt-message" role="status">
+          Cargando la configuración guardada…
+        </p>
+      )}
+      {state.status === 'error' && state.message && (
+        <div className="attempt-error" role="alert">
+          <p>{state.message}</p>
+          {!state.configuration && (
+            <button className="secondary-button" type="button" onClick={onRetry} disabled={busy}>
+              Reintentar carga
+            </button>
+          )}
+        </div>
+      )}
+      {state.configuration && (
+        <>
+          <dl className="configuration-facts">
+            <div>
+              <dt>Modelo</dt>
+              <dd>{modelLabel(state.configuration.draft.modelKey)}</dd>
+            </div>
+            <div>
+              <dt>Habilidades activas</dt>
+              <dd>
+                {state.configuration.draft.skills
+                  .filter((skill) => skill.enabled)
+                  .map(
+                    (skill) =>
+                      ROBOT_CATALOG.find((entry) => entry.id === skill.id)?.name ??
+                      'Habilidad no disponible',
+                  )
+                  .join(', ') || 'ninguna'}
+              </dd>
+            </div>
+          </dl>
+          <div className="configuration-preview-copy">
+            <h4>Instrucciones generales</h4>
+            <p>{state.configuration.draft.instructions || 'Sin instrucciones.'}</p>
+            <h4>Habilidades y descripciones guardadas</h4>
+            <ul>
+              {state.configuration.draft.skills.map((skill) =>
+                (() => {
+                  const entry = ROBOT_CATALOG.find((candidate) => candidate.id === skill.id);
+                  const description =
+                    skill.description === undefined
+                      ? 'omitida'
+                      : skill.description === ''
+                        ? 'vacía'
+                        : skill.description;
+                  return (
+                    <li key={skill.id}>
+                      <strong>{entry?.name ?? 'Habilidad no disponible'}</strong>,{' '}
+                      {skill.enabled ? 'enviada al agente' : 'no enviada al agente'}, descripción:{' '}
+                      {description}
+                    </li>
+                  );
+                })(),
+              )}
+            </ul>
+          </div>
+          {state.applied && (
+            <p className="configuration-applied" role="status">
+              Configuración cargada en el editor. Se guarda como una edición normal.
+            </p>
+          )}
+          <button
+            className="primary-button"
+            type="button"
+            onClick={onApply}
+            disabled={busy || state.status === 'applying' || !configurationAvailable}
+          >
+            {state.status === 'applying' ? 'Aplicando configuración…' : 'Usar esta configuración'}
+          </button>
+        </>
+      )}
+    </section>
+  );
+}
