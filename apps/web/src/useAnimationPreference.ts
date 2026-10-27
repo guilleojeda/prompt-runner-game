@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ApiAuthRequired } from './api-auth.js';
-import { AttemptApiFailure, type AttemptApi } from './attempt-api.js';
+import { AttemptApiFailure, isTransientReadFailure, type AttemptApi } from './attempt-api.js';
 import type { AnimationPreference } from '../../../shared/attempt.js';
 
 const RECOVERY_DELAY_MS = 60_000;
@@ -117,16 +117,6 @@ function hasPendingIntent(state: PreferenceState): boolean {
     state.forcedWriteVersion !== null ||
     (state.confirmed !== null && state.value !== state.confirmed.animationEnabled) ||
     (state.confirmed === null && state.choiceMade)
-  );
-}
-
-function isTransientReadFailure(error: unknown): boolean {
-  if (!(error instanceof AttemptApiFailure)) return true;
-  if (error.code === 'network') return true;
-  if (error.code === 'server') return error.status === undefined || error.status >= 500;
-  return (
-    error.code === 'attempt_unavailable' &&
-    (error.status === 429 || error.status === undefined || error.status >= 500)
   );
 }
 

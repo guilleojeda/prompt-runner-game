@@ -114,6 +114,16 @@ export class AttemptApiFailure extends Error {
   public readonly authContext?: number;
 }
 
+export function isTransientReadFailure(error: unknown): boolean {
+  if (!(error instanceof AttemptApiFailure)) return true;
+  if (error.code === 'network') return true;
+  if (error.code === 'server') return error.status === undefined || error.status >= 500;
+  return (
+    error.code === 'attempt_unavailable' &&
+    (error.status === 429 || error.status === undefined || error.status >= 500)
+  );
+}
+
 export type AttemptTokenProvider = ApiTokenProvider;
 
 export interface AttemptApiClientOptions {
@@ -293,10 +303,21 @@ function parseQuota(value: unknown): QuotaSummary | null {
   if (!isRecord(value)) return null;
   const day = requiredString(value, 'day');
   const resetsAt = requiredString(value, 'resetsAt');
+  const resetsAtEpoch = resetsAt === null ? null : Date.parse(resetsAt);
   const used = requiredNumber(value, 'used');
   const limit = requiredNumber(value, 'limit');
   const remaining = requiredNumber(value, 'remaining');
-  if (!day || !resetsAt || used === null || limit === null || remaining === null) return null;
+  if (
+    !day ||
+    !resetsAt ||
+    resetsAtEpoch === null ||
+    !Number.isFinite(resetsAtEpoch) ||
+    used === null ||
+    limit === null ||
+    remaining === null
+  ) {
+    return null;
+  }
   return { day, used, limit, remaining, resetsAt };
 }
 

@@ -20,7 +20,6 @@ import {
   type AttemptSummary,
   type AttemptConfiguration,
   type AttemptsPage,
-  type QuotaSummary,
 } from './attempt-api.js';
 import {
   clearAttemptRecovery,
@@ -38,6 +37,7 @@ import { ReplayScene } from './replay/ReplayScene.js';
 import { ResultSharing } from './ResultSharing.js';
 import { formatScore } from './result-sharing.js';
 import { useAnimationPreference } from './useAnimationPreference.js';
+import { useQuota } from './useQuota.js';
 
 type WorkspaceMode =
   | 'loading'
@@ -55,7 +55,7 @@ type WorkspaceMode =
   | 'result';
 
 type WorkspaceErrorGuidance =
-  'check-status' | 'queries' | 'enable-skill' | 'replay' | 'presentation-completion';
+  'check-status' | 'enable-skill' | 'replay' | 'presentation-completion';
 
 interface WorkspaceError {
   readonly message: string;
@@ -72,7 +72,6 @@ function admissionErrorGuidance(error: unknown): WorkspaceErrorGuidance | undefi
   if (error.message.trim().replace(/[.!?]+$/, '') === 'Seleccioná al menos una habilidad') {
     return 'enable-skill';
   }
-  if (error.code === 'quota_exceeded') return 'queries';
   return undefined;
 }
 
@@ -583,6 +582,7 @@ function ResultCard({
 function HistoryList({
   attempts,
   nextCursor,
+  error,
   busy,
   onOpen,
   onReplay,
@@ -590,9 +590,11 @@ function HistoryList({
   onConfiguration,
   configurationBusyId,
   onMore,
+  onRetry,
 }: {
   attempts: readonly AttemptSummary[];
   nextCursor?: string;
+  error: string | null;
   busy: boolean;
   onOpen: (id: string) => void;
   onReplay: (id: string) => void;
@@ -600,6 +602,7 @@ function HistoryList({
   onConfiguration: (id: string) => void;
   configurationBusyId: string | null;
   onMore: () => void;
+  onRetry: () => void;
 }) {
   const ranked = comparableVictories(attempts);
   const victoriesWithoutScore = attempts.filter(
@@ -620,6 +623,14 @@ function HistoryList({
           {formatHistoryScope(attempts.length, nextCursor !== undefined)}
         </span>
       </div>
+      {error && (
+        <div className="attempt-error" role="alert">
+          <p>{error}</p>
+          <button className="secondary-button" type="button" onClick={onRetry} disabled={busy}>
+            Reintentar historial
+          </button>
+        </div>
+      )}
       <section className="history-ranking" aria-labelledby="history-ranking-title">
         <div className="history-subheading">
           <h4 id="history-ranking-title">Tus mejores soluciones</h4>
@@ -932,7 +943,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     const [mode, setMode] = useState<WorkspaceMode>('loading');
     const [attempt, setAttempt] = useState<AttemptSummary | null>(null);
     const [error, setError] = useState<WorkspaceError | null>(null);
-    const [quota, setQuota] = useState<QuotaSummary | null>(null);
+    const [historyError, setHistoryError] = useState<string | null>(null);
     const [history, setHistory] = useState<readonly AttemptSummary[]>([]);
     const [historyCursor, setHistoryCursor] = useState<string | undefined>();
     const [activeCandidates, setActiveCandidates] = useState<readonly AttemptSummary[]>([]);
@@ -952,8 +963,6 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     const presentationRef = useRef<HTMLDivElement>(null);
     const generationRef = useRef(0);
     const historyGenerationRef = useRef(0);
-    const quotaGenerationRef = useRef(0);
-    const quotaRef = useRef<QuotaSummary | null>(null);
     const frozenRef = useRef<FrozenAdmission | null>(null);
     const attemptRef = useRef<AttemptSummary | null>(null);
     const modeRef = useRef(mode);
@@ -991,6 +1000,15 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       authPaused,
       onAuthRequired,
     });
+    const quotaController = useQuota({
+      api,
+      identity: sessionSub,
+      authPaused,
+      onAuthRequired,
+    });
+    const quota = quotaController.quota;
+    const isQuotaAvailableNow = quotaController.isAvailableNow;
+    const refreshQuotaAfterAdmission = quotaController.refreshAfterAdmission;
     const isPreferenceReadyNow = animationPreference.isReadyNow;
     const confirmedAnimationValueNow = animationPreference.confirmedValueNow;
     const authPausedRef = useRef(authPaused);
@@ -1099,8 +1117,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     useEffect(() => {
       const previousSub = sessionSubRef.current;
       if (previousSub !== sessionSub) {
-        quotaRef.current = null;
-        setQuota(null);
+        setHistoryError(null);
         frozenRef.current = null;
         attemptRef.current = null;
         resetCancelBusy();
@@ -1162,22 +1179,25 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
     const animationPreferenceUnknown = animationPreference.unknown;
     const animationEnabled = animationPreference.value;
     const preferenceRemoteValue = preferenceConflict?.remote.animationEnabled ?? null;
-    const tryAvailable = preferenceReady && quota?.remaining !== 0;
+    const quotaCurrent = quotaController.current;
+    const tryAvailable = preferenceReady && (!quotaCurrent || quota?.remaining !== 0);
     const tryAvailabilityMessage = preferenceSaving
       ? 'Confirmando tu preferencia de animación. Podés seguir preparando el robot.'
       : !preferenceReady && (preferenceError === null || preferenceRecovering)
         ? 'Estamos recuperando tu preferencia de animación. Podés seguir preparando el robot.'
         : preferenceConflict !== null
           ? ''
-          : quota?.remaining === 0
+          : quotaCurrent && quota?.remaining === 0
             ? 'No quedan partidas disponibles.'
-            : quota === null
+            : !quotaCurrent
               ? 'Disponibilidad sin confirmar. La comprobamos al iniciar.'
-              : '';
+              : quotaController.recovering
+                ? 'La cuota está en comprobación.'
+                : '';
 
     const isTryAvailableNow = useCallback(
-      (): boolean => isPreferenceReadyNow() && quotaRef.current?.remaining !== 0,
-      [isPreferenceReadyNow],
+      (): boolean => isPreferenceReadyNow() && isQuotaAvailableNow(),
+      [isPreferenceReadyNow, isQuotaAvailableNow],
     );
 
     useEffect(() => {
@@ -1469,6 +1489,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             mergeHistoryPage(current, page.attempts, attemptRef.current, false),
           );
           setHistoryCursor(page.nextCursor);
+          setHistoryError(null);
         } catch (historyError) {
           if (
             !signal?.aborted &&
@@ -1478,7 +1499,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             if (isAuthenticationFailure(historyError)) {
               onAuthRequired?.(historyError.authContext);
             }
-            setError(workspaceError(attemptErrorMessage(historyError), 'queries'));
+            setHistoryError(attemptErrorMessage(historyError));
           }
         } finally {
           if (
@@ -1487,34 +1508,6 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             historyGenerationRef.current === historyGeneration
           ) {
             setLoadingHistory(false);
-          }
-        }
-      },
-      [api, onAuthRequired],
-    );
-
-    const refreshQuota = useCallback(
-      async (signal?: AbortSignal): Promise<void> => {
-        const operationGeneration = generationRef.current;
-        const quotaGeneration = ++quotaGenerationRef.current;
-        try {
-          const nextQuota = await api.getQuota(signal);
-          if (
-            !signal?.aborted &&
-            generationRef.current === operationGeneration &&
-            quotaGenerationRef.current === quotaGeneration
-          ) {
-            quotaRef.current = nextQuota;
-            setQuota(nextQuota);
-          }
-        } catch (quotaError) {
-          if (!signal?.aborted && generationRef.current === operationGeneration) {
-            if (isAuthenticationFailure(quotaError)) {
-              onAuthRequired?.(quotaError.authContext);
-            }
-            if (quotaGenerationRef.current === quotaGeneration) {
-              setError(workspaceError(attemptErrorMessage(quotaError), 'queries'));
-            }
           }
         }
       },
@@ -1724,7 +1717,6 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           setAttempt(null);
           setActiveCandidates([]);
           setError(null);
-          void refreshQuota(controller.signal);
           await refreshHistory(controller.signal);
           if (await recoverKnownAttempt(controller.signal)) return;
           await discoverActiveAttempts(controller.signal);
@@ -1747,7 +1739,6 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       onAuthRequired,
       recoverKnownAttempt,
       refreshHistory,
-      refreshQuota,
       sessionSub,
     ]);
 
@@ -1784,10 +1775,18 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         if (isTerminal(next.status) && next.presentationComplete) {
           clearAttemptRecovery(sessionSub);
         }
-        await refreshQuota();
+        await refreshQuotaAfterAdmission();
+        if (
+          generationRef.current !== operationGeneration ||
+          operationEpochRef.current !== operationEpoch ||
+          currentSessionSubRef.current !== sessionSub ||
+          authPausedRef.current
+        ) {
+          return;
+        }
         await refreshHistory();
       },
-      [applyAttempt, refreshHistory, refreshQuota, retryPendingStart, sessionSub],
+      [applyAttempt, refreshQuotaAfterAdmission, refreshHistory, retryPendingStart, sessionSub],
     );
     useEffect(() => {
       startServerAttemptRef.current = startServerAttempt;
@@ -1929,6 +1928,12 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
             admissionErrorGuidance(admissionError),
           ),
         );
+        if (
+          admissionError instanceof AttemptApiFailure &&
+          admissionError.code === 'quota_exceeded'
+        ) {
+          void refreshQuotaAfterAdmission();
+        }
         if (isAuthenticationFailure(admissionError)) {
           onAuthRequired?.(admissionError.authContext);
         }
@@ -1943,6 +1948,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
       isTryAvailableNow,
       confirmedAnimationValueNow,
       onAuthRequired,
+      refreshQuotaAfterAdmission,
       sessionSub,
       startServerAttempt,
     ]);
@@ -2628,6 +2634,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         }
         setHistory((current) => mergeHistoryPage(current, page.attempts, attemptRef.current, true));
         setHistoryCursor(page.nextCursor);
+        setHistoryError(null);
       } catch (historyError) {
         if (
           generationRef.current !== operationGeneration ||
@@ -2638,7 +2645,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         if (isAuthenticationFailure(historyError)) {
           onAuthRequired?.(historyError.authContext);
         }
-        setError(workspaceError(attemptErrorMessage(historyError), 'queries'));
+        setHistoryError(attemptErrorMessage(historyError));
       } finally {
         if (
           generationRef.current === operationGeneration &&
@@ -2648,6 +2655,10 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         }
       }
     }, [api, busy, historyCursor, loadingHistory, onAuthRequired]);
+
+    const retryHistory = useCallback((): void => {
+      void refreshHistory();
+    }, [refreshHistory]);
 
     useEffect(() => {
       if (
@@ -2712,11 +2723,16 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         {quota && (
           <div
             className="quota-badge"
-            aria-label={`Cuota: ${quota.remaining} de ${quota.limit} intentos disponibles`}
+            aria-label={
+              quotaCurrent
+                ? `Cuota: ${quota.remaining} de ${quota.limit} intentos disponibles`
+                : `Cuota anterior: ${quota.remaining} de ${quota.limit} intentos disponibles`
+            }
           >
             <strong>{quota.remaining}</strong>
             <span>de {quota.limit} intentos disponibles</span>
             <small>Se renueva el {formatDateTime(quota.resetsAt)}</small>
+            {!quotaCurrent && <small>Saldo anterior; cuota vigente sin confirmar.</small>}
           </div>
         )}
 
@@ -2743,13 +2759,21 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         </div>
 
         {preferenceConflict === null && (
-          <span
-            id="attempt-availability-status"
-            className="attempt-availability-status"
-            role="status"
-            aria-live="polite"
-          >
-            {tryAvailabilityMessage}
+          <>
+            <span
+              id="attempt-availability-status"
+              className="attempt-availability-status"
+              role="status"
+              aria-live="polite"
+            >
+              {tryAvailabilityMessage}
+            </span>
+          </>
+        )}
+
+        {!quotaCurrent && quotaController.recovering && (
+          <span className="attempt-availability-status" role="status" aria-live="polite">
+            La cuota se vuelve a comprobar automáticamente.
           </span>
         )}
 
@@ -2772,6 +2796,14 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
         {preferenceError && (
           <div className="attempt-error" role="alert">
             <p>{preferenceError}</p>
+          </div>
+        )}
+        {quotaController.error && quotaController.recoverableFailure && (
+          <small className="quota-recovery-detail">{quotaController.error}</small>
+        )}
+        {quotaController.error && !quotaController.recoverableFailure && (
+          <div className="attempt-error" role="alert">
+            <p>No se pudo confirmar la cuota: {quotaController.error}</p>
           </div>
         )}
       </div>
@@ -2820,7 +2852,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
                             : 'Reintentar cierre de presentación vuelve a enviar el cierre.'
                           : currentErrorGuidance === 'enable-skill'
                             ? 'Habilitá al menos una habilidad y volvé a pulsar Probar.'
-                            : 'Reintentar consultas vuelve a consultar cuota e historial.'}
+                            : ''}
                   </p>
                 )}
               {mode === 'unknown' && (
@@ -2850,19 +2882,6 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
                     Ver resultado
                   </button>
                 </>
-              )}
-              {(mode === 'idle' || mode === 'result') && currentErrorGuidance === 'queries' && (
-                <button
-                  className="secondary-button"
-                  type="button"
-                  onClick={() => {
-                    setError(null);
-                    void refreshQuota();
-                    void refreshHistory();
-                  }}
-                >
-                  Reintentar consultas
-                </button>
               )}
             </div>
           )}
@@ -3036,6 +3055,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
           <HistoryList
             attempts={history}
             nextCursor={historyCursor}
+            error={historyError}
             busy={busy || loadingHistory}
             onOpen={(id) => void openAttempt(id)}
             onReplay={(id) => void openReplayFromHistory(id)}
@@ -3047,6 +3067,7 @@ export const AttemptWorkspace = forwardRef<AttemptWorkspaceHandle, AttemptWorksp
                 : null
             }
             onMore={() => void loadMore()}
+            onRetry={retryHistory}
           />
         )}
       </section>
