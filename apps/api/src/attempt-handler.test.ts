@@ -4,7 +4,11 @@ import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { createDefaultDraft, validateDraft } from '../../../shared/robot';
 import { captureLambdaStdout } from '../../../shared/testing/lambda-telemetry.js';
 import * as attemptStoreModule from './attempt-store';
-import { AttemptStoreError, MemoryAttemptStore } from './attempt-store';
+import {
+  AttemptStoredIncompatibleError,
+  AttemptStoreError,
+  MemoryAttemptStore,
+} from './attempt-store';
 import { handleRequest } from './handler';
 
 let lambdaStdout: ReturnType<typeof captureLambdaStdout>;
@@ -571,7 +575,7 @@ describe('attempt API projection and dispatch recovery', () => {
     const draft = createDefaultDraft();
     const attemptStore = new MemoryAttemptStore({ draft: { version: 1, draft } });
     vi.spyOn(attemptStore, 'get').mockRejectedValue(
-      new AttemptStoreError('El intento guardado tiene una configuración incompatible.'),
+      new AttemptStoredIncompatibleError('El intento guardado tiene una configuración incompatible.'),
     );
     const response = await handleRequest(eventFor('GET', '/attempts/incompatible/configuration'), {
       store: { get: vi.fn(), put: vi.fn() },

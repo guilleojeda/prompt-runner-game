@@ -4347,7 +4347,8 @@ describe('AttemptActivity', () => {
     expect(document.activeElement).toBe(resultOpener);
   });
 
-  it('keeps a failed configuration load in focus and retries it from the panel', async () => {
+  it('keeps a failed configuration load in focus and recovers it after one minute', async () => {
+    vi.useFakeTimers();
     const terminal = { ...summary('victory'), id: 'attempt-retry', score: 100, gameTokens: 700 };
     let rejectLoad!: (error: AttemptApiFailure) => void;
     const getConfiguration = vi
@@ -4375,13 +4376,27 @@ describe('AttemptActivity', () => {
         'Cargando la configuración guardada…',
       ),
     ).toBeTruthy();
+    expect(document.activeElement).toBe(heading);
     await act(async () => {
       rejectLoad(new AttemptApiFailure('network', 'No se pudo consultar.'));
     });
-    expect((await screen.findByRole('alert')).textContent).toContain('No se pudo consultar.');
+    const panel = heading.closest('section') as HTMLElement;
+    expect(within(panel).queryByRole('alert')).toBeNull();
+    expect(within(panel).getByRole('status')).toBeTruthy();
+    expect(within(panel).queryByRole('button', { name: 'Reintentar carga' })).toBeNull();
     expect(document.activeElement).toBe(heading);
-    fireEvent.click(screen.getByRole('button', { name: 'Reintentar carga' }));
-    expect(await screen.findByRole('button', { name: 'Usar esta configuración' })).toBeTruthy();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(59_999);
+    });
+    await settleWorkspacePromises();
+    expect(getConfiguration).toHaveBeenCalledOnce();
+    expect(document.activeElement).toBe(heading);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    await settleWorkspacePromises();
+    expect(within(panel).getByRole('button', { name: 'Usar esta configuración' })).toBeTruthy();
+    expect(document.activeElement).toBe(heading);
     expect(getConfiguration).toHaveBeenCalledTimes(2);
     expect(attemptApi.createAttempt).not.toHaveBeenCalled();
   });
