@@ -93,6 +93,7 @@ export type AttemptApiFailureCode =
   | 'attempt_unavailable'
   | 'conflict'
   | 'incompatible'
+  | 'pending'
   | 'quota_exceeded'
   | 'not_found'
   | 'invalid'
@@ -1004,6 +1005,20 @@ export class AttemptApiClient implements AttemptApi {
         throw new AttemptApiFailure(
           'not_found',
           errorMessage(parsed, 'No se encontró el intento.'),
+          response.status,
+        );
+      }
+      if (response.status === 409 && responseCode(parsed) === 'configuration_pending') {
+        throw new AttemptApiFailure(
+          'pending',
+          errorMessage(parsed, invalidMessage),
+          response.status,
+        );
+      }
+      if (response.status === 409 && responseCode(parsed) === 'configuration_incompatible') {
+        throw new AttemptApiFailure(
+          'incompatible',
+          errorMessage(parsed, invalidMessage),
           response.status,
         );
       }

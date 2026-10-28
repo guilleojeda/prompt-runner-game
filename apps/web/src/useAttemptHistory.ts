@@ -10,6 +10,7 @@ import {
 } from './attempt-api.js';
 import type { RobotEditorHandle } from './RobotEditor.js';
 import type { ResultSource } from './attempt-display.js';
+import { useAttemptReadRecovery, type AttemptReadResource } from './useAttemptReadRecovery.js';
 
 export interface AttemptDisplayContext {
   readonly source: ResultSource;
@@ -29,7 +30,8 @@ interface HistoryReturnOrigin {
 export interface AttemptConfigurationState {
   readonly targetId: string;
   readonly displayContext?: AttemptDisplayContext;
-  readonly status: 'loading' | 'ready' | 'applying' | 'error';
+  readonly focusVersion: number;
+  readonly status: 'loading' | 'recovering' | 'pending' | 'ready' | 'applying' | 'error';
   readonly configuration?: AttemptConfiguration;
   readonly message?: string;
   readonly applied?: boolean;
@@ -145,16 +147,17 @@ interface FailedHistoryPage {
   readonly deadline: number;
 }
 
-interface HistoryResultResource {
+interface HistoryResultResource extends AttemptReadResource {
   readonly identity: string;
   readonly targetId: string;
+  readonly surface: 'historial';
   readonly contextAttempt?: AttemptSummary;
   readonly handleActivityTarget: ActivityTargetHandler;
 }
 
-interface FailedHistoryResult {
-  readonly resource: HistoryResultResource;
-  readonly deadline: number;
+interface HistoryConfigurationResource extends AttemptReadResource {
+  readonly displayContext?: AttemptDisplayContext;
+  readonly focusVersion: number;
 }
 
 export interface AttemptHistoryController {
@@ -187,7 +190,6 @@ export interface AttemptHistoryController {
     displayContext?: AttemptDisplayContext,
   ): Promise<void>;
   applyConfiguration(): Promise<void>;
-  retryConfiguration(): void;
   closeConfiguration(): void;
   clearConfiguration(): void;
   openDecisionInspector(target: AttemptSummary, selection?: DecisionInitialSelection): void;
@@ -265,25 +267,11 @@ export function useAttemptHistory({
   >(async () => undefined);
   const processDuePageRef = useRef<() => void>(() => undefined);
   const schedulePageRetryRef = useRef<() => void>(() => undefined);
-  const resultQueryOperationRef = useRef(0);
-  const resultQueryControllerRef = useRef<AbortController | null>(null);
-  const resultQueryResourceRef = useRef<HistoryResultResource | null>(null);
-  const failedResultRef = useRef<FailedHistoryResult | null>(null);
-  const resultQueryTimerRef = useRef<number | null>(null);
-  const resultAuthBlockedRef = useRef(false);
-  const resultNeedsFreshReadRef = useRef(false);
-  const resultQueryVisibleRef = useRef(false);
-  const runResultQueryRef = useRef<(resource: HistoryResultResource) => Promise<void>>(
-    async () => undefined,
-  );
-  const processDueResultRef = useRef<() => void>(() => undefined);
-  const scheduleResultRetryRef = useRef<() => void>(() => undefined);
   const historyOriginRef = useRef<HistoryReturnOrigin | null>(null);
   const pendingHistoryReturnRef = useRef(false);
   const pendingResultQueryFocusRef = useRef(false);
   const authPausedRef = useRef(authPaused);
   const configurationOperationRef = useRef(0);
-  const configurationControllerRef = useRef<AbortController | null>(null);
   const configurationApplicationIdRef = useRef(0);
   const configurationApplicationRef = useRef<{
     readonly id: number;
@@ -330,7 +318,6 @@ export function useAttemptHistory({
     historyVisibleRef.current = historyListVisible;
     apiRef.current = api;
     authRequiredRef.current = onAuthRequired;
-    resultQueryVisibleRef.current = resultQueryVisible;
     surfaceRef.current = surface;
   }, [api, authPaused, historyListVisible, onAuthRequired, resultQueryVisible, surface]);
 
@@ -446,16 +433,6 @@ export function useAttemptHistory({
     );
   }, []);
 
-  const clearConfiguration = useCallback((): void => {
-    configurationOperationRef.current += 1;
-    configurationControllerRef.current?.abort();
-    configurationControllerRef.current = null;
-    cancelConfigurationApplication();
-    configurationTriggerRef.current = null;
-    pendingConfigurationFocusRef.current = null;
-    setConfigurationState(null);
-  }, [cancelConfigurationApplication]);
-
   const clearDecisionInspector = useCallback(
     (restoreFocus = true): void => {
       const trigger = decisionInspectorTriggerRef.current;
@@ -504,301 +481,162 @@ export function useAttemptHistory({
     });
   }, []);
 
-  const clearResultTimer = useCallback((): void => {
-    if (resultQueryTimerRef.current === null) return;
-    window.clearTimeout(resultQueryTimerRef.current);
-    resultQueryTimerRef.current = null;
-  }, []);
-
-  const clearResultQuery = useCallback(
-    (restoreFocus = false): void => {
-      resultQueryOperationRef.current += 1;
-      resultQueryControllerRef.current?.abort();
-      resultQueryControllerRef.current = null;
-      resultQueryResourceRef.current = null;
-      failedResultRef.current = null;
-      resultAuthBlockedRef.current = false;
-      resultNeedsFreshReadRef.current = false;
-      resultQueryVisibleRef.current = false;
-      clearResultTimer();
-      setResultQuery(null);
-      pendingResultQueryFocusRef.current = false;
-      if (restoreFocus) restoreHistoryOrigin();
-    },
-    [clearResultTimer, restoreHistoryOrigin],
-  );
-
-  const scheduleResultRetry = useCallback((): void => {
-    clearResultTimer();
-    const pending = failedResultRef.current;
-    const resource = resultQueryResourceRef.current;
-    if (
-      !mountedRef.current ||
-      pending === null ||
-      resource === null ||
-      pending.resource !== resource ||
-      identityRef.current !== resource.identity ||
-      surfaceRef.current !== 'historial' ||
-      !resultQueryVisibleRef.current ||
-      authPausedRef.current ||
-      resultAuthBlockedRef.current ||
-      resultNeedsFreshReadRef.current ||
-      document.hidden ||
-      document.visibilityState === 'hidden' ||
-      activityBusy.current
-    ) {
-      return;
-    }
-    const delay = Math.max(0, pending.deadline - Date.now());
-    resultQueryTimerRef.current = window.setTimeout(
-      () => {
-        resultQueryTimerRef.current = null;
-        processDueResultRef.current();
-      },
-      Math.min(MAX_TIMEOUT_MS, delay),
-    );
-  }, [activityBusy, clearResultTimer]);
-
-  const processDueResult = useCallback((): void => {
-    const resource = resultQueryResourceRef.current;
-    if (
-      !mountedRef.current ||
-      resource === null ||
-      identityRef.current !== resource.identity ||
-      surfaceRef.current !== 'historial' ||
-      !resultQueryVisibleRef.current ||
-      authPausedRef.current ||
-      document.hidden ||
-      document.visibilityState === 'hidden' ||
-      activityBusy.current ||
-      resultQueryControllerRef.current !== null ||
-      resultAuthBlockedRef.current
-    ) {
-      return;
-    }
-    if (resultNeedsFreshReadRef.current) {
-      clearResultTimer();
-      resultNeedsFreshReadRef.current = false;
-      failedResultRef.current = null;
-      void runResultQueryRef.current(resource);
-      return;
-    }
-    const pending = failedResultRef.current;
-    if (!pending || pending.resource !== resource) return;
-    if (pending.deadline > Date.now()) {
-      scheduleResultRetryRef.current();
-      return;
-    }
-    clearResultTimer();
-    failedResultRef.current = null;
-    void runResultQueryRef.current(resource);
-  }, [activityBusy, clearResultTimer]);
-
-  const runResultQuery = useCallback(
-    async (resource: HistoryResultResource): Promise<void> => {
-      const canStart =
-        !mountedRef.current ||
-        resultQueryResourceRef.current !== resource ||
-        identityRef.current !== resource.identity ||
-        surfaceRef.current !== 'historial' ||
-        !resultQueryVisibleRef.current ||
-        authPausedRef.current ||
-        document.hidden ||
-        document.visibilityState === 'hidden' ||
-        activityBusy.current ||
-        resultQueryControllerRef.current !== null;
-      if (canStart) {
-        if (
-          mountedRef.current &&
-          resultQueryResourceRef.current === resource &&
-          identityRef.current === resource.identity &&
-          surfaceRef.current === 'historial' &&
-          !activityBusy.current &&
-          resultQueryControllerRef.current === null &&
-          (authPausedRef.current ||
-            document.hidden ||
-            document.visibilityState === 'hidden' ||
-            !resultQueryVisibleRef.current)
-        ) {
-          resultNeedsFreshReadRef.current = true;
-          setResultQuery({
-            targetId: resource.targetId,
-            status: 'recovering',
-            message: 'Volveremos a consultar el resultado cuando esté disponible.',
-            contextAttempt: resource.contextAttempt,
-          });
-        }
-        return;
+  const configurationRecovery = useAttemptReadRecovery<
+    HistoryConfigurationResource,
+    AttemptConfiguration
+  >({
+    active:
+      configurationState !== null && decisionInspectorTarget === null && !activityBusy.current,
+    authPaused,
+    identity,
+    surface,
+    onAuthRequired: (authContext) => authRequiredRef.current?.(authContext),
+    read: (resource, signal) => apiRef.current.getConfiguration(resource.targetId, signal),
+    isPendingFailure: (error) => error instanceof AttemptApiFailure && error.code === 'pending',
+    onStart: (resource) =>
+      setConfigurationState((state) =>
+        state?.targetId === resource.targetId && state.focusVersion === resource.focusVersion
+          ? { ...state, status: 'loading', message: undefined }
+          : {
+              targetId: resource.targetId,
+              displayContext: resource.displayContext,
+              focusVersion: resource.focusVersion,
+              status: 'loading',
+            },
+      ),
+    onValue: (configuration, resource) => {
+      if (configuration.attemptId !== resource.targetId) {
+        throw new AttemptApiFailure(
+          'server',
+          'La configuración recibida no coincide con el intento consultado.',
+          200,
+        );
       }
+      setConfigurationState({
+        targetId: resource.targetId,
+        displayContext: resource.displayContext,
+        focusVersion: resource.focusVersion,
+        status: 'ready',
+        configuration,
+      });
+      return false;
+    },
+    onRecovering: (resource, error, reason) =>
+      setConfigurationState((state) => {
+        if (state?.targetId !== resource.targetId || state.focusVersion !== resource.focusVersion) {
+          return state;
+        }
+        return {
+          ...state,
+          status: reason === 'pending' ? 'pending' : 'recovering',
+          message:
+            reason === 'pending' || reason === 'authentication'
+              ? errorMessage(error)
+              : 'Volveremos a consultar la configuración guardada.',
+        };
+      }),
+    onPaused: (resource) =>
+      setConfigurationState((state) =>
+        state?.targetId === resource.targetId && state.focusVersion === resource.focusVersion
+          ? {
+              ...state,
+              status: 'recovering',
+              message: 'Volveremos a consultar la configuración guardada cuando esté disponible.',
+            }
+          : state,
+      ),
+    onError: (resource, error) =>
+      setConfigurationState((state) =>
+        state?.targetId === resource.targetId && state.focusVersion === resource.focusVersion
+          ? { ...state, status: 'error', message: errorMessage(error) }
+          : state,
+      ),
+  });
 
-      clearResultTimer();
-      resultAuthBlockedRef.current = false;
-      resultNeedsFreshReadRef.current = false;
-      const operation = ++resultQueryOperationRef.current;
-      const controller = new AbortController();
-      resultQueryControllerRef.current = controller;
+  const resultRecovery = useAttemptReadRecovery<HistoryResultResource, AttemptSummary>({
+    active: resultQueryVisible && !activityBusy.current,
+    authPaused,
+    identity,
+    surface,
+    onAuthRequired: (authContext) => authRequiredRef.current?.(authContext),
+    read: (resource, signal) => apiRef.current.getAttempt(resource.targetId, signal),
+    onStart: (resource) =>
       setResultQuery({
         targetId: resource.targetId,
         status: 'loading',
         contextAttempt: resource.contextAttempt,
-      });
-
-      const isCurrentOperation = (): boolean =>
-        mountedRef.current &&
-        resultQueryResourceRef.current === resource &&
-        resultQueryOperationRef.current === operation &&
-        identityRef.current === resource.identity &&
-        surfaceRef.current === 'historial' &&
-        !controller.signal.aborted;
-      const isCurrentRead = (): boolean =>
-        isCurrentOperation() &&
-        !authPausedRef.current &&
-        resultQueryVisibleRef.current &&
-        !document.hidden &&
-        document.visibilityState !== 'hidden';
-      const deferUntilAvailable = (): void => {
-        resultAuthBlockedRef.current = false;
-        resultNeedsFreshReadRef.current = true;
-        setResultQuery({
-          targetId: resource.targetId,
-          status: 'recovering',
-          message: 'Volveremos a consultar el resultado cuando esté disponible.',
-          contextAttempt: resource.contextAttempt,
-        });
-      };
-
-      const aborted = Symbol('history-result-aborted');
-      let resolveAborted!: (value: typeof aborted) => void;
-      const abortPromise = new Promise<typeof aborted>((resolve) => {
-        resolveAborted = resolve;
-      });
-      const handleAbort = (): void => resolveAborted(aborted);
-      controller.signal.addEventListener('abort', handleAbort, { once: true });
-      if (controller.signal.aborted) handleAbort();
-
-      try {
-        const result = await Promise.race([
-          Promise.resolve().then(() =>
-            apiRef.current.getAttempt(resource.targetId, controller.signal),
-          ),
-          abortPromise,
-        ]);
-        if (result === aborted || !isCurrentOperation()) return;
-        if (!isCurrentRead()) {
-          deferUntilAvailable();
-          return;
-        }
-        if (result.id !== resource.targetId) {
-          throw new AttemptApiFailure(
-            'server',
-            'El intento recibido no coincide con el solicitado.',
-            200,
-          );
-        }
-
-        updateSummaryById(result);
-        const handoff = resource.handleActivityTarget(result, controller.signal);
-        const handedOff = typeof handoff === 'boolean' ? handoff : await handoff;
-        if (handedOff && resultQueryResourceRef.current === resource) {
-          clearResultQuery(false);
-          return;
-        }
-        if (!isCurrentOperation()) return;
-        if (!isCurrentRead()) {
-          deferUntilAvailable();
-          return;
-        }
-        failedResultRef.current = null;
-        resultAuthBlockedRef.current = false;
-        resultNeedsFreshReadRef.current = false;
-        setResultQuery({ targetId: resource.targetId, status: 'ready', attempt: result });
-      } catch (error) {
-        if (!isCurrentOperation()) return;
-        if (!isCurrentRead()) {
-          deferUntilAvailable();
-          return;
-        }
-        const isAuthenticationError =
-          error instanceof AttemptApiFailure && error.code === 'authentication';
-        if (isAuthenticationError) {
-          const acceptedAuthFailure = notifyAuthenticationFailure(error, authRequiredRef.current);
-          if (!isCurrentOperation()) return;
-          if (acceptedAuthFailure !== false) {
-            clearResultTimer();
-            failedResultRef.current = null;
-            resultAuthBlockedRef.current = true;
-            resultNeedsFreshReadRef.current = true;
-            setResultQuery({
-              targetId: resource.targetId,
-              status: 'recovering',
-              message: errorMessage(error),
-              contextAttempt: resource.contextAttempt,
-            });
-            return;
-          }
-        }
-
-        if (isAuthenticationError || isTransientReadFailure(error)) {
-          failedResultRef.current = {
-            resource,
-            deadline: Date.now() + HISTORY_RECOVERY_DELAY_MS,
-          };
-          resultAuthBlockedRef.current = false;
-          resultNeedsFreshReadRef.current = false;
-          setResultQuery({
-            targetId: resource.targetId,
-            status: 'recovering',
-            message: 'Volveremos a consultar el resultado.',
-            contextAttempt: resource.contextAttempt,
-          });
-          return;
-        }
-
-        clearResultTimer();
-        failedResultRef.current = null;
-        resultAuthBlockedRef.current = false;
-        resultNeedsFreshReadRef.current = false;
-        setResultQuery({
-          targetId: resource.targetId,
-          status: 'error',
-          message: errorMessage(error),
-          contextAttempt: resource.contextAttempt,
-        });
-      } finally {
-        controller.signal.removeEventListener('abort', handleAbort);
-        if (resultQueryControllerRef.current === controller) {
-          resultQueryControllerRef.current = null;
-          scheduleResultRetryRef.current();
-        }
+      }),
+    onValue: (result, resource, signal, isCurrent) => {
+      if (result.id !== resource.targetId) {
+        throw new AttemptApiFailure(
+          'server',
+          'El intento recibido no coincide con el solicitado.',
+          200,
+        );
       }
+      updateSummaryById(result);
+      const handoff = resource.handleActivityTarget(result, signal);
+      if (typeof handoff === 'boolean') {
+        if (!handoff && isCurrent()) {
+          setResultQuery({ targetId: resource.targetId, status: 'ready', attempt: result });
+        }
+        return handoff;
+      }
+      return handoff.then((handedOff) => {
+        if (!handedOff && isCurrent()) {
+          setResultQuery({ targetId: resource.targetId, status: 'ready', attempt: result });
+        }
+        return handedOff;
+      });
     },
-    [activityBusy, clearResultQuery, clearResultTimer, updateSummaryById],
+    onComplete: () => {
+      setResultQuery(null);
+      pendingResultQueryFocusRef.current = false;
+    },
+    onRecovering: (resource, error, reason) =>
+      setResultQuery({
+        targetId: resource.targetId,
+        status: 'recovering',
+        message:
+          reason === 'authentication'
+            ? errorMessage(error)
+            : 'Volveremos a consultar el resultado.',
+        contextAttempt: resource.contextAttempt,
+      }),
+    onPaused: (resource) =>
+      setResultQuery({
+        targetId: resource.targetId,
+        status: 'recovering',
+        message: 'Volveremos a consultar el resultado cuando esté disponible.',
+        contextAttempt: resource.contextAttempt,
+      }),
+    onError: (resource, error) =>
+      setResultQuery({
+        targetId: resource.targetId,
+        status: 'error',
+        message: errorMessage(error),
+        contextAttempt: resource.contextAttempt,
+      }),
+  });
+
+  const clearResultQuery = useCallback(
+    (restoreFocus = false): void => {
+      resultRecovery.clear();
+      setResultQuery(null);
+      pendingResultQueryFocusRef.current = false;
+      if (restoreFocus) restoreHistoryOrigin();
+    },
+    [resultRecovery, restoreHistoryOrigin],
   );
 
-  const pauseResultQuery = useCallback((): void => {
-    clearResultTimer();
-    const resource = resultQueryResourceRef.current;
-    const controller = resultQueryControllerRef.current;
-    if (!resource || !controller) return;
-    if (!failedResultRef.current || failedResultRef.current.resource !== resource) {
-      resultNeedsFreshReadRef.current = true;
-    }
-    resultQueryControllerRef.current = null;
-    resultQueryOperationRef.current += 1;
-    controller.abort();
-    setResultQuery({
-      targetId: resource.targetId,
-      status: 'recovering',
-      message: 'Volveremos a consultar el resultado cuando esté disponible.',
-      contextAttempt: resource.contextAttempt,
-    });
-  }, [clearResultTimer]);
-
-  useLayoutEffect(() => {
-    runResultQueryRef.current = runResultQuery;
-    processDueResultRef.current = processDueResult;
-    scheduleResultRetryRef.current = scheduleResultRetry;
-  }, [processDueResult, runResultQuery, scheduleResultRetry]);
+  const clearConfiguration = useCallback((): void => {
+    configurationOperationRef.current += 1;
+    configurationRecovery.clear();
+    cancelConfigurationApplication();
+    configurationTriggerRef.current = null;
+    pendingConfigurationFocusRef.current = null;
+    setConfigurationState(null);
+  }, [cancelConfigurationApplication, configurationRecovery]);
 
   const openResult = useCallback(
     (
@@ -820,13 +658,12 @@ export function useAttemptHistory({
       const resource: HistoryResultResource = {
         identity,
         targetId: id,
+        surface: 'historial',
         ...(contextAttempt ? { contextAttempt } : {}),
         handleActivityTarget,
       };
-      resultQueryResourceRef.current = resource;
-      resultQueryVisibleRef.current = true;
       pendingResultQueryFocusRef.current = true;
-      return runResultQueryRef.current(resource);
+      return resultRecovery.open(resource);
     },
     [
       activityBusy,
@@ -837,6 +674,7 @@ export function useAttemptHistory({
       history,
       identity,
       rememberHistoryOrigin,
+      resultRecovery,
       surface,
     ],
   );
@@ -877,12 +715,12 @@ export function useAttemptHistory({
   );
 
   const openConfiguration = useCallback(
-    async (
+    (
       id: string,
       rememberTrigger = true,
       requestedDisplayContext?: AttemptDisplayContext,
     ): Promise<void> => {
-      if (activityBusy.current || authPaused) return;
+      if (activityBusy.current || authPaused) return Promise.resolve();
       const contextAttempt =
         history.find((item) => item.id === id) ??
         (currentAttempt.current?.id === id ? currentAttempt.current : undefined);
@@ -903,60 +741,30 @@ export function useAttemptHistory({
         if (surface === 'historial') rememberHistoryOrigin(id, 'configuration');
       }
       const operation = ++configurationOperationRef.current;
-      configurationControllerRef.current?.abort();
-      const controller = new AbortController();
-      configurationControllerRef.current = controller;
-      const operationSurface = surface;
-      setConfigurationState({ targetId: id, displayContext, status: 'loading' });
-      try {
-        const configuration = await api.getConfiguration(id, controller.signal);
-        if (
-          controller.signal.aborted ||
-          configurationOperationRef.current !== operation ||
-          identityRef.current !== identity ||
-          surface !== operationSurface
-        ) {
-          return;
-        }
-        if (configuration.attemptId !== id) {
-          throw new AttemptApiFailure(
-            'server',
-            'La configuración recibida no coincide con el intento consultado.',
-          );
-        }
-        setConfigurationState({ targetId: id, displayContext, status: 'ready', configuration });
-      } catch (error) {
-        if (
-          controller.signal.aborted ||
-          configurationOperationRef.current !== operation ||
-          identityRef.current !== identity ||
-          surface !== operationSurface
-        ) {
-          return;
-        }
-        notifyAuthenticationFailure(error, onAuthRequired);
-        setConfigurationState({
-          targetId: id,
-          displayContext,
-          status: 'error',
-          message: errorMessage(error),
-        });
-      } finally {
-        if (configurationControllerRef.current === controller) {
-          configurationControllerRef.current = null;
-        }
-      }
+      const resource: HistoryConfigurationResource = {
+        identity,
+        targetId: id,
+        surface,
+        displayContext,
+        focusVersion: operation,
+      };
+      setConfigurationState({
+        targetId: id,
+        displayContext,
+        focusVersion: operation,
+        status: 'loading',
+      });
+      return configurationRecovery.open(resource);
     },
     [
       activityBusy,
-      api,
       authPaused,
       cancelConfigurationApplication,
+      configurationRecovery,
       editor,
       history,
       identity,
       currentAttempt,
-      onAuthRequired,
       rememberHistoryOrigin,
       surface,
     ],
@@ -1047,11 +855,6 @@ export function useAttemptHistory({
       };
     }
   }, [clearConfiguration, configurationState?.targetId, identity, restoreHistoryOrigin, surface]);
-
-  const retryConfiguration = useCallback((): void => {
-    const targetId = configurationState?.targetId;
-    if (targetId) void openConfiguration(targetId, false, configurationState?.displayContext);
-  }, [configurationState, openConfiguration]);
 
   const openDecisionInspector = useCallback(
     (target: AttemptSummary, selection: DecisionInitialSelection = 'first'): void => {
@@ -1359,7 +1162,6 @@ export function useAttemptHistory({
     if (authPaused) {
       clearPageTimer();
       cancelPageOperation(true);
-      pauseResultQuery();
       return;
     }
     if (wasPaused && authBlockedPageRef.current) {
@@ -1372,10 +1174,6 @@ export function useAttemptHistory({
       setInvalidHistoryCursor(false);
       setHistoryRecovering(true);
     }
-    if (wasPaused && resultAuthBlockedRef.current) {
-      resultAuthBlockedRef.current = false;
-      resultNeedsFreshReadRef.current = true;
-    }
     if (!historyListVisible || document.hidden || document.visibilityState === 'hidden') {
       clearPageTimer();
       cancelPageOperation(true);
@@ -1383,35 +1181,16 @@ export function useAttemptHistory({
       processDuePageRef.current();
       schedulePageRetryRef.current();
     }
-    if (!resultQueryVisibleRef.current) {
-      clearResultTimer();
-      pauseResultQuery();
-      return;
-    }
-    if (!document.hidden && document.visibilityState !== 'hidden') {
-      processDueResultRef.current();
-      scheduleResultRetryRef.current();
-    }
-  }, [
-    authPaused,
-    cancelPageOperation,
-    clearPageTimer,
-    clearResultTimer,
-    historyListVisible,
-    pauseResultQuery,
-    resultQueryVisible,
-  ]);
+  }, [authPaused, cancelPageOperation, clearPageTimer, historyListVisible]);
 
   useEffect(() => {
     const handleWake = (): void => {
       if (document.hidden || document.visibilityState === 'hidden') {
         clearPageTimer();
         cancelPageOperation(true);
-        pauseResultQuery();
         return;
       }
       processDuePageRef.current();
-      processDueResultRef.current();
     };
     window.addEventListener('focus', handleWake);
     document.addEventListener('visibilitychange', handleWake);
@@ -1419,7 +1198,7 @@ export function useAttemptHistory({
       window.removeEventListener('focus', handleWake);
       document.removeEventListener('visibilitychange', handleWake);
     };
-  }, [cancelPageOperation, clearPageTimer, pauseResultQuery]);
+  }, [cancelPageOperation, clearPageTimer]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -1431,19 +1210,12 @@ export function useAttemptHistory({
       failedPageRef.current = null;
       authBlockedPageRef.current = null;
       clearPageTimer();
-      resultQueryOperationRef.current += 1;
-      clearResultTimer();
-      resultQueryResourceRef.current = null;
-      failedResultRef.current = null;
-      resultQueryControllerRef.current?.abort();
-      resultQueryControllerRef.current = null;
       configurationOperationRef.current += 1;
-      configurationControllerRef.current?.abort();
       const application = configurationApplicationRef.current;
       configurationApplicationRef.current = null;
       application?.controller.abort();
     };
-  }, [clearPageTimer, clearResultTimer]);
+  }, [clearPageTimer]);
 
   useLayoutEffect(() => {
     if (identityRef.current === identity) return;
@@ -1589,7 +1361,6 @@ export function useAttemptHistory({
     updateSummaryById,
     openConfiguration,
     applyConfiguration,
-    retryConfiguration,
     closeConfiguration,
     clearConfiguration,
     openDecisionInspector,

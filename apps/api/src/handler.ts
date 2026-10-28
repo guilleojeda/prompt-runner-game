@@ -801,7 +801,10 @@ export const handleRequest = async (
       try {
         attempt = await attemptStore.get(identity.sub, attemptId);
       } catch (error) {
-        if (error instanceof DraftValidationError || error instanceof AttemptStoreError) {
+        if (
+          error instanceof DraftValidationError ||
+          error instanceof AttemptStoredIncompatibleError
+        ) {
           throw incompatibleConfiguration(error);
         }
         throw error;

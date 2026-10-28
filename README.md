@@ -53,7 +53,7 @@ En Historial, **Recientes** muestra las partidas cargadas y **Mejores** compara 
 
 Si falla temporalmente una página del historial, se recupera automáticamente al minuto, conservando las anteriores y la vista elegida. Al ocultar la lista se pausa esa recuperación; volver retoma sólo la consulta pendiente. Un cursor inválido ofrece **Actualizar historial** para iniciar otra cadena, sin repetir el cursor rechazado.
 
-Al abrir un resultado, su consulta también se recupera al minuto sin otro clic ni pérdida de contexto. Cerrar esa consulta termina su recuperación; los datos incompatibles no se repiten indefinidamente. La consulta de configuración conserva sus controles actuales.
+Al abrir un resultado o consultar la configuración de una partida, la consulta se recupera al minuto sin otro clic ni pérdida de contexto. Si la configuración todavía espera el cierre del intento, se sigue comprobando mientras la consulta permanezca abierta. Cerrar termina su recuperación; los datos incompatibles no se repiten indefinidamente. Consultar una configuración no reemplaza tu robot: para eso tenés que elegir **Usar esta configuración**.
 
 Después de ingresar, podés habilitar habilidades del catálogo, escribir sus descripciones y editar las instrucciones. El editor guarda automáticamente después de una pausa breve y muestra el estado: esperá **Guardado** antes de cerrar el navegador para recuperar esos cambios al volver a ingresar. Los textos se conservan literalmente, incluso vacíos o equivocados. También se puede guardar sin habilidades habilitadas.
 
