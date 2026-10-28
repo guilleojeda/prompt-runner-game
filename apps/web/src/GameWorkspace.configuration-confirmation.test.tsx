@@ -488,6 +488,7 @@ describe('GameWorkspace configuration replacement confirmation', () => {
     expect(putDraft.mock.calls[0]?.slice(0, 2)).toEqual([4, editedDraft]);
     const visibleWriteSignal = putDraft.mock.calls[0]?.[2];
     expect(visibleWriteSignal).toBeInstanceOf(AbortSignal);
+    vi.useRealTimers();
 
     fireEvent.click(button('Historial'));
     await settleWorkspace();
