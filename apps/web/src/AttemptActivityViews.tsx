@@ -511,7 +511,7 @@ export function HistoryList({
                   <time dateTime={item.createdAt}>{formatDateTime(item.createdAt)}</time>
                 </div>
                 <span>
-                  {view === 'best' ? `#${rankFor(ranked, index)} · ` : ''}
+                  {view === 'best' ? `#${rankFor(ranked, index)}, ` : ''}
                   {item.status === 'victory'
                     ? item.score === null
                       ? 'Puntaje desconocido'
