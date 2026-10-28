@@ -267,11 +267,15 @@ export function useAttemptActivity({
     clearActivityPresentation();
     onReturnToEditor?.();
   }, [clearActivityPresentation, onReturnToEditor]);
+  const activityHistoryVisible =
+    surface === 'historial' &&
+    (mode === 'loading' || mode === 'idle' || mode === 'result') &&
+    !historyResultOpen;
   const historyOwner = useAttemptHistory({
     api,
     identity: sessionSub,
     currentAttempt: attemptRef,
-    active: surface === 'historial',
+    historyVisible: activityHistoryVisible,
     surface,
     editor,
     configurationAvailable,
@@ -286,11 +290,14 @@ export function useAttemptActivity({
     historyCursor,
     historyError,
     loadingHistory,
+    historyRecovering,
+    historyRecoveryMessage,
+    invalidHistoryCursor,
     resultQuery,
     loadBootstrapPage,
     refreshHistory,
     loadMore,
-    retryHistory,
+    updateHistory,
     selectHistoryView,
     rememberHistoryOrigin,
     restoreHistoryOrigin,
@@ -1631,7 +1638,7 @@ export function useAttemptActivity({
           <span
             id="attempt-availability-status"
             className="attempt-availability-status"
-            role="status"
+            role={tryAvailabilityMessage ? 'status' : undefined}
             aria-live="polite"
           >
             {tryAvailabilityMessage}
@@ -1948,6 +1955,9 @@ export function useAttemptActivity({
         nextCursor={historyCursor}
         error={historyError}
         loading={loadingHistory}
+        recovering={historyRecovering}
+        recoveryMessage={historyRecoveryMessage}
+        invalidCursor={invalidHistoryCursor}
         busy={busy || loadingHistory}
         onOpen={(id) => void openHistoryResult(id, handoffHistoryActivityTarget)}
         onReplay={(id) => void openReplayFromHistory(id)}
@@ -1964,7 +1974,7 @@ export function useAttemptActivity({
             : null
         }
         onMore={() => void loadMore()}
-        onRetry={retryHistory}
+        onUpdate={updateHistory}
         onSelectView={selectHistoryView}
         onPrepare={returnToEditor}
       />

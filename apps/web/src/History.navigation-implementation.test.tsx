@@ -60,7 +60,7 @@ function HistoryInspectorHarness({
     api,
     identity: 'history-inspector-test',
     currentAttempt,
-    active: true,
+    historyVisible: true,
     surface: 'historial',
     editor,
     configurationAvailable: true,
@@ -86,6 +86,9 @@ function HistoryInspectorHarness({
           nextCursor={history.historyCursor}
           error={history.historyError}
           loading={history.loadingHistory}
+          recovering={history.historyRecovering}
+          recoveryMessage={history.historyRecoveryMessage}
+          invalidCursor={history.invalidHistoryCursor}
           busy={false}
           onOpen={() => undefined}
           onReplay={() => undefined}
@@ -98,7 +101,7 @@ function HistoryInspectorHarness({
           }
           configurationBusyId={null}
           onMore={() => undefined}
-          onRetry={() => undefined}
+          onUpdate={history.updateHistory}
           onSelectView={history.selectHistoryView}
         />
       </div>

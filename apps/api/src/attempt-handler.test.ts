@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { createDefaultDraft, validateDraft } from '../../../shared/robot';
 import { captureLambdaStdout } from '../../../shared/testing/lambda-telemetry.js';
@@ -50,6 +51,88 @@ const responseBody = (response: { body?: string }): Record<string, unknown> =>
   JSON.parse(response.body ?? '{}') as Record<string, unknown>;
 
 describe('attempt API projection and dispatch recovery', () => {
+  it('returns 400 invalid for an invalid attempt cursor', async () => {
+    const draft = createDefaultDraft();
+    const attemptStore = new MemoryAttemptStore({ draft: { version: 1, draft } });
+    const dependencies = {
+      store: { get: vi.fn(), put: vi.fn() },
+      attemptStore,
+      fetch: vi.fn(
+        async () => new Response(JSON.stringify({ sub: 'owner', email_verified: true })),
+      ),
+      clientId: 'client',
+      userInfoUrl: 'https://cognito.example.test/userinfo',
+    };
+    const invalidCursorEvent = eventFor('GET', '/attempts');
+    invalidCursorEvent.queryStringParameters = { cursor: 'not-a-cursor' };
+
+    const invalidCursorResponse = await handleRequest(invalidCursorEvent, dependencies);
+    expect(invalidCursorResponse.statusCode).toBe(400);
+    expect(responseBody(invalidCursorResponse)).toEqual({
+      code: 'invalid',
+      message: 'El cursor no es válido.',
+    });
+  });
+
+  it('returns 400 invalid for a Dynamo attempt cursor before querying', async () => {
+    const send = vi.fn();
+    const attemptStore = attemptStoreModule.createDynamoAttemptStore({
+      client: { send } as unknown as DynamoDBClient,
+      tableName: 'attempts',
+    });
+    const dependencies = {
+      store: { get: vi.fn(), put: vi.fn() },
+      attemptStore,
+      fetch: vi.fn(
+        async () => new Response(JSON.stringify({ sub: 'owner', email_verified: true })),
+      ),
+      clientId: 'client',
+      userInfoUrl: 'https://cognito.example.test/userinfo',
+    };
+    const invalidCursorEvent = eventFor('GET', '/attempts');
+    invalidCursorEvent.queryStringParameters = { cursor: 'not-a-cursor' };
+
+    const invalidCursorResponse = await handleRequest(invalidCursorEvent, dependencies);
+    expect({
+      statusCode: invalidCursorResponse.statusCode,
+      body: responseBody(invalidCursorResponse),
+      queryCount: send.mock.calls.length,
+    }).toEqual({
+      statusCode: 400,
+      body: { code: 'invalid', message: 'El cursor no es válido.' },
+      queryCount: 0,
+    });
+  });
+
+  it('preserves 503 dependency_unavailable for an attempt-store failure', async () => {
+    const dependencies = {
+      store: { get: vi.fn(), put: vi.fn() },
+      fetch: vi.fn(
+        async () => new Response(JSON.stringify({ sub: 'owner', email_verified: true })),
+      ),
+      clientId: 'client',
+      userInfoUrl: 'https://cognito.example.test/userinfo',
+    };
+    const storageFailure = new AttemptStoreError('No se pudo consultar los intentos.');
+    const client = {
+      send: vi.fn().mockRejectedValue(storageFailure),
+    } as unknown as DynamoDBClient;
+    const dynamoStore = attemptStoreModule.createDynamoAttemptStore({
+      client,
+      tableName: 'attempts',
+    });
+    const storageFailureResponse = await handleRequest(eventFor('GET', '/attempts'), {
+      ...dependencies,
+      attemptStore: dynamoStore,
+    });
+    expect(storageFailureResponse.statusCode).toBe(503);
+    expect(responseBody(storageFailureResponse)).toEqual({
+      code: 'dependency_unavailable',
+      message: 'No se pudo consultar los intentos.',
+    });
+    expect(client.send).toHaveBeenCalledTimes(1);
+  });
+
   it('uses the production Dynamo store with private body recovery for default attempt GETs', async () => {
     vi.stubEnv('DRAFT_TABLE_NAME', 'attempts');
     vi.stubEnv('ATTEMPT_BODIES_BUCKET', 'attempt-bodies');

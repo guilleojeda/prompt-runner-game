@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObje
 import type { ApiAuthRequired } from './api-auth.js';
 import {
   AttemptApiFailure,
+  isTransientReadFailure,
   type AttemptApi,
   type AttemptConfiguration,
   type AttemptSummary,
@@ -105,10 +106,37 @@ function errorMessage(error: unknown): string {
     : 'No se pudo consultar el historial de intentos.';
 }
 
-function notifyAuthenticationFailure(error: unknown, onAuthRequired?: ApiAuthRequired): void {
+function notifyAuthenticationFailure(
+  error: unknown,
+  onAuthRequired?: ApiAuthRequired,
+): boolean | void {
   if (error instanceof AttemptApiFailure && error.code === 'authentication') {
-    onAuthRequired?.(error.authContext);
+    return onAuthRequired?.(error.authContext);
   }
+  return undefined;
+}
+
+const HISTORY_RECOVERY_DELAY_MS = 60_000;
+const MAX_TIMEOUT_MS = 2_147_483_647;
+
+interface HistoryPageResource {
+  readonly identity: string;
+  readonly cursor: string | undefined;
+  readonly append: boolean;
+  readonly chain: number;
+}
+
+interface HistoryPageOperation {
+  readonly id: number;
+  readonly resource: HistoryPageResource;
+  readonly controller: AbortController;
+  readonly requiresVisibleList: boolean;
+  readonly recovery: boolean;
+}
+
+interface FailedHistoryPage {
+  readonly resource: HistoryPageResource;
+  readonly deadline: number;
 }
 
 export interface AttemptHistoryController {
@@ -117,6 +145,9 @@ export interface AttemptHistoryController {
   readonly historyCursor: string | undefined;
   readonly historyError: string | null;
   readonly loadingHistory: boolean;
+  readonly historyRecovering: boolean;
+  readonly historyRecoveryMessage: string | null;
+  readonly invalidHistoryCursor: boolean;
   readonly resultQuery: AttemptResultQueryState | null;
   readonly configurationState: AttemptConfigurationState | null;
   readonly decisionInspectorTarget: AttemptSummary | null;
@@ -130,7 +161,7 @@ export interface AttemptHistoryController {
   loadBootstrapPage(signal: AbortSignal, isCurrent: () => boolean): Promise<void>;
   refreshHistory(): Promise<void>;
   loadMore(): Promise<void>;
-  retryHistory(): void;
+  updateHistory(): void;
   updateSummaryById(summary: AttemptSummary): void;
   openConfiguration(
     id: string,
@@ -160,7 +191,7 @@ interface UseAttemptHistoryOptions {
   readonly api: AttemptApi;
   readonly identity: string;
   readonly currentAttempt: { readonly current: AttemptSummary | null };
-  readonly active: boolean;
+  readonly historyVisible: boolean;
   readonly surface: 'preparar' | 'historial' | 'mis-robots';
   readonly editor: RefObject<RobotEditorHandle | null>;
   readonly configurationAvailable: boolean;
@@ -174,7 +205,7 @@ export function useAttemptHistory({
   api,
   identity,
   currentAttempt,
-  active,
+  historyVisible,
   surface,
   editor,
   configurationAvailable,
@@ -189,12 +220,34 @@ export function useAttemptHistory({
   const [historyCursor, setHistoryCursor] = useState<string | undefined>();
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [loadingHistory, setLoadingHistory] = useState(false);
-  const [loadingBootstrap, setLoadingBootstrap] = useState(false);
+  const [historyRecovering, setHistoryRecovering] = useState(false);
+  const [historyRecoveryMessage, setHistoryRecoveryMessage] = useState<string | null>(null);
+  const [invalidHistoryCursor, setInvalidHistoryCursor] = useState(false);
   const [resultQuery, setResultQuery] = useState<AttemptResultQueryState | null>(null);
-  const visibleGenerationRef = useRef(0);
-  const bootstrapGenerationRef = useRef(0);
-  const visibleControllerRef = useRef<AbortController | null>(null);
   const identityRef = useRef(identity);
+  const historyVisibleRef = useRef(historyVisible);
+  const apiRef = useRef(api);
+  const authRequiredRef = useRef(onAuthRequired);
+  const mountedRef = useRef(true);
+  const pageChainRef = useRef(0);
+  const pageOperationIdRef = useRef(0);
+  const pageOperationRef = useRef<HistoryPageOperation | null>(null);
+  const failedPageRef = useRef<FailedHistoryPage | null>(null);
+  const authBlockedPageRef = useRef<HistoryPageResource | null>(null);
+  const bootstrapIdentityRef = useRef<string | null>(null);
+  const pageTimerRef = useRef<number | null>(null);
+  const runPageRef = useRef<
+    (
+      resource: HistoryPageResource,
+      options: {
+        readonly externalSignal?: AbortSignal;
+        readonly isCurrent?: () => boolean;
+        readonly requiresVisibleList: boolean;
+      },
+    ) => Promise<void>
+  >(async () => undefined);
+  const processDuePageRef = useRef<() => void>(() => undefined);
+  const schedulePageRetryRef = useRef<() => void>(() => undefined);
   const resultQueryOperationRef = useRef(0);
   const resultQueryControllerRef = useRef<AbortController | null>(null);
   const historyOriginRef = useRef<HistoryReturnOrigin | null>(null);
@@ -233,10 +286,18 @@ export function useAttemptHistory({
   const [decisionInspectorOpenVersion, setDecisionInspectorOpenVersion] = useState(0);
   const decisionInspectorTriggerRef = useRef<HTMLElement | null>(null);
   const pendingDecisionFocusRef = useRef<HTMLElement | null>(null);
+  const historyListVisible =
+    historyVisible &&
+    configurationState === null &&
+    decisionInspectorTarget === null &&
+    resultQuery === null;
 
   useLayoutEffect(() => {
     authPausedRef.current = authPaused;
-  }, [authPaused]);
+    historyVisibleRef.current = historyListVisible;
+    apiRef.current = api;
+    authRequiredRef.current = onAuthRequired;
+  }, [api, authPaused, historyListVisible, onAuthRequired]);
 
   const rememberHistoryOrigin = useCallback(
     (attemptId: string, action: string): void => {
@@ -814,40 +875,299 @@ export function useAttemptHistory({
     surface,
   ]);
 
-  useEffect(() => {
-    if (!authPaused) return;
-    cancelConfigurationApplication();
-    clearDecisionInspector(false);
-  }, [authPaused, cancelConfigurationApplication, clearDecisionInspector]);
+  const clearPageTimer = useCallback((): void => {
+    if (pageTimerRef.current === null) return;
+    window.clearTimeout(pageTimerRef.current);
+    pageTimerRef.current = null;
+  }, []);
 
-  useEffect(
-    () => () => {
+  const cancelPageOperation = useCallback((preserveResource: boolean): void => {
+    const operation = pageOperationRef.current;
+    if (!operation) return;
+    pageOperationRef.current = null;
+    pageOperationIdRef.current += 1;
+    operation.controller.abort();
+    setLoadingHistory(false);
+    if (preserveResource && !failedPageRef.current && authBlockedPageRef.current === null) {
+      failedPageRef.current = { resource: operation.resource, deadline: Date.now() };
+      setHistoryRecovering(operation.recovery);
+      if (!operation.recovery) setHistoryRecoveryMessage(null);
+    }
+  }, []);
+
+  const schedulePageRetry = useCallback((): void => {
+    clearPageTimer();
+    const pending = failedPageRef.current;
+    if (
+      !mountedRef.current ||
+      authPausedRef.current ||
+      !historyVisibleRef.current ||
+      document.hidden ||
+      document.visibilityState === 'hidden' ||
+      pageOperationRef.current !== null ||
+      pending === null ||
+      pending.resource.identity !== identityRef.current ||
+      pending.resource.chain !== pageChainRef.current
+    ) {
+      return;
+    }
+    const delay = Math.max(0, pending.deadline - Date.now());
+    pageTimerRef.current = window.setTimeout(
+      () => {
+        pageTimerRef.current = null;
+        processDuePageRef.current();
+      },
+      Math.min(MAX_TIMEOUT_MS, delay),
+    );
+  }, [clearPageTimer]);
+
+  const processDuePage = useCallback((): void => {
+    const pending = failedPageRef.current;
+    if (
+      !mountedRef.current ||
+      pending === null ||
+      authPausedRef.current ||
+      !historyVisibleRef.current ||
+      document.hidden ||
+      document.visibilityState === 'hidden' ||
+      pageOperationRef.current !== null ||
+      pending.resource.identity !== identityRef.current ||
+      pending.resource.chain !== pageChainRef.current
+    ) {
+      return;
+    }
+    if (pending.deadline > Date.now()) {
+      schedulePageRetryRef.current();
+      return;
+    }
+    clearPageTimer();
+    void runPageRef.current(pending.resource, { requiresVisibleList: true });
+  }, [clearPageTimer]);
+
+  const runPage = useCallback(
+    async (
+      resource: HistoryPageResource,
+      options: {
+        readonly externalSignal?: AbortSignal;
+        readonly isCurrent?: () => boolean;
+        readonly requiresVisibleList: boolean;
+      },
+    ): Promise<void> => {
+      const canStart =
+        mountedRef.current &&
+        !authPausedRef.current &&
+        identityRef.current === resource.identity &&
+        pageChainRef.current === resource.chain &&
+        !options.externalSignal?.aborted &&
+        options.isCurrent?.() !== false &&
+        (!options.requiresVisibleList ||
+          (historyVisibleRef.current && !document.hidden && document.visibilityState !== 'hidden'));
+      if (!canStart) return;
+
+      clearPageTimer();
+      cancelPageOperation(false);
+      const controller = new AbortController();
+      const operation: HistoryPageOperation = {
+        id: ++pageOperationIdRef.current,
+        resource,
+        controller,
+        requiresVisibleList: options.requiresVisibleList,
+        recovery: failedPageRef.current?.resource === resource,
+      };
+      pageOperationRef.current = operation;
+      setLoadingHistory(true);
+      setHistoryError(null);
+      setInvalidHistoryCursor(false);
+      setHistoryRecovering(failedPageRef.current !== null);
+
+      const abortCurrent = (): void => controller.abort();
+      if (options.externalSignal) {
+        options.externalSignal.addEventListener('abort', abortCurrent, { once: true });
+        if (options.externalSignal.aborted) controller.abort();
+      }
+      const aborted = Symbol('history-page-aborted');
+      let resolveAborted!: (value: typeof aborted) => void;
+      const abortPromise = new Promise<typeof aborted>((resolve) => {
+        resolveAborted = resolve;
+      });
+      const handleAbort = (): void => resolveAborted(aborted);
+      controller.signal.addEventListener('abort', handleAbort, { once: true });
+      if (controller.signal.aborted) handleAbort();
+
+      const isCurrentOperation = (): boolean =>
+        mountedRef.current &&
+        pageOperationRef.current === operation &&
+        pageOperationIdRef.current === operation.id &&
+        identityRef.current === resource.identity &&
+        pageChainRef.current === resource.chain &&
+        !controller.signal.aborted &&
+        !options.externalSignal?.aborted &&
+        options.isCurrent?.() !== false &&
+        !authPausedRef.current &&
+        (!operation.requiresVisibleList ||
+          (historyVisibleRef.current && !document.hidden && document.visibilityState !== 'hidden'));
+
+      try {
+        const result = await Promise.race([
+          Promise.resolve().then(() =>
+            apiRef.current.listAttempts(resource.cursor, controller.signal),
+          ),
+          abortPromise,
+        ]);
+        if (result === aborted || !isCurrentOperation()) return;
+        const page: AttemptsPage = result;
+        setHistory((current) =>
+          mergePage(current, page.attempts, currentAttempt.current, resource.append),
+        );
+        setHistoryCursor(page.nextCursor);
+        setHistoryError(null);
+        setInvalidHistoryCursor(false);
+        failedPageRef.current = null;
+        authBlockedPageRef.current = null;
+        setHistoryRecovering(false);
+        setHistoryRecoveryMessage(null);
+      } catch (error) {
+        if (!isCurrentOperation()) return;
+        const acceptedAuthFailure = notifyAuthenticationFailure(error, authRequiredRef.current);
+        const isAuthenticationError =
+          error instanceof AttemptApiFailure && error.code === 'authentication';
+        if (isAuthenticationError && acceptedAuthFailure !== false) {
+          failedPageRef.current = null;
+          authBlockedPageRef.current = resource;
+          setHistoryRecovering(false);
+          setHistoryRecoveryMessage(null);
+          setHistoryError(errorMessage(error));
+          setInvalidHistoryCursor(false);
+          return;
+        }
+        const transient = isAuthenticationError || isTransientReadFailure(error);
+        if (transient) {
+          failedPageRef.current = {
+            resource,
+            deadline: Date.now() + HISTORY_RECOVERY_DELAY_MS,
+          };
+          authBlockedPageRef.current = null;
+          setHistoryRecovering(true);
+          setHistoryRecoveryMessage(errorMessage(error));
+          setHistoryError(null);
+          setInvalidHistoryCursor(false);
+          return;
+        }
+
+        failedPageRef.current = null;
+        authBlockedPageRef.current = null;
+        setHistoryRecovering(false);
+        setHistoryRecoveryMessage(null);
+        setHistoryError(errorMessage(error));
+        const invalidCursor =
+          resource.cursor !== undefined &&
+          error instanceof AttemptApiFailure &&
+          error.code === 'invalid';
+        setInvalidHistoryCursor(invalidCursor);
+        if (invalidCursor) setHistoryCursor(undefined);
+      } finally {
+        options.externalSignal?.removeEventListener('abort', abortCurrent);
+        controller.signal.removeEventListener('abort', handleAbort);
+        if (pageOperationRef.current === operation) {
+          pageOperationRef.current = null;
+          setLoadingHistory(false);
+          schedulePageRetryRef.current();
+        }
+      }
+    },
+    [cancelPageOperation, clearPageTimer, currentAttempt],
+  );
+
+  useLayoutEffect(() => {
+    runPageRef.current = runPage;
+    processDuePageRef.current = processDuePage;
+    schedulePageRetryRef.current = schedulePageRetry;
+  }, [processDuePage, runPage, schedulePageRetry]);
+
+  const previousAuthPausedRef = useRef(authPaused);
+  useEffect(() => {
+    const wasPaused = previousAuthPausedRef.current;
+    previousAuthPausedRef.current = authPaused;
+    if (authPaused) {
+      clearPageTimer();
+      cancelPageOperation(true);
+      return;
+    }
+    if (wasPaused && authBlockedPageRef.current) {
+      failedPageRef.current = {
+        resource: authBlockedPageRef.current,
+        deadline: Date.now(),
+      };
+      authBlockedPageRef.current = null;
+      setHistoryError(null);
+      setInvalidHistoryCursor(false);
+      setHistoryRecovering(true);
+    }
+    if (!historyListVisible || document.hidden || document.visibilityState === 'hidden') {
+      clearPageTimer();
+      cancelPageOperation(true);
+      return;
+    }
+    processDuePageRef.current();
+    schedulePageRetryRef.current();
+  }, [authPaused, cancelPageOperation, clearPageTimer, historyListVisible]);
+
+  useEffect(() => {
+    const handleWake = (): void => {
+      if (document.hidden || document.visibilityState === 'hidden') {
+        clearPageTimer();
+        cancelPageOperation(true);
+        return;
+      }
+      processDuePageRef.current();
+    };
+    window.addEventListener('focus', handleWake);
+    document.addEventListener('visibilitychange', handleWake);
+    return () => {
+      window.removeEventListener('focus', handleWake);
+      document.removeEventListener('visibilitychange', handleWake);
+    };
+  }, [cancelPageOperation, clearPageTimer]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      pageOperationIdRef.current += 1;
+      pageOperationRef.current?.controller.abort();
+      pageOperationRef.current = null;
+      failedPageRef.current = null;
+      authBlockedPageRef.current = null;
+      clearPageTimer();
       resultQueryOperationRef.current += 1;
       resultQueryControllerRef.current?.abort();
-      visibleGenerationRef.current += 1;
-      visibleControllerRef.current?.abort();
       configurationOperationRef.current += 1;
       configurationControllerRef.current?.abort();
       const application = configurationApplicationRef.current;
       configurationApplicationRef.current = null;
       application?.controller.abort();
-    },
-    [],
-  );
+    };
+  }, [clearPageTimer]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (identityRef.current === identity) return;
     identityRef.current = identity;
-    visibleGenerationRef.current += 1;
-    bootstrapGenerationRef.current += 1;
-    visibleControllerRef.current?.abort();
-    visibleControllerRef.current = null;
+    pageChainRef.current = 0;
+    pageOperationIdRef.current += 1;
+    pageOperationRef.current?.controller.abort();
+    pageOperationRef.current = null;
+    failedPageRef.current = null;
+    authBlockedPageRef.current = null;
+    clearPageTimer();
+    bootstrapIdentityRef.current = null;
     setHistory([]);
     setHistoryView('recent');
     setHistoryCursor(undefined);
     setHistoryError(null);
     setLoadingHistory(false);
-    setLoadingBootstrap(false);
+    setHistoryRecovering(false);
+    setHistoryRecoveryMessage(null);
+    setInvalidHistoryCursor(false);
     clearConfiguration();
     clearDecisionInspector(false);
     clearResultQuery(false);
@@ -856,6 +1176,7 @@ export function useAttemptHistory({
   }, [
     clearConfiguration,
     clearDecisionInspector,
+    clearPageTimer,
     clearResultQuery,
     editor,
     forgetHistoryOrigin,
@@ -863,127 +1184,97 @@ export function useAttemptHistory({
   ]);
 
   useEffect(() => {
-    if (active) return;
-    visibleGenerationRef.current += 1;
-    visibleControllerRef.current?.abort();
-    visibleControllerRef.current = null;
-    setLoadingHistory(false);
-  }, [active]);
+    if (!authPaused) return;
+    cancelConfigurationApplication();
+    clearDecisionInspector(false);
+  }, [authPaused, cancelConfigurationApplication, clearDecisionInspector]);
 
   const loadBootstrapPage = useCallback(
     async (signal: AbortSignal, isCurrent: () => boolean): Promise<void> => {
-      const generation = ++bootstrapGenerationRef.current;
-      setLoadingBootstrap(true);
-      try {
-        const page: AttemptsPage = await api.listAttempts(undefined, signal);
-        if (signal.aborted || !isCurrent() || generation !== bootstrapGenerationRef.current) return;
-        setHistory((current) => mergePage(current, page.attempts, currentAttempt.current, false));
-        setHistoryCursor(page.nextCursor);
-        setHistoryError(null);
-      } catch (error) {
-        if (signal.aborted || !isCurrent() || generation !== bootstrapGenerationRef.current) return;
-        notifyAuthenticationFailure(error, onAuthRequired);
-        setHistoryError(errorMessage(error));
-      } finally {
-        if (generation === bootstrapGenerationRef.current && !signal.aborted && isCurrent()) {
-          setLoadingBootstrap(false);
-        }
+      if (bootstrapIdentityRef.current !== identity) {
+        bootstrapIdentityRef.current = identity;
+        if (pageChainRef.current === 0) pageChainRef.current = 1;
       }
+      const resource: HistoryPageResource = {
+        identity,
+        cursor: undefined,
+        append: false,
+        chain: pageChainRef.current,
+      };
+      await runPageRef.current(resource, {
+        externalSignal: signal,
+        isCurrent,
+        requiresVisibleList: false,
+      });
     },
-    [api, currentAttempt, onAuthRequired],
+    [identity],
   );
 
-  const refreshHistory = useCallback(async (): Promise<void> => {
-    const generation = ++visibleGenerationRef.current;
-    visibleControllerRef.current?.abort();
-    const controller = new AbortController();
-    visibleControllerRef.current = controller;
-    setLoadingHistory(true);
-    try {
-      const page = await api.listAttempts(undefined, controller.signal);
-      if (
-        controller.signal.aborted ||
-        generation !== visibleGenerationRef.current ||
-        identityRef.current !== identity
-      ) {
-        return;
+  const startFirstPage = useCallback(
+    (requiresVisibleList: boolean): Promise<void> => {
+      const chain = ++pageChainRef.current;
+      clearPageTimer();
+      failedPageRef.current = null;
+      authBlockedPageRef.current = null;
+      cancelPageOperation(false);
+      const resource: HistoryPageResource = {
+        identity,
+        cursor: undefined,
+        append: false,
+        chain,
+      };
+      if (authPausedRef.current) {
+        failedPageRef.current = { resource, deadline: Date.now() };
+        setHistoryRecovering(true);
+        setHistoryRecoveryMessage('La consulta se reanudará al restablecer el acceso.');
+        setHistoryError(null);
+        setInvalidHistoryCursor(false);
+        return Promise.resolve();
       }
-      setHistory((current) => mergePage(current, page.attempts, currentAttempt.current, false));
-      setHistoryCursor(page.nextCursor);
+      setHistoryRecovering(false);
+      setHistoryRecoveryMessage(null);
       setHistoryError(null);
-    } catch (error) {
-      if (
-        controller.signal.aborted ||
-        generation !== visibleGenerationRef.current ||
-        identityRef.current !== identity
-      ) {
-        return;
-      }
-      notifyAuthenticationFailure(error, onAuthRequired);
-      setHistoryError(errorMessage(error));
-    } finally {
-      if (
-        !controller.signal.aborted &&
-        generation === visibleGenerationRef.current &&
-        identityRef.current === identity
-      ) {
-        setLoadingHistory(false);
-        if (visibleControllerRef.current === controller) visibleControllerRef.current = null;
-      }
-    }
-  }, [api, currentAttempt, identity, onAuthRequired]);
+      setInvalidHistoryCursor(false);
+      return runPageRef.current(resource, { requiresVisibleList });
+    },
+    [cancelPageOperation, clearPageTimer, identity],
+  );
+
+  const refreshHistory = useCallback((): Promise<void> => startFirstPage(false), [startFirstPage]);
+
+  const updateHistory = useCallback((): void => {
+    void startFirstPage(true);
+  }, [startFirstPage]);
 
   const loadMore = useCallback(async (): Promise<void> => {
-    if (!historyCursor || loadingHistory || !active) return;
-    const generation = ++visibleGenerationRef.current;
-    visibleControllerRef.current?.abort();
-    const controller = new AbortController();
-    visibleControllerRef.current = controller;
-    setLoadingHistory(true);
-    try {
-      const page = await api.listAttempts(historyCursor, controller.signal);
-      if (
-        controller.signal.aborted ||
-        generation !== visibleGenerationRef.current ||
-        identityRef.current !== identity
-      ) {
-        return;
-      }
-      setHistory((current) => mergePage(current, page.attempts, currentAttempt.current, true));
-      setHistoryCursor(page.nextCursor);
-      setHistoryError(null);
-    } catch (error) {
-      if (
-        controller.signal.aborted ||
-        generation !== visibleGenerationRef.current ||
-        identityRef.current !== identity
-      ) {
-        return;
-      }
-      notifyAuthenticationFailure(error, onAuthRequired);
-      setHistoryError(errorMessage(error));
-    } finally {
-      if (
-        !controller.signal.aborted &&
-        generation === visibleGenerationRef.current &&
-        identityRef.current === identity
-      ) {
-        setLoadingHistory(false);
-        if (visibleControllerRef.current === controller) visibleControllerRef.current = null;
-      }
+    if (
+      !historyCursor ||
+      loadingHistory ||
+      historyRecovering ||
+      !historyVisibleRef.current ||
+      authPausedRef.current ||
+      pageOperationRef.current !== null
+    ) {
+      return;
     }
-  }, [active, api, currentAttempt, historyCursor, identity, loadingHistory, onAuthRequired]);
-
-  const retryHistory = useCallback((): void => {
-    void refreshHistory();
-  }, [refreshHistory]);
+    const resource: HistoryPageResource = {
+      identity,
+      cursor: historyCursor,
+      append: true,
+      chain: pageChainRef.current,
+    };
+    await runPageRef.current(resource, { requiresVisibleList: true });
+  }, [historyCursor, historyRecovering, identity, loadingHistory]);
 
   return {
     history,
     historyView,
     historyCursor,
     historyError,
-    loadingHistory: loadingHistory || loadingBootstrap,
+    loadingHistory,
+    historyRecovering,
+    historyRecoveryMessage,
+    invalidHistoryCursor,
     configurationState,
     decisionInspectorTarget,
     decisionInspectorSelection,
@@ -998,7 +1289,7 @@ export function useAttemptHistory({
     loadBootstrapPage,
     refreshHistory,
     loadMore,
-    retryHistory,
+    updateHistory,
     updateSummaryById,
     openConfiguration,
     applyConfiguration,
