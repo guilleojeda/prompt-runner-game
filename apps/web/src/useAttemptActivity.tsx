@@ -257,18 +257,11 @@ export function useAttemptActivity({
   const cancelBusyRef = useRef(false);
   const replayEpochRef = useRef(0);
   const recoveryControllerRef = useRef<AbortController | null>(null);
-  const historyResultTriggerRef = useRef<{
-    readonly attemptId: string;
-    readonly action: string;
-  } | null>(null);
-  const pendingHistoryFocusRef = useRef(false);
   const sessionSub = session.identity.sub;
   const clearActivityPresentation = useCallback((): void => {
     setHistoryResultOpen(false);
     setMode((current) => (current === 'result' ? 'idle' : current));
     setError(null);
-    historyResultTriggerRef.current = null;
-    pendingHistoryFocusRef.current = false;
   }, []);
   const onHistoryConfigurationApplied = useCallback((): void => {
     clearActivityPresentation();
@@ -289,6 +282,7 @@ export function useAttemptActivity({
   });
   const {
     history,
+    historyView,
     historyCursor,
     historyError,
     loadingHistory,
@@ -297,6 +291,10 @@ export function useAttemptActivity({
     refreshHistory,
     loadMore,
     retryHistory,
+    selectHistoryView,
+    rememberHistoryOrigin,
+    restoreHistoryOrigin,
+    forgetHistoryOrigin,
     updateSummaryById,
     configurationState,
     decisionInspectorTarget,
@@ -332,31 +330,16 @@ export function useAttemptActivity({
 
   const returnToEditor = useCallback((): void => {
     leaveResultPresentation();
+    forgetHistoryOrigin();
     onReturnToEditor?.();
-  }, [leaveResultPresentation, onReturnToEditor]);
+  }, [forgetHistoryOrigin, leaveResultPresentation, onReturnToEditor]);
 
   const returnToHistory = useCallback((): void => {
     setHistoryResultOpen(false);
     setMode('idle');
     setError(null);
-    pendingHistoryFocusRef.current = true;
-  }, []);
-
-  useLayoutEffect(() => {
-    if (!pendingHistoryFocusRef.current || historyResultOpen || mode !== 'idle') return;
-    pendingHistoryFocusRef.current = false;
-    const target = historyResultTriggerRef.current;
-    historyResultTriggerRef.current = null;
-    const buttons = document.querySelectorAll<HTMLButtonElement>('[data-history-attempt-id]');
-    const opener = target
-      ? [...buttons].find(
-          (button) =>
-            button.dataset.historyAttemptId === target.attemptId &&
-            button.dataset.historyAction === target.action,
-        )
-      : undefined;
-    (opener ?? document.getElementById('attempt-history-title'))?.focus();
-  }, [historyResultOpen, mode]);
+    restoreHistoryOrigin();
+  }, [restoreHistoryOrigin]);
 
   const onPresentationConfirmed = useCallback(
     (completed: AttemptSummary): void => {
@@ -701,13 +684,8 @@ export function useAttemptActivity({
   );
 
   const handoffHistoryActivityTarget = useCallback(
-    async (
-      target: AttemptSummary,
-      origin: { readonly attemptId: string; readonly action: string },
-      signal: AbortSignal,
-    ): Promise<boolean> => {
+    async (target: AttemptSummary, signal: AbortSignal): Promise<boolean> => {
       if (!isActive(target.status) && !needsAutomaticPresentation(target)) return false;
-      historyResultTriggerRef.current = origin;
       setHistoryResultOpen(true);
       clearConfiguration();
       clearDecisionInspector(false);
@@ -1110,7 +1088,6 @@ export function useAttemptActivity({
     const operationEpoch = operationEpochRef.current;
     const requestKey = makeRequestKey();
     setHistoryResultOpen(false);
-    historyResultTriggerRef.current = null;
     const foregroundRecovery = readAttemptRecovery(sessionSub);
     setMode('admitting');
     setError(null);
@@ -1367,16 +1344,7 @@ export function useAttemptActivity({
   const openReplayFromHistory = useCallback(
     async (id: string): Promise<void> => {
       if (busy) return;
-      const trigger = document.activeElement;
-      historyResultTriggerRef.current =
-        trigger instanceof HTMLButtonElement &&
-        trigger.dataset.historyAttemptId &&
-        trigger.dataset.historyAction
-          ? {
-              attemptId: trigger.dataset.historyAttemptId,
-              action: trigger.dataset.historyAction,
-            }
-          : { attemptId: id, action: 'replay' };
+      rememberHistoryOrigin(id, 'replay');
       setHistoryResultOpen(true);
       const next = history.find((item) => item.id === id);
       if (!next) {
@@ -1423,6 +1391,7 @@ export function useAttemptActivity({
       editor,
       history,
       handoffResultToActivity,
+      rememberHistoryOrigin,
       resetCancelBusy,
       updateSummaryById,
     ],
@@ -1971,17 +1940,16 @@ export function useAttemptActivity({
     />
   ) : null;
 
-  const historyView =
+  const renderedHistoryView =
     mode === 'loading' || mode === 'idle' || mode === 'result' ? (
       <HistoryList
         attempts={history}
+        view={historyView}
         nextCursor={historyCursor}
         error={historyError}
         loading={loadingHistory}
         busy={busy || loadingHistory}
-        onOpen={(id, action) =>
-          void openHistoryResult(id, handoffHistoryActivityTarget, true, action)
-        }
+        onOpen={(id) => void openHistoryResult(id, handoffHistoryActivityTarget)}
         onReplay={(id) => void openReplayFromHistory(id)}
         onInspect={(id, selection) => void openDecisionInspectorFromHistory(id, selection)}
         onConfiguration={(target) =>
@@ -1997,6 +1965,8 @@ export function useAttemptActivity({
         }
         onMore={() => void loadMore()}
         onRetry={retryHistory}
+        onSelectView={selectHistoryView}
+        onPrepare={returnToEditor}
       />
     ) : null;
 
@@ -2014,7 +1984,7 @@ export function useAttemptActivity({
     tryAvailable,
     controls: attemptControls,
     view,
-    historyView,
+    historyView: renderedHistoryView,
     historyResultView,
     configurationView,
     inspectorView,

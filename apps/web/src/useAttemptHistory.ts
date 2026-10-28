@@ -16,6 +16,14 @@ export interface AttemptDisplayContext {
 }
 
 export type DecisionInitialSelection = 'first' | 'last-action-or-decision' | 'last-decision';
+export type HistoryView = 'recent' | 'best';
+
+interface HistoryReturnOrigin {
+  readonly attemptId: string;
+  readonly action: string;
+  readonly view: HistoryView;
+  readonly rowTop: number | null;
+}
 
 export interface AttemptConfigurationState {
   readonly targetId: string;
@@ -26,14 +34,8 @@ export interface AttemptConfigurationState {
   readonly applied?: boolean;
 }
 
-export interface HistoryQueryOrigin {
-  readonly attemptId: string;
-  readonly action: string;
-}
-
 export type ActivityTargetHandler = (
   target: AttemptSummary,
-  origin: HistoryQueryOrigin,
   signal: AbortSignal,
 ) => boolean | Promise<boolean>;
 
@@ -111,6 +113,7 @@ function notifyAuthenticationFailure(error: unknown, onAuthRequired?: ApiAuthReq
 
 export interface AttemptHistoryController {
   readonly history: readonly AttemptSummary[];
+  readonly historyView: HistoryView;
   readonly historyCursor: string | undefined;
   readonly historyError: string | null;
   readonly loadingHistory: boolean;
@@ -120,6 +123,10 @@ export interface AttemptHistoryController {
   readonly decisionInspectorSelection: DecisionInitialSelection;
   readonly decisionInspectorOpenVersion: number;
   readonly queryVisible: boolean;
+  selectHistoryView(view: HistoryView): void;
+  rememberHistoryOrigin(attemptId: string, action: string): void;
+  restoreHistoryOrigin(): void;
+  forgetHistoryOrigin(): void;
   loadBootstrapPage(signal: AbortSignal, isCurrent: () => boolean): Promise<void>;
   refreshHistory(): Promise<void>;
   loadMore(): Promise<void>;
@@ -142,7 +149,6 @@ export interface AttemptHistoryController {
     id: string,
     handleActivityTarget: ActivityTargetHandler,
     rememberOrigin?: boolean,
-    originAction?: string,
     contextAttempt?: AttemptSummary,
   ): Promise<void>;
   retryResult(): void;
@@ -178,6 +184,8 @@ export function useAttemptHistory({
   onReturnToEditor,
 }: UseAttemptHistoryOptions): AttemptHistoryController {
   const [history, setHistory] = useState<readonly AttemptSummary[]>([]);
+  const [historyView, setHistoryView] = useState<HistoryView>('recent');
+  const [historyReturnRevision, setHistoryReturnRevision] = useState(0);
   const [historyCursor, setHistoryCursor] = useState<string | undefined>();
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [loadingHistory, setLoadingHistory] = useState(false);
@@ -189,8 +197,8 @@ export function useAttemptHistory({
   const identityRef = useRef(identity);
   const resultQueryOperationRef = useRef(0);
   const resultQueryControllerRef = useRef<AbortController | null>(null);
-  const resultOriginRef = useRef<HistoryQueryOrigin | null>(null);
-  const pendingResultFocusRef = useRef(false);
+  const historyOriginRef = useRef<HistoryReturnOrigin | null>(null);
+  const pendingHistoryReturnRef = useRef(false);
   const pendingResultQueryFocusRef = useRef(false);
   const activityTargetHandlerRef = useRef<ActivityTargetHandler | null>(null);
   const authPausedRef = useRef(authPaused);
@@ -230,6 +238,105 @@ export function useAttemptHistory({
     authPausedRef.current = authPaused;
   }, [authPaused]);
 
+  const rememberHistoryOrigin = useCallback(
+    (attemptId: string, action: string): void => {
+      const row = [...document.querySelectorAll<HTMLElement>('[data-history-row-id]')].find(
+        (candidate) => candidate.dataset.historyRowId === attemptId,
+      );
+      const activeElement = document.activeElement;
+      const trigger = activeElement instanceof HTMLElement ? activeElement : null;
+      const rowIsVisible = row !== undefined && row.closest('[hidden]') === null;
+      const triggerIsInRow = row !== undefined && trigger !== null && row.contains(trigger);
+      if (historyOriginRef.current && !triggerIsInRow) return;
+      if (!rowIsVisible && !triggerIsInRow) return;
+      historyOriginRef.current = {
+        attemptId,
+        action,
+        view: historyView,
+        rowTop: rowIsVisible ? row.getBoundingClientRect().top : null,
+      };
+    },
+    [historyView],
+  );
+
+  const restoreHistoryOrigin = useCallback((): void => {
+    pendingHistoryReturnRef.current = true;
+    setHistoryReturnRevision((revision) => revision + 1);
+  }, []);
+
+  const forgetHistoryOrigin = useCallback((): void => {
+    historyOriginRef.current = null;
+    pendingHistoryReturnRef.current = false;
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!pendingHistoryReturnRef.current || surface !== 'historial') return;
+    const historySection = document.querySelector<HTMLElement>('.attempt-history');
+    if (!historySection || historySection.closest('[hidden]')) return;
+
+    const origin = historyOriginRef.current;
+    if (origin && origin.view !== historyView) {
+      setHistoryView(origin.view);
+      return;
+    }
+
+    pendingHistoryReturnRef.current = false;
+    historyOriginRef.current = null;
+    const row = origin
+      ? [...historySection.querySelectorAll<HTMLElement>('[data-history-row-id]')].find(
+          (candidate) => candidate.dataset.historyRowId === origin.attemptId,
+        )
+      : undefined;
+    const actionTarget = row
+      ? [...row.querySelectorAll<HTMLElement>('[data-history-action]')].find(
+          (element) => element.dataset.historyAction === origin?.action,
+        )
+      : undefined;
+    const target = actionTarget ?? row?.querySelector<HTMLElement>('[data-history-action="open"]');
+    if (target) {
+      const disclosure = target.closest('details');
+      if (disclosure) disclosure.open = true;
+
+      const viewportHeight = window.visualViewport?.height || window.innerHeight;
+      const visibleMargin = Math.min(8, viewportHeight / 4);
+      const targetRect = target.getBoundingClientRect();
+      const preferredOffset =
+        row && origin?.rowTop !== null && origin?.rowTop !== undefined
+          ? row.getBoundingClientRect().top - origin.rowTop
+          : 0;
+      const minimumOffset = targetRect.bottom - (viewportHeight - visibleMargin);
+      const maximumOffset = targetRect.top - visibleMargin;
+      const offset =
+        minimumOffset <= maximumOffset
+          ? Math.min(Math.max(preferredOffset, minimumOffset), maximumOffset)
+          : maximumOffset;
+      const scrollElement = document.scrollingElement;
+      const maximumScrollY = scrollElement
+        ? Math.max(0, scrollElement.scrollHeight - viewportHeight)
+        : Number.POSITIVE_INFINITY;
+      const nextScrollY = Math.min(Math.max(0, window.scrollY + offset), maximumScrollY);
+      const scrollOffset = nextScrollY - window.scrollY;
+      if (scrollOffset !== 0) window.scrollBy(0, scrollOffset);
+      target.focus({ preventScroll: true });
+      return;
+    }
+
+    const historyHeading = document.getElementById('attempt-history-title');
+    if (!historyHeading) return;
+    if (typeof historyHeading.scrollIntoView === 'function') {
+      historyHeading.scrollIntoView({ block: 'nearest' });
+    }
+    historyHeading.focus({ preventScroll: true });
+  }, [
+    history,
+    historyReturnRevision,
+    historyView,
+    resultQuery,
+    surface,
+    configurationState,
+    decisionInspectorTarget,
+  ]);
+
   const cancelConfigurationApplication = useCallback((): void => {
     const application = configurationApplicationRef.current;
     if (!application) return;
@@ -253,12 +360,27 @@ export function useAttemptHistory({
     setConfigurationState(null);
   }, [cancelConfigurationApplication]);
 
-  const clearDecisionInspector = useCallback((restoreFocus = true): void => {
-    const trigger = decisionInspectorTriggerRef.current;
-    decisionInspectorTriggerRef.current = null;
-    setDecisionInspectorTarget(null);
-    pendingDecisionFocusRef.current = restoreFocus && trigger?.isConnected ? trigger : null;
-  }, []);
+  const clearDecisionInspector = useCallback(
+    (restoreFocus = true): void => {
+      const trigger = decisionInspectorTriggerRef.current;
+      const targetId = decisionInspectorTarget?.id;
+      decisionInspectorTriggerRef.current = null;
+      setDecisionInspectorTarget(null);
+      const origin = historyOriginRef.current;
+      if (
+        restoreFocus &&
+        targetId &&
+        origin?.attemptId === targetId &&
+        (origin.action === 'inspect' || origin.action === 'inspect-last')
+      ) {
+        pendingDecisionFocusRef.current = null;
+        restoreHistoryOrigin();
+        return;
+      }
+      pendingDecisionFocusRef.current = restoreFocus && trigger?.isConnected ? trigger : null;
+    },
+    [decisionInspectorTarget, restoreHistoryOrigin],
+  );
 
   useLayoutEffect(() => {
     if (decisionInspectorTarget !== null) return;
@@ -286,37 +408,29 @@ export function useAttemptHistory({
     });
   }, []);
 
-  const clearResultQuery = useCallback((restoreFocus = false): void => {
-    resultQueryOperationRef.current += 1;
-    resultQueryControllerRef.current?.abort();
-    resultQueryControllerRef.current = null;
-    setResultQuery(null);
-    pendingResultQueryFocusRef.current = false;
-    pendingResultFocusRef.current = restoreFocus;
-    if (!restoreFocus) resultOriginRef.current = null;
-  }, []);
+  const clearResultQuery = useCallback(
+    (restoreFocus = false): void => {
+      resultQueryOperationRef.current += 1;
+      resultQueryControllerRef.current?.abort();
+      resultQueryControllerRef.current = null;
+      setResultQuery(null);
+      pendingResultQueryFocusRef.current = false;
+      if (restoreFocus) restoreHistoryOrigin();
+    },
+    [restoreHistoryOrigin],
+  );
 
   const openResult = useCallback(
     async (
       id: string,
       handleActivityTarget: ActivityTargetHandler,
       rememberOrigin = true,
-      originAction = 'result',
       requestedContextAttempt?: AttemptSummary,
     ): Promise<void> => {
       if (activityBusy.current || surface !== 'historial') return;
       activityTargetHandlerRef.current = handleActivityTarget;
       if (rememberOrigin) {
-        const trigger = document.activeElement;
-        resultOriginRef.current =
-          trigger instanceof HTMLButtonElement &&
-          trigger.dataset.historyAttemptId &&
-          trigger.dataset.historyAction
-            ? {
-                attemptId: trigger.dataset.historyAttemptId,
-                action: trigger.dataset.historyAction,
-              }
-            : { attemptId: id, action: originAction };
+        rememberHistoryOrigin(id, 'open');
       }
       clearConfiguration();
       clearDecisionInspector(false);
@@ -325,7 +439,6 @@ export function useAttemptHistory({
       resultQueryControllerRef.current?.abort();
       const controller = new AbortController();
       resultQueryControllerRef.current = controller;
-      const origin = resultOriginRef.current ?? { attemptId: id, action: originAction };
       const contextAttempt =
         requestedContextAttempt?.id === id
           ? requestedContextAttempt
@@ -349,7 +462,7 @@ export function useAttemptHistory({
           );
         }
         updateSummaryById(target);
-        if (await handleActivityTarget(target, origin, controller.signal)) {
+        if (await handleActivityTarget(target, controller.signal)) {
           clearResultQuery(false);
           return;
         }
@@ -385,6 +498,7 @@ export function useAttemptHistory({
       identity,
       history,
       onAuthRequired,
+      rememberHistoryOrigin,
       surface,
       updateSummaryById,
     ],
@@ -395,7 +509,7 @@ export function useAttemptHistory({
     const handler = activityTargetHandlerRef.current;
     const contextAttempt =
       resultQuery?.status === 'ready' ? resultQuery.attempt : resultQuery?.contextAttempt;
-    if (targetId && handler) void openResult(targetId, handler, false, 'result', contextAttempt);
+    if (targetId && handler) void openResult(targetId, handler, false, contextAttempt);
   }, [openResult, resultQuery]);
 
   const closeResult = useCallback((): void => {
@@ -420,22 +534,6 @@ export function useAttemptHistory({
     }
     pendingResultQueryFocusRef.current = false;
     document.getElementById('history-result-loading-title')?.focus({ preventScroll: true });
-  }, [resultQuery, surface]);
-
-  useLayoutEffect(() => {
-    if (!pendingResultFocusRef.current || resultQuery !== null || surface !== 'historial') return;
-    pendingResultFocusRef.current = false;
-    const origin = resultOriginRef.current;
-    resultOriginRef.current = null;
-    const buttons = document.querySelectorAll<HTMLButtonElement>('[data-history-attempt-id]');
-    const opener = origin
-      ? [...buttons].find(
-          (button) =>
-            button.dataset.historyAttemptId === origin.attemptId &&
-            button.dataset.historyAction === origin.action,
-        )
-      : undefined;
-    (opener ?? document.getElementById('attempt-history-title'))?.focus();
   }, [resultQuery, surface]);
 
   const isCurrentConfigurationApplication = useCallback(
@@ -473,6 +571,7 @@ export function useAttemptHistory({
       if (rememberTrigger) {
         configurationTriggerRef.current =
           document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        if (surface === 'historial') rememberHistoryOrigin(id, 'configuration');
       }
       const operation = ++configurationOperationRef.current;
       configurationControllerRef.current?.abort();
@@ -529,6 +628,7 @@ export function useAttemptHistory({
       identity,
       currentAttempt,
       onAuthRequired,
+      rememberHistoryOrigin,
       surface,
     ],
   );
@@ -600,8 +700,15 @@ export function useAttemptHistory({
 
   const closeConfiguration = useCallback((): void => {
     const trigger = configurationTriggerRef.current;
+    const targetId = configurationState?.targetId;
     const nextOperation = configurationOperationRef.current + 1;
     clearConfiguration();
+    const origin = historyOriginRef.current;
+    if (targetId && origin?.attemptId === targetId && origin.action === 'configuration') {
+      pendingConfigurationFocusRef.current = null;
+      restoreHistoryOrigin();
+      return;
+    }
     if (trigger?.isConnected) {
       pendingConfigurationFocusRef.current = {
         trigger,
@@ -610,7 +717,7 @@ export function useAttemptHistory({
         surface,
       };
     }
-  }, [clearConfiguration, identity, surface]);
+  }, [clearConfiguration, configurationState?.targetId, identity, restoreHistoryOrigin, surface]);
 
   const retryConfiguration = useCallback((): void => {
     const targetId = configurationState?.targetId;
@@ -624,13 +731,23 @@ export function useAttemptHistory({
       cancelConfigurationApplication();
       editor.current?.cancelApplication?.();
       pendingDecisionFocusRef.current = null;
+      if (surface === 'historial') {
+        rememberHistoryOrigin(target.id, selection === 'first' ? 'inspect' : 'inspect-last');
+      }
       decisionInspectorTriggerRef.current =
         document.activeElement instanceof HTMLElement ? document.activeElement : null;
       setDecisionInspectorTarget(target);
       setDecisionInspectorSelection(selection);
       setDecisionInspectorOpenVersion((version) => version + 1);
     },
-    [activityBusy, cancelConfigurationApplication, clearConfiguration, editor],
+    [
+      activityBusy,
+      cancelConfigurationApplication,
+      clearConfiguration,
+      editor,
+      rememberHistoryOrigin,
+      surface,
+    ],
   );
 
   const openDecisionInspectorFromHistory = useCallback(
@@ -680,6 +797,7 @@ export function useAttemptHistory({
   useEffect(() => {
     if (previousSurfaceRef.current === surface) return;
     previousSurfaceRef.current = surface;
+    forgetHistoryOrigin();
     if (configurationState !== null) clearConfiguration();
     if (decisionInspectorTarget !== null) clearDecisionInspector(false);
     if (resultQuery !== null) clearResultQuery(false);
@@ -691,6 +809,7 @@ export function useAttemptHistory({
     configurationState,
     decisionInspectorTarget,
     editor,
+    forgetHistoryOrigin,
     resultQuery,
     surface,
   ]);
@@ -724,6 +843,7 @@ export function useAttemptHistory({
     visibleControllerRef.current?.abort();
     visibleControllerRef.current = null;
     setHistory([]);
+    setHistoryView('recent');
     setHistoryCursor(undefined);
     setHistoryError(null);
     setLoadingHistory(false);
@@ -731,8 +851,16 @@ export function useAttemptHistory({
     clearConfiguration();
     clearDecisionInspector(false);
     clearResultQuery(false);
+    forgetHistoryOrigin();
     editor.current?.cancelApplication?.();
-  }, [clearConfiguration, clearDecisionInspector, clearResultQuery, editor, identity]);
+  }, [
+    clearConfiguration,
+    clearDecisionInspector,
+    clearResultQuery,
+    editor,
+    forgetHistoryOrigin,
+    identity,
+  ]);
 
   useEffect(() => {
     if (active) return;
@@ -852,6 +980,7 @@ export function useAttemptHistory({
 
   return {
     history,
+    historyView,
     historyCursor,
     historyError,
     loadingHistory: loadingHistory || loadingBootstrap,
@@ -862,6 +991,10 @@ export function useAttemptHistory({
     resultQuery,
     queryVisible:
       configurationState !== null || decisionInspectorTarget !== null || resultQuery !== null,
+    selectHistoryView: setHistoryView,
+    rememberHistoryOrigin,
+    restoreHistoryOrigin,
+    forgetHistoryOrigin,
     loadBootstrapPage,
     refreshHistory,
     loadMore,

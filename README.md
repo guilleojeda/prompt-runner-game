@@ -49,6 +49,8 @@ La URL se obtiene del output `MonitoringUrl` de ese stack. El dashboard conserva
 
 La navegación **Preparar / Historial / Mis robots** muestra una superficie a la vez, tanto en teléfono como en escritorio. El editor conserva su texto, selección y guardados al navegar; al volver a Preparar se abren las habilidades activas. Las consultas conservan su origen y regreso, sin modificar el borrador.
 
+En Historial, **Recientes** muestra las partidas cargadas y **Mejores** compara sólo sus victorias con puntaje conocido y registro completo. Cada fila ofrece **Abrir** y agrupa las demás consultas en **Más acciones**. Al volver se conservan la vista, las páginas y la referencia a la partida; **Cargar 20 más** amplía ambas vistas sin cargar toda la cuenta.
+
 Después de ingresar, podés habilitar habilidades del catálogo, escribir sus descripciones y editar las instrucciones. El editor guarda automáticamente después de una pausa breve y muestra el estado: esperá **Guardado** antes de cerrar el navegador para recuperar esos cambios al volver a ingresar. Los textos se conservan literalmente, incluso vacíos o equivocados. También se puede guardar sin habilidades habilitadas.
 
 Si otra pestaña guardó antes, el editor conserva tus cambios y muestra un conflicto. Podés usar la versión guardada o decidir reemplazarla con tus cambios después de revisarla. Una nueva edición concurrente vuelve a producir un conflicto. Los fallos transitorios se recuperan automáticamente al minuto; si se perdió una respuesta de guardado, se consulta el servidor antes de decidir qué repetir.

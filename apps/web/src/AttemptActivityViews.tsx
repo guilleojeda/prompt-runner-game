@@ -8,6 +8,7 @@ import type {
   AttemptDisplayContext,
   DecisionInitialSelection,
   AttemptResultQueryState,
+  HistoryView,
 } from './useAttemptHistory.js';
 import {
   comparableVictories,
@@ -15,10 +16,7 @@ import {
   formatDateTime,
   formatMetric,
   formatProgress,
-  historyComparisonMetrics,
-  historyDetailMetrics,
   modelLabel,
-  objectCollectionStatus,
   rankFor,
   resultSourceLabel,
   statusLabel,
@@ -393,6 +391,7 @@ export function HistoryResultQuery({
 
 export function HistoryList({
   attempts,
+  view,
   nextCursor,
   error,
   loading,
@@ -404,28 +403,27 @@ export function HistoryList({
   configurationBusyId,
   onMore,
   onRetry,
+  onSelectView,
+  onPrepare,
 }: {
   attempts: readonly AttemptSummary[];
+  view: HistoryView;
   nextCursor?: string;
   error: string | null;
   loading: boolean;
   busy: boolean;
-  onOpen: (id: string, action: 'result' | 'ranking-result') => void;
+  onOpen: (id: string) => void;
   onReplay: (id: string) => void;
   onInspect?: (id: string, initialSelection: DecisionInitialSelection) => void;
   onConfiguration: (attempt: AttemptSummary) => void;
   configurationBusyId: string | null;
   onMore: () => void;
   onRetry: () => void;
+  onSelectView: (view: HistoryView) => void;
+  onPrepare?: () => void;
 }) {
   const ranked = comparableVictories(attempts);
-  const victoriesWithoutScore = attempts.filter(
-    (item) => item.status === 'victory' && item.score === null,
-  );
-  const victoriesWithoutCompleteRecord = attempts.filter(
-    (item) => item.status === 'victory' && item.score !== null && !item.recordComplete,
-  );
-  const nonVictories = attempts.filter((item) => item.status !== 'victory');
+  const visibleAttempts = view === 'best' ? ranked : attempts;
   return (
     <section className="attempt-history" aria-labelledby="attempt-history-title">
       <div className="attempt-section-heading">
@@ -435,9 +433,11 @@ export function HistoryList({
             Historial
           </h3>
         </div>
-        <span className="history-count">
-          {formatHistoryScope(attempts.length, nextCursor !== undefined)}
-        </span>
+        {(attempts.length > 0 || (!loading && error === null)) && (
+          <span className="history-count">
+            {formatHistoryScope(attempts.length, nextCursor !== undefined)}
+          </span>
+        )}
       </div>
       {error && (
         <div className="attempt-error" role="alert">
@@ -447,178 +447,157 @@ export function HistoryList({
           </button>
         </div>
       )}
-      <section className="history-ranking" aria-labelledby="history-ranking-title">
-        <div className="history-subheading">
-          <h4 id="history-ranking-title">Tus mejores soluciones</h4>
-          <span>{ranked.length} comparables</span>
-        </div>
-        <p>
-          Sólo incluye victorias con registro completo y puntaje conocido del nivel vigente. Los
-          puntos ordenan de mayor a menor; los empates conservan la misma posición. La comparación
-          usa los tokens de juego registrados, y cada modelo puede contar tokens con un tokenizador
-          distinto.
-        </p>
-        {ranked.length === 0 ? (
-          <p className="history-empty">
-            Todavía no hay victorias comparables entre los intentos cargados.
+      <div className="history-view-toggle" role="group" aria-label="Vista del historial">
+        <button
+          className="history-view-button"
+          type="button"
+          aria-pressed={view === 'recent'}
+          onClick={() => onSelectView('recent')}
+        >
+          Recientes
+        </button>
+        <button
+          className="history-view-button"
+          type="button"
+          aria-pressed={view === 'best'}
+          onClick={() => onSelectView('best')}
+        >
+          Mejores
+        </button>
+      </div>
+      {view === 'best' && (
+        <div className="history-best-context">
+          <p>
+            {ranked.length} {ranked.length === 1 ? 'victoria comparable' : 'victorias comparables'}
           </p>
-        ) : (
-          <div className="history-ranking-list">
-            {ranked.map((item, index) => (
-              <article className="history-ranking-card" key={item.id}>
-                <div>
-                  <strong>
-                    #{rankFor(ranked, index)}, {item.score!.toLocaleString('es-AR')} puntos
-                  </strong>
-                  <span>{historyComparisonMetrics(item)}</span>
-                </div>
-                <div className="history-actions">
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    data-history-attempt-id={item.id}
-                    data-history-action="ranking-result"
-                    onClick={() => onOpen(item.id, 'ranking-result')}
-                    disabled={busy}
-                  >
-                    Abrir resultado
-                  </button>
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    onClick={() => onConfiguration(item)}
-                    disabled={busy || configurationBusyId === item.id}
-                  >
-                    {configurationBusyId === item.id
-                      ? 'Cargando configuración…'
-                      : 'Ver configuración'}
-                  </button>
-                </div>
-              </article>
-            ))}
-          </div>
-        )}
-      </section>
-      {(victoriesWithoutScore.length > 0 ||
-        victoriesWithoutCompleteRecord.length > 0 ||
-        nonVictories.length > 0) && (
-        <div className="history-exclusions">
-          {victoriesWithoutScore.length > 0 && (
+          <details className="history-methodology">
+            <summary>Cómo se comparan</summary>
             <p>
-              <strong>Victorias sin puntaje exacto:</strong> {victoriesWithoutScore.length}. Se
-              conservan para consultar el resultado y la configuración.
+              Sólo incluye victorias con registro completo y puntaje conocido del nivel vigente de
+              las páginas cargadas. Los puntos ordenan de mayor a menor y los empates conservan la
+              misma posición. La comparación usa los tokens de juego registrados; cada modelo puede
+              contar tokens con un tokenizador distinto.
             </p>
-          )}
-          {victoriesWithoutCompleteRecord.length > 0 && (
-            <p>
-              <strong>Victorias con registro incompleto:</strong>{' '}
-              {victoriesWithoutCompleteRecord.length}. Se conservan fuera de la clasificación.
-            </p>
-          )}
-          {nonVictories.length > 0 && (
-            <p>
-              <strong>Otros resultados:</strong> {nonVictories.length}. Se conservan con su avance y
-              métricas, fuera de la clasificación.
-            </p>
-          )}
+          </details>
         </div>
       )}
-      {loading && attempts.length === 0 ? (
+      {loading && attempts.length === 0 && error === null ? (
         <p className="attempt-message" role="status">
           Recuperando tus intentos…
         </p>
-      ) : attempts.length === 0 ? (
-        <p className="history-empty">Todavía no hay intentos guardados.</p>
+      ) : attempts.length === 0 && !loading && error === null ? (
+        <div className="history-empty">
+          <p>Todavía no hay intentos guardados.</p>
+          <button
+            className="primary-button"
+            type="button"
+            aria-label="Preparar un robot"
+            onClick={onPrepare}
+          >
+            Preparar
+          </button>
+        </div>
+      ) : view === 'best' && attempts.length > 0 && ranked.length === 0 ? (
+        <p className="history-empty">
+          Todavía no hay victorias comparables entre los intentos cargados.
+        </p>
       ) : (
         <ul className="history-list">
-          {attempts.map((item) => (
-            <li key={item.id}>
+          {visibleAttempts.map((item, index) => (
+            <li key={item.id} data-history-row-id={item.id}>
               <div className="history-metadata">
-                <strong>{statusLabel(item.status)}</strong>
-                <span>{historyDetailMetrics(item)}</span>
-                <span>{objectCollectionStatus(item)}</span>
-                {item.status === 'victory' && (
-                  <span>
-                    Puntaje:{' '}
-                    {item.score === null ? 'desconocido' : item.score.toLocaleString('es-AR')}
-                  </span>
-                )}
-                {item.status === 'victory' && item.score === null && (
-                  <span>Fuera de clasificación: puntaje exacto no disponible.</span>
-                )}
-                {item.status === 'victory' && item.score !== null && !item.recordComplete && (
-                  <span>Fuera de clasificación: registro incompleto.</span>
-                )}
-                {item.status !== 'victory' && (
-                  <span>Fuera de clasificación: {statusLabel(item.status)}.</span>
-                )}
+                <div className="history-row-heading">
+                  <strong>{statusLabel(item.status)}</strong>
+                  <time dateTime={item.createdAt}>{formatDateTime(item.createdAt)}</time>
+                </div>
+                <span>
+                  {view === 'best' ? `#${rankFor(ranked, index)} · ` : ''}
+                  {item.status === 'victory'
+                    ? item.score === null
+                      ? 'Puntaje desconocido'
+                      : `Puntaje: ${formatMetric(item.score)} puntos`
+                    : `Avance: ${formatProgress(item.progress)}`}
+                </span>
+                <span>
+                  {item.turnsUsed} / {item.maxTurns} turnos
+                </span>
               </div>
-              <div className="history-actions">
+              <div className="history-row-actions">
                 <button
-                  className="secondary-button"
+                  className="primary-button history-open-button"
                   type="button"
                   data-history-attempt-id={item.id}
-                  data-history-action="result"
-                  onClick={() => onOpen(item.id, 'result')}
+                  data-history-action="open"
+                  onClick={() => onOpen(item.id)}
                   disabled={busy}
                 >
-                  Ver resultado
+                  Abrir
                 </button>
-                {item.recordComplete && isTerminal(item.status) && item.turnsUsed > 0 && (
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    data-history-attempt-id={item.id}
-                    data-history-action="replay"
-                    onClick={() => onReplay(item.id)}
-                    disabled={busy}
-                  >
-                    Ver de nuevo
-                  </button>
-                )}
-                {isTerminal(item.status) &&
-                  item.recordComplete &&
-                  item.presentationComplete &&
-                  onInspect && (
-                    <>
-                      <button
-                        className="secondary-button"
-                        type="button"
-                        onClick={() => onInspect(item.id, 'first')}
-                        disabled={busy}
-                      >
-                        Inspeccionar decisiones
-                      </button>
-                      {item.status !== 'victory' && (
+                {isTerminal(item.status) && (
+                  <details className="history-actions-disclosure">
+                    <summary>Más acciones</summary>
+                    <div className="history-actions">
+                      {item.recordComplete && item.turnsUsed > 0 && (
                         <button
                           className="secondary-button"
                           type="button"
-                          onClick={() =>
-                            onInspect(
-                              item.id,
-                              item.status === 'defeat'
-                                ? 'last-action-or-decision'
-                                : 'last-decision',
-                            )
-                          }
+                          data-history-attempt-id={item.id}
+                          data-history-action="replay"
+                          onClick={() => onReplay(item.id)}
                           disabled={busy}
                         >
-                          {item.status === 'defeat' ? 'Ir a la última acción' : 'Ver último paso'}
+                          Ver de nuevo
                         </button>
                       )}
-                    </>
-                  )}
-                {isTerminal(item.status) && (
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    onClick={() => onConfiguration(item)}
-                    disabled={busy || configurationBusyId === item.id}
-                  >
-                    {configurationBusyId === item.id
-                      ? 'Cargando configuración…'
-                      : 'Ver configuración'}
-                  </button>
+                      {item.recordComplete && item.presentationComplete && onInspect && (
+                        <>
+                          <button
+                            className="secondary-button"
+                            type="button"
+                            data-history-attempt-id={item.id}
+                            data-history-action="inspect"
+                            onClick={() => onInspect(item.id, 'first')}
+                            disabled={busy}
+                          >
+                            Inspeccionar decisiones
+                          </button>
+                          {item.status !== 'victory' && (
+                            <button
+                              className="secondary-button"
+                              type="button"
+                              data-history-attempt-id={item.id}
+                              data-history-action="inspect-last"
+                              onClick={() =>
+                                onInspect(
+                                  item.id,
+                                  item.status === 'defeat'
+                                    ? 'last-action-or-decision'
+                                    : 'last-decision',
+                                )
+                              }
+                              disabled={busy}
+                            >
+                              {item.status === 'defeat'
+                                ? 'Ir a la última acción'
+                                : 'Ver último paso'}
+                            </button>
+                          )}
+                        </>
+                      )}
+                      <button
+                        className="secondary-button"
+                        type="button"
+                        data-history-attempt-id={item.id}
+                        data-history-action="configuration"
+                        onClick={() => onConfiguration(item)}
+                        disabled={busy || configurationBusyId === item.id}
+                      >
+                        {configurationBusyId === item.id
+                          ? 'Cargando configuración…'
+                          : 'Ver configuración'}
+                      </button>
+                    </div>
+                  </details>
                 )}
               </div>
             </li>
@@ -626,7 +605,12 @@ export function HistoryList({
         </ul>
       )}
       {nextCursor && (
-        <button className="secondary-button" type="button" onClick={onMore} disabled={busy}>
+        <button
+          className="secondary-button history-load-more"
+          type="button"
+          onClick={onMore}
+          disabled={busy}
+        >
           Cargar 20 más
         </button>
       )}
