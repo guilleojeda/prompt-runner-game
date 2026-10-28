@@ -2267,14 +2267,14 @@ describe('AttemptActivity', () => {
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
     await screen.findByText('Historial');
-    const open = await historyActionForRow('Abrir', 'Recorrido incompleto');
+    const open = await historyActionForRow('Abrir', 'Victoria');
     const history = historySection();
-    const incompleteRow = within(history)
+    const pendingRow = within(history)
       .getAllByRole('listitem')
-      .find((row) => row.textContent?.includes('Recorrido incompleto'));
-    expect(incompleteRow).toBeTruthy();
+      .find((row) => row.textContent?.includes('Victoria'));
+    expect(pendingRow).toBeTruthy();
     expect(
-      within(incompleteRow!).queryByRole('button', { name: 'Inspeccionar decisiones' }),
+      within(pendingRow!).queryByRole('button', { name: 'Inspeccionar decisiones' }),
     ).toBeNull();
     fireEvent.click(open);
     expect(await screen.findByRole('button', { name: 'Completar reproducción' })).toBeTruthy();

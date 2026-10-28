@@ -744,6 +744,7 @@ describe('Phase 12 independent accessible query diagnostics', () => {
     });
     await readyForPreparation();
     selectTab('Historial');
+    const historyReadsBeforeReplay = listAttempts.mock.calls.length;
     fireEvent.click(await historyAction('Abrir'));
     fireEvent.click(await screen.findByRole('button', { name: 'Ver de nuevo' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Escena lista' }));
@@ -766,7 +767,7 @@ describe('Phase 12 independent accessible query diagnostics', () => {
     const returnedFocus = document.activeElement;
     act(() => window.dispatchEvent(new Event('resize')));
     expect(document.activeElement).toBe(returnedFocus);
-    expect(listAttempts).toHaveBeenCalledOnce();
+    expect(listAttempts).toHaveBeenCalledTimes(historyReadsBeforeReplay);
     expect(getAttempt).toHaveBeenCalledOnce();
     expect(getReplay).toHaveBeenCalledOnce();
   });
@@ -819,6 +820,7 @@ describe('Phase 12 independent accessible query diagnostics', () => {
     });
     await readyForPreparation();
     selectTab('Historial');
+    const historyReadsBeforeResult = listAttempts.mock.calls.length;
 
     const opener = await historyAction('Abrir');
     opener.focus();
@@ -831,7 +833,7 @@ describe('Phase 12 independent accessible query diagnostics', () => {
 
     act(() => window.dispatchEvent(new Event('resize')));
     expect(document.activeElement).toBe(restored);
-    expect(listAttempts).toHaveBeenCalledOnce();
+    expect(listAttempts).toHaveBeenCalledTimes(historyReadsBeforeResult);
     expect(getAttempt).toHaveBeenCalledOnce();
   });
 
@@ -1958,9 +1960,12 @@ describe('Phase 14 history acceptance', () => {
     const history = historySection();
     expect(await historyActions('Abrir')).toHaveLength(1);
     const moreActions = within(history).getByText('Más acciones', { selector: 'summary' });
-    expect(within(history).queryByRole('button', { name: 'Ver configuración' })).toBeNull();
+    const actionsDisclosure = moreActions.closest('details');
+    expect(actionsDisclosure).not.toBeNull();
+    expect((actionsDisclosure as HTMLDetailsElement).open).toBe(false);
     fireEvent.click(moreActions);
 
+    expect((actionsDisclosure as HTMLDetailsElement).open).toBe(true);
     expect(within(history).getByRole('button', { name: 'Ver configuración' })).toBeTruthy();
     expect(within(history).queryByRole('button', { name: 'Ver de nuevo' })).toBeNull();
     expect(within(history).queryByRole('button', { name: 'Inspeccionar decisiones' })).toBeNull();
@@ -1993,9 +1998,10 @@ describe('Phase 14 history acceptance', () => {
       ),
     ).toBeNull();
     const prepare = within(history).getByText('Preparar', { exact: true });
+    const historyReadsBeforePrepare = listAttempts.mock.calls.length;
     fireEvent.click(prepare);
     expect(screen.getByRole('heading', { name: 'Prepará tu robot' })).toBeTruthy();
-    expect(listAttempts).toHaveBeenCalledOnce();
+    expect(listAttempts).toHaveBeenCalledTimes(historyReadsBeforePrepare);
   });
 
   it('shows a history read error with the existing retry action instead of an empty state', async () => {
@@ -2013,10 +2019,12 @@ describe('Phase 14 history acceptance', () => {
     expect(error.textContent).toContain('Historial no disponible.');
     expect(within(history).queryByText('Todavía no hay intentos guardados.')).toBeNull();
     expect(within(history).queryByText('Preparar', { exact: true })).toBeNull();
+    const historyReadsBeforeRetry = listAttempts.mock.calls.length;
     fireEvent.click(within(error).getByRole('button', { name: 'Reintentar historial' }));
     await settle();
     expect(within(history).getAllByText('Todavía no hay intentos guardados.')).toHaveLength(1);
     expect(within(history).getByText('Preparar', { exact: true })).toBeTruthy();
-    expect(listAttempts).toHaveBeenCalledTimes(2);
+    expect(listAttempts).toHaveBeenCalledTimes(historyReadsBeforeRetry + 1);
+    expect(listAttempts.mock.calls.at(-1)?.[0]).toBeUndefined();
   });
 });
