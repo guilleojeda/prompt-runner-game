@@ -501,7 +501,8 @@ describe('GameWorkspace queried result recovery', () => {
     expect(getAttempt).toHaveBeenCalledTimes(2);
     expect(getAttempt.mock.calls.map(([id]) => id)).toEqual([target.id, target.id]);
     expect(within(visibleResultPanel()).getByRole('heading', { name: 'Victoria' })).toBeTruthy();
-    expect(within(visibleResultPanel()).getByText('Puntaje: 140')).toBeTruthy();
+    const score = within(visibleResultPanel()).getByLabelText('Puntaje de la victoria');
+    expect(within(score).getByText('140,00', { exact: true })).toBeTruthy();
   });
 
   it('uses current credentials after App declines an obsolete auth context', async () => {
