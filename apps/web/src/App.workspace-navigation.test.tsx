@@ -16,6 +16,13 @@ import { App } from './App.js';
 import { type AuthClient, type AuthConfig, type AuthSession } from './auth.js';
 import { AttemptApiFailure, type AttemptApi, type AttemptSummary } from './attempt-api.js';
 import { DraftApiFailure, type DraftApi } from './draft-api.js';
+import {
+  historyAction,
+  historyActionForRow,
+  historyActions,
+  historySection,
+  settle,
+} from './History.test-support.js';
 import { type SavedRobotApi } from './saved-robot-api.js';
 
 vi.mock('./replay/ReplayScene.js', () => ({
@@ -257,20 +264,6 @@ async function readyForPreparation(): Promise<HTMLTextAreaElement> {
   return instructions;
 }
 
-function historySection(): HTMLElement {
-  const heading = screen.getByRole('heading', { name: 'Historial' });
-  const section = heading.closest('section');
-  expect(section).not.toBeNull();
-  return section as HTMLElement;
-}
-
-async function historyButton(name: string): Promise<HTMLButtonElement> {
-  const heading = await screen.findByRole('heading', { name: 'Historial' });
-  const section = heading.closest('section');
-  expect(section).not.toBeNull();
-  return (await within(section as HTMLElement).findByRole('button', { name })) as HTMLButtonElement;
-}
-
 function copy(name: string, id: string, instructions: string): SavedRobot {
   const draft = { ...createDefaultDraft(), instructions };
   return {
@@ -303,12 +296,6 @@ function deferred<T>() {
     reject = rejectPromise;
   });
   return { promise, resolve, reject };
-}
-
-async function settle(): Promise<void> {
-  await act(async () => {
-    for (let index = 0; index < 16; index += 1) await Promise.resolve();
-  });
 }
 
 async function advance(milliseconds: number): Promise<void> {
@@ -718,13 +705,13 @@ describe('App workspace navigation acceptance', () => {
     });
     await readyForPreparation();
     selectTab('Historial');
-    const opener = await historyButton('Ver resultado');
+    const opener = await historyAction('Abrir');
     fireEvent.click(opener);
     expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Volver al historial' }));
 
     expect(tab('Historial').getAttribute('aria-current')).toBe('page');
-    const restoredOpener = within(historySection()).getByRole('button', { name: 'Ver resultado' });
+    const restoredOpener = within(historySection()).getByRole('button', { name: 'Abrir' });
     expect(document.activeElement).toBe(restoredOpener);
     expect(getAttempt).toHaveBeenCalledOnce();
   });
@@ -743,7 +730,7 @@ describe('App workspace navigation acceptance', () => {
     });
     await readyForPreparation();
     selectTab('Historial');
-    fireEvent.click(await historyButton('Ver configuración'));
+    fireEvent.click(await historyAction('Ver configuración'));
     expect(await screen.findByRole('heading', { name: 'Configuración del intento' })).toBeTruthy();
     expect(screen.getByText(candidate.instructions)).toBeTruthy();
     expect(screen.queryByRole('textbox', { name: 'Qué debe tener en cuenta el robot' })).toBeNull();
@@ -780,17 +767,12 @@ describe('App workspace navigation acceptance', () => {
     });
     await readyForPreparation();
     selectTab('Historial');
-    await within(historySection()).findAllByRole('button', { name: 'Ver configuración' });
-    const configButtons = within(historySection()).getAllByRole('button', {
-      name: 'Ver configuración',
-    });
+    const configButtons = await historyActions('Ver configuración');
     fireEvent.click(configButtons[0]!);
     expect(await screen.findByText('Cargando la configuración guardada…')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Cerrar' }));
     expect(requestedSignals[0]?.aborted).toBe(true);
-    fireEvent.click(
-      within(historySection()).getAllByRole('button', { name: 'Ver configuración' })[1]!,
-    );
+    fireEvent.click((await historyActions('Ver configuración'))[1]!);
     expect(await screen.findByText('Selección vigente.')).toBeTruthy();
     const focusBeforeLateResponse = document.activeElement;
 
@@ -840,7 +822,7 @@ describe('App workspace navigation acceptance', () => {
       await readyForPreparation();
       selectTab(source === 'history' ? 'Historial' : 'Mis robots');
       if (source === 'history') {
-        fireEvent.click(await historyButton(sourceAction));
+        fireEvent.click(await historyAction(sourceAction));
         await screen.findByRole('button', { name: 'Usar esta configuración' });
         fireEvent.click(screen.getByRole('button', { name: 'Usar esta configuración' }));
       } else {
@@ -925,7 +907,7 @@ describe('App workspace navigation acceptance', () => {
       const instructions = await readyForPreparation();
       selectTab(source === 'history' ? 'Historial' : 'Mis robots');
       if (source === 'history') {
-        fireEvent.click(await historyButton('Ver configuración'));
+        fireEvent.click(await historyAction('Ver configuración'));
         await screen.findByRole('button', { name: 'Usar esta configuración' });
         fireEvent.click(screen.getByRole('button', { name: 'Usar esta configuración' }));
       } else {
@@ -1081,7 +1063,7 @@ describe('App workspace navigation acceptance', () => {
     });
     await readyForPreparation();
     selectTab('Historial');
-    fireEvent.click(await historyButton('Ver de nuevo'));
+    fireEvent.click(await historyAction('Ver de nuevo'));
     const readyButton = await screen.findByRole('button', { name: 'Escena lista' });
     fireEvent.click(readyButton);
     const finishButton = await screen.findByRole('button', { name: 'Terminar escena' });
@@ -1113,7 +1095,7 @@ describe('App workspace navigation acceptance', () => {
     });
     await readyForPreparation();
     selectTab('Historial');
-    fireEvent.click(await historyButton('Inspeccionar decisiones'));
+    fireEvent.click(await historyAction('Inspeccionar decisiones'));
     expect(await screen.findByRole('heading', { name: 'Inspeccionar decisiones' })).toBeTruthy();
     expect(tab('Historial').getAttribute('aria-current')).toBe('page');
     expect(screen.queryByRole('textbox', { name: 'Qué debe tener en cuenta el robot' })).toBeNull();
@@ -1211,11 +1193,7 @@ describe('App workspace navigation acceptance', () => {
     expect(screen.getByRole('heading', { name: 'Historial' })).toBeTruthy();
     await settle();
     expect(screen.getByText('Derrota')).toBeTruthy();
-    const otherRow = within(historySection()).getByText('Derrota').closest('li');
-    expect(otherRow).not.toBeNull();
-    fireEvent.click(
-      within(otherRow as HTMLElement).getByRole('button', { name: 'Ver configuración' }),
-    );
+    fireEvent.click(await historyActionForRow('Ver configuración', 'Derrota'));
     await settle();
     expect(screen.getByText(otherConfiguration.instructions)).toBeTruthy();
     expect(getConfiguration).toHaveBeenCalledWith(other.id, expect.any(AbortSignal));
@@ -1260,7 +1238,7 @@ describe('App workspace navigation acceptance', () => {
     });
     await settle();
     selectTab('Historial');
-    fireEvent.click(within(historySection()).getByRole('button', { name: 'Ver configuración' }));
+    fireEvent.click(await historyAction('Ver configuración'));
     expect(getConfiguration).toHaveBeenCalledOnce();
 
     await advance(1_000);

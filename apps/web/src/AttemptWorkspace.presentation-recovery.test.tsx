@@ -10,6 +10,11 @@ import type { AttemptSummary, DecisionIndex, ReplayRecordView } from '../../../s
 import type { AuthSession } from './auth.js';
 import { AttemptApiFailure, isTransientReadFailure, type AttemptApi } from './attempt-api.js';
 import { AttemptActivityHarness as AttemptActivity } from './AttemptActivity.test-support.js';
+import {
+  historyActionForRow,
+  historySection,
+  openHistoryActionMenus,
+} from './History.test-support.js';
 import type { AttemptActivityHandle } from './useAttemptActivity.js';
 import type { RobotEditorHandle } from './RobotEditor.js';
 import { writeAttemptRecovery } from './attempt-recovery.js';
@@ -547,14 +552,15 @@ describe('AttemptActivity presentation ACK recovery', () => {
     expect(screen.queryByRole('heading', { name: 'Recorrido incompleto' })).toBeNull();
     expect(screen.queryByRole('button', { name: /Reintentar cierre/ })).toBeNull();
     expect(screen.getByRole('alert').textContent?.trim()).not.toBe('');
-    const history = screen.getByRole('heading', { name: 'Historial' }).closest('section');
-    expect(history).not.toBeNull();
-    const rowB = Array.from((history as HTMLElement).querySelectorAll('li')).find((row) =>
-      row.textContent?.includes('Recorrido incompleto'),
-    );
-    expect(rowB).toBeTruthy();
+    const history = historySection();
+    await historyActionForRow('Abrir', 'Recorrido incompleto');
+    const incompleteRow = within(history)
+      .getAllByRole('listitem')
+      .find((row) => row.textContent?.includes('Recorrido incompleto'));
+    expect(incompleteRow).toBeTruthy();
+    openHistoryActionMenus(incompleteRow!);
     expect(
-      within(rowB as HTMLElement).queryByRole('button', { name: 'Inspeccionar decisiones' }),
+      within(incompleteRow!).queryByRole('button', { name: 'Inspeccionar decisiones' }),
     ).toBeNull();
     expect(attemptApi.createAttempt).not.toHaveBeenCalled();
     expect(attemptApi.startAttempt).not.toHaveBeenCalled();
@@ -627,15 +633,7 @@ describe('AttemptActivity presentation ACK recovery', () => {
       JSON.parse(window.sessionStorage.getItem('prompt-runner:attempt-recovery') ?? '{}'),
     ).toMatchObject({ sub: ACCOUNT, attemptId: pendingB.id });
 
-    const history = screen.getByRole('heading', { name: 'Historial' }).closest('section');
-    expect(history).not.toBeNull();
-    const cRow = Array.from((history as HTMLElement).querySelectorAll('li')).find((row) =>
-      row.textContent?.includes('Derrota'),
-    );
-    expect(cRow).toBeTruthy();
-    fireEvent.click(
-      within(cRow as HTMLElement).getByRole('button', { name: 'Inspeccionar decisiones' }),
-    );
+    fireEvent.click(await historyActionForRow('Inspeccionar decisiones', 'Derrota'));
     await act(async () => vi.advanceTimersByTimeAsync(0));
     await settle();
     expect(screen.getByRole('heading', { name: 'Inspeccionar decisiones' })).toBeTruthy();
@@ -674,7 +672,7 @@ describe('AttemptActivity presentation ACK recovery', () => {
       await Promise.resolve();
     });
     await settle();
-    await waitForVictoryRow('Inspeccionar decisiones');
+    await waitForHistoryAction('Inspeccionar decisiones');
     expect(screen.getByRole('heading', { name: 'Inspeccionar decisiones' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Recorrido incompleto' })).toBeTruthy();
     expect(screen.queryByRole('alert')).toBeNull();
@@ -1065,17 +1063,6 @@ describe('AttemptActivity presentation ACK recovery', () => {
   });
 });
 
-async function waitForVictoryRow(actionName: string): Promise<HTMLElement> {
-  let matched: HTMLElement | undefined;
-  await act(async () => {
-    for (let index = 0; index < 24; index += 1) await Promise.resolve();
-    const history = screen.getByRole('heading', { name: 'Historial' }).closest('section');
-    matched = Array.from((history as HTMLElement).querySelectorAll('li')).find(
-      (row) =>
-        row.textContent?.includes('Victoria') &&
-        within(row).queryByRole('button', { name: actionName }),
-    );
-  });
-  expect(matched).toBeTruthy();
-  return matched as HTMLElement;
+async function waitForHistoryAction(actionName: string): Promise<HTMLButtonElement> {
+  return historyActionForRow(actionName, 'Victoria');
 }

@@ -22,6 +22,14 @@ import {
   type DecisionIndex,
 } from './attempt-api.js';
 import { AttemptActivityHarness as AttemptActivity } from './AttemptActivity.test-support.js';
+import {
+  historyAction,
+  historyActionForRow,
+  historyActions,
+  historySection,
+  openHistoryActionMenus,
+  selectHistoryView,
+} from './History.test-support.js';
 import type { AttemptActivityHandle } from './useAttemptActivity.js';
 import { RobotEditor, type RobotEditorHandle } from './RobotEditor.js';
 import type { DraftApi } from './draft-api.js';
@@ -391,22 +399,14 @@ describe('AttemptActivity', () => {
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
-    const history = await screen.findByRole('heading', { name: 'Historial' });
-    fireEvent.click(
-      await within(history.closest('section') as HTMLElement).findByRole('button', {
-        name: 'Inspeccionar decisiones',
-      }),
-    );
+    await screen.findByRole('heading', { name: 'Historial' });
+    fireEvent.click(await historyAction('Inspeccionar decisiones'));
     expect(await screen.findByRole('heading', { name: 'Inspeccionar decisiones' })).toBeTruthy();
     await waitFor(() =>
       expect(getDecisionIndex).toHaveBeenCalledWith(terminal.id, expect.any(AbortSignal)),
     );
     fireEvent.click(screen.getByRole('button', { name: 'Cerrar inspección' }));
-    fireEvent.click(
-      await within(history.closest('section') as HTMLElement).findByRole('button', {
-        name: 'Ver resultado',
-      }),
-    );
+    fireEvent.click(await historyAction('Abrir'));
     expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
     fireEvent.click(
       within(
@@ -464,12 +464,8 @@ describe('AttemptActivity', () => {
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
-    const history = await screen.findByRole('heading', { name: 'Historial' });
-    fireEvent.click(
-      await within(history.closest('section') as HTMLElement).findByRole('button', {
-        name: 'Ver resultado',
-      }),
-    );
+    await screen.findByRole('heading', { name: 'Historial' });
+    fireEvent.click(await historyAction('Abrir'));
     const result = await screen.findByRole('heading', { name: 'Derrota' });
     const resultSection = result.closest('section') as HTMLElement;
     fireEvent.click(within(resultSection).getByRole('button', { name: 'Ir a la última acción' }));
@@ -534,21 +530,14 @@ describe('AttemptActivity', () => {
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
-    const history = await screen.findByRole('heading', { name: 'Historial' });
-    const historySection = history.closest('section') as HTMLElement;
-    fireEvent.click(await within(historySection).findByRole('button', { name: 'Ver último paso' }));
+    await screen.findByRole('heading', { name: 'Historial' });
+    fireEvent.click(await historyAction('Ver último paso'));
     expect(await screen.findByRole('heading', { name: 'Decisión 2, casilla 4' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Cerrar inspección' }));
-    fireEvent.click(
-      await within(historySection).findByRole('button', { name: 'Inspeccionar decisiones' }),
-    );
+    fireEvent.click(await historyAction('Inspeccionar decisiones'));
     expect(await screen.findByRole('heading', { name: 'Decisión 1, casilla 3' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Cerrar inspección' }));
-    fireEvent.click(
-      await within(historySection).findByRole('button', {
-        name: 'Ver resultado',
-      }),
-    );
+    fireEvent.click(await historyAction('Abrir'));
     const result = await screen.findByRole('heading', { name: 'Recorrido incompleto' });
     fireEvent.click(
       within(result.closest('section') as HTMLElement).getByRole('button', {
@@ -612,12 +601,7 @@ describe('AttemptActivity', () => {
 
     const history = screen.getByRole('heading', { name: 'Historial' }).closest('section');
     expect(history).not.toBeNull();
-    const historyRows = await within(history as HTMLElement).findAllByRole('listitem');
-    fireEvent.click(
-      within(historyRows[1] as HTMLElement).getByRole('button', {
-        name: 'Inspeccionar decisiones',
-      }),
-    );
+    fireEvent.click(await historyActionForRow('Inspeccionar decisiones', 'Recorrido incompleto'));
     expect(await screen.findByRole('heading', { name: 'Inspeccionar decisiones' })).toBeTruthy();
     expect(
       screen.getByText(/Intento inspeccionado: Recorrido incompleto, 21 sept 2026/),
@@ -689,17 +673,7 @@ describe('AttemptActivity', () => {
     expect(screen.getByRole('heading', { name: 'Victoria' })).toBeTruthy();
     expect(completePresentation).toHaveBeenCalledOnce();
 
-    const history = screen.getByRole('heading', { name: 'Historial' }).closest('section');
-    expect(history).not.toBeNull();
-    const rowB = Array.from((history as HTMLElement).querySelectorAll('li')).find((row) =>
-      row.textContent?.includes('Recorrido incompleto'),
-    );
-    expect(rowB).toBeTruthy();
-    fireEvent.click(
-      within(rowB as HTMLElement).getByRole('button', {
-        name: 'Inspeccionar decisiones',
-      }),
-    );
+    fireEvent.click(await historyActionForRow('Inspeccionar decisiones', 'Recorrido incompleto'));
     await act(async () => vi.advanceTimersByTimeAsync(0));
     await settleWorkspacePromises();
     expect(screen.getByRole('heading', { name: 'Inspeccionar decisiones' })).toBeTruthy();
@@ -757,22 +731,14 @@ describe('AttemptActivity', () => {
       />,
     );
 
-    const history = await screen.findByRole('heading', { name: 'Historial' });
-    fireEvent.click(
-      await within(history.closest('section') as HTMLElement).findByRole('button', {
-        name: 'Inspeccionar decisiones',
-      }),
-    );
+    await screen.findByRole('heading', { name: 'Historial' });
+    fireEvent.click(await historyAction('Inspeccionar decisiones'));
     expect(await screen.findByRole('heading', { name: 'Inspeccionar decisiones' })).toBeTruthy();
     await screen.findByRole('alert');
     expect(onAuthRequired).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Cerrar inspección' }));
 
-    fireEvent.click(
-      await within(history.closest('section') as HTMLElement).findByRole('button', {
-        name: 'Ver resultado',
-      }),
-    );
+    fireEvent.click(await historyAction('Abrir'));
     expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
     fireEvent.click(
       within(
@@ -842,12 +808,8 @@ describe('AttemptActivity', () => {
       />,
     );
 
-    const history = await screen.findByRole('heading', { name: 'Historial' });
-    fireEvent.click(
-      await within(history.closest('section') as HTMLElement).findByRole('button', {
-        name: 'Inspeccionar decisiones',
-      }),
-    );
+    await screen.findByRole('heading', { name: 'Historial' });
+    fireEvent.click(await historyAction('Inspeccionar decisiones'));
     expect(await screen.findByRole('heading', { name: 'Inspeccionar decisiones' })).toBeTruthy();
     expect((await screen.findByRole('alert')).textContent).toContain('La sesión venció.');
     expect(onAuthRequired).toHaveBeenCalledWith(9);
@@ -883,12 +845,8 @@ describe('AttemptActivity', () => {
     const ref = { current: null } as unknown as { current: AttemptActivityHandle | null };
     render(<AttemptActivity ref={ref} api={attemptApi} editor={editor} session={session()} />);
 
-    const history = await screen.findByRole('heading', { name: 'Historial' });
-    fireEvent.click(
-      await within(history.closest('section') as HTMLElement).findByRole('button', {
-        name: 'Ver resultado',
-      }),
-    );
+    await screen.findByRole('heading', { name: 'Historial' });
+    fireEvent.click(await historyAction('Abrir'));
     expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
     fireEvent.click(
       within(
@@ -1514,8 +1472,10 @@ describe('AttemptActivity', () => {
       const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
       render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
-      const showResult = await screen.findByRole('button', { name: 'Ver resultado' });
-      expect(screen.queryByRole('button', { name: 'Ver de nuevo' })).toBeNull();
+      const showResult = await historyAction('Abrir');
+      const history = historySection();
+      openHistoryActionMenus(history);
+      expect(within(history).queryByRole('button', { name: 'Ver de nuevo' })).toBeNull();
       fireEvent.click(showResult);
       expect(await screen.findByRole('heading', { name: label })).toBeTruthy();
       expect(screen.queryByRole('button', { name: 'Ver de nuevo' })).toBeNull();
@@ -1543,16 +1503,9 @@ describe('AttemptActivity', () => {
     await screen.findByRole('heading', { name: 'Historial' });
     const history = screen.getByRole('heading', { name: 'Historial' }).closest('section');
     expect(history).not.toBeNull();
-    expect(
-      within(history as HTMLElement).getByText(
-        'Recompensa: recogida (25 puntos), Llave: no recogida (0 puntos), valor total: 25 puntos',
-      ),
-    ).toBeTruthy();
-    expect(within(history as HTMLElement).queryByText(/Puntaje:/)).toBeNull();
+    expect(within(history as HTMLElement).getByText('Derrota')).toBeTruthy();
 
-    fireEvent.click(
-      await within(history as HTMLElement).findByRole('button', { name: 'Ver resultado' }),
-    );
+    fireEvent.click(await historyAction('Abrir'));
     await screen.findByRole('heading', { name: 'Derrota' });
     expect(screen.getByText('Avance máximo').nextElementSibling?.textContent).toBe('40%');
     expect(screen.getByText('Recompensa').nextElementSibling?.textContent).toBe(
@@ -1591,17 +1544,13 @@ describe('AttemptActivity', () => {
     );
     const history = screen.getByRole('heading', { name: 'Historial' }).closest('section');
     expect(history).not.toBeNull();
-    expect(
-      within(history as HTMLElement).getByText(
-        'Recompensa: recogida (25 puntos), Llave: recogida (0 puntos), valor total: 25 puntos',
-      ),
-    ).toBeTruthy();
-    expect(within(history as HTMLElement).getByText(/Puntaje: 935,13/)).toBeTruthy();
+    const historyRows = within(history as HTMLElement).getAllByRole('listitem');
+    expect(historyRows).toHaveLength(1);
+    expect(historyRows[0]?.textContent).toContain('Victoria');
+    expect(historyRows[0]?.textContent).toContain('935,13');
     expect(getReplay).not.toHaveBeenCalled();
 
-    fireEvent.click(
-      await within(history as HTMLElement).findByRole('button', { name: 'Ver resultado' }),
-    );
+    fireEvent.click(await historyAction('Abrir'));
     expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
     const scoreBreakdown = screen.getByText('Desglose del puntaje').closest('details');
     expect(scoreBreakdown).not.toBeNull();
@@ -1653,12 +1602,8 @@ describe('AttemptActivity', () => {
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
-    const history = await screen.findByRole('heading', { name: 'Historial' });
-    fireEvent.click(
-      await within(history.closest('section') as HTMLElement).findByRole('button', {
-        name: 'Ver resultado',
-      }),
-    );
+    await screen.findByRole('heading', { name: 'Historial' });
+    fireEvent.click(await historyAction('Abrir'));
     await screen.findByRole('heading', { name: 'Victoria' });
     const scoreBreakdown = screen.getByText('Desglose del puntaje').closest('details');
     expect(scoreBreakdown).not.toBeNull();
@@ -1691,7 +1636,7 @@ describe('AttemptActivity', () => {
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Ver de nuevo' }));
+    fireEvent.click(await historyAction('Ver de nuevo'));
     expect(await screen.findByRole('button', { name: 'Completar reproducción' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Ver configuración' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Recursos listos' }));
@@ -2018,7 +1963,7 @@ describe('AttemptActivity', () => {
 
     const history = screen.getByRole('heading', { name: 'Historial' }).closest('section');
     expect(history).not.toBeNull();
-    fireEvent.click(within(history as HTMLElement).getByRole('button', { name: 'Ver de nuevo' }));
+    fireEvent.click(await historyAction('Ver de nuevo'));
     await settleWorkspacePromises();
     expect(screen.getByRole('button', { name: 'Completar reproducción' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Completar reproducción' }));
@@ -2073,9 +2018,7 @@ describe('AttemptActivity', () => {
     await waitFor(() => expect(completePresentation).toHaveBeenCalledOnce());
     const history = screen.getByRole('heading', { name: 'Historial' }).closest('section');
     expect(history).not.toBeNull();
-    fireEvent.click(
-      await within(history as HTMLElement).findByRole('button', { name: 'Ver de nuevo' }),
-    );
+    fireEvent.click(await historyAction('Ver de nuevo'));
     expect(await screen.findByRole('heading', { name: 'Reproducción del intento' })).toBeTruthy();
     expect(screen.queryByRole('heading', { name: 'Victoria' })).toBeNull();
     expect(await screen.findByRole('heading', { name: 'Reproducción del intento' })).toBeTruthy();
@@ -2137,18 +2080,14 @@ describe('AttemptActivity', () => {
     await waitFor(() => expect(completePresentation).toHaveBeenCalledOnce());
     const history = screen.getByRole('heading', { name: 'Historial' }).closest('section');
     expect(history).not.toBeNull();
-    const rows = await within(history as HTMLElement).findAllByRole('listitem');
-    fireEvent.click(within(rows[1] as HTMLElement).getByRole('button', { name: 'Ver de nuevo' }));
+    fireEvent.click((await historyActions('Ver de nuevo'))[1]!);
     expect(await screen.findByRole('heading', { name: 'Ver de nuevo' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Completar reproducción' }));
     expect(await screen.findByRole('heading', { name: 'Recorrido incompleto' })).toBeTruthy();
 
     const historyAfterB = screen.getByRole('heading', { name: 'Historial' }).closest('section');
     expect(historyAfterB).not.toBeNull();
-    const rowsAfterB = await within(historyAfterB as HTMLElement).findAllByRole('listitem');
-    fireEvent.click(
-      within(rowsAfterB[0] as HTMLElement).getByRole('button', { name: 'Ver resultado' }),
-    );
+    fireEvent.click((await historyActions('Abrir'))[0]!);
     expect(await screen.findByRole('heading', { name: 'Reproducción del intento' })).toBeTruthy();
     await act(async () => {
       finishMark({ ...attemptA, presentationComplete: true });
@@ -2328,8 +2267,16 @@ describe('AttemptActivity', () => {
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
     await screen.findByText('Historial');
-    expect(screen.queryByRole('button', { name: 'Inspeccionar decisiones' })).toBeNull();
-    fireEvent.click(await screen.findByRole('button', { name: 'Ver resultado' }));
+    const open = await historyActionForRow('Abrir', 'Recorrido incompleto');
+    const history = historySection();
+    const incompleteRow = within(history)
+      .getAllByRole('listitem')
+      .find((row) => row.textContent?.includes('Recorrido incompleto'));
+    expect(incompleteRow).toBeTruthy();
+    expect(
+      within(incompleteRow!).queryByRole('button', { name: 'Inspeccionar decisiones' }),
+    ).toBeNull();
+    fireEvent.click(open);
     expect(await screen.findByRole('button', { name: 'Completar reproducción' })).toBeTruthy();
     expect(getReplay).toHaveBeenCalledWith(pending.id);
     expect(completePresentation).not.toHaveBeenCalled();
@@ -3604,9 +3551,9 @@ describe('AttemptActivity', () => {
     const view = render(
       <AttemptActivity ref={ref} api={attemptApi} editor={editor} session={session()} />,
     );
-    await screen.findByRole('button', { name: 'Ver resultado' });
+    await historyAction('Abrir');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Ver resultado' }));
+    fireEvent.click(await historyAction('Abrir'));
     await screen.findByRole('heading', { name: 'Consultando el resultado guardado…' });
     view.rerender(
       <AttemptActivity
@@ -3663,9 +3610,7 @@ describe('AttemptActivity', () => {
       within(historySection as HTMLElement).queryByText('Intento recibido, esperando inicio'),
     ).toBeNull();
 
-    fireEvent.click(
-      within(historySection as HTMLElement).getByRole('button', { name: 'Ver resultado' }),
-    );
+    fireEvent.click(await historyAction('Abrir'));
     const result = (await screen.findByRole('heading', { name: 'Error de ejecución' })).closest(
       'section',
     );
@@ -3740,7 +3685,7 @@ describe('AttemptActivity', () => {
     ).toBeNull();
   });
 
-  it('ranks only loaded complete victories, keeps ties and zero scores, and labels the loaded scope', async () => {
+  it('ranks only loaded complete victories, keeps ties and negative/zero scores, and labels scope', async () => {
     const ranked = [
       { ...summary('victory'), id: 'score-200', score: 200, gameTokens: 800 },
       {
@@ -3758,6 +3703,7 @@ describe('AttemptActivity', () => {
         gameTokens: 1_100,
       },
       { ...summary('victory'), id: 'score-zero', score: 0, gameTokens: 2_000 },
+      { ...summary('victory'), id: 'score-negative', score: -37.2, gameTokens: null },
       { ...summary('victory'), id: 'score-unknown', score: null, gameTokens: null },
       {
         ...summary('victory'),
@@ -3784,40 +3730,99 @@ describe('AttemptActivity', () => {
       .mockResolvedValueOnce({ attempts: ranked, nextCursor: 'more' })
       .mockResolvedValueOnce({ attempts: [later] })
       .mockResolvedValueOnce({ attempts: [later] });
-    const attemptApi = api({ listAttempts });
+    const attemptsById = new Map([...ranked, later].map((attempt) => [attempt.id, attempt]));
+    const getAttempt = vi.fn(async (id: string) => {
+      const attempt = attemptsById.get(id);
+      if (!attempt) throw new Error(`Unexpected attempt ${id}`);
+      return attempt;
+    });
+    const attemptApi = api({ listAttempts, getAttempt });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
-    const history = await screen.findByRole('heading', { name: 'Historial' });
-    expect(
-      within(history.closest('section') as HTMLElement).getByText(
-        '10 cargados, hay más intentos para consultar',
-      ),
-    ).toBeTruthy();
-    expect(screen.getByRole('heading', { name: 'Tus mejores soluciones' })).toBeTruthy();
-    expect(screen.getByText('#1, 200 puntos')).toBeTruthy();
-    expect(screen.getAllByText('#2, 100 puntos')).toHaveLength(2);
-    expect(screen.getByText('#4, 0 puntos')).toBeTruthy();
-    expect(screen.queryByText('#1, 400 puntos')).toBeNull();
-    const ranking = screen
-      .getByRole('heading', { name: 'Tus mejores soluciones' })
-      .closest('section') as HTMLElement;
-    const rankingCards = within(ranking).getAllByRole('article');
-    expect(rankingCards[1]?.textContent).toContain('900 tokens para puntaje');
-    expect(rankingCards[2]?.textContent).toContain('1.100 tokens para puntaje');
-    expect(rankingCards[1]?.textContent).toContain('21 sept 2026');
-    expect(screen.getByText(/Victorias sin puntaje exacto:/)).toBeTruthy();
-    expect(screen.getByText(/Victorias con registro incompleto:/)).toBeTruthy();
-    expect(screen.getByText(/Otros resultados:/)).toBeTruthy();
+    await screen.findByRole('heading', { name: 'Historial' });
+    const history = historySection();
+    expect(within(history).getByText('Recientes', { exact: true })).toBeTruthy();
+    expect(within(history).getByText('Mejores', { exact: true })).toBeTruthy();
+    selectHistoryView('Recientes');
+    expect(await historyActions('Abrir')).toHaveLength(11);
+    expect(within(history).getByText('11 cargados, hay más intentos para consultar')).toBeTruthy();
+    expect(within(history).getAllByText('Victoria', { exact: true })).toHaveLength(7);
     for (const status of ['Derrota', 'Recorrido incompleto', 'Cancelado', 'Error de ejecución']) {
-      expect(within(history.closest('section') as HTMLElement).getByText(status)).toBeTruthy();
+      expect(within(history).getByText(status)).toBeTruthy();
     }
-    expect(screen.getAllByText(/tokens para puntaje/).length).toBeGreaterThan(0);
-    expect(screen.getByRole('button', { name: 'Cargar 20 más' })).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Cargar 20 más' }));
-    expect(await screen.findByText('#1, 300 puntos')).toBeTruthy();
-    expect(screen.getByText('11 cargados, todo el historial disponible está visible')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Cargar 20 más' })).toBeNull();
+
+    const initialHistoryReads = listAttempts.mock.calls.length;
+    selectHistoryView('Mejores');
+    const firstPageRankedActions = await historyActions('Abrir');
+    expect(firstPageRankedActions).toHaveLength(5);
+    const firstPageBestRows = within(history).getAllByRole('listitem');
+    expect(firstPageBestRows).toHaveLength(5);
+    expect(firstPageBestRows[0]?.textContent).toContain('#1');
+    expect(firstPageBestRows[0]?.textContent).toMatch(/200(?:,00)? puntos/);
+    for (const tiedRow of firstPageBestRows.slice(1, 3)) {
+      expect(tiedRow.textContent).toContain('#2');
+      expect(tiedRow.textContent).toMatch(/100(?:,00)? puntos/);
+    }
+    expect(firstPageBestRows[3]?.textContent).toContain('#4');
+    expect(firstPageBestRows[3]?.textContent).toMatch(/0(?:,00)? puntos/);
+    expect(firstPageBestRows[4]?.textContent).toContain('#5');
+    expect(firstPageBestRows[4]?.textContent).toMatch(/-37(?:,2|,20) puntos/);
+    expect(within(history).queryByText('Derrota')).toBeNull();
+    expect(within(history).queryByText(/fuera de clasificación/i)).toBeNull();
+    expect(listAttempts).toHaveBeenCalledTimes(initialHistoryReads);
+
+    selectHistoryView('Recientes');
+    expect(await historyActions('Abrir')).toHaveLength(11);
+    const historyReadsBeforeMore = listAttempts.mock.calls.length;
+    fireEvent.click(within(history).getByRole('button', { name: 'Cargar 20 más' }));
+    await waitFor(() =>
+      expect(within(history).getAllByRole('button', { name: 'Abrir' })).toHaveLength(12),
+    );
+    expect(listAttempts).toHaveBeenCalledTimes(historyReadsBeforeMore + 1);
+    expect(listAttempts.mock.calls.at(-1)?.[0]).toBe('more');
+    expect(
+      within(history).getByText('12 cargados, todo el historial disponible está visible'),
+    ).toBeTruthy();
+    expect(within(history).queryByRole('button', { name: 'Cargar 20 más' })).toBeNull();
+
+    const readsAfterPagination = listAttempts.mock.calls.length;
+    selectHistoryView('Mejores');
+    expect(listAttempts).toHaveBeenCalledTimes(readsAfterPagination);
+    expect(await historyActions('Abrir')).toHaveLength(6);
+    const bestRows = within(history).getAllByRole('listitem');
+    expect(bestRows).toHaveLength(6);
+    const expectedRanking = [
+      { id: later.id, rank: '#1', value: /300(?:,00)? puntos/ },
+      { id: 'score-200', rank: '#2', value: /200(?:,00)? puntos/ },
+      { id: 'score-100-a', rank: '#3', value: /100(?:,00)? puntos/ },
+      { id: 'score-100-b', rank: '#3', value: /100(?:,00)? puntos/ },
+      { id: 'score-zero', rank: '#5', value: /0(?:,00)? puntos/ },
+      { id: 'score-negative', rank: '#6', value: /-37(?:,2|,20) puntos/ },
+    ];
+    for (const [index, expected] of expectedRanking.entries()) {
+      expect(bestRows[index]?.textContent).toContain(expected.rank);
+      expect(bestRows[index]?.textContent).toMatch(expected.value);
+    }
+    expect(within(history).queryByText('Derrota')).toBeNull();
+    expect(within(history).queryByText(/fuera de clasificación/i)).toBeNull();
+    expect(within(history).getByText(/12 cargados/)).toBeTruthy();
+
+    for (const [index, expected] of expectedRanking.entries()) {
+      const openers = await historyActions('Abrir');
+      fireEvent.click(openers[index]!);
+      expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
+      expect(getAttempt).toHaveBeenNthCalledWith(index + 1, expected.id, expect.any(AbortSignal));
+      if (expected.id === 'score-negative') {
+        const scoreBreakdown = screen.getByText('Desglose del puntaje').closest('details');
+        expect(scoreBreakdown).not.toBeNull();
+        fireEvent.click(within(scoreBreakdown as HTMLElement).getByText('Desglose del puntaje'));
+        expect(screen.getByText('Total').nextElementSibling?.textContent).toBe('-37,20 puntos');
+      }
+      fireEvent.click(screen.getByRole('button', { name: 'Volver al historial' }));
+      expect(await historyActions('Abrir')).toHaveLength(6);
+      expect(listAttempts).toHaveBeenCalledTimes(readsAfterPagination);
+    }
   });
 
   it('keeps a refreshed history sequence when an older page resolves after Probar', async () => {
@@ -4020,7 +4025,7 @@ describe('AttemptActivity', () => {
     expect(attemptApi.getQuota).toHaveBeenCalledTimes(quotaReadsBeforeHistoryRetry);
   });
 
-  it('explains an empty history and an empty comparable set without starting inference', async () => {
+  it('shows one empty history without starting inference', async () => {
     const attemptApi = api({ listAttempts: vi.fn().mockResolvedValue({ attempts: [] }) });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
@@ -4028,8 +4033,8 @@ describe('AttemptActivity', () => {
     expect(await screen.findByText('Todavía no hay intentos guardados.')).toBeTruthy();
     expect(screen.getByText('0 cargados, todo el historial disponible está visible')).toBeTruthy();
     expect(
-      screen.getByText('Todavía no hay victorias comparables entre los intentos cargados.'),
-    ).toBeTruthy();
+      screen.queryByText('Todavía no hay victorias comparables entre los intentos cargados.'),
+    ).toBeNull();
     expect(attemptApi.createAttempt).not.toHaveBeenCalled();
   });
 
@@ -4057,10 +4062,8 @@ describe('AttemptActivity', () => {
     const editor = { current: { applyDraft } } as unknown as { current: RobotEditorHandle | null };
     const view = render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
-    const history = await screen.findByRole('heading', { name: 'Historial' });
-    const configurationButtons = await within(
-      history.closest('section') as HTMLElement,
-    ).findAllByRole('button', { name: 'Ver configuración' });
+    await screen.findByRole('heading', { name: 'Historial' });
+    const configurationButtons = await historyActions('Ver configuración');
     fireEvent.click(configurationButtons[0]!);
     expect(await screen.findByRole('heading', { name: 'Configuración del intento' })).toBeTruthy();
     expect(getConfiguration).toHaveBeenCalledWith(terminal.id, expect.any(AbortSignal));
@@ -4109,12 +4112,8 @@ describe('AttemptActivity', () => {
     const editor = { current: { applyDraft } } as unknown as { current: RobotEditorHandle | null };
     render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
-    const history = await screen.findByRole('heading', { name: 'Historial' });
-    const opener = (
-      await within(history.closest('section') as HTMLElement).findAllByRole('button', {
-        name: 'Ver configuración',
-      })
-    )[0]!;
+    await screen.findByRole('heading', { name: 'Historial' });
+    const opener = (await historyActions('Ver configuración'))[0]!;
     opener.focus();
     fireEvent.click(opener);
     await screen.findByText('Candidato de historial.');
@@ -4168,11 +4167,8 @@ describe('AttemptActivity', () => {
     const editor = { current: { applyDraft } } as unknown as { current: RobotEditorHandle | null };
     render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
-    const history = await screen.findByRole('heading', { name: 'Historial' });
-    const historyList = await within(history.closest('section') as HTMLElement).findByRole('list');
-    const configurationButtons = await within(historyList).findAllByRole('button', {
-      name: 'Ver configuración',
-    });
+    await screen.findByRole('heading', { name: 'Historial' });
+    const configurationButtons = await historyActions('Ver configuración');
     const firstOpener = configurationButtons[0]!;
     const secondOpener = configurationButtons[1]!;
     fireEvent.click(firstOpener);
@@ -4224,14 +4220,8 @@ describe('AttemptActivity', () => {
       };
       const view = render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
-      const history = await screen.findByRole('heading', { name: 'Historial' });
-      fireEvent.click(
-        (
-          await within(history.closest('section') as HTMLElement).findAllByRole('button', {
-            name: 'Ver configuración',
-          })
-        )[0]!,
-      );
+      await screen.findByRole('heading', { name: 'Historial' });
+      fireEvent.click((await historyActions('Ver configuración'))[0]!);
       await screen.findByText('Aplicación cancelada.');
       fireEvent.click(screen.getByRole('button', { name: 'Usar esta configuración' }));
       const signal = applyDraft.mock.calls[0]?.[1]?.signal;
@@ -4281,14 +4271,8 @@ describe('AttemptActivity', () => {
       />,
     );
 
-    const history = await screen.findByRole('heading', { name: 'Historial' });
-    fireEvent.click(
-      (
-        await within(history.closest('section') as HTMLElement).findAllByRole('button', {
-          name: 'Ver configuración',
-        })
-      )[0]!,
-    );
+    await screen.findByRole('heading', { name: 'Historial' });
+    fireEvent.click((await historyActions('Ver configuración'))[0]!);
     expect(await screen.findByText('Snapshot consultable')).toBeTruthy();
     const applyButton = screen.getByRole('button', { name: 'Usar esta configuración' });
     expect((applyButton as HTMLButtonElement).disabled).toBe(true);
@@ -4314,12 +4298,8 @@ describe('AttemptActivity', () => {
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
-    const history = await screen.findByRole('heading', { name: 'Historial' });
-    const opener = (
-      await within(history.closest('section') as HTMLElement).findAllByRole('button', {
-        name: 'Ver configuración',
-      })
-    )[0]!;
+    await screen.findByRole('heading', { name: 'Historial' });
+    const opener = (await historyActions('Ver configuración'))[0]!;
     opener.focus();
     fireEvent.click(opener);
     const heading = await screen.findByRole('heading', { name: 'Configuración del intento' });
@@ -4327,10 +4307,7 @@ describe('AttemptActivity', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cerrar' }));
     expect(document.activeElement).toBe(opener);
 
-    const row = (
-      await within(history.closest('section') as HTMLElement).findAllByRole('listitem')
-    )[0]!;
-    fireEvent.click(within(row).getByRole('button', { name: 'Ver resultado' }));
+    fireEvent.click(await historyAction('Abrir'));
     const result = await screen.findByRole('heading', { name: 'Victoria' });
     const resultOpener = within(result.closest('section') as HTMLElement).getByRole('button', {
       name: 'Ver configuración',
@@ -4362,12 +4339,8 @@ describe('AttemptActivity', () => {
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
-    const history = await screen.findByRole('heading', { name: 'Historial' });
-    const opener = (
-      await within(history.closest('section') as HTMLElement).findAllByRole('button', {
-        name: 'Ver configuración',
-      })
-    )[0]!;
+    await screen.findByRole('heading', { name: 'Historial' });
+    const opener = (await historyActions('Ver configuración'))[0]!;
     opener.focus();
     fireEvent.click(opener);
     const heading = await screen.findByRole('heading', { name: 'Configuración del intento' });
@@ -4403,14 +4376,8 @@ describe('AttemptActivity', () => {
     const editor = { current: { applyDraft } } as unknown as { current: RobotEditorHandle | null };
     render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
-    const history = await screen.findByRole('heading', { name: 'Historial' });
-    fireEvent.click(
-      (
-        await within(history.closest('section') as HTMLElement).findAllByRole('button', {
-          name: 'Ver configuración',
-        })
-      )[0]!,
-    );
+    await screen.findByRole('heading', { name: 'Historial' });
+    fireEvent.click((await historyActions('Ver configuración'))[0]!);
     fireEvent.click(await screen.findByRole('button', { name: 'Usar esta configuración' }));
     await waitFor(() => expect(applyDraft).toHaveBeenCalled());
     await waitFor(() =>
@@ -4452,16 +4419,9 @@ describe('AttemptActivity', () => {
     });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
-    const history = await screen.findByRole('heading', { name: 'Historial' });
-    fireEvent.click(
-      (
-        await within(history.closest('section') as HTMLElement).findAllByRole('button', {
-          name: 'Ver configuración',
-        })
-      )[0]!,
-    );
-    const rows = await within(history.closest('section') as HTMLElement).findAllByRole('listitem');
-    fireEvent.click(within(rows[1]!).getByRole('button', { name: 'Ver resultado' }));
+    await screen.findByRole('heading', { name: 'Historial' });
+    fireEvent.click((await historyActions('Ver configuración'))[0]!);
+    fireEvent.click((await historyActions('Abrir'))[1]!);
     resolveConfiguration({ attemptId: first.id, draft: createDefaultDraft() });
     await act(async () => {
       await Promise.resolve();
@@ -4494,14 +4454,8 @@ describe('AttemptActivity', () => {
     });
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     const view = render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
-    const history = await screen.findByRole('heading', { name: 'Historial' });
-    fireEvent.click(
-      (
-        await within(history.closest('section') as HTMLElement).findAllByRole('button', {
-          name: 'Ver configuración',
-        })
-      )[0]!,
-    );
+    await screen.findByRole('heading', { name: 'Historial' });
+    fireEvent.click((await historyActions('Ver configuración'))[0]!);
     view.rerender(
       <AttemptActivity
         api={attemptApi}
@@ -4545,12 +4499,8 @@ describe('AttemptActivity', () => {
     const editor = { current: { applyDraft } } as unknown as { current: RobotEditorHandle | null };
     const view = render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
     const openFromHistory = async (): Promise<void> => {
-      const history = await screen.findByRole('heading', { name: 'Historial' });
-      const button = (
-        await within(history.closest('section') as HTMLElement).findAllByRole('button', {
-          name: 'Ver configuración',
-        })
-      )[0] as HTMLButtonElement;
+      await screen.findByRole('heading', { name: 'Historial' });
+      const button = (await historyActions('Ver configuración'))[0]!;
       await waitFor(() => expect(button.disabled).toBe(false));
       fireEvent.click(button);
       fireEvent.click(await screen.findByRole('button', { name: 'Usar esta configuración' }));
@@ -4628,10 +4578,8 @@ describe('AttemptActivity', () => {
     const ref = { current: null } as unknown as { current: AttemptActivityHandle | null };
     render(<AttemptActivity ref={ref} api={attemptApi} editor={editor} session={session()} />);
 
-    const history = await screen.findByRole('heading', { name: 'Historial' });
-    const configurationButtons = await within(
-      history.closest('section') as HTMLElement,
-    ).findAllByRole('button', { name: 'Ver configuración' });
+    await screen.findByRole('heading', { name: 'Historial' });
+    const configurationButtons = await historyActions('Ver configuración');
     fireEvent.click(configurationButtons[0]!);
     fireEvent.click(await screen.findByRole('button', { name: 'Usar esta configuración' }));
     await waitFor(() =>

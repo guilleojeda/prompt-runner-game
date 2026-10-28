@@ -9,6 +9,7 @@ import { AuthFailure, type AuthClient, type AuthConfig, type AuthSession } from 
 import { DraftApiClient, DraftApiFailure, type DraftApi } from './draft-api.js';
 import { SavedRobotApiClient, type SavedRobotApi } from './saved-robot-api.js';
 import { AttemptApiFailure, type AttemptApi, type AttemptSummary } from './attempt-api.js';
+import { historyAction, historyActions } from './History.test-support.js';
 import {
   CognitoPendingConfirmationClient,
   type PendingConfirmationClient,
@@ -771,15 +772,11 @@ describe('access screen', () => {
     expect(screen.getByRole('heading', { name: 'Prepará tu robot' })).toBeTruthy();
     navigate('Historial');
     await act(flushAuthMicrotasks);
-    const openConfiguration = () => {
-      const history = screen.getByRole('heading', { name: 'Historial' });
-      fireEvent.click(
-        within(history.closest('section') as HTMLElement).getAllByRole('button', {
-          name: 'Ver configuración',
-        })[0]!,
-      );
+    const openConfiguration = async (): Promise<void> => {
+      expect(screen.getByRole('heading', { name: 'Historial' })).toBeTruthy();
+      fireEvent.click((await historyActions('Ver configuración'))[0]!);
     };
-    openConfiguration();
+    await openConfiguration();
     await act(flushAuthMicrotasks);
     expect(screen.getByText('Recuperada desde el historial')).toBeTruthy();
     expect(
@@ -793,7 +790,7 @@ describe('access screen', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cerrar' }));
     expect(screen.queryByRole('heading', { name: 'Configuración del intento' })).toBeNull();
 
-    openConfiguration();
+    await openConfiguration();
     await act(flushAuthMicrotasks);
     expect(screen.getByText('Recuperada desde el historial')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Reintentar carga' })).toBeNull();
@@ -896,10 +893,7 @@ describe('access screen', () => {
     await screen.findByRole('heading', { name: 'Prepará tu robot' });
     navigate('Historial');
     await screen.findByRole('heading', { name: 'Historial' });
-    const history = screen
-      .getByRole('heading', { name: 'Historial' })
-      .closest('section') as HTMLElement;
-    fireEvent.click(within(history).getByRole('button', { name: 'Ver configuración' }));
+    fireEvent.click(await historyAction('Ver configuración'));
     fireEvent.click(await screen.findByRole('button', { name: 'Usar esta configuración' }));
     await waitFor(() => expect(putDraft).toHaveBeenCalledOnce());
     await act(flushAuthMicrotasks);
@@ -2144,7 +2138,7 @@ describe('access screen', () => {
 
     await screen.findByRole('button', { name: 'Cuenta' });
     navigate('Historial');
-    fireEvent.click(await screen.findByRole('button', { name: 'Ver resultado' }));
+    fireEvent.click(await historyAction('Abrir'));
     expect(await screen.findByText('La sesión ya no está autorizada.')).toBeTruthy();
     expect(screen.getByText(/La sesión dejó de tener acceso a esta cuenta/)).toBeTruthy();
     const retainedInstructions = document.querySelector<HTMLTextAreaElement>('#robot-instructions');
@@ -2604,11 +2598,8 @@ describe('access screen', () => {
     await screen.findByRole('button', { name: 'Cuenta' });
     navigate('Historial');
     expect(await screen.findByRole('heading', { name: 'Historial' })).toBeTruthy();
-    const history = screen
-      .getByRole('heading', { name: 'Historial' })
-      .closest('section') as HTMLElement;
-    const sourceRow = within(history).getAllByRole('listitem')[0]!;
-    fireEvent.click(within(sourceRow).getByRole('button', { name: 'Ver configuración' }));
+    await screen.findByRole('heading', { name: 'Historial' });
+    fireEvent.click(await historyAction('Ver configuración'));
     fireEvent.click(await screen.findByRole('button', { name: 'Usar esta configuración' }));
     expect(await screen.findByDisplayValue('Desde la victoria')).toBeTruthy();
     navigate('Mis robots');
