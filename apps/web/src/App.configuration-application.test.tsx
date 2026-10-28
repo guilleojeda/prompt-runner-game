@@ -14,6 +14,7 @@ import { App } from './App.js';
 import type { AuthClient, AuthConfig, AuthSession } from './auth.js';
 import { AttemptApiFailure, type AttemptApi, type AttemptSummary } from './attempt-api.js';
 import { DraftApiFailure, type DraftApi } from './draft-api.js';
+import { historyAction } from './History.test-support.js';
 import { SavedRobotApiFailure, type SavedRobotApi } from './saved-robot-api.js';
 
 vi.mock('./replay/ReplayScene.js', () => ({ CoursePreview: () => null, ReplayScene: () => null }));
@@ -225,9 +226,8 @@ type Source = 'history' | 'saved copy';
 async function apply(source: Source): Promise<void> {
   if (source === 'history') {
     navigate('Historial');
-    const history = screen.getByRole('heading', { name: 'Historial' }).closest('section');
-    expect(history).not.toBeNull();
-    fireEvent.click(within(history!).getByRole('button', { name: 'Ver configuración' }));
+    expect(screen.getByRole('heading', { name: 'Historial' })).toBeTruthy();
+    fireEvent.click(await historyAction('Ver configuración'));
     await settle();
     fireEvent.click(button('Usar esta configuración'));
   } else {

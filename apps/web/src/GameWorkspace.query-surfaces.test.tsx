@@ -16,6 +16,14 @@ import { App } from './App.js';
 import { type AuthClient, type AuthConfig, type AuthSession } from './auth.js';
 import { AttemptApiFailure, type AttemptApi, type AttemptSummary } from './attempt-api.js';
 import { type DraftApi } from './draft-api.js';
+import {
+  historyAction,
+  historyActions,
+  historySection,
+  openHistoryActionMenus,
+  selectHistoryView,
+  settle,
+} from './History.test-support.js';
 import { formatDateTime } from './attempt-display.js';
 import { renderResultImage } from './result-sharing.js';
 import { SavedRobotApiFailure, type SavedRobotApi } from './saved-robot-api.js';
@@ -295,11 +303,10 @@ async function readyForPreparation(): Promise<HTMLTextAreaElement> {
   return instructions;
 }
 
-async function historyButton(name: string): Promise<HTMLButtonElement> {
-  const heading = await screen.findByRole('heading', { name: 'Historial' });
-  const section = heading.closest('section');
-  expect(section).not.toBeNull();
-  return (await within(section as HTMLElement).findByRole('button', { name })) as HTMLButtonElement;
+function historyRowsContaining(history: HTMLElement, text: string): HTMLElement[] {
+  return within(history)
+    .getAllByRole('listitem')
+    .filter((row) => row.textContent?.includes(text));
 }
 
 afterEach(() => {
@@ -376,7 +383,7 @@ describe('Phase 12 independent accessible query diagnostics', () => {
     });
     await readyForPreparation();
     selectTab('Historial');
-    fireEvent.click(await historyButton('Ver configuración'));
+    fireEvent.click(await historyAction('Ver configuración'));
     await screen.findByRole('heading', { name: 'Configuración del intento' });
     expect(screen.queryByRole('heading', { name: 'Historial' })).toBeNull();
   });
@@ -392,7 +399,7 @@ describe('Phase 12 independent accessible query diagnostics', () => {
     });
     await readyForPreparation();
     selectTab('Historial');
-    fireEvent.click(await historyButton('Inspeccionar decisiones'));
+    fireEvent.click(await historyAction('Inspeccionar decisiones'));
     await screen.findByRole('heading', { name: 'Inspeccionar decisiones' });
     expect(screen.queryByRole('heading', { name: 'Historial' })).toBeNull();
   });
@@ -409,7 +416,7 @@ describe('Phase 12 independent accessible query diagnostics', () => {
     });
     await readyForPreparation();
     selectTab('Historial');
-    fireEvent.click(await historyButton('Ver resultado'));
+    fireEvent.click(await historyAction('Abrir'));
     fireEvent.click(await screen.findByRole('button', { name: 'Ver de nuevo' }));
     await screen.findByRole('button', { name: 'Escena lista' });
     expect(screen.queryByRole('button', { name: 'Volver al historial' })).toBeNull();
@@ -428,7 +435,7 @@ describe('Phase 12 independent accessible query diagnostics', () => {
     });
     await readyForPreparation();
     selectTab('Historial');
-    fireEvent.click(await historyButton('Ver resultado'));
+    fireEvent.click(await historyAction('Abrir'));
     fireEvent.click(await screen.findByRole('button', { name: 'Ver de nuevo' }));
 
     const previousScroll = HTMLElement.prototype.scrollIntoView;
@@ -725,25 +732,26 @@ describe('Phase 12 independent accessible query diagnostics', () => {
     const terminal = summary('review-replay-origin', 'defeat', {
       turnsUsed: replayRecord('review-replay-origin', 'defeat').actions.length,
     });
+    const listAttempts = vi.fn().mockResolvedValue({ attempts: [terminal] });
+    const getAttempt = vi.fn().mockResolvedValue(terminal);
+    const getReplay = vi.fn(async (id: string) => replayRecord(id, 'defeat'));
     renderApp({
       runner: attemptApi({
-        listAttempts: vi.fn().mockResolvedValue({ attempts: [terminal] }),
-        getAttempt: vi.fn().mockResolvedValue(terminal),
-        getReplay: vi.fn(async (id: string) => replayRecord(id, 'defeat')),
+        listAttempts,
+        getAttempt,
+        getReplay,
       }),
     });
     await readyForPreparation();
     selectTab('Historial');
-    const history = await screen.findByRole('heading', { name: 'Historial' });
-    const historySection = history.closest('section') as HTMLElement;
-    fireEvent.click(within(historySection).getByRole('button', { name: 'Ver resultado' }));
+    const historyReadsBeforeReplay = listAttempts.mock.calls.length;
+    fireEvent.click(await historyAction('Abrir'));
     fireEvent.click(await screen.findByRole('button', { name: 'Ver de nuevo' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Escena lista' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Terminar escena' }));
 
     const backButtons = screen.getAllByRole('button', { name: 'Volver al historial' });
     expect(backButtons).toHaveLength(1);
-    const focusSpy = vi.spyOn(HTMLButtonElement.prototype, 'focus');
     fireEvent.click(backButtons[0]!);
 
     expect(await screen.findByRole('heading', { name: 'Historial' })).toBeTruthy();
@@ -751,46 +759,90 @@ describe('Phase 12 independent accessible query diagnostics', () => {
     expect(screen.queryByRole('button', { name: 'Volver al historial' })).toBeNull();
     const restoredHistory = screen.getByRole('heading', { name: 'Historial' }).closest('section');
     expect(restoredHistory).not.toBeNull();
-    const restoredReplay = within(restoredHistory as HTMLElement).getByRole('button', {
-      name: 'Ver de nuevo',
+    const restoredOpeners = within(restoredHistory as HTMLElement).getAllByRole('button', {
+      name: 'Abrir',
     });
-    expect(document.activeElement).toBe(restoredReplay);
-    expect(focusSpy.mock.calls).toEqual([[]]);
+    expect(restoredOpeners).toHaveLength(1);
+    expect(document.activeElement).toBe(restoredOpeners[0]);
+    const returnedFocus = document.activeElement;
+    act(() => window.dispatchEvent(new Event('resize')));
+    expect(document.activeElement).toBe(returnedFocus);
+    expect(listAttempts).toHaveBeenCalledTimes(historyReadsBeforeReplay);
+    expect(getAttempt).toHaveBeenCalledOnce();
+    expect(getReplay).toHaveBeenCalledOnce();
   });
 
-  it('uses native scrolling focus when a history-result query returns to its row', async () => {
+  it('returns a replay opened from Mejores to the same visible history row', async () => {
+    const victory = summary('history-best-replay', 'victory', {
+      score: 240,
+      turnsUsed: replayRecord('history-best-replay').actions.length,
+    });
+    const excluded = summary('history-best-replay-excluded', 'defeat');
+    const listAttempts = vi.fn().mockResolvedValue({ attempts: [victory, excluded] });
+    const getAttempt = vi.fn().mockResolvedValue(victory);
+    const getReplay = vi.fn(async (id: string) => replayRecord(id, 'victory'));
+    renderApp({ runner: attemptApi({ listAttempts, getAttempt, getReplay }) });
+    await readyForPreparation();
+    selectTab('Historial');
+    await historyActions('Abrir');
+    selectHistoryView('Mejores');
+
+    const historyReadsBeforeReplay = listAttempts.mock.calls.length;
+    fireEvent.click(await historyAction('Abrir'));
+    expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
+    const result = screen
+      .getByRole('heading', { name: 'Victoria' })
+      .closest('section') as HTMLElement;
+    fireEvent.click(within(result).getByRole('button', { name: 'Ver de nuevo' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Escena lista' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Terminar escena' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Volver al historial' }));
+
+    const history = historySection();
+    const openers = within(history).getAllByRole('button', { name: 'Abrir' });
+    expect(openers).toHaveLength(1);
+    expect(within(history).queryByText('Derrota')).toBeNull();
+    expect(document.activeElement).toBe(openers[0]);
+    expect(listAttempts).toHaveBeenCalledTimes(historyReadsBeforeReplay);
+    expect(getAttempt).toHaveBeenCalledOnce();
+    expect(getReplay).toHaveBeenCalledOnce();
+  });
+
+  it('returns focus to the history result action without refocusing on resize or re-reading history', async () => {
     const terminal = summary('history-result-native-focus', 'defeat');
+    const listAttempts = vi.fn().mockResolvedValue({ attempts: [terminal] });
+    const getAttempt = vi.fn().mockResolvedValue(terminal);
     renderApp({
       runner: attemptApi({
-        listAttempts: vi.fn().mockResolvedValue({ attempts: [terminal] }),
-        getAttempt: vi.fn().mockResolvedValue(terminal),
+        listAttempts,
+        getAttempt,
       }),
     });
     await readyForPreparation();
     selectTab('Historial');
+    const historyReadsBeforeResult = listAttempts.mock.calls.length;
 
-    const opener = await historyButton('Ver resultado');
+    const opener = await historyAction('Abrir');
     opener.focus();
     fireEvent.click(opener);
     expect(await screen.findByRole('heading', { name: 'Derrota' })).toBeTruthy();
 
-    const focusSpy = vi.spyOn(HTMLButtonElement.prototype, 'focus');
     fireEvent.click(await screen.findByRole('button', { name: 'Volver al historial' }));
-    const restored = await historyButton('Ver resultado');
+    const restored = await historyAction('Abrir');
     await waitFor(() => expect(document.activeElement).toBe(restored));
 
-    expect(restored.dataset.historyAttemptId).toBe(terminal.id);
-    expect(restored.dataset.historyAction).toBe('result');
-    expect(focusSpy.mock.calls).toEqual([[]]);
     act(() => window.dispatchEvent(new Event('resize')));
-    expect(focusSpy.mock.calls).toEqual([[]]);
+    expect(document.activeElement).toBe(restored);
+    expect(listAttempts).toHaveBeenCalledTimes(historyReadsBeforeResult);
+    expect(getAttempt).toHaveBeenCalledOnce();
   });
 
-  it('uses native scrolling focus when a history inspector closes to its opener', async () => {
+  it('returns inspector focus into its history row without refocusing on resize or re-reading history', async () => {
     const terminal = summary('history-inspector-native-focus', 'defeat');
+    const listAttempts = vi.fn().mockResolvedValue({ attempts: [terminal] });
     renderApp({
       runner: attemptApi({
-        listAttempts: vi.fn().mockResolvedValue({ attempts: [terminal] }),
+        listAttempts,
         getDecisionIndex: vi.fn().mockResolvedValue({
           attemptId: terminal.id,
           levelId: LEVEL.id,
@@ -801,17 +853,24 @@ describe('Phase 12 independent accessible query diagnostics', () => {
     await readyForPreparation();
     selectTab('Historial');
 
-    const opener = await historyButton('Inspeccionar decisiones');
+    const opener = await historyAction('Inspeccionar decisiones');
     opener.focus();
+    const historyReadsBeforeInspection = listAttempts.mock.calls.length;
     fireEvent.click(opener);
     expect(await screen.findByRole('heading', { name: 'Inspeccionar decisiones' })).toBeTruthy();
 
-    const focusSpy = vi.spyOn(HTMLButtonElement.prototype, 'focus');
     fireEvent.click(await screen.findByRole('button', { name: 'Cerrar inspección' }));
-    await waitFor(() => expect(document.activeElement).toBe(opener));
-    expect(focusSpy.mock.calls).toEqual([[]]);
+    const history = historySection();
+    const historyRowFocusTargets = [
+      ...within(history).queryAllByRole('button', { name: 'Abrir' }),
+      ...within(history).queryAllByText('Más acciones', { selector: 'summary' }),
+      ...within(history).queryAllByRole('button', { name: 'Inspeccionar decisiones' }),
+    ];
+    await waitFor(() => expect(historyRowFocusTargets).toContain(document.activeElement));
+    const returnedFocus = document.activeElement;
     act(() => window.dispatchEvent(new Event('resize')));
-    expect(focusSpy.mock.calls).toEqual([[]]);
+    expect(document.activeElement).toBe(returnedFocus);
+    expect(listAttempts).toHaveBeenCalledTimes(historyReadsBeforeInspection);
   });
 
   it('keeps the person’s focus when a delayed history result arrives', async () => {
@@ -828,7 +887,7 @@ describe('Phase 12 independent accessible query diagnostics', () => {
     });
     await readyForPreparation();
     selectTab('Historial');
-    fireEvent.click(await historyButton('Ver resultado'));
+    fireEvent.click(await historyAction('Abrir'));
     const loadingTitle = await screen.findByRole('heading', {
       name: 'Consultando el resultado guardado…',
     });
@@ -868,7 +927,7 @@ describe('Phase 12 independent accessible query diagnostics', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Probar' }));
       } else {
         selectTab('Historial');
-        fireEvent.click(await historyButton('Ver resultado'));
+        fireEvent.click(await historyAction('Abrir'));
       }
       await screen.findByRole('heading', { name: 'Derrota' });
       fireEvent.click(screen.getByRole('button', { name: 'Compartir resultado' }));
@@ -987,7 +1046,7 @@ describe('Phase 12 independent accessible query diagnostics', () => {
     });
     await readyForPreparation();
     selectTab('Historial');
-    fireEvent.click(await historyButton('Ver resultado'));
+    fireEvent.click(await historyAction('Abrir'));
     await screen.findByRole('heading', { name: 'Derrota' });
     fireEvent.click(screen.getByRole('button', { name: 'Compartir resultado' }));
     await screen.findByRole('heading', { name: 'Compartir resultado' });
@@ -1245,7 +1304,7 @@ describe('Phase 13 result acceptance', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Probar' }));
       } else {
         selectTab('Historial');
-        fireEvent.click(await historyButton('Ver resultado'));
+        fireEvent.click(await historyAction('Abrir'));
       }
 
       expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
@@ -1298,7 +1357,7 @@ describe('Phase 13 result acceptance', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Probar' }));
       } else {
         selectTab('Historial');
-        fireEvent.click(await historyButton('Ver resultado'));
+        fireEvent.click(await historyAction('Abrir'));
       }
       const result = activitySurface(source);
       await within(result).findByRole('heading', { name: 'Victoria' });
@@ -1344,7 +1403,7 @@ describe('Phase 13 result acceptance', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Probar' }));
     } else {
       selectTab('Historial');
-      fireEvent.click(await historyButton('Ver resultado'));
+      fireEvent.click(await historyAction('Abrir'));
     }
     const result = activitySurface(source);
     await within(result).findByRole('heading', { name: 'Victoria' });
@@ -1458,12 +1517,14 @@ describe('Phase 13 result acceptance', () => {
       await readyForPreparation();
       selectTab('Historial');
       const row = screen.getByRole('region', { name: 'Historial de intentos' });
+      await historyAction('Abrir');
+      openHistoryActionMenus(row);
       const rowInspector = within(row).queryByRole('button', { name: 'Inspeccionar decisiones' });
       const rowReplay = within(row).queryByRole('button', { name: 'Ver de nuevo' });
       expect.soft(Boolean(rowInspector)).toBe(inspectAvailable);
       expect(rowReplay).toBeNull();
 
-      fireEvent.click(await historyButton('Ver resultado'));
+      fireEvent.click(await historyAction('Abrir'));
       const result = activitySurface('history');
       await within(result).findByRole('heading', {
         name: status === 'victory' ? 'Victoria' : 'Derrota',
@@ -1496,6 +1557,8 @@ describe('Phase 13 result acceptance', () => {
     await readyForPreparation();
     selectTab('Historial');
     const row = screen.getByRole('region', { name: 'Historial de intentos' });
+    await historyAction('Abrir');
+    openHistoryActionMenus(row);
     expect(within(row).queryByRole('button', { name: 'Inspeccionar decisiones' })).toBeNull();
     expect(getDecisionIndex).not.toHaveBeenCalled();
   });
@@ -1531,7 +1594,7 @@ describe('Phase 13 result acceptance', () => {
     });
     await readyForPreparation();
     selectTab('Historial');
-    fireEvent.click(await historyButton('Ver resultado'));
+    fireEvent.click(await historyAction('Abrir'));
     const result = activitySurface('history');
     await within(result).findByRole('heading', { name: 'Derrota' });
     const returnEditor = within(result).queryByRole('button', { name: 'Volver al editor' });
@@ -1572,7 +1635,7 @@ describe('Phase 13 result acceptance', () => {
     });
     await readyForPreparation();
     selectTab('Historial');
-    fireEvent.click(await historyButton('Ver resultado'));
+    fireEvent.click(await historyAction('Abrir'));
     await screen.findByRole('heading', { name: 'Consultando el resultado guardado…' });
 
     selectTab('Preparar');
@@ -1594,5 +1657,374 @@ describe('Phase 13 result acceptance', () => {
     expect(getAttempt).toHaveBeenCalledOnce();
     expect(createAttempt).toHaveBeenCalledOnce();
     expect(completePresentation).not.toHaveBeenCalled();
+  });
+});
+
+describe('Phase 14 history acceptance', () => {
+  it('shows one recent row per loaded attempt and ranks only comparable victories on demand', async () => {
+    const recent = [
+      summary('history-recent-low', 'victory', {
+        createdAt: '2026-10-27T12:00:00.000Z',
+        score: 100.25,
+        gameTokens: 15,
+      }),
+      summary('history-tie-b', 'victory', {
+        createdAt: '2026-10-27T11:00:00.000Z',
+        score: 200,
+        gameTokens: 18,
+      }),
+      summary('history-tie-a', 'victory', {
+        createdAt: '2026-10-27T11:00:00.000Z',
+        score: 200,
+        gameTokens: 18,
+      }),
+    ];
+    const nextPage = [
+      summary('history-page-two-best', 'victory', {
+        createdAt: '2026-10-27T10:00:00.000Z',
+        score: 300,
+        gameTokens: 9,
+      }),
+      summary('history-incomplete-victory', 'victory', {
+        createdAt: '2026-10-27T09:00:00.000Z',
+        score: 900,
+        recordComplete: false,
+      }),
+      summary('history-unknown-score', 'victory', {
+        createdAt: '2026-10-27T08:00:00.000Z',
+        score: null,
+      }),
+      summary('history-page-two-defeat', 'defeat', {
+        createdAt: '2026-10-27T07:00:00.000Z',
+        score: 500,
+      }),
+    ];
+    const listAttempts = vi.fn(async (cursor?: string) => {
+      if (cursor === 'history-next') return { attempts: nextPage, nextCursor: 'history-next-2' };
+      if (cursor === 'history-next-2') return { attempts: [] };
+      return { attempts: recent, nextCursor: 'history-next' };
+    });
+    const app = renderApp({
+      runner: attemptApi({ listAttempts }),
+    });
+    await readyForPreparation();
+    selectTab('Historial');
+
+    const history = historySection();
+    expect(within(history).getByText('Recientes', { exact: true })).toBeTruthy();
+    expect(within(history).getByText('Mejores', { exact: true })).toBeTruthy();
+    expect(await historyActions('Abrir')).toHaveLength(3);
+    const recentRow = historyRowsContaining(history, formatDateTime(recent[0]!.createdAt));
+    expect(recentRow).toHaveLength(1);
+    expect(recentRow[0]?.textContent).toContain('Victoria');
+    expect(recentRow[0]?.textContent).toMatch(/100,25/);
+
+    const historyReadsBeforePagination = listAttempts.mock.calls.length;
+    fireEvent.click(within(history).getByRole('button', { name: 'Cargar 20 más' }));
+    await settle();
+    expect(historyRowsContaining(history, formatDateTime(nextPage[0]!.createdAt))).toHaveLength(1);
+    expect(await historyActions('Abrir')).toHaveLength(7);
+    expect(listAttempts).toHaveBeenCalledTimes(historyReadsBeforePagination + 1);
+    expect(listAttempts.mock.calls.at(-1)?.[0]).toBe('history-next');
+    const readsAfterPagination = listAttempts.mock.calls.length;
+
+    selectHistoryView('Mejores');
+    const bestActions = within(history).getAllByRole('button', { name: 'Abrir' });
+    expect(bestActions).toHaveLength(4);
+    expect(within(history).queryByText('Derrota')).toBeNull();
+    expect(within(history).queryByText(/fuera de clasificación/i)).toBeNull();
+    const bestRows = within(history).getAllByRole('listitem');
+    expect(bestRows).toHaveLength(4);
+    expect(bestRows[0]?.textContent).toContain('#1');
+    expect(bestRows[0]?.textContent).toMatch(/300(?:,00)? puntos/);
+    for (const tiedRow of bestRows.slice(1, 3)) {
+      expect(tiedRow.textContent).toContain('#2');
+      expect(tiedRow.textContent).toMatch(/200(?:,00)? puntos/);
+    }
+    expect(bestRows[3]?.textContent).toContain('#4');
+    expect(bestRows[3]?.textContent).toMatch(/100,25 puntos/);
+    const loadedScope = within(history).getByText(/7 cargados.*más/i);
+    expect(loadedScope.closest('details')).toBeNull();
+
+    const methodology = within(history).getByText('Cómo se comparan', { selector: 'summary' });
+    const methodologyDetails = methodology.closest('details');
+    expect(methodologyDetails).not.toBeNull();
+    expect((methodologyDetails as HTMLDetailsElement).open).toBe(false);
+    fireEvent.click(methodology);
+    expect((methodologyDetails as HTMLDetailsElement).open).toBe(true);
+    expect(within(methodologyDetails as HTMLElement).getByText(/páginas cargadas/i)).toBeTruthy();
+    expect(
+      within(methodologyDetails as HTMLElement).getByText(/empates conservan la misma posición/i),
+    ).toBeTruthy();
+    expect(
+      within(methodologyDetails as HTMLElement).getByText(/tokens de juego registrados/i),
+    ).toBeTruthy();
+
+    selectHistoryView('Recientes');
+    expect(within(history).getAllByRole('button', { name: 'Abrir' })).toHaveLength(7);
+    expect(within(history).getByText('Derrota')).toBeTruthy();
+    expect(historyRowsContaining(history, formatDateTime(recent[0]!.createdAt))).toHaveLength(1);
+    expect(listAttempts).toHaveBeenCalledTimes(readsAfterPagination);
+    expect(app.runner.getAttempt).not.toHaveBeenCalled();
+    expect(app.runner.getConfiguration).not.toHaveBeenCalled();
+    expect(app.runner.getDecisionIndex).not.toHaveBeenCalled();
+    expect(app.runner.getReplay).not.toHaveBeenCalled();
+    expect(app.runner.createAttempt).not.toHaveBeenCalled();
+    expect(app.draft.putDraft).not.toHaveBeenCalled();
+  });
+
+  it('keeps the selected best view, loaded pages, editor literal, and row focus after opening a result', async () => {
+    const firstPage = [
+      summary('history-return-recent', 'victory', {
+        createdAt: '2026-10-27T12:00:00.000Z',
+        score: 120,
+      }),
+      summary('history-return-defeat', 'defeat', {
+        createdAt: '2026-10-27T11:00:00.000Z',
+      }),
+    ];
+    const secondPage = [
+      summary('history-return-best', 'victory', {
+        createdAt: '2026-10-27T10:00:00.000Z',
+        score: 420,
+      }),
+    ];
+    const listAttempts = vi.fn(async (cursor?: string) =>
+      cursor === 'history-return-next'
+        ? { attempts: secondPage }
+        : { attempts: firstPage, nextCursor: 'history-return-next' },
+    );
+    const getAttempt = vi.fn().mockResolvedValue(secondPage[0]);
+    const getDraft = vi.fn().mockResolvedValue({
+      version: 1,
+      draft: { ...createDefaultDraft(), instructions: 'Texto actual del editor.' },
+    });
+    const putDraft = vi.fn();
+    const app = renderApp({
+      draft: draftApi({ getDraft, putDraft }),
+      runner: attemptApi({ listAttempts, getAttempt }),
+    });
+    const instructions = await readyForPreparation();
+    await waitFor(() => expect(instructions.value).toBe('Texto actual del editor.'));
+    const unsavedLiteral = 'Edición que debe quedar en el editor.';
+    fireEvent.change(instructions, { target: { value: unsavedLiteral } });
+    selectTab('Historial');
+    expect(await historyActions('Abrir')).toHaveLength(2);
+    vi.useFakeTimers();
+    const history = historySection();
+    const loadMore = within(history).getByRole('button', { name: 'Cargar 20 más' });
+    const historyReadsBeforePagination = listAttempts.mock.calls.length;
+    fireEvent.click(loadMore);
+    await settle();
+    expect(historyRowsContaining(history, formatDateTime(secondPage[0]!.createdAt))).toHaveLength(
+      1,
+    );
+    expect(listAttempts).toHaveBeenCalledTimes(historyReadsBeforePagination + 1);
+    selectHistoryView('Mejores');
+
+    const sortedActions = within(history).getAllByRole('button', { name: 'Abrir' });
+    expect(sortedActions).toHaveLength(2);
+    const historyReadsAfterPagination = listAttempts.mock.calls.length;
+    await act(async () => {
+      fireEvent.click(sortedActions[0]!);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByRole('heading', { name: 'Victoria' })).toBeTruthy();
+    expect(getAttempt).toHaveBeenCalledWith('history-return-best', expect.any(AbortSignal));
+    act(() => fireEvent.click(screen.getByRole('button', { name: 'Volver al historial' })));
+
+    const historyAfterReturn = historySection();
+    const restoredActions = within(historyAfterReturn).getAllByRole('button', { name: 'Abrir' });
+    expect(restoredActions).toHaveLength(2);
+    expect(document.activeElement).toBe(restoredActions[0]);
+    expect(within(historyAfterReturn).queryByText('Derrota')).toBeNull();
+    expect(instructions.isConnected).toBe(true);
+    expect(instructions.value).toBe(unsavedLiteral);
+    expect(getDraft).toHaveBeenCalledOnce();
+    expect(putDraft).not.toHaveBeenCalled();
+    expect(listAttempts).toHaveBeenCalledTimes(historyReadsAfterPagination);
+    expect(getAttempt).toHaveBeenCalledOnce();
+    expect(app.runner.getConfiguration).not.toHaveBeenCalled();
+    expect(app.runner.getDecisionIndex).not.toHaveBeenCalled();
+    expect(app.runner.getReplay).not.toHaveBeenCalled();
+    expect(app.runner.createAttempt).not.toHaveBeenCalled();
+    expect(app.runner.startAttempt).not.toHaveBeenCalled();
+    expect(app.runner.cancelAttempt).not.toHaveBeenCalled();
+  });
+
+  it('distinguishes Mejores with no comparable victories from an empty account history', async () => {
+    const defeat = summary('history-best-empty-defeat', 'defeat', {
+      createdAt: '2026-10-27T12:00:00.000Z',
+    });
+    const unknownScore = summary('history-best-empty-unknown', 'victory', {
+      createdAt: '2026-10-27T11:00:00.000Z',
+      score: null,
+    });
+    const listAttempts = vi.fn(async (cursor?: string) =>
+      cursor === 'history-best-empty-next'
+        ? { attempts: [] }
+        : { attempts: [defeat, unknownScore], nextCursor: 'history-best-empty-next' },
+    );
+    renderApp({ runner: attemptApi({ listAttempts }) });
+    await readyForPreparation();
+    selectTab('Historial');
+    expect(await historyActions('Abrir')).toHaveLength(2);
+    await settle();
+    const initialHistoryReads = listAttempts.mock.calls.length;
+
+    selectHistoryView('Mejores');
+    const history = historySection();
+    expect(within(history).getByText(/no hay victorias comparables/i)).toBeTruthy();
+    expect(within(history).queryByText('Todavía no hay intentos guardados.')).toBeNull();
+    expect(within(history).getByText(/2 cargados/)).toBeTruthy();
+    expect(within(history).queryByText('Derrota')).toBeNull();
+
+    selectHistoryView('Recientes');
+    expect(within(history).getAllByRole('button', { name: 'Abrir' })).toHaveLength(2);
+    expect(within(history).getByText('Derrota')).toBeTruthy();
+    expect(listAttempts).toHaveBeenCalledTimes(initialHistoryReads);
+  });
+
+  it.each(['configuration', 'inspector'] as const)(
+    'returns from a history %s to its selected best view without another history read',
+    async (query) => {
+      const victory = summary(`history-${query}-best`, 'victory', { score: 240 });
+      const defeat = summary(`history-${query}-excluded`, 'defeat');
+      const listAttempts = vi.fn().mockResolvedValue({ attempts: [victory, defeat] });
+      const getConfiguration = vi.fn().mockResolvedValue({
+        attemptId: victory.id,
+        draft: createDefaultDraft(),
+      });
+      const getDecisionIndex = vi.fn().mockResolvedValue({
+        attemptId: victory.id,
+        levelId: LEVEL.id,
+        decisions: [],
+      });
+      renderApp({
+        runner: attemptApi({ listAttempts, getConfiguration, getDecisionIndex }),
+      });
+      await readyForPreparation();
+      selectTab('Historial');
+      await historyActions('Abrir');
+      selectHistoryView('Mejores');
+      const historyReadsBeforeQuery = listAttempts.mock.calls.length;
+      fireEvent.click(
+        await historyAction(
+          query === 'configuration' ? 'Ver configuración' : 'Inspeccionar decisiones',
+        ),
+      );
+      await screen.findByRole('heading', {
+        name: query === 'configuration' ? 'Configuración del intento' : 'Inspeccionar decisiones',
+      });
+      fireEvent.click(
+        screen.getByRole('button', {
+          name: query === 'configuration' ? 'Cerrar' : 'Cerrar inspección',
+        }),
+      );
+
+      const history = historySection();
+      const remainingOpeners = within(history).getAllByRole('button', { name: 'Abrir' });
+      expect(remainingOpeners).toHaveLength(1);
+      expect(within(history).queryByText('Derrota')).toBeNull();
+      const historyRowFocusTargets = [
+        ...within(history).queryAllByRole('button', { name: 'Abrir' }),
+        ...within(history).queryAllByText('Más acciones', { selector: 'summary' }),
+        ...within(history).queryAllByRole('button', { name: 'Ver configuración' }),
+        ...within(history).queryAllByRole('button', { name: 'Inspeccionar decisiones' }),
+      ];
+      await waitFor(() => expect(historyRowFocusTargets).toContain(document.activeElement));
+      expect(listAttempts).toHaveBeenCalledTimes(historyReadsBeforeQuery);
+      expect(getConfiguration).toHaveBeenCalledTimes(query === 'configuration' ? 1 : 0);
+      expect(getDecisionIndex).toHaveBeenCalledTimes(query === 'inspector' ? 1 : 0);
+    },
+  );
+
+  it('groups row queries and keeps unsupported replay and inspection actions unavailable', async () => {
+    const incomplete = summary('history-incomplete-actions', 'defeat', {
+      recordComplete: false,
+      presentationComplete: true,
+      turnsUsed: 3,
+    });
+    const getReplay = vi.fn();
+    const getDecisionIndex = vi.fn();
+    renderApp({
+      runner: attemptApi({
+        listAttempts: vi.fn().mockResolvedValue({ attempts: [incomplete] }),
+        getReplay,
+        getDecisionIndex,
+      }),
+    });
+    await readyForPreparation();
+    selectTab('Historial');
+    const history = historySection();
+    expect(await historyActions('Abrir')).toHaveLength(1);
+    const moreActions = within(history).getByText('Más acciones', { selector: 'summary' });
+    const actionsDisclosure = moreActions.closest('details');
+    expect(actionsDisclosure).not.toBeNull();
+    expect((actionsDisclosure as HTMLDetailsElement).open).toBe(false);
+    fireEvent.click(moreActions);
+
+    expect((actionsDisclosure as HTMLDetailsElement).open).toBe(true);
+    expect(within(history).getByRole('button', { name: 'Ver configuración' })).toBeTruthy();
+    expect(within(history).queryByRole('button', { name: 'Ver de nuevo' })).toBeNull();
+    expect(within(history).queryByRole('button', { name: 'Inspeccionar decisiones' })).toBeNull();
+    expect(getReplay).not.toHaveBeenCalled();
+    expect(getDecisionIndex).not.toHaveBeenCalled();
+  });
+
+  it('keeps loading and error distinct from the single empty state that leads to Preparar', async () => {
+    const bootstrap = deferred<{ attempts: readonly AttemptSummary[] }>();
+    const listAttempts = vi.fn().mockReturnValueOnce(bootstrap.promise).mockResolvedValue({
+      attempts: [],
+    });
+    renderApp({ runner: attemptApi({ listAttempts }) });
+    await readyForNavigation();
+    selectTab('Historial');
+    const history = historySection();
+    expect(await within(history).findByText('Recuperando tus intentos…')).toBeTruthy();
+    expect(within(history).queryByText(/^Todavía no hay/)).toBeNull();
+    expect(within(history).getByText('Recuperando tus intentos…')).toBeTruthy();
+
+    await act(async () => {
+      bootstrap.resolve({ attempts: [] });
+      await bootstrap.promise;
+    });
+    await settle();
+    expect(within(history).getAllByText('Todavía no hay intentos guardados.')).toHaveLength(1);
+    expect(
+      within(history).queryByText(
+        'Todavía no hay victorias comparables entre los intentos cargados.',
+      ),
+    ).toBeNull();
+    const prepare = within(history).getByText('Preparar', { exact: true });
+    const historyReadsBeforePrepare = listAttempts.mock.calls.length;
+    fireEvent.click(prepare);
+    expect(screen.getByRole('heading', { name: 'Prepará tu robot' })).toBeTruthy();
+    expect(listAttempts).toHaveBeenCalledTimes(historyReadsBeforePrepare);
+  });
+
+  it('shows a history read error with the existing retry action instead of an empty state', async () => {
+    const listAttempts = vi
+      .fn()
+      .mockRejectedValueOnce(new AttemptApiFailure('server', 'Historial no disponible.', 503))
+      .mockResolvedValue({ attempts: [] });
+    renderApp({ runner: attemptApi({ listAttempts }) });
+    await readyForPreparation();
+    selectTab('Historial');
+
+    await settle();
+    const history = historySection();
+    const error = within(history).getByRole('alert');
+    expect(error.textContent).toContain('Historial no disponible.');
+    expect(within(history).queryByText('Todavía no hay intentos guardados.')).toBeNull();
+    expect(within(history).queryByText('Preparar', { exact: true })).toBeNull();
+    const historyReadsBeforeRetry = listAttempts.mock.calls.length;
+    fireEvent.click(within(error).getByRole('button', { name: 'Reintentar historial' }));
+    await settle();
+    expect(within(history).getAllByText('Todavía no hay intentos guardados.')).toHaveLength(1);
+    expect(within(history).getByText('Preparar', { exact: true })).toBeTruthy();
+    expect(listAttempts).toHaveBeenCalledTimes(historyReadsBeforeRetry + 1);
+    expect(listAttempts.mock.calls.at(-1)?.[0]).toBeUndefined();
   });
 });

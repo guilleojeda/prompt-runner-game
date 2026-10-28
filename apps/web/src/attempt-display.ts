@@ -1,6 +1,5 @@
 import type { AttemptStatus, AttemptSummary } from './attempt-api.js';
 import type { RobotDraft } from '../../../shared/robot.js';
-import { LEVEL } from '../../../shared/game.js';
 import { MODEL_CATALOG } from '../../../shared/models.js';
 
 export function isTerminal(status: AttemptStatus): boolean {
@@ -63,19 +62,6 @@ export function formatProgress(value: number): string {
   return `${Math.round(percent)}%`;
 }
 
-export function objectCollectionStatus(attempt: AttemptSummary): string {
-  const collected = new Set(attempt.collectedObjectIds);
-  const details = LEVEL.objects.map((object) => {
-    const label = object.id === 'llave-1' ? 'Llave' : 'Recompensa';
-    const value = `${object.scoreValue} puntos`;
-    const state = collected.has(object.id)
-      ? `recogida (${value})`
-      : `no recogida (${value}${object.scoreValue > 0 ? ' posibles' : ''})`;
-    return `${label}: ${state}`;
-  });
-  return `${details.join(', ')}, valor total: ${attempt.objectPoints.toLocaleString('es-AR')} puntos`;
-}
-
 export function stableHistoryOrder(left: AttemptSummary, right: AttemptSummary): number {
   const byDate = right.createdAt.localeCompare(left.createdAt);
   return byDate === 0 ? left.id.localeCompare(right.id) : byDate;
@@ -97,20 +83,12 @@ export function comparableVictories(
 export function formatHistoryScope(count: number, hasMore: boolean): string {
   return hasMore
     ? `${count} cargados, hay más intentos para consultar`
-    : `${count} cargados, todo el historial disponible está visible`;
+    : `${count} cargados, no hay más páginas`;
 }
 
 export function rankFor(attempts: readonly AttemptSummary[], index: number): number {
   const score = attempts[index]?.score;
   return attempts.findIndex((attempt) => attempt.score === score) + 1;
-}
-
-export function historyComparisonMetrics(attempt: AttemptSummary): string {
-  return `${attempt.turnsUsed} / ${attempt.maxTurns} turnos, ${formatMetric(attempt.gameTokens)} tokens para puntaje, ${attempt.collectedObjectIds.length} objetos, ${attempt.modelLabel}, ${formatDateTime(attempt.createdAt)}`;
-}
-
-export function historyDetailMetrics(attempt: AttemptSummary): string {
-  return `Avance: ${formatProgress(attempt.progress)}, ${historyComparisonMetrics(attempt)}`;
 }
 
 export function modelLabel(modelKey: RobotDraft['modelKey']): string {
