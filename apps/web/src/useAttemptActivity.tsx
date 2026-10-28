@@ -317,7 +317,6 @@ export function useAttemptActivity({
     clearDecisionInspector,
     handleDecisionInspectorAuthRequired,
     openResult: openHistoryResult,
-    retryResult,
     closeResult,
     handoffResultToActivity,
   } = historyOwner;
@@ -691,7 +690,8 @@ export function useAttemptActivity({
   );
 
   const handoffHistoryActivityTarget = useCallback(
-    async (target: AttemptSummary, signal: AbortSignal): Promise<boolean> => {
+    (target: AttemptSummary, signal: AbortSignal): boolean => {
+      if (signal.aborted) return false;
       if (!isActive(target.status) && !needsAutomaticPresentation(target)) return false;
       setHistoryResultOpen(true);
       clearConfiguration();
@@ -700,8 +700,11 @@ export function useAttemptActivity({
       const operationGeneration = generationRef.current;
       const operationEpoch = ++operationEpochRef.current;
       if (target.status === 'pending' && !target.cancelRequested) {
-        await retryPendingStart(target, {
-          signal,
+        recoveryControllerRef.current?.abort();
+        const controller = new AbortController();
+        recoveryControllerRef.current = controller;
+        void retryPendingStart(target, {
+          signal: controller.signal,
           operationGeneration,
           operationEpoch,
         });
@@ -1928,7 +1931,6 @@ export function useAttemptActivity({
     <HistoryResultQuery
       state={resultQuery}
       sharingVisible={configurationState === null && decisionInspectorTarget === null}
-      onRetry={retryResult}
       onClose={closeResult}
       onReplay={(id) => void openReplayFromHistory(id)}
       onInspect={openHistoryDecisionInspector}

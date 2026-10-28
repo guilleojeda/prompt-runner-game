@@ -304,7 +304,6 @@ export function ResultCard({
 export function HistoryResultQuery({
   state,
   sharingVisible,
-  onRetry,
   onClose,
   onReturnToEditor,
   onReplay,
@@ -315,7 +314,6 @@ export function HistoryResultQuery({
 }: {
   state: AttemptResultQueryState;
   sharingVisible: boolean;
-  onRetry: () => void;
   onClose: () => void;
   onReturnToEditor: () => void;
   onReplay: (attemptId: string) => void;
@@ -327,9 +325,11 @@ export function HistoryResultQuery({
   const title =
     state.status === 'loading'
       ? 'Consultando el resultado guardado…'
-      : state.status === 'error'
-        ? 'No se pudo abrir el resultado'
-        : statusLabel(state.attempt.status);
+      : state.status === 'recovering'
+        ? 'Recuperando el resultado'
+        : state.status === 'error'
+          ? 'No se pudo abrir el resultado'
+          : statusLabel(state.attempt.status);
 
   return (
     <section className="attempt-result-query" aria-labelledby="history-result-loading-title">
@@ -359,12 +359,14 @@ export function HistoryResultQuery({
           Cargando el intento seleccionado del historial.
         </p>
       )}
+      {state.status === 'recovering' && (
+        <p className="attempt-message" role="status">
+          {state.message}
+        </p>
+      )}
       {state.status === 'error' && (
         <div className="attempt-error" role="alert">
           <p>{state.message}</p>
-          <button className="secondary-button" type="button" onClick={onRetry}>
-            Reintentar consulta
-          </button>
         </div>
       )}
       {state.status === 'ready' && (

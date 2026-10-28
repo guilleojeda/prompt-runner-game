@@ -31,6 +31,7 @@ import {
   AnimationPreferenceConflictError,
   AttemptNotTerminalError,
   AttemptStoreError,
+  AttemptStoredIncompatibleError,
   BudgetUnavailableError,
   IdempotencyConflictError,
   ModelUnavailableError,
@@ -57,6 +58,8 @@ import { logLambdaRecord, withLambdaTelemetry } from '../../../shared/lambda-tel
 const APPLICATION_SCOPE = 'prompt-runner/robot';
 const STORED_DRAFT_INCOMPATIBLE_MESSAGE =
   'El borrador guardado no es compatible con la versión actual.';
+const STORED_ATTEMPT_INCOMPATIBLE_MESSAGE =
+  'El resultado guardado no es compatible con la versión actual.';
 const ATTEMPT_UNAVAILABLE_MESSAGE =
   'No se puede iniciar una partida por ahora. Podés consultar tus partidas o intentarlo más tarde.';
 
@@ -736,7 +739,19 @@ export const handleRequest = async (
     }
     if (isAttemptCollection && method === 'GET') {
       const cursor = event.queryStringParameters?.cursor;
-      const result = await attemptStore.list(identity.sub, cursor, 20);
+      const result = await attemptStore.list(identity.sub, cursor, 20).catch((error: unknown) => {
+        if (error instanceof AttemptStoredIncompatibleError) {
+          throw new ApiError(
+            500,
+            'stored_attempt_incompatible',
+            STORED_ATTEMPT_INCOMPATIBLE_MESSAGE,
+            {
+              cause: error,
+            },
+          );
+        }
+        throw error;
+      });
       return respond(event, 200, 'ok', result);
     }
     if (isAttemptRequest) {
@@ -814,7 +829,19 @@ export const handleRequest = async (
     }
     if (isAttemptItem && method === 'GET') {
       const attemptId = decodeURIComponent(parts[1]);
-      const attempt = await attemptStore.closeExpired(identity.sub, attemptId);
+      const attempt = await attemptStore
+        .closeExpired(identity.sub, attemptId)
+        .catch((error: unknown) => {
+          if (error instanceof AttemptStoredIncompatibleError) {
+            throw new ApiError(
+              500,
+              'stored_attempt_incompatible',
+              STORED_ATTEMPT_INCOMPATIBLE_MESSAGE,
+              { cause: error },
+            );
+          }
+          throw error;
+        });
       if (!attempt) throw new ApiError(404, 'not_found', 'Intento no encontrado.');
       return respond(event, 200, 'ok', summaryResponse(attempt));
     }
