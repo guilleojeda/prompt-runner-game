@@ -4104,7 +4104,7 @@ describe('AttemptActivity', () => {
     fireEvent.click(configurationButtons[0]!);
     expect(await screen.findByRole('heading', { name: 'Configuración del intento' })).toBeTruthy();
     expect(getConfiguration).toHaveBeenCalledWith(terminal.id, expect.any(AbortSignal));
-    expect(screen.getByText('Recuperada desde el intento')).toBeTruthy();
+    expect(await screen.findByText('Recuperada desde el intento')).toBeTruthy();
     expect(screen.getByText('Claude Sonnet 4.6')).toBeTruthy();
     const configuration = screen
       .getByRole('heading', { name: 'Configuración del intento' })
