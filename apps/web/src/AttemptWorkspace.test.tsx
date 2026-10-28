@@ -3781,9 +3781,7 @@ describe('AttemptActivity', () => {
     );
     expect(listAttempts).toHaveBeenCalledTimes(historyReadsBeforeMore + 1);
     expect(listAttempts.mock.calls.at(-1)?.[0]).toBe('more');
-    expect(
-      within(history).getByText('12 cargados, todo el historial disponible está visible'),
-    ).toBeTruthy();
+    expect(within(history).getByText('12 cargados, no hay más páginas')).toBeTruthy();
     expect(within(history).queryByRole('button', { name: 'Cargar 20 más' })).toBeNull();
 
     const readsAfterPagination = listAttempts.mock.calls.length;
@@ -3947,7 +3945,7 @@ describe('AttemptActivity', () => {
     await waitFor(() => expect((loadMore as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(await within(historySection).findByRole('button', { name: 'Cargar 20 más' }));
     await waitFor(() => expect(within(historySection).getAllByRole('listitem')).toHaveLength(3));
-    expect(screen.getByText('3 cargados, todo el historial disponible está visible')).toBeTruthy();
+    expect(screen.getByText('3 cargados, no hay más páginas')).toBeTruthy();
   });
 
   it('ignores an error and finalizer from a paginated history request superseded by refresh', async () => {
@@ -4031,7 +4029,7 @@ describe('AttemptActivity', () => {
     render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
     expect(await screen.findByText('Todavía no hay intentos guardados.')).toBeTruthy();
-    expect(screen.getByText('0 cargados, todo el historial disponible está visible')).toBeTruthy();
+    expect(screen.getByText('0 cargados, no hay más páginas')).toBeTruthy();
     expect(
       screen.queryByText('Todavía no hay victorias comparables entre los intentos cargados.'),
     ).toBeNull();
