@@ -1903,13 +1903,6 @@ export function useAttemptActivity({
       busy={busy}
       configurationAvailable={configurationAvailable && !authPaused}
       onApply={() => void applyConfiguration()}
-      onRetry={() =>
-        void openConfiguration(
-          configurationState.targetId,
-          false,
-          configurationState.displayContext,
-        )
-      }
       onClose={closeConfiguration}
     />
   ) : null;

@@ -640,13 +640,13 @@ export function ConfigurationPreview({
   busy,
   configurationAvailable,
   onApply,
-  onRetry,
   onClose,
 }: {
   state: {
     readonly targetId: string;
     readonly displayContext?: AttemptDisplayContext;
-    readonly status: 'loading' | 'ready' | 'applying' | 'error';
+    readonly focusVersion: number;
+    readonly status: 'loading' | 'recovering' | 'pending' | 'ready' | 'applying' | 'error';
     readonly configuration?: AttemptConfiguration;
     readonly message?: string;
     readonly applied?: boolean;
@@ -654,13 +654,12 @@ export function ConfigurationPreview({
   busy: boolean;
   configurationAvailable: boolean;
   onApply: () => void;
-  onRetry: () => void;
   onClose: () => void;
 }) {
   const headingRef = useRef<HTMLHeadingElement>(null);
   useEffect(() => {
-    if (state.status === 'loading') headingRef.current?.focus();
-  }, [state.status, state.targetId]);
+    headingRef.current?.focus();
+  }, [state.focusVersion]);
   return (
     <section className="attempt-configuration" aria-labelledby="attempt-configuration-title">
       <div className="attempt-section-heading">
@@ -686,14 +685,19 @@ export function ConfigurationPreview({
           Cargando la configuración guardada…
         </p>
       )}
+      {state.status === 'recovering' && state.message && (
+        <p className="attempt-message" role="status">
+          {state.message}
+        </p>
+      )}
+      {state.status === 'pending' && state.message && (
+        <p className="attempt-message" role="status">
+          {state.message}
+        </p>
+      )}
       {state.status === 'error' && state.message && (
         <div className="attempt-error" role="alert">
           <p>{state.message}</p>
-          {!state.configuration && (
-            <button className="secondary-button" type="button" onClick={onRetry} disabled={busy}>
-              Reintentar carga
-            </button>
-          )}
         </div>
       )}
       {state.configuration && (
