@@ -269,6 +269,7 @@ async function openConfiguration(opening: ConfigurationOpening): Promise<void> {
     return;
   }
 
+  await waitFor(() => expect(button('Probar').disabled).toBe(false));
   fireEvent.click(button('Probar'));
   await screen.findByRole('heading', { name: 'Victoria' });
   const trigger = button('Ver configuración');
