@@ -575,7 +575,9 @@ describe('attempt API projection and dispatch recovery', () => {
     const draft = createDefaultDraft();
     const attemptStore = new MemoryAttemptStore({ draft: { version: 1, draft } });
     vi.spyOn(attemptStore, 'get').mockRejectedValue(
-      new AttemptStoredIncompatibleError('El intento guardado tiene una configuración incompatible.'),
+      new AttemptStoredIncompatibleError(
+        'El intento guardado tiene una configuración incompatible.',
+      ),
     );
     const response = await handleRequest(eventFor('GET', '/attempts/incompatible/configuration'), {
       store: { get: vi.fn(), put: vi.fn() },
