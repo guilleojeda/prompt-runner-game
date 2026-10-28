@@ -395,6 +395,9 @@ export function HistoryList({
   nextCursor,
   error,
   loading,
+  recovering,
+  recoveryMessage,
+  invalidCursor,
   busy,
   onOpen,
   onReplay,
@@ -402,7 +405,7 @@ export function HistoryList({
   onConfiguration,
   configurationBusyId,
   onMore,
-  onRetry,
+  onUpdate,
   onSelectView,
   onPrepare,
 }: {
@@ -411,6 +414,9 @@ export function HistoryList({
   nextCursor?: string;
   error: string | null;
   loading: boolean;
+  recovering: boolean;
+  recoveryMessage: string | null;
+  invalidCursor: boolean;
   busy: boolean;
   onOpen: (id: string) => void;
   onReplay: (id: string) => void;
@@ -418,7 +424,7 @@ export function HistoryList({
   onConfiguration: (attempt: AttemptSummary) => void;
   configurationBusyId: string | null;
   onMore: () => void;
-  onRetry: () => void;
+  onUpdate: () => void;
   onSelectView: (view: HistoryView) => void;
   onPrepare?: () => void;
 }) {
@@ -442,10 +448,21 @@ export function HistoryList({
       {error && (
         <div className="attempt-error" role="alert">
           <p>{error}</p>
-          <button className="secondary-button" type="button" onClick={onRetry} disabled={busy}>
-            Reintentar historial
-          </button>
+          {invalidCursor && (
+            <button className="secondary-button" type="button" onClick={onUpdate} disabled={busy}>
+              Actualizar historial
+            </button>
+          )}
         </div>
+      )}
+      {(loading || recovering) && error === null && (
+        <p className="attempt-message" role="status">
+          {recovering && !loading
+            ? (recoveryMessage ?? 'Volveremos a consultar el historial.')
+            : loading && attempts.length === 0 && !recovering
+              ? 'Recuperando tus intentos…'
+              : 'Actualizando el historial…'}
+        </p>
       )}
       <div className="history-view-toggle" role="group" aria-label="Vista del historial">
         <button
@@ -481,11 +498,9 @@ export function HistoryList({
           </details>
         </div>
       )}
-      {loading && attempts.length === 0 && error === null ? (
-        <p className="attempt-message" role="status">
-          Recuperando tus intentos…
-        </p>
-      ) : attempts.length === 0 && !loading && error === null ? (
+      {attempts.length === 0 &&
+      (loading || recovering) &&
+      error === null ? null : attempts.length === 0 && !loading && !recovering && error === null ? (
         <div className="history-empty">
           <p>Todavía no hay intentos guardados.</p>
           <button
@@ -609,7 +624,7 @@ export function HistoryList({
           className="secondary-button history-load-more"
           type="button"
           onClick={onMore}
-          disabled={busy}
+          disabled={busy || recovering}
         >
           Cargar 20 más
         </button>

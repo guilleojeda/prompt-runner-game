@@ -26,6 +26,7 @@ import {
 import {
   AdmissionConflictError,
   AttemptCapacityError,
+  AttemptCursorError,
   AttemptDecisionsPendingError,
   AnimationPreferenceConflictError,
   AttemptNotTerminalError,
@@ -819,7 +820,7 @@ export const handleRequest = async (
     }
     throw new ApiError(404, 'not_found', 'Ruta no encontrada.');
   } catch (error) {
-    if (error instanceof SavedRobotCursorError) {
+    if (error instanceof SavedRobotCursorError || error instanceof AttemptCursorError) {
       return respond(event, 400, 'invalid', {
         code: 'invalid',
         message: error.message,

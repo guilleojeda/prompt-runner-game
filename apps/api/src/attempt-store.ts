@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   ConditionalCheckFailedException,
   DeleteItemCommand,
+  DynamoDBServiceException,
   type TransactWriteItem,
   DynamoDBClient,
   GetItemCommand,
@@ -98,6 +99,13 @@ export class AttemptStoreError extends Error {
   public constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = 'AttemptStoreError';
+  }
+}
+
+export class AttemptCursorError extends AttemptStoreError {
+  public constructor(message = 'El cursor no es válido.', options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'AttemptCursorError';
   }
 }
 
@@ -216,6 +224,34 @@ const skillsFor = (draft: RobotDraft): AttemptSkill[] =>
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const isStringAttributeValue = (value: unknown): value is { S: string } =>
+  isRecord(value) && Object.keys(value).length === 1 && typeof value.S === 'string';
+
+const TRANSIENT_DYNAMO_TRANSPORT_NAMES = new Set([
+  'TimeoutError',
+  'RequestTimeout',
+  'RequestTimeoutException',
+]);
+const TRANSIENT_NODE_NETWORK_CODES = new Set([
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'EPIPE',
+  'ETIMEDOUT',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+]);
+
+const isTransientDynamoTransportError = (error: unknown): boolean => {
+  if (!(error instanceof Error) || error.name === 'AbortError') return false;
+  const code = (error as NodeJS.ErrnoException).code;
+  return (
+    TRANSIENT_DYNAMO_TRANSPORT_NAMES.has(error.name) ||
+    (typeof code === 'string' && TRANSIENT_NODE_NETWORK_CODES.has(code))
+  );
+};
 
 const freezeDeep = <T>(value: T): T => {
   if (typeof value === 'object' && value !== null && !Object.isFrozen(value)) {
@@ -1607,17 +1643,25 @@ export class DynamoAttemptStore implements AttemptStore {
     nextCursor?: string;
   }> {
     const exclusiveStartKey = cursor ? this.decodeCursor(cursor, owner) : undefined;
-    const response = await this.client.send(
-      new QueryCommand({
-        TableName: this.tableName,
-        KeyConditionExpression: 'PK = :pk AND begins_with(SK, :prefix)',
-        ExpressionAttributeValues: marshall({ ':pk': `USER#${owner}`, ':prefix': 'ATTEMPT#' }),
-        ExclusiveStartKey: exclusiveStartKey,
-        Limit: Math.min(limit, 20),
-        ScanIndexForward: false,
-        ConsistentRead: true,
-      }),
-    );
+    const query = new QueryCommand({
+      TableName: this.tableName,
+      KeyConditionExpression: 'PK = :pk AND begins_with(SK, :prefix)',
+      ExpressionAttributeValues: marshall({ ':pk': `USER#${owner}`, ':prefix': 'ATTEMPT#' }),
+      ExclusiveStartKey: exclusiveStartKey,
+      Limit: Math.min(limit, 20),
+      ScanIndexForward: false,
+      ConsistentRead: true,
+    });
+    const response = await this.client.send(query).catch((error: unknown) => {
+      if (
+        (error instanceof DynamoDBServiceException &&
+          (error.$fault === 'server' || error.$retryable !== undefined)) ||
+        isTransientDynamoTransportError(error)
+      ) {
+        throw new AttemptStoreError('No se pudo consultar los intentos.', { cause: error });
+      }
+      throw error;
+    });
     const attempts = (response.Items ?? []).map((item) => summaryOf(toRecord(unmarshall(item))));
     return {
       attempts,
@@ -2699,13 +2743,31 @@ export class DynamoAttemptStore implements AttemptStore {
     try {
       const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as {
         owner?: unknown;
-        key?: Record<string, AttributeValue>;
+        key?: unknown;
       };
-      if (parsed.owner !== owner || !parsed.key?.PK || !parsed.key.SK)
+      const key = parsed.key;
+      if (
+        parsed.owner !== owner ||
+        !isRecord(key) ||
+        Object.keys(key).length !== 2 ||
+        !Object.prototype.hasOwnProperty.call(key, 'PK') ||
+        !Object.prototype.hasOwnProperty.call(key, 'SK') ||
+        !isStringAttributeValue(key.PK) ||
+        !isStringAttributeValue(key.SK)
+      )
         throw new Error('invalid cursor');
-      return parsed.key;
+      const attributeKey = key as Record<string, AttributeValue>;
+      const decoded = unmarshall(attributeKey);
+      if (
+        decoded.PK !== `USER#${owner}` ||
+        typeof decoded.SK !== 'string' ||
+        !decoded.SK.startsWith('ATTEMPT#')
+      ) {
+        throw new Error('invalid cursor');
+      }
+      return attributeKey;
     } catch (error) {
-      throw new AttemptStoreError('El cursor no es válido.', { cause: error });
+      throw new AttemptCursorError(undefined, { cause: error });
     }
   }
 }
@@ -3491,7 +3553,7 @@ export class MemoryAttemptStore implements AttemptStore {
         throw new Error('invalid cursor');
       return parsed.offset;
     } catch (error) {
-      throw new AttemptStoreError('El cursor no es válido.', { cause: error });
+      throw new AttemptCursorError(undefined, { cause: error });
     }
   }
 }
