@@ -88,6 +88,8 @@ const keyFromInput = (input: Record<string, unknown>): { PK: string; SK: string 
 
 const itemKey = (pk: string, sk: string): string => `${pk}\u0000${sk}`;
 const hashBytes = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
+const cursorFor = (value: unknown): string =>
+  Buffer.from(JSON.stringify(value), 'utf8').toString('base64url');
 
 /** Command-level DynamoDB double; production code still uses DynamoAttemptStore. */
 class DynamoHarness {
@@ -574,6 +576,88 @@ const legacyDecisionFixture = (
 };
 
 describe('Dynamo attempt admission conditions', () => {
+  it.each([
+    ['malformed', 'not-a-cursor'],
+    ['missing key sort key', cursorFor({ owner: 'owner', key: { PK: 'USER#owner' } })],
+    [
+      'foreign cursor owner',
+      cursorFor({ owner: 'another-owner', key: { PK: 'USER#owner', SK: 'ATTEMPT#attempt-1' } }),
+    ],
+    [
+      'partition key for another owner',
+      cursorFor({
+        owner: 'owner',
+        key: marshall({ PK: 'USER#another-owner', SK: 'ATTEMPT#attempt-1' }),
+      }),
+    ],
+    [
+      'sort key outside the attempt prefix',
+      cursorFor({
+        owner: 'owner',
+        key: marshall({ PK: 'USER#owner', SK: 'ROBOT#robot-1' }),
+      }),
+    ],
+    [
+      'non-string partition key',
+      cursorFor({ owner: 'owner', key: marshall({ PK: 1, SK: 'ATTEMPT#attempt-1' }) }),
+    ],
+    [
+      'invalid AttributeValue shape',
+      cursorFor({
+        owner: 'owner',
+        key: { PK: { X: 'unsupported' }, SK: { S: 'ATTEMPT#attempt-1' } },
+      }),
+    ],
+  ])('rejects %s cursor before querying DynamoDB', async (_label, cursor) => {
+    const harness = new DynamoHarness();
+    const store = storeFor(harness);
+
+    const outcome = await store.list('owner', cursor).then(
+      () => ({ kind: 'resolved' as const }),
+      (error: unknown) => ({
+        kind: 'rejected' as const,
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    );
+    expect({ outcome, queryCount: harness.send.mock.calls.length }).toEqual({
+      outcome: { kind: 'rejected', message: 'El cursor no es válido.' },
+      queryCount: 0,
+    });
+  });
+
+  it('continues valid attempt pagination within each owner', async () => {
+    const harness = new DynamoHarness();
+    harness.queryPageSize = 1;
+    const { attemptId } = seedAttempt(harness);
+    const firstRecord = harness.read(`USER#owner`, `ATTEMPT#${attemptId}`)!;
+    harness.put({
+      ...firstRecord,
+      SK: 'ATTEMPT#attempt-2',
+      id: 'attempt-2',
+      createdAt: '2026-09-21T15:00:01.000Z',
+    });
+    harness.put({
+      ...firstRecord,
+      PK: 'USER#another-owner',
+      SK: 'ATTEMPT#foreign-attempt',
+      id: 'foreign-attempt',
+      owner: 'another-owner',
+    });
+    const store = storeFor(harness);
+
+    const pageOne = await store.list('owner', undefined, 1);
+    expect(pageOne.attempts).toHaveLength(1);
+    expect(pageOne.nextCursor).toBeDefined();
+    const pageTwo = await store.list('owner', pageOne.nextCursor, 1);
+    expect([...pageOne.attempts, ...pageTwo.attempts].map(({ id }) => id).sort()).toEqual(
+      [attemptId, 'attempt-2'].sort(),
+    );
+    expect(pageTwo.attempts).toHaveLength(1);
+
+    const otherOwnerPage = await store.list('another-owner', undefined, 1);
+    expect(otherOwnerPage.attempts.map(({ id }) => id)).toEqual(['foreign-attempt']);
+  });
+
   it('rejects v2 and v3 durable attempt records under the current v4 contract', async () => {
     for (const recordVersion of [2, 3]) {
       const harness = new DynamoHarness();

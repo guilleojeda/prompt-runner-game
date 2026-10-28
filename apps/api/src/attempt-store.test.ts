@@ -246,6 +246,42 @@ const publishMemoryRoute = async (
 };
 
 describe('attempt lifecycle store', () => {
+  it('rejects malformed, invalid-shape, and foreign-owner attempt cursors', async () => {
+    const store = new MemoryAttemptStore({ draft: savedDraft() });
+    const cursorFor = (value: unknown): string =>
+      Buffer.from(JSON.stringify(value), 'utf8').toString('base64url');
+    const invalidCursors = [
+      ['malformed', 'not-a-cursor'],
+      ['invalid offset shape', cursorFor({ owner: 'a', offset: -1 })],
+      ['foreign owner', cursorFor({ owner: 'another-owner', offset: 0 })],
+    ] as const;
+
+    for (const [label, cursor] of invalidCursors) {
+      await expect(store.list('a', cursor), label).rejects.toThrow('El cursor no es válido.');
+    }
+  });
+
+  it('continues valid attempt pagination within each owner', async () => {
+    const draft = savedDraft().draft;
+    const store = new MemoryAttemptStore({ draft: { version: 1, draft } });
+    const admit = async (owner: string, requestKey: string) =>
+      store.admit({ owner, requestKey, expectedVersion: 1, draft, animationEnabled: false });
+    const first = await admit('a', 'cursor-page-one');
+    const second = await admit('a', 'cursor-page-two');
+    const otherOwner = await admit('b', 'cursor-other-owner');
+
+    const pageOne = await store.list('a', undefined, 1);
+    expect(pageOne.attempts).toHaveLength(1);
+    expect(pageOne.nextCursor).toBeDefined();
+    const pageTwo = await store.list('a', pageOne.nextCursor, 1);
+    const ownerIds = [...pageOne.attempts, ...pageTwo.attempts].map(({ id }) => id).sort();
+    expect(ownerIds).toEqual([first.attempt.id, second.attempt.id].sort());
+    expect(pageTwo.attempts).toHaveLength(1);
+
+    const otherOwnerPage = await store.list('b', undefined, 1);
+    expect(otherOwnerPage.attempts.map(({ id }) => id)).toEqual([otherOwner.attempt.id]);
+  });
+
   it('reads the current level independent of serialized object key order', () => {
     const reverseKeys = (value: unknown): unknown => {
       if (Array.isArray(value)) return value.map(reverseKeys);

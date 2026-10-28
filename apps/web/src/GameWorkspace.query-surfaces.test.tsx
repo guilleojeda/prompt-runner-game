@@ -2004,27 +2004,41 @@ describe('Phase 14 history acceptance', () => {
     expect(listAttempts).toHaveBeenCalledTimes(historyReadsBeforePrepare);
   });
 
-  it('shows a history read error with the existing retry action instead of an empty state', async () => {
+  it('recovers a failed bootstrap into one confirmed empty history and Preparar action', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-28T12:00:00.000Z'));
+    const recovery = deferred<{ attempts: readonly AttemptSummary[]; nextCursor?: string }>();
     const listAttempts = vi
       .fn()
       .mockRejectedValueOnce(new AttemptApiFailure('server', 'Historial no disponible.', 503))
-      .mockResolvedValue({ attempts: [] });
+      .mockResolvedValueOnce({ attempts: [] })
+      .mockReturnValueOnce(recovery.promise);
     renderApp({ runner: attemptApi({ listAttempts }) });
-    await readyForPreparation();
-    selectTab('Historial');
+    await settle();
+    expect(screen.getByRole('navigation', { name: 'Navegación principal' })).toBeTruthy();
+    expect(listAttempts).toHaveBeenCalledTimes(2);
 
+    await act(async () => vi.advanceTimersByTimeAsync(60_000));
+    expect(listAttempts).toHaveBeenCalledTimes(2);
+    selectTab('Historial');
     await settle();
-    const history = historySection();
-    const error = within(history).getByRole('alert');
-    expect(error.textContent).toContain('Historial no disponible.');
-    expect(within(history).queryByText('Todavía no hay intentos guardados.')).toBeNull();
-    expect(within(history).queryByText('Preparar', { exact: true })).toBeNull();
-    const historyReadsBeforeRetry = listAttempts.mock.calls.length;
-    fireEvent.click(within(error).getByRole('button', { name: 'Reintentar historial' }));
-    await settle();
-    expect(within(history).getAllByText('Todavía no hay intentos guardados.')).toHaveLength(1);
-    expect(within(history).getByText('Preparar', { exact: true })).toBeTruthy();
-    expect(listAttempts).toHaveBeenCalledTimes(historyReadsBeforeRetry + 1);
+    expect(listAttempts).toHaveBeenCalledTimes(3);
     expect(listAttempts.mock.calls.at(-1)?.[0]).toBeUndefined();
+    const history = historySection();
+    expect(within(history).queryByText('Todavía no hay intentos guardados.')).toBeNull();
+    await act(async () => recovery.resolve({ attempts: [] }));
+    await settle();
+
+    expect(within(history).getAllByText('Todavía no hay intentos guardados.')).toHaveLength(1);
+    expect(
+      within(history).queryByText(
+        'Todavía no hay victorias comparables entre los intentos cargados.',
+      ),
+    ).toBeNull();
+    expect(within(history).getByText('Preparar', { exact: true })).toBeTruthy();
+    const historyReadsBeforePrepare = listAttempts.mock.calls.length;
+    fireEvent.click(within(history).getByText('Preparar', { exact: true }));
+    expect(screen.getByRole('heading', { name: 'Prepará tu robot' })).toBeTruthy();
+    expect(listAttempts).toHaveBeenCalledTimes(historyReadsBeforePrepare);
   });
 });

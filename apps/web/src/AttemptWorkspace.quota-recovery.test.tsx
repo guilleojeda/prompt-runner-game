@@ -697,7 +697,7 @@ describe('AttemptActivity quota recovery', () => {
     expect(screen.queryByText('La sesión venció.')).toBeNull();
   });
 
-  it('keeps history recovery manual and independent when quota recovery succeeds', async () => {
+  it('recovers history automatically and independently when quota recovery succeeds', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(TEST_NOW);
     const getQuota = vi
@@ -712,21 +712,19 @@ describe('AttemptActivity quota recovery', () => {
 
     await readyForAssertions();
     expect(screen.getByText('History unavailable.')).toBeTruthy();
-    const retryHistory = screen.getByRole('button', { name: /Reintentar historial/i });
+    expect(screen.queryByRole('button', { name: /Reintentar historial/i })).toBeNull();
+    const historyReadsBeforeRecovery = listAttempts.mock.calls.length;
     await advance(MINUTE);
     expect(getQuota).toHaveBeenCalledTimes(2);
-    expect(screen.getByText('History unavailable.')).toBeTruthy();
-    expect(screen.getByLabelText('Cuota: 16 de 100 intentos disponibles')).toBeTruthy();
-
-    const quotaCallsBeforeHistoryRetry = getQuota.mock.calls.length;
-    fireEvent.click(retryHistory);
-    await settle();
-    expect(getQuota).toHaveBeenCalledTimes(quotaCallsBeforeHistoryRetry);
-    expect(listAttempts.mock.calls.length).toBeGreaterThan(2);
+    expect(listAttempts.mock.calls.length).toBe(historyReadsBeforeRecovery + 1);
+    expect(listAttempts.mock.calls.at(-1)?.[0]).toBeUndefined();
     expect(screen.queryByText('History unavailable.')).toBeNull();
+    expect(screen.getByLabelText('Cuota: 16 de 100 intentos disponibles')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Reintentar historial/i })).toBeNull();
+    expect(getQuota).toHaveBeenCalledTimes(2);
   });
 
-  it('keeps a newer quota failure visible after the history-only retry succeeds', async () => {
+  it('keeps a newer quota failure visible when automatic history recovery succeeds', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(TEST_NOW);
     const getQuota = vi
@@ -745,9 +743,7 @@ describe('AttemptActivity quota recovery', () => {
     expect(document.getElementById('attempt-availability-status')?.textContent).toMatch(
       /sin confirmar/i,
     );
-    const retryHistory = screen.getByRole('button', { name: /Reintentar historial/i });
-    fireEvent.click(retryHistory);
-    await settle();
+    expect(screen.queryByRole('button', { name: /Reintentar historial/i })).toBeNull();
     expect(document.getElementById('attempt-availability-status')?.textContent).toMatch(
       /sin confirmar/i,
     );

@@ -332,7 +332,9 @@ describe('AttemptActivity', () => {
     expect(screen.queryByRole('button', { name: 'Reintentar consultas' })).toBeNull();
   });
 
-  it('offers a history-only manual retry after a history query error', async () => {
+  it('recovers a transient history query without a manual retry or quota side effect', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-21T12:00:00.000Z'));
     const listAttempts = vi
       .fn()
       .mockRejectedValueOnce(new AttemptApiFailure('network', 'No se pudo cargar el historial.'))
@@ -348,14 +350,22 @@ describe('AttemptActivity', () => {
     const editor = { current: null } as unknown as { current: RobotEditorHandle | null };
     render(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
 
-    const retry = await screen.findByRole('button', { name: /Reintentar historial/i });
+    await settleWorkspacePromises();
+    expect(screen.getByRole('heading', { name: 'Historial' })).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('button', { name: /Reintentar historial/i })).toBeNull();
+    expect(screen.getByRole('status')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Reintentar consultas' })).toBeNull();
     expect(getQuota).toHaveBeenCalledOnce();
-    const callsBeforeRetry = listAttempts.mock.calls.length;
-    fireEvent.click(retry);
-    await waitFor(() => expect(listAttempts.mock.calls.length).toBeGreaterThan(callsBeforeRetry));
-    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
-    expect(screen.queryByRole('button', { name: 'Reintentar consultas' })).toBeNull();
+    const callsBeforeRecovery = listAttempts.mock.calls.length;
+    await act(async () => vi.advanceTimersByTimeAsync(59_999));
+    expect(listAttempts).toHaveBeenCalledTimes(callsBeforeRecovery);
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    await settleWorkspacePromises();
+    expect(listAttempts).toHaveBeenCalledTimes(callsBeforeRecovery + 1);
+    expect(listAttempts.mock.calls.at(-1)?.[0]).toBeUndefined();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('button', { name: /Reintentar historial/i })).toBeNull();
     expect(getQuota).toHaveBeenCalledOnce();
     expect(attemptApi.createAttempt).not.toHaveBeenCalled();
   });
@@ -3949,8 +3959,11 @@ describe('AttemptActivity', () => {
   });
 
   it('ignores an error and finalizer from a paginated history request superseded by refresh', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-21T12:00:00.000Z'));
     const firstPage = { ...summary('victory'), id: 'history-old-1' };
     const newAttempt = { ...summary('victory'), id: 'history-new' };
+    const appendedAttempt = { ...summary('victory'), id: 'history-new-page-2' };
     const refreshedPage = {
       attempts: [newAttempt, firstPage],
       nextCursor: 'cursor-after-refresh',
@@ -3961,9 +3974,14 @@ describe('AttemptActivity', () => {
     });
     let unpagedCalls = 0;
     let cursorCalls = 0;
+    let refreshedCursorCalls = 0;
     const listAttempts = vi.fn((cursor?: string) => {
       if (cursor === 'cursor-after-refresh') {
-        return Promise.reject(new AttemptApiFailure('network', 'current pagination failed'));
+        refreshedCursorCalls += 1;
+        if (refreshedCursorCalls === 1) {
+          return Promise.reject(new AttemptApiFailure('network', 'current pagination failed'));
+        }
+        return Promise.resolve({ attempts: [appendedAttempt] });
       }
       if (cursor === 'cursor-old') {
         cursorCalls += 1;
@@ -3992,34 +4010,44 @@ describe('AttemptActivity', () => {
     const ref = { current: null } as { current: AttemptActivityHandle | null };
     render(<AttemptActivity ref={ref} api={attemptApi} editor={editor} session={session()} />);
 
-    const history = await screen.findByRole('heading', { name: 'Historial' });
+    await settleWorkspacePromises();
+    const history = screen.getByRole('heading', { name: 'Historial' });
     const historySection = history.closest('section') as HTMLElement;
-    fireEvent.click(await within(historySection).findByRole('button', { name: 'Cargar 20 más' }));
-    await waitFor(() => expect(cursorCalls).toBe(2));
-    await waitFor(() => expect(screen.queryByText('Cargando preferencia guardada…')).toBeNull());
+    fireEvent.click(within(historySection).getByRole('button', { name: 'Cargar 20 más' }));
+    await settleWorkspacePromises();
+    expect(cursorCalls).toBe(2);
     await act(async () => {
       ref.current!.start();
       await Promise.resolve();
     });
-    await waitFor(() => expect(unpagedCalls).toBe(3));
-    await waitFor(() => expect(within(historySection).getAllByRole('listitem')).toHaveLength(2));
+    await settleWorkspacePromises();
+    expect(unpagedCalls).toBe(3);
+    expect(within(historySection).getAllByRole('listitem')).toHaveLength(2);
     const quotaReadsBeforeHistoryRetry = vi.mocked(attemptApi.getQuota).mock.calls.length;
 
     await act(async () => rejectOlderPage(new Error('old history request failed')));
-    await waitFor(() => expect(screen.queryByText('old history request failed')).toBeNull());
+    await settleWorkspacePromises();
+    expect(screen.queryByText('old history request failed')).toBeNull();
     expect(within(historySection).getAllByRole('listitem')).toHaveLength(2);
-    expect(
-      await within(historySection).findByRole('button', { name: 'Cargar 20 más' }),
-    ).toBeTruthy();
+    expect(within(historySection).getByRole('button', { name: 'Cargar 20 más' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Reintentar consultas' })).toBeNull();
 
-    fireEvent.click(await within(historySection).findByRole('button', { name: 'Cargar 20 más' }));
-    expect(await screen.findByRole('button', { name: /Reintentar historial/i })).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: /Reintentar historial/i }));
-    await waitFor(() =>
-      expect(screen.queryByRole('button', { name: /Reintentar historial/i })).toBeNull(),
-    );
-    expect(within(historySection).getAllByRole('listitem')).toHaveLength(2);
+    fireEvent.click(within(historySection).getByRole('button', { name: 'Cargar 20 más' }));
+    await settleWorkspacePromises();
+    expect(within(historySection).queryByRole('alert')).toBeNull();
+    expect(
+      within(historySection).queryByRole('button', { name: /Reintentar historial/i }),
+    ).toBeNull();
+    const callsBeforeRecovery = listAttempts.mock.calls.length;
+    await act(async () => vi.advanceTimersByTimeAsync(59_999));
+    expect(listAttempts).toHaveBeenCalledTimes(callsBeforeRecovery);
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    await settleWorkspacePromises();
+    expect(listAttempts).toHaveBeenCalledTimes(callsBeforeRecovery + 1);
+    expect(listAttempts.mock.calls.at(-1)?.[0]).toBe('cursor-after-refresh');
+    expect(refreshedCursorCalls).toBe(2);
+    expect(within(historySection).getAllByRole('listitem')).toHaveLength(3);
+    expect(screen.getByText('3 cargados, no hay más páginas')).toBeTruthy();
     expect(attemptApi.getQuota).toHaveBeenCalledTimes(quotaReadsBeforeHistoryRetry);
   });
 
