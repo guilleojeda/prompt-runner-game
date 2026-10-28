@@ -413,7 +413,10 @@ describe('GameWorkspace configuration query recovery', () => {
     expect(
       within(returnedHistory).getByRole('button', { name: 'Mejores' }).getAttribute('aria-pressed'),
     ).toBe('true');
-    expect(returnedHistory.querySelectorAll('[data-history-row-id]')).toHaveLength(21);
+    expect(returnedHistory.querySelectorAll('[data-history-row-id]')).toHaveLength(2);
+    expect(returnedHistory.querySelector('.history-count')?.textContent).toContain(
+      '21 cargados, no hay más páginas',
+    );
     expect(returnedHistory.querySelector(`[data-history-row-id="${target.id}"]`)).toBeTruthy();
     expect(listAttempts).toHaveBeenCalledTimes(historyReadsBeforeRetry);
     const returnedRow = returnedHistory.querySelector<HTMLElement>(
@@ -588,7 +591,7 @@ describe('GameWorkspace configuration query recovery', () => {
     await advance(2 * MINUTE);
     expect(http.fetchImpl).toHaveBeenCalledTimes(4);
     expectSideEffectCounts(mounted.runner, mounted.drafts, effectsBeforeRetry);
-    expect(listAttempts).toHaveBeenCalledOnce();
+    expect(listAttempts).toHaveBeenCalledTimes(effectsBeforeRetry.list);
   });
 
   it('preserves the real 409 configuration_pending code and message and checks it every minute', async () => {

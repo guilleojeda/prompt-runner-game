@@ -4348,7 +4348,6 @@ describe('AttemptActivity', () => {
   });
 
   it('keeps a failed configuration load in focus and recovers it after one minute', async () => {
-    vi.useFakeTimers();
     const terminal = { ...summary('victory'), id: 'attempt-retry', score: 100, gameTokens: 700 };
     let rejectLoad!: (error: AttemptApiFailure) => void;
     const getConfiguration = vi
@@ -4371,6 +4370,7 @@ describe('AttemptActivity', () => {
     opener.focus();
     fireEvent.click(opener);
     const heading = await screen.findByRole('heading', { name: 'Configuración del intento' });
+    vi.useFakeTimers();
     expect(
       within(heading.closest('section') as HTMLElement).getByText(
         'Cargando la configuración guardada…',
