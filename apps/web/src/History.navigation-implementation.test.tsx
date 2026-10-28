@@ -68,11 +68,12 @@ function HistoryInspectorHarness({
     activityBusy,
   });
 
+  const { loadBootstrapPage } = history;
   useEffect(() => {
     const controller = new AbortController();
-    void history.loadBootstrapPage(controller.signal, () => true);
+    void loadBootstrapPage(controller.signal, () => true);
     return () => controller.abort();
-  }, [history.loadBootstrapPage]);
+  }, [loadBootstrapPage]);
 
   const inspecting = history.decisionInspectorTarget !== null;
   const configurationOpen = history.configurationState !== null;
