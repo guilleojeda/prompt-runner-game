@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef } from 'react';
 import type { AttemptConfiguration, AttemptSummary } from './attempt-api.js';
 import { DEFAULT_SCORE_RULES, LEVEL } from '../../../shared/game.js';
 import { ROBOT_CATALOG } from '../../../shared/robot.js';
@@ -6,6 +6,7 @@ import { ResultSharing } from './ResultSharing.js';
 import { formatScore } from './result-sharing.js';
 import type {
   AttemptDisplayContext,
+  AttemptConfigurationConfirmation,
   DecisionInitialSelection,
   AttemptResultQueryState,
   HistoryView,
@@ -635,11 +636,85 @@ export function HistoryList({
   );
 }
 
-export function ConfigurationPreview({
-  state,
+function ConfigurationConfirmationDialog({
+  confirmation,
   busy,
   configurationAvailable,
-  onApply,
+  onConfirm,
+  onCancel,
+}: {
+  confirmation: AttemptConfigurationConfirmation;
+  busy: boolean;
+  configurationAvailable: boolean;
+  onConfirm: (id: number) => void;
+  onCancel: (id: number, restoreFocus: boolean) => void;
+}) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const cancelButtonRef = useRef<HTMLButtonElement>(null);
+
+  useLayoutEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    if (!dialog.open) dialog.showModal();
+    cancelButtonRef.current?.focus({ preventScroll: true });
+  }, []);
+
+  return (
+    <dialog
+      ref={dialogRef}
+      className="configuration-confirmation-dialog"
+      aria-labelledby="configuration-confirmation-title"
+      aria-describedby="configuration-confirmation-consequence"
+      onCancel={(event) => {
+        event.preventDefault();
+        onCancel(confirmation.id, true);
+      }}
+      onClose={() => onCancel(confirmation.id, false)}
+    >
+      <div className="configuration-confirmation-content">
+        <h2 id="configuration-confirmation-title">¿Reemplazar tu robot?</h2>
+        <p id="configuration-confirmation-consequence">
+          Al continuar, vas a reemplazar las instrucciones y habilidades actuales de tu robot por
+          las guardadas para esta partida.
+        </p>
+        {confirmation.displayContext && (
+          <ResultContext
+            source={confirmation.displayContext.source}
+            createdAt={confirmation.displayContext.createdAt}
+          />
+        )}
+        <p className="configuration-attempt-id">Intento: {confirmation.targetId}</p>
+        <div className="configuration-confirmation-actions">
+          <button
+            ref={cancelButtonRef}
+            className="secondary-button"
+            type="button"
+            onClick={() => onCancel(confirmation.id, true)}
+          >
+            Cancelar
+          </button>
+          <button
+            className="primary-button"
+            type="button"
+            onClick={() => onConfirm(confirmation.id)}
+            disabled={busy || !configurationAvailable}
+          >
+            Reemplazar mi robot
+          </button>
+        </div>
+      </div>
+    </dialog>
+  );
+}
+
+export function ConfigurationPreview({
+  state,
+  confirmation,
+  busy,
+  configurationAvailable,
+  onRequestApply,
+  onConfirm,
+  onCancelConfirmation,
   onClose,
 }: {
   state: {
@@ -651,12 +726,39 @@ export function ConfigurationPreview({
     readonly message?: string;
     readonly applied?: boolean;
   };
+  confirmation: AttemptConfigurationConfirmation | null;
   busy: boolean;
   configurationAvailable: boolean;
-  onApply: () => void;
+  onRequestApply: () => void;
+  onConfirm: (id: number) => void;
+  onCancelConfirmation: (id: number) => void;
   onClose: () => void;
 }) {
   const headingRef = useRef<HTMLHeadingElement>(null);
+  const useButtonRef = useRef<HTMLButtonElement>(null);
+  const focusAfterConfirmationRef = useRef<'use' | 'heading' | null>(null);
+
+  useLayoutEffect(() => {
+    if (confirmation) return;
+    const focusAfterConfirmation = focusAfterConfirmationRef.current;
+    if (!focusAfterConfirmation) return;
+    focusAfterConfirmationRef.current = null;
+    const target = focusAfterConfirmation === 'use' ? useButtonRef.current : headingRef.current;
+    if (!target?.isConnected || target.closest('[hidden]')) return;
+    if (target instanceof HTMLButtonElement && target.disabled) return;
+    target.focus({ preventScroll: true });
+  }, [confirmation]);
+
+  const confirm = (id: number): void => {
+    focusAfterConfirmationRef.current = 'heading';
+    onConfirm(id);
+  };
+
+  const cancelConfirmation = (id: number, restoreFocus: boolean): void => {
+    if (restoreFocus) focusAfterConfirmationRef.current = 'use';
+    onCancelConfirmation(id);
+  };
+
   useEffect(() => {
     headingRef.current?.focus();
   }, [state.focusVersion]);
@@ -752,14 +854,25 @@ export function ConfigurationPreview({
             </p>
           )}
           <button
+            ref={useButtonRef}
             className="primary-button"
             type="button"
-            onClick={onApply}
+            onClick={onRequestApply}
             disabled={busy || state.status === 'applying' || !configurationAvailable}
           >
             {state.status === 'applying' ? 'Aplicando configuración…' : 'Usar esta configuración'}
           </button>
         </>
+      )}
+      {confirmation && (
+        <ConfigurationConfirmationDialog
+          key={confirmation.id}
+          confirmation={confirmation}
+          busy={busy}
+          configurationAvailable={configurationAvailable}
+          onConfirm={confirm}
+          onCancel={cancelConfirmation}
+        />
       )}
     </section>
   );

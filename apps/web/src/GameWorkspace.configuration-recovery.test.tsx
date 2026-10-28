@@ -2,7 +2,8 @@
 
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { User } from 'oidc-client-ts';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { installHtmlDialogTestShim } from './configuration-confirmation.test-support.js';
 import { createDefaultDraft, type RobotDraft } from '../../../shared/robot.js';
 import { LEVEL } from '../../../shared/game.js';
 import type { DecisionIndex } from '../../../shared/attempt.js';
@@ -351,6 +352,16 @@ afterEach(() => {
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(TEST_NOW);
+});
+
+let restoreHtmlDialogTestShim: (() => void) | undefined;
+
+beforeAll(() => {
+  restoreHtmlDialogTestShim = installHtmlDialogTestShim();
+});
+
+afterAll(() => {
+  restoreHtmlDialogTestShim?.();
 });
 
 describe('GameWorkspace configuration query recovery', () => {
@@ -993,8 +1004,9 @@ describe('GameWorkspace configuration query recovery', () => {
     expect(getConfiguration).toHaveBeenCalledOnce();
     expect(screen.getByText('Explicit candidate.')).toBeTruthy();
     const applyDraft = vi.fn().mockRejectedValue(new Error('D2 application failed.'));
-    mounted.editor.current!.applyDraft = applyDraft;
     fireEvent.click(screen.getByRole('button', { name: 'Usar esta configuración' }));
+    mounted.editor.current!.applyDraft = applyDraft;
+    fireEvent.click(screen.getByRole('button', { name: 'Reemplazar mi robot' }));
     await settle();
     expect(within(configurationPanel()).getByRole('alert').textContent).toContain(
       'D2 application failed.',
@@ -1026,9 +1038,9 @@ describe('GameWorkspace configuration query recovery', () => {
       applicationSignal = options?.signal;
       return application.promise;
     });
-    mounted.editor.current!.applyDraft = applyDraft;
-
     fireEvent.click(screen.getByRole('button', { name: 'Usar esta configuración' }));
+    mounted.editor.current!.applyDraft = applyDraft;
+    fireEvent.click(screen.getByRole('button', { name: 'Reemplazar mi robot' }));
     await settle();
     expect(screen.getByText('Aplicando configuración…')).toBeTruthy();
     expect(applicationSignal).toBeInstanceOf(AbortSignal);

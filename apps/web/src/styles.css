@@ -1631,6 +1631,50 @@ h1 {
   line-height: 1.45;
 }
 
+.configuration-confirmation-dialog {
+  width: min(34rem, calc(100vw - 2rem));
+  max-width: calc(100vw - 2rem);
+  max-height: calc(100vh - 2rem);
+  max-height: calc(100dvh - 2rem);
+  margin: auto;
+  padding: 0;
+  overflow: auto;
+  border: 1px solid rgba(216, 179, 106, 0.72);
+  border-radius: 0.8rem;
+  color: #f2efe8;
+  background: #20251c;
+  box-shadow: 0 1.5rem 4rem rgba(0, 0, 0, 0.55);
+}
+
+.configuration-confirmation-dialog::backdrop {
+  background: rgba(9, 10, 8, 0.76);
+}
+
+.configuration-confirmation-content {
+  padding: clamp(1rem, 4vw, 1.4rem);
+}
+
+.configuration-confirmation-content h2 {
+  margin: 0 0 0.8rem;
+  color: #f7f1e1;
+  font-size: clamp(1.2rem, 5vw, 1.5rem);
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.configuration-confirmation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.65rem;
+  margin-top: 1.2rem;
+}
+
+.configuration-confirmation-actions button {
+  flex: 1 1 11rem;
+  text-align: center;
+}
+
 .history-empty {
   display: grid;
   justify-items: start;

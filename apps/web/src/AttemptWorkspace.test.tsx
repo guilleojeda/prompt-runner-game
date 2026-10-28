@@ -3,7 +3,8 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { User } from 'oidc-client-ts';
 import { StrictMode } from 'react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { installHtmlDialogTestShim } from './configuration-confirmation.test-support.js';
 import {
   createDefaultDraft,
   ROBOT_CATALOG_VERSION,
@@ -226,6 +227,16 @@ afterEach(() => {
   window.sessionStorage.clear();
   vi.restoreAllMocks();
   vi.useRealTimers();
+});
+
+let restoreHtmlDialogTestShim: (() => void) | undefined;
+
+beforeAll(() => {
+  restoreHtmlDialogTestShim = installHtmlDialogTestShim();
+});
+
+afterAll(() => {
+  restoreHtmlDialogTestShim?.();
 });
 
 describe('AttemptActivity', () => {
@@ -4093,7 +4104,7 @@ describe('AttemptActivity', () => {
     fireEvent.click(configurationButtons[0]!);
     expect(await screen.findByRole('heading', { name: 'Configuración del intento' })).toBeTruthy();
     expect(getConfiguration).toHaveBeenCalledWith(terminal.id, expect.any(AbortSignal));
-    expect(screen.getByText('Recuperada desde el intento')).toBeTruthy();
+    expect(await screen.findByText('Recuperada desde el intento')).toBeTruthy();
     expect(screen.getByText('Claude Sonnet 4.6')).toBeTruthy();
     const configuration = screen
       .getByRole('heading', { name: 'Configuración del intento' })
@@ -4114,6 +4125,7 @@ describe('AttemptActivity', () => {
     expect(applyDraft).not.toHaveBeenCalled();
     view.rerender(<AttemptActivity api={attemptApi} editor={editor} session={session()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Usar esta configuración' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reemplazar mi robot' }));
     await waitFor(() =>
       expect(applyDraft).toHaveBeenCalledWith(
         recovered,
@@ -4144,6 +4156,7 @@ describe('AttemptActivity', () => {
     fireEvent.click(opener);
     await screen.findByText('Candidato de historial.');
     fireEvent.click(screen.getByRole('button', { name: 'Usar esta configuración' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reemplazar mi robot' }));
 
     expect(applyDraft).toHaveBeenCalledWith(
       recovered,
@@ -4200,6 +4213,7 @@ describe('AttemptActivity', () => {
     fireEvent.click(firstOpener);
     await screen.findByText('Primera configuración.');
     fireEvent.click(screen.getByRole('button', { name: 'Usar esta configuración' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reemplazar mi robot' }));
     const applicationSignal = applyDraft.mock.calls[0]?.[1]?.signal;
     expect(applicationSignal).toBeInstanceOf(AbortSignal);
 
@@ -4250,6 +4264,7 @@ describe('AttemptActivity', () => {
       fireEvent.click((await historyActions('Ver configuración'))[0]!);
       await screen.findByText('Aplicación cancelada.');
       fireEvent.click(screen.getByRole('button', { name: 'Usar esta configuración' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Reemplazar mi robot' }));
       const signal = applyDraft.mock.calls[0]?.[1]?.signal;
       expect(signal).toBeInstanceOf(AbortSignal);
 
@@ -4420,6 +4435,7 @@ describe('AttemptActivity', () => {
     await screen.findByRole('heading', { name: 'Historial' });
     fireEvent.click((await historyActions('Ver configuración'))[0]!);
     fireEvent.click(await screen.findByRole('button', { name: 'Usar esta configuración' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reemplazar mi robot' }));
     await waitFor(() => expect(applyDraft).toHaveBeenCalled());
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Usar esta configuración' })).toBeTruthy(),
@@ -4545,6 +4561,7 @@ describe('AttemptActivity', () => {
       await waitFor(() => expect(button.disabled).toBe(false));
       fireEvent.click(button);
       fireEvent.click(await screen.findByRole('button', { name: 'Usar esta configuración' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Reemplazar mi robot' }));
     };
 
     await openFromHistory();
@@ -4623,6 +4640,7 @@ describe('AttemptActivity', () => {
     const configurationButtons = await historyActions('Ver configuración');
     fireEvent.click(configurationButtons[0]!);
     fireEvent.click(await screen.findByRole('button', { name: 'Usar esta configuración' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reemplazar mi robot' }));
     await waitFor(() =>
       expect(applyDraft).toHaveBeenCalledWith(
         recovered,

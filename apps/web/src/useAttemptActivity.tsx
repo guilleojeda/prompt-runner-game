@@ -304,12 +304,15 @@ export function useAttemptActivity({
     forgetHistoryOrigin,
     updateSummaryById,
     configurationState,
+    configurationConfirmation,
     decisionInspectorTarget,
     decisionInspectorSelection,
     decisionInspectorOpenVersion,
     queryVisible,
     openConfiguration,
-    applyConfiguration,
+    requestConfigurationConfirmation,
+    confirmConfiguration,
+    cancelConfigurationConfirmation,
     closeConfiguration,
     clearConfiguration,
     openDecisionInspector: openHistoryDecisionInspector,
@@ -1900,9 +1903,12 @@ export function useAttemptActivity({
   const configurationView = configurationState ? (
     <ConfigurationPreview
       state={configurationState}
+      confirmation={configurationConfirmation}
       busy={busy}
       configurationAvailable={configurationAvailable && !authPaused}
-      onApply={() => void applyConfiguration()}
+      onRequestApply={requestConfigurationConfirmation}
+      onConfirm={confirmConfiguration}
+      onCancelConfirmation={cancelConfigurationConfirmation}
       onClose={closeConfiguration}
     />
   ) : null;

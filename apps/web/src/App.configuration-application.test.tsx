@@ -2,7 +2,8 @@
 
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { User } from 'oidc-client-ts';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { installHtmlDialogTestShim } from './configuration-confirmation.test-support.js';
 import { LEVEL } from '../../../shared/game.js';
 import {
   createDefaultDraft,
@@ -230,6 +231,7 @@ async function apply(source: Source): Promise<void> {
     fireEvent.click(await historyAction('Ver configuración'));
     await settle();
     fireEvent.click(button('Usar esta configuración'));
+    fireEvent.click(screen.getByRole('button', { name: 'Reemplazar mi robot' }));
   } else {
     navigate('Mis robots');
     fireEvent.click(screen.getByRole('button', { name: /Copia A.*Cargar/ }));
@@ -411,6 +413,16 @@ describe.each<Source>(['history', 'saved copy'])('configuration application from
     expect(screen.queryByRole('textbox', { name: 'Qué debe tener en cuenta el robot' })).toBeNull();
     expect(runnerApi.createAttempt).not.toHaveBeenCalled();
   });
+});
+
+let restoreHtmlDialogTestShim: (() => void) | undefined;
+
+beforeAll(() => {
+  restoreHtmlDialogTestShim = installHtmlDialogTestShim();
+});
+
+afterAll(() => {
+  restoreHtmlDialogTestShim?.();
 });
 
 describe('candidate source and history cancellation', () => {

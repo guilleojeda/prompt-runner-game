@@ -2,7 +2,8 @@
 
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { User } from 'oidc-client-ts';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { installHtmlDialogTestShim } from './configuration-confirmation.test-support.js';
 import {
   createDefaultDraft,
   type DraftSnapshot,
@@ -309,6 +310,16 @@ afterEach(() => {
   window.sessionStorage.clear();
   vi.restoreAllMocks();
   vi.useRealTimers();
+});
+
+let restoreHtmlDialogTestShim: (() => void) | undefined;
+
+beforeAll(() => {
+  restoreHtmlDialogTestShim = installHtmlDialogTestShim();
+});
+
+afterAll(() => {
+  restoreHtmlDialogTestShim?.();
 });
 
 describe('App workspace navigation acceptance', () => {
@@ -732,7 +743,7 @@ describe('App workspace navigation acceptance', () => {
     selectTab('Historial');
     fireEvent.click(await historyAction('Ver configuración'));
     expect(await screen.findByRole('heading', { name: 'Configuración del intento' })).toBeTruthy();
-    expect(screen.getByText(candidate.instructions)).toBeTruthy();
+    expect(await screen.findByText(candidate.instructions)).toBeTruthy();
     expect(screen.queryByRole('textbox', { name: 'Qué debe tener en cuenta el robot' })).toBeNull();
     expect(app.draft.putDraft).not.toHaveBeenCalled();
     expect(app.runner.createAttempt).not.toHaveBeenCalled();
@@ -825,6 +836,7 @@ describe('App workspace navigation acceptance', () => {
         fireEvent.click(await historyAction(sourceAction));
         await screen.findByRole('button', { name: 'Usar esta configuración' });
         fireEvent.click(screen.getByRole('button', { name: 'Usar esta configuración' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Reemplazar mi robot' }));
       } else {
         fireEvent.click(await screen.findByRole('button', { name: /Robot de prueba.*Cargar/ }));
       }
@@ -910,6 +922,7 @@ describe('App workspace navigation acceptance', () => {
         fireEvent.click(await historyAction('Ver configuración'));
         await screen.findByRole('button', { name: 'Usar esta configuración' });
         fireEvent.click(screen.getByRole('button', { name: 'Usar esta configuración' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Reemplazar mi robot' }));
       } else {
         fireEvent.click(await screen.findByRole('button', { name: /Robot pendiente.*Cargar/ }));
       }

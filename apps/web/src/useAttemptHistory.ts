@@ -37,6 +37,20 @@ export interface AttemptConfigurationState {
   readonly applied?: boolean;
 }
 
+export interface AttemptConfigurationConfirmation {
+  readonly id: number;
+  readonly targetId: string;
+  readonly displayContext?: AttemptDisplayContext;
+}
+
+interface PendingAttemptConfigurationConfirmation extends AttemptConfigurationConfirmation {
+  readonly identity: string;
+  readonly operation: number;
+  readonly focusVersion: number;
+  readonly surface: UseAttemptHistoryOptions['surface'];
+  readonly configuration: AttemptConfiguration;
+}
+
 export type ActivityTargetHandler = (
   target: AttemptSummary,
   signal: AbortSignal,
@@ -171,6 +185,7 @@ export interface AttemptHistoryController {
   readonly invalidHistoryCursor: boolean;
   readonly resultQuery: AttemptResultQueryState | null;
   readonly configurationState: AttemptConfigurationState | null;
+  readonly configurationConfirmation: AttemptConfigurationConfirmation | null;
   readonly decisionInspectorTarget: AttemptSummary | null;
   readonly decisionInspectorSelection: DecisionInitialSelection;
   readonly decisionInspectorOpenVersion: number;
@@ -189,7 +204,9 @@ export interface AttemptHistoryController {
     rememberTrigger?: boolean,
     displayContext?: AttemptDisplayContext,
   ): Promise<void>;
-  applyConfiguration(): Promise<void>;
+  requestConfigurationConfirmation(): void;
+  confirmConfiguration(id: number): void;
+  cancelConfigurationConfirmation(id: number): void;
   closeConfiguration(): void;
   clearConfiguration(): void;
   openDecisionInspector(target: AttemptSummary, selection?: DecisionInitialSelection): void;
@@ -243,6 +260,8 @@ export function useAttemptHistory({
   const [historyRecoveryMessage, setHistoryRecoveryMessage] = useState<string | null>(null);
   const [invalidHistoryCursor, setInvalidHistoryCursor] = useState(false);
   const [resultQuery, setResultQuery] = useState<AttemptResultQueryState | null>(null);
+  const [configurationConfirmation, setConfigurationConfirmation] =
+    useState<AttemptConfigurationConfirmation | null>(null);
   const identityRef = useRef(identity);
   const historyVisibleRef = useRef(historyVisible);
   const apiRef = useRef(api);
@@ -272,6 +291,9 @@ export function useAttemptHistory({
   const pendingResultQueryFocusRef = useRef(false);
   const authPausedRef = useRef(authPaused);
   const configurationOperationRef = useRef(0);
+  const configurationConfirmationIdRef = useRef(0);
+  const pendingConfigurationConfirmationRef =
+    useRef<PendingAttemptConfigurationConfirmation | null>(null);
   const configurationApplicationIdRef = useRef(0);
   const configurationApplicationRef = useRef<{
     readonly id: number;
@@ -291,6 +313,7 @@ export function useAttemptHistory({
   } | null>(null);
   const previousSurfaceRef = useRef(surface);
   const surfaceRef = useRef(surface);
+  const configurationAvailableRef = useRef(configurationAvailable);
   const [configurationState, setConfigurationState] = useState<AttemptConfigurationState | null>(
     null,
   );
@@ -313,13 +336,31 @@ export function useAttemptHistory({
     configurationState === null &&
     decisionInspectorTarget === null;
 
+  const clearPendingConfigurationConfirmation = useCallback((id?: number): void => {
+    if (id !== undefined && pendingConfigurationConfirmationRef.current?.id !== id) {
+      return;
+    }
+    if (pendingConfigurationConfirmationRef.current === null) return;
+    pendingConfigurationConfirmationRef.current = null;
+    setConfigurationConfirmation(null);
+  }, []);
+
   useLayoutEffect(() => {
     authPausedRef.current = authPaused;
     historyVisibleRef.current = historyListVisible;
     apiRef.current = api;
     authRequiredRef.current = onAuthRequired;
     surfaceRef.current = surface;
-  }, [api, authPaused, historyListVisible, onAuthRequired, resultQueryVisible, surface]);
+    configurationAvailableRef.current = configurationAvailable;
+  }, [
+    api,
+    authPaused,
+    configurationAvailable,
+    historyListVisible,
+    onAuthRequired,
+    resultQueryVisible,
+    surface,
+  ]);
 
   const rememberHistoryOrigin = useCallback(
     (attemptId: string, action: string): void => {
@@ -632,11 +673,16 @@ export function useAttemptHistory({
   const clearConfiguration = useCallback((): void => {
     configurationOperationRef.current += 1;
     configurationRecovery.clear();
+    clearPendingConfigurationConfirmation();
     cancelConfigurationApplication();
     configurationTriggerRef.current = null;
     pendingConfigurationFocusRef.current = null;
     setConfigurationState(null);
-  }, [cancelConfigurationApplication, configurationRecovery]);
+  }, [
+    cancelConfigurationApplication,
+    clearPendingConfigurationConfirmation,
+    configurationRecovery,
+  ]);
 
   const openResult = useCallback(
     (
@@ -709,9 +755,9 @@ export function useAttemptHistory({
       !application.controller.signal.aborted &&
       configurationOperationRef.current === application.operation &&
       identityRef.current === application.identity &&
-      surface === application.surface &&
+      surfaceRef.current === application.surface &&
       !authPausedRef.current,
-    [surface],
+    [],
   );
 
   const openConfiguration = useCallback(
@@ -733,6 +779,7 @@ export function useAttemptHistory({
             }
           : undefined);
       cancelConfigurationApplication();
+      clearPendingConfigurationConfirmation();
       editor.current?.cancelApplication?.();
       pendingDecisionFocusRef.current = null;
       if (rememberTrigger) {
@@ -760,6 +807,7 @@ export function useAttemptHistory({
       activityBusy,
       authPaused,
       cancelConfigurationApplication,
+      clearPendingConfigurationConfirmation,
       configurationRecovery,
       editor,
       history,
@@ -770,70 +818,140 @@ export function useAttemptHistory({
     ],
   );
 
-  const applyConfiguration = useCallback(async (): Promise<void> => {
+  const isCurrentConfigurationConfirmation = useCallback(
+    (confirmation: PendingAttemptConfigurationConfirmation): boolean => {
+      const current = configurationState;
+      return (
+        pendingConfigurationConfirmationRef.current === confirmation &&
+        configurationConfirmation?.id === confirmation.id &&
+        mountedRef.current &&
+        configurationOperationRef.current === confirmation.operation &&
+        identityRef.current === confirmation.identity &&
+        surfaceRef.current === confirmation.surface &&
+        !authPausedRef.current &&
+        !activityBusy.current &&
+        configurationAvailableRef.current &&
+        current?.targetId === confirmation.targetId &&
+        current.focusVersion === confirmation.focusVersion &&
+        current.configuration === confirmation.configuration &&
+        current.status !== 'applying'
+      );
+    },
+    [activityBusy, configurationConfirmation?.id, configurationState],
+  );
+
+  const requestConfigurationConfirmation = useCallback((): void => {
     const current = configurationState;
-    const configuration = current?.configuration;
     if (
-      !configuration ||
+      pendingConfigurationConfirmationRef.current ||
+      !current?.configuration ||
+      current.status === 'applying' ||
       activityBusy.current ||
-      authPaused ||
-      !configurationAvailable ||
-      current.status === 'applying'
+      authPausedRef.current ||
+      !configurationAvailableRef.current ||
+      configurationOperationRef.current !== current.focusVersion ||
+      identityRef.current !== identity ||
+      surfaceRef.current !== surface
     ) {
       return;
     }
-    const operation = configurationOperationRef.current;
-    const application = {
-      id: configurationApplicationIdRef.current + 1,
-      operation,
-      generation: operation,
-      identity,
-      targetId: configuration.attemptId,
-      surface,
-      controller: new AbortController(),
+    const confirmation: PendingAttemptConfigurationConfirmation = {
+      id: configurationConfirmationIdRef.current + 1,
+      targetId: current.targetId,
+      identity: identityRef.current,
+      operation: configurationOperationRef.current,
+      focusVersion: current.focusVersion,
+      surface: surfaceRef.current,
+      configuration: current.configuration,
+      ...(current.displayContext ? { displayContext: current.displayContext } : {}),
     };
-    configurationApplicationIdRef.current = application.id;
-    configurationApplicationRef.current = application;
-    setConfigurationState({ ...current, status: 'applying', message: undefined });
-    try {
-      const applied = await editor.current?.applyDraft(configuration.draft, {
-        signal: application.controller.signal,
-      });
-      if (!isCurrentConfigurationApplication(application)) return;
-      if (applied === true && onReturnToEditor) {
-        clearConfiguration();
-        onReturnToEditor();
+    configurationConfirmationIdRef.current = confirmation.id;
+    pendingConfigurationConfirmationRef.current = confirmation;
+    setConfigurationConfirmation({
+      id: confirmation.id,
+      targetId: confirmation.targetId,
+      ...(confirmation.displayContext ? { displayContext: confirmation.displayContext } : {}),
+    });
+  }, [activityBusy, configurationState, identity, surface]);
+
+  const startConfigurationApplication = useCallback(
+    async (confirmation: PendingAttemptConfigurationConfirmation): Promise<void> => {
+      const application = {
+        id: configurationApplicationIdRef.current + 1,
+        operation: confirmation.operation,
+        generation: confirmation.operation,
+        identity: confirmation.identity,
+        targetId: confirmation.targetId,
+        surface: confirmation.surface,
+        controller: new AbortController(),
+      };
+      configurationApplicationIdRef.current = application.id;
+      configurationApplicationRef.current = application;
+      setConfigurationState((state) =>
+        state && state.focusVersion === confirmation.focusVersion
+          ? { ...state, status: 'applying', message: undefined }
+          : state,
+      );
+      try {
+        const applied = await editor.current?.applyDraft(confirmation.configuration.draft, {
+          signal: application.controller.signal,
+        });
+        if (!isCurrentConfigurationApplication(application)) return;
+        if (applied === true && onReturnToEditor) {
+          clearConfiguration();
+          onReturnToEditor();
+          return;
+        }
+        setConfigurationState((state) =>
+          state &&
+          state.targetId === confirmation.targetId &&
+          state.focusVersion === confirmation.focusVersion
+            ? { ...state, status: 'ready', applied: applied === true, message: undefined }
+            : state,
+        );
+      } catch (error) {
+        if (!isCurrentConfigurationApplication(application)) return;
+        setConfigurationState((state) =>
+          state &&
+          state.targetId === confirmation.targetId &&
+          state.focusVersion === confirmation.focusVersion
+            ? { ...state, status: 'error', applied: false, message: errorMessage(error) }
+            : state,
+        );
+      } finally {
+        if (configurationApplicationRef.current?.id === application.id) {
+          configurationApplicationRef.current = null;
+        }
+      }
+    },
+    [clearConfiguration, editor, isCurrentConfigurationApplication, onReturnToEditor],
+  );
+
+  const confirmConfiguration = useCallback(
+    (id: number): void => {
+      const confirmation = pendingConfigurationConfirmationRef.current;
+      if (!confirmation || confirmation.id !== id) return;
+      if (!isCurrentConfigurationConfirmation(confirmation)) {
+        clearPendingConfigurationConfirmation(id);
         return;
       }
-      setConfigurationState((state) =>
-        state && state.targetId === configuration.attemptId
-          ? { ...state, status: 'ready', applied: applied === true, message: undefined }
-          : state,
-      );
-    } catch (error) {
-      if (!isCurrentConfigurationApplication(application)) return;
-      setConfigurationState((state) =>
-        state && state.targetId === configuration.attemptId
-          ? { ...state, status: 'error', applied: false, message: errorMessage(error) }
-          : state,
-      );
-    } finally {
-      if (configurationApplicationRef.current?.id === application.id) {
-        configurationApplicationRef.current = null;
-      }
-    }
-  }, [
-    activityBusy,
-    authPaused,
-    clearConfiguration,
-    configurationAvailable,
-    configurationState,
-    editor,
-    identity,
-    isCurrentConfigurationApplication,
-    onReturnToEditor,
-    surface,
-  ]);
+      pendingConfigurationConfirmationRef.current = null;
+      setConfigurationConfirmation(null);
+      void startConfigurationApplication(confirmation);
+    },
+    [
+      clearPendingConfigurationConfirmation,
+      isCurrentConfigurationConfirmation,
+      startConfigurationApplication,
+    ],
+  );
+
+  const cancelConfigurationConfirmation = useCallback(
+    (id: number): void => {
+      clearPendingConfigurationConfirmation(id);
+    },
+    [clearPendingConfigurationConfirmation],
+  );
 
   const closeConfiguration = useCallback((): void => {
     const trigger = configurationTriggerRef.current;
@@ -1211,6 +1329,7 @@ export function useAttemptHistory({
       authBlockedPageRef.current = null;
       clearPageTimer();
       configurationOperationRef.current += 1;
+      pendingConfigurationConfirmationRef.current = null;
       const application = configurationApplicationRef.current;
       configurationApplicationRef.current = null;
       application?.controller.abort();
@@ -1251,11 +1370,17 @@ export function useAttemptHistory({
     identity,
   ]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!authPaused) return;
+    clearPendingConfigurationConfirmation();
     cancelConfigurationApplication();
     clearDecisionInspector(false);
-  }, [authPaused, cancelConfigurationApplication, clearDecisionInspector]);
+  }, [
+    authPaused,
+    cancelConfigurationApplication,
+    clearDecisionInspector,
+    clearPendingConfigurationConfirmation,
+  ]);
 
   const loadBootstrapPage = useCallback(
     async (signal: AbortSignal, isCurrent: () => boolean): Promise<void> => {
@@ -1344,6 +1469,7 @@ export function useAttemptHistory({
     historyRecoveryMessage,
     invalidHistoryCursor,
     configurationState,
+    configurationConfirmation,
     decisionInspectorTarget,
     decisionInspectorSelection,
     decisionInspectorOpenVersion,
@@ -1360,7 +1486,9 @@ export function useAttemptHistory({
     updateHistory,
     updateSummaryById,
     openConfiguration,
-    applyConfiguration,
+    requestConfigurationConfirmation,
+    confirmConfiguration,
+    cancelConfigurationConfirmation,
     closeConfiguration,
     clearConfiguration,
     openDecisionInspector,

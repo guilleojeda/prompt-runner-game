@@ -2,7 +2,8 @@
 
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { User } from 'oidc-client-ts';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { installHtmlDialogTestShim } from './configuration-confirmation.test-support.js';
 import {
   createDefaultDraft,
   type RobotDraft,
@@ -331,6 +332,16 @@ function stubObjectUrls() {
   return { createUrl, revokeUrl };
 }
 
+let restoreHtmlDialogTestShim: (() => void) | undefined;
+
+beforeAll(() => {
+  restoreHtmlDialogTestShim = installHtmlDialogTestShim();
+});
+
+afterAll(() => {
+  restoreHtmlDialogTestShim?.();
+});
+
 describe('Phase 12 independent accessible query diagnostics', () => {
   it('keeps the real App history loading view visible during activity bootstrap', async () => {
     const bootstrap = deferred<{ attempts: readonly AttemptSummary[] }>();
@@ -604,6 +615,7 @@ describe('Phase 12 independent accessible query diagnostics', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Ver configuración' }));
     await screen.findByRole('heading', { name: 'Configuración del intento' });
     fireEvent.click(await screen.findByRole('button', { name: 'Usar esta configuración' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reemplazar mi robot' }));
     await waitFor(() => expect(putDraft).toHaveBeenCalledOnce());
 
     const instructions = screen.getByLabelText(

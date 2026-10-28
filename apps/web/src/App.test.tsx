@@ -3,7 +3,8 @@
 import { StrictMode } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { User } from 'oidc-client-ts';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { installHtmlDialogTestShim } from './configuration-confirmation.test-support.js';
 import { App } from './App.js';
 import { AuthFailure, type AuthClient, type AuthConfig, type AuthSession } from './auth.js';
 import { DraftApiClient, DraftApiFailure, type DraftApi } from './draft-api.js';
@@ -253,6 +254,16 @@ async function flushAuthMicrotasks(): Promise<void> {
     await Promise.resolve();
   }
 }
+
+let restoreHtmlDialogTestShim: (() => void) | undefined;
+
+beforeAll(() => {
+  restoreHtmlDialogTestShim = installHtmlDialogTestShim();
+});
+
+afterAll(() => {
+  restoreHtmlDialogTestShim?.();
+});
 
 describe('access screen', () => {
   it('keeps the guest brand linked to the Robot Runner home page', async () => {
@@ -809,6 +820,7 @@ describe('access screen', () => {
         .disabled,
     ).toBe(false);
     fireEvent.click(screen.getByRole('button', { name: 'Usar esta configuración' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reemplazar mi robot' }));
     await act(flushAuthMicrotasks);
     expect(putDraft).toHaveBeenCalledOnce();
     expect(getAccountTrigger().disabled).toBe(false);
@@ -895,6 +907,7 @@ describe('access screen', () => {
     await screen.findByRole('heading', { name: 'Historial' });
     fireEvent.click(await historyAction('Ver configuración'));
     fireEvent.click(await screen.findByRole('button', { name: 'Usar esta configuración' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reemplazar mi robot' }));
     await waitFor(() => expect(putDraft).toHaveBeenCalledOnce());
     await act(flushAuthMicrotasks);
 
@@ -2601,6 +2614,7 @@ describe('access screen', () => {
     await screen.findByRole('heading', { name: 'Historial' });
     fireEvent.click(await historyAction('Ver configuración'));
     fireEvent.click(await screen.findByRole('button', { name: 'Usar esta configuración' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reemplazar mi robot' }));
     expect(await screen.findByDisplayValue('Desde la victoria')).toBeTruthy();
     navigate('Mis robots');
 

@@ -53,7 +53,7 @@ En Historial, **Recientes** muestra las partidas cargadas y **Mejores** compara 
 
 Si falla temporalmente una página del historial, se recupera automáticamente al minuto, conservando las anteriores y la vista elegida. Al ocultar la lista se pausa esa recuperación; volver retoma sólo la consulta pendiente. Un cursor inválido ofrece **Actualizar historial** para iniciar otra cadena, sin repetir el cursor rechazado.
 
-Al abrir un resultado o consultar la configuración de una partida, la consulta se recupera al minuto sin otro clic ni pérdida de contexto. Si la configuración todavía espera el cierre del intento, se sigue comprobando mientras la consulta permanezca abierta. Cerrar termina su recuperación; los datos incompatibles no se repiten indefinidamente. Consultar una configuración no reemplaza tu robot: para eso tenés que elegir **Usar esta configuración**.
+Al abrir un resultado o consultar la configuración de una partida, la consulta se recupera al minuto sin otro clic ni pérdida de contexto. Si la configuración todavía espera el cierre del intento, se sigue comprobando mientras la consulta permanezca abierta. Cerrar termina su recuperación; los datos incompatibles no se repiten indefinidamente. Consultar una configuración no reemplaza tu robot. **Usar esta configuración** pide confirmar el reemplazo de las instrucciones y habilidades; sólo **Reemplazar mi robot** lo aplica. Cancelar conserva la consulta y tu robot.
 
 Después de ingresar, podés habilitar habilidades del catálogo, escribir sus descripciones y editar las instrucciones. El editor guarda automáticamente después de una pausa breve y muestra el estado: esperá **Guardado** antes de cerrar el navegador para recuperar esos cambios al volver a ingresar. Los textos se conservan literalmente, incluso vacíos o equivocados. También se puede guardar sin habilidades habilitadas.
 
@@ -91,15 +91,15 @@ El frontend se sirve por HTTPS desde CloudFront, con un origen S3 privado y OAC.
 
 La especificación vigente se organiza por responsabilidad. Incluye las decisiones confirmadas y distingue las preferencias, los defaults propuestos y lo que sigue por resolver.
 
-| Documento | Qué define |
-|---|---|
-| [Experiencia y alcance](docs/intent/experiencia.md) | Propósito, participación, interfaz y alcance de la primera versión. |
-| [Reglas del juego](docs/intent/juego.md) | Recorrido, reloj, acciones, obstáculos, objetos, salida y niveles. |
-| [Contrato del agente](docs/intent/agente.md) | Información permitida, herramientas, instrucciones y configuración. |
-| [Intentos y reproducción](docs/intent/intentos.md) | Ejecución, registro, persistencia y animación fiel. |
-| [Consumo y puntuación](docs/intent/consumo-y-puntaje.md) | Tokens reales, costo, fórmula de puntos y comparación de resultados. |
-| [Monitoreo administrativo](docs/intent/monitoreo.md) | Inventario confirmado, intentos usados, puntaje máximo, ventanas móviles, datos ausentes y actualización manual. |
-| [Plataforma y operación](docs/intent/plataforma.md) | Cuentas, cuota, capacidad, tecnologías, AWS y entrega automática. |
+| Documento                                                | Qué define                                                                                                       |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| [Experiencia y alcance](docs/intent/experiencia.md)      | Propósito, participación, interfaz y alcance de la primera versión.                                              |
+| [Reglas del juego](docs/intent/juego.md)                 | Recorrido, reloj, acciones, obstáculos, objetos, salida y niveles.                                               |
+| [Contrato del agente](docs/intent/agente.md)             | Información permitida, herramientas, instrucciones y configuración.                                              |
+| [Intentos y reproducción](docs/intent/intentos.md)       | Ejecución, registro, persistencia y animación fiel.                                                              |
+| [Consumo y puntuación](docs/intent/consumo-y-puntaje.md) | Tokens reales, costo, fórmula de puntos y comparación de resultados.                                             |
+| [Monitoreo administrativo](docs/intent/monitoreo.md)     | Inventario confirmado, intentos usados, puntaje máximo, ventanas móviles, datos ausentes y actualización manual. |
+| [Plataforma y operación](docs/intent/plataforma.md)      | Cuentas, cuota, capacidad, tecnologías, AWS y entrega automática.                                                |
 
 Cada documento describe el comportamiento vigente y señala por separado las capacidades de fases posteriores. Los detalles técnicos pendientes no son decisiones aprobadas por aparecer enumerados.
 
@@ -107,13 +107,13 @@ Cada documento describe el comportamiento vigente y señala por separado las cap
 
 Las consultas de servicios se conservan por tema, con fecha, fuentes y límites de evidencia. Describen capacidades disponibles; no reemplazan la especificación ni aprueban una arquitectura.
 
-| Referencia | Contenido |
-|---|---|
-| [AgentCore](docs/reference/agentcore.md) | Runtime con Strands, controles de memoria/contexto, TypeScript, tareas asíncronas y cuotas. |
-| [Bedrock](docs/reference/bedrock.md) | Sonnet 5/4.6, APIs, selección de herramientas, tokens, caché y tarifas. |
-| [Identidad y correo](docs/reference/identidad.md) | Cognito, verificación de email, OTP, SES, interfaces y costos. |
-| [Datos y entrega](docs/reference/datos-y-entrega.md) | DynamoDB, S3, Lambda/API Gateway, CDK, publicación web y GitHub Actions. |
-| [Cuenta AWS](docs/reference/cuenta-aws.md) | Resultados de consultas de lectura al entorno y lo que esas consultas no verifican. |
+| Referencia                                           | Contenido                                                                                   |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| [AgentCore](docs/reference/agentcore.md)             | Runtime con Strands, controles de memoria/contexto, TypeScript, tareas asíncronas y cuotas. |
+| [Bedrock](docs/reference/bedrock.md)                 | Sonnet 5/4.6, APIs, selección de herramientas, tokens, caché y tarifas.                     |
+| [Identidad y correo](docs/reference/identidad.md)    | Cognito, verificación de email, OTP, SES, interfaces y costos.                              |
+| [Datos y entrega](docs/reference/datos-y-entrega.md) | DynamoDB, S3, Lambda/API Gateway, CDK, publicación web y GitHub Actions.                    |
+| [Cuenta AWS](docs/reference/cuenta-aws.md)           | Resultados de consultas de lectura al entorno y lo que esas consultas no verifican.         |
 
 ## Arquitectura
 
@@ -121,13 +121,13 @@ Las consultas de servicios se conservan por tema, con fecha, fuentes y límites 
 
 Están aprobados el contrato de registro, el reproductor, DynamoDB on-demand con S3 privado para cuerpos de inferencia, un único ambiente, la política diaria de cuota y Cognito Essentials con Managed Login. El User Pool está configurado para enviar confirmaciones, reenvíos y recuperación mediante SES en el mismo pool, con el remitente y la plantilla en español descritos arriba. El frontend React estático está publicado en S3 privado mediante CloudFront con Origin Access Control, usando CDK y GitHub Actions.
 
-| Documento | Contenido |
-|---|---|
-| [Ejecución del juego y agente](docs/architecture/ejecucion.md) | Decisión Runtime/Strands/Bedrock, flujo de pantalla, continuidad, concurrencia y fallos. |
-| [Persistencia y cuota](docs/architecture/datos.md) | DynamoDB/S3, registro completo, historial y política diaria aprobados. |
-| [Registro de ejecución](docs/architecture/registro-de-ejecucion.md) | Snapshots, acciones y resultados, fases, cierre y datos necesarios para reproducir. |
-| [Animación](docs/architecture/animacion.md) | Sprites por capas, clips y reacciones, reproducción continua a velocidad fija y extensión del perfil vigente. |
-| [Acceso y entrega](docs/architecture/acceso-y-entrega.md) | Cognito con correo nativo por SES, publicación en S3 privado con CloudFront, un ambiente y CI/CD automático. |
+| Documento                                                           | Contenido                                                                                                     |
+| ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| [Ejecución del juego y agente](docs/architecture/ejecucion.md)      | Decisión Runtime/Strands/Bedrock, flujo de pantalla, continuidad, concurrencia y fallos.                      |
+| [Persistencia y cuota](docs/architecture/datos.md)                  | DynamoDB/S3, registro completo, historial y política diaria aprobados.                                        |
+| [Registro de ejecución](docs/architecture/registro-de-ejecucion.md) | Snapshots, acciones y resultados, fases, cierre y datos necesarios para reproducir.                           |
+| [Animación](docs/architecture/animacion.md)                         | Sprites por capas, clips y reacciones, reproducción continua a velocidad fija y extensión del perfil vigente. |
+| [Acceso y entrega](docs/architecture/acceso-y-entrega.md)           | Cognito con correo nativo por SES, publicación en S3 privado con CloudFront, un ambiente y CI/CD automático.  |
 
 ## Cómo mantener esta documentación
 
