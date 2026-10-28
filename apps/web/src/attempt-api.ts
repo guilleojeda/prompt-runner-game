@@ -92,6 +92,7 @@ export type AttemptApiFailureCode =
   | 'authentication'
   | 'attempt_unavailable'
   | 'conflict'
+  | 'incompatible'
   | 'quota_exceeded'
   | 'not_found'
   | 'invalid'
@@ -979,6 +980,15 @@ export class AttemptApiClient implements AttemptApi {
           'Están llegando muchas solicitudes. Esperá un momento y volvé a intentar.',
           response.status,
           false,
+        );
+      }
+      if (response.status === 500 && responseCode(parsed) === 'stored_attempt_incompatible') {
+        throw new AttemptApiFailure(
+          'incompatible',
+          errorMessage(parsed, invalidMessage),
+          response.status,
+          false,
+          { authContext },
         );
       }
       if (response.status === 401 || response.status === 403) {

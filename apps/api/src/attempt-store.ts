@@ -20,6 +20,7 @@ import {
   ROBOT_SCHEMA_VERSION,
   validateDraft,
   validateWritableDraft,
+  DraftValidationError,
   type RobotSkillId,
   type DraftSnapshot,
   type RobotDraft,
@@ -27,6 +28,7 @@ import {
 import {
   readModelProfile,
   resolveModelProfile,
+  ModelProfileError,
   type ModelProfile,
 } from '../../../shared/models.js';
 import {
@@ -99,6 +101,13 @@ export class AttemptStoreError extends Error {
   public constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = 'AttemptStoreError';
+  }
+}
+
+export class AttemptStoredIncompatibleError extends AttemptStoreError {
+  public constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'AttemptStoredIncompatibleError';
   }
 }
 
@@ -263,7 +272,9 @@ const freezeDeep = <T>(value: T): T => {
 
 const storedConfig = (value: unknown): AttemptConfig => {
   if (!isRecord(value) || !isRecord(value.model) || !isRecord(value.protocol))
-    throw new AttemptStoreError('El intento guardado tiene una configuración incompatible.');
+    throw new AttemptStoredIncompatibleError(
+      'El intento guardado tiene una configuración incompatible.',
+    );
   let model: ReturnType<typeof readModelProfile>;
   let levelDefinition: AttemptConfig['levelDefinition'];
   let scoreParameters: AttemptConfig['scoreParameters'];
@@ -272,9 +283,13 @@ const storedConfig = (value: unknown): AttemptConfig => {
     levelDefinition = readCurrentLevel(value.levelDefinition);
     scoreParameters = readAttemptScoreParameters(value.scoreParameters);
   } catch (error) {
-    throw new AttemptStoreError('El intento guardado no coincide con el contrato actual.', {
-      cause: error,
-    });
+    if (error instanceof ModelProfileError || error instanceof ReplayRecordError) {
+      throw new AttemptStoredIncompatibleError(
+        'El intento guardado no coincide con el contrato actual.',
+        { cause: error },
+      );
+    }
+    throw error;
   }
   if (
     value.protocol.api !== 'converse' ||
@@ -286,7 +301,9 @@ const storedConfig = (value: unknown): AttemptConfig => {
     value.inferenceVersion !== model.profileVersion ||
     value.maxTurns !== levelDefinition.maxTurns
   ) {
-    throw new AttemptStoreError('El intento guardado tiene una configuración incompatible.');
+    throw new AttemptStoredIncompatibleError(
+      'El intento guardado tiene una configuración incompatible.',
+    );
   }
   return freezeDeep({
     ...(value as unknown as Omit<AttemptConfig, 'model' | 'levelDefinition'>),
@@ -386,21 +403,34 @@ const toRecord = (item: Record<string, unknown>): PersistedAttempt => {
     typeof item.animationEnabled !== 'boolean' ||
     typeof item.presentationComplete !== 'boolean'
   ) {
-    throw new AttemptStoreError('El intento guardado usa una versión incompatible.');
+    throw new AttemptStoredIncompatibleError('El intento guardado usa una versión incompatible.');
   }
   const config = storedConfig(item.config);
   const recordFields = { ...item };
   delete recordFields.objectPoints;
   const record = recordFields as unknown as PersistedAttempt;
-  const draft = validateDraft(item.draft);
+  let draft: RobotDraft;
+  try {
+    draft = validateDraft(item.draft);
+  } catch (error) {
+    if (error instanceof DraftValidationError) {
+      throw new AttemptStoredIncompatibleError(
+        'El intento guardado tiene una configuración incompatible.',
+        { cause: error },
+      );
+    }
+    throw error;
+  }
   if (draft.modelKey !== config.model.key) {
-    throw new AttemptStoreError('El intento guardado tiene un modelo inconsistente.');
+    throw new AttemptStoredIncompatibleError('El intento guardado tiene un modelo inconsistente.');
   }
   if (
     !Array.isArray(item.collectedObjectIds) ||
     !item.collectedObjectIds.every((objectId) => typeof objectId === 'string')
   ) {
-    throw new AttemptStoreError('El intento guardado no tiene un resumen de objetos válido.');
+    throw new AttemptStoredIncompatibleError(
+      'El intento guardado no tiene un resumen de objetos válido.',
+    );
   }
   const parsed: PersistedAttempt = {
     ...record,
@@ -419,7 +449,14 @@ const toRecord = (item: Record<string, unknown>): PersistedAttempt => {
     collectedObjectIds: [...item.collectedObjectIds],
     reason: typeof item.reason === 'string' ? item.reason : undefined,
   };
-  summaryOf(parsed);
+  try {
+    summaryOf(parsed);
+  } catch (error) {
+    if (error instanceof ReplayRecordError) {
+      throw new AttemptStoredIncompatibleError(error.message, { cause: error });
+    }
+    throw error;
+  }
   return parsed;
 };
 
@@ -1407,7 +1444,9 @@ export class DynamoAttemptStore implements AttemptStore {
       typeof item.currentStateId !== 'string' ||
       item.currentStateId !== `state-${item.sequence}`
     ) {
-      throw new AttemptStoreError('El intento guardado no tiene referencias de estado válidas.');
+      throw new AttemptStoredIncompatibleError(
+        'El intento guardado no tiene referencias de estado válidas.',
+      );
     }
     const stateId = item.currentStateId;
     const [state, initial] = await Promise.all([
@@ -1443,7 +1482,9 @@ export class DynamoAttemptStore implements AttemptStore {
       initialRow.snapshot.id !== 'state-0' ||
       initialRow.snapshot.turnsUsed !== 0
     ) {
-      throw new AttemptStoreError('El intento guardado hace referencia a un estado incompleto.');
+      throw new AttemptStoredIncompatibleError(
+        'El intento guardado hace referencia a un estado incompleto.',
+      );
     }
     const currentSnapshot = currentRow.snapshot;
     const initialSnapshot = initialRow.snapshot;

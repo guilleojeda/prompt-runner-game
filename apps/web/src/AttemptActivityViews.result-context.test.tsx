@@ -40,7 +40,6 @@ function view(state: Parameters<typeof HistoryResultQuery>[0]['state']) {
     <HistoryResultQuery
       state={state}
       sharingVisible
-      onRetry={vi.fn()}
       onClose={vi.fn()}
       onReturnToEditor={vi.fn()}
       onReplay={vi.fn()}
