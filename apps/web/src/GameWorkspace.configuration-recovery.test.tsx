@@ -1004,8 +1004,8 @@ describe('GameWorkspace configuration query recovery', () => {
     expect(getConfiguration).toHaveBeenCalledOnce();
     expect(screen.getByText('Explicit candidate.')).toBeTruthy();
     const applyDraft = vi.fn().mockRejectedValue(new Error('D2 application failed.'));
-    mounted.editor.current!.applyDraft = applyDraft;
     fireEvent.click(screen.getByRole('button', { name: 'Usar esta configuración' }));
+    mounted.editor.current!.applyDraft = applyDraft;
     fireEvent.click(screen.getByRole('button', { name: 'Reemplazar mi robot' }));
     await settle();
     expect(within(configurationPanel()).getByRole('alert').textContent).toContain(
@@ -1038,9 +1038,8 @@ describe('GameWorkspace configuration query recovery', () => {
       applicationSignal = options?.signal;
       return application.promise;
     });
-    mounted.editor.current!.applyDraft = applyDraft;
-
     fireEvent.click(screen.getByRole('button', { name: 'Usar esta configuración' }));
+    mounted.editor.current!.applyDraft = applyDraft;
     fireEvent.click(screen.getByRole('button', { name: 'Reemplazar mi robot' }));
     await settle();
     expect(screen.getByText('Aplicando configuración…')).toBeTruthy();
