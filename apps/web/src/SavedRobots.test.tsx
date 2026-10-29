@@ -1286,7 +1286,7 @@ describe('SavedRobots', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Eliminar' }));
     await waitFor(() => expect(savedApi.deleteRobot).toHaveBeenCalledWith('robot-a', 1));
     expect(editorRef.current?.applyDraft).toHaveBeenCalledTimes(1);
-    expect(screen.queryByText('Seleccionado:')).toBeNull();
+    await waitFor(() => expect(screen.queryByText('Seleccionado:')).toBeNull());
   });
 
   it('does not delete when confirmation is cancelled', async () => {
