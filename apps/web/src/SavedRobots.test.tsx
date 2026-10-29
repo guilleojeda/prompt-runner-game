@@ -1,18 +1,19 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { User } from 'oidc-client-ts';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   createDefaultDraft,
   type RobotDraft,
   type SavedRobot,
   type SavedRobotSummary,
 } from '../../../shared/robot.js';
-import type { AuthSession } from './auth.js';
-import type { RobotEditorHandle } from './RobotEditor.js';
-import { SavedRobots } from './SavedRobots.js';
-import { SavedRobotApiFailure, type SavedRobotApi } from './saved-robot-api.js';
+import type { AuthSession } from '../../../apps/web/src/auth.js';
+import type { RobotEditorHandle } from '../../../apps/web/src/RobotEditor.js';
+import { SavedRobots } from '../../../apps/web/src/SavedRobots.js';
+import { SavedRobotApiFailure, type SavedRobotApi } from '../../../apps/web/src/saved-robot-api.js';
+import { installHtmlDialogTestShim } from '../../../apps/web/src/configuration-confirmation.test-support.js';
 
 function session(sub = 'subject-a'): AuthSession {
   return {
@@ -141,38 +142,85 @@ function api(overrides: Partial<SavedRobotApi> = {}): SavedRobotApi {
   };
 }
 
+let restoreDialogShim: (() => void) | undefined;
+
+beforeAll(() => {
+  restoreDialogShim = installHtmlDialogTestShim();
+});
+
+afterAll(() => restoreDialogShim?.());
+
+async function chooseCopy(matcher: RegExp): Promise<HTMLElement> {
+  const radio = await screen.findByRole('radio', { name: matcher });
+  fireEvent.click(radio);
+  await waitFor(() =>
+    expect(screen.getByRole('region', { name: /Mis robots/u }).getAttribute('aria-busy')).toBe(
+      'false',
+    ),
+  );
+  return radio;
+}
+
+function selectedCopyPanel(): HTMLElement {
+  return screen.getByRole('region', { name: 'Copia seleccionada' });
+}
+
+async function useSelectedCopy(): Promise<void> {
+  const panel = selectedCopyPanel();
+  fireEvent.click(within(panel).getByRole('button', { name: 'Usar este robot' }));
+  const dialog = await screen.findByRole('dialog');
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Usar este robot' }));
+}
+
+async function useCopy(matcher: RegExp): Promise<HTMLElement> {
+  const radio = await chooseCopy(matcher);
+  await useSelectedCopy();
+  return radio;
+}
+
+function openMoreActions(): void {
+  const summary = screen.getByText('Más acciones');
+  if (!(summary.closest('details') as HTMLDetailsElement | null)?.open) {
+    fireEvent.click(summary);
+  }
+}
+
+function deleteSelectedCopy(): void {
+  openMoreActions();
+  fireEvent.click(screen.getByRole('button', { name: /Eliminar copia/u }));
+}
+
 afterEach(() => cleanup());
 
 describe('SavedRobots', () => {
-  it('loads a selected copy into the editor and creates a named copy from its snapshot', async () => {
+  it('uses a copy only after confirmation, then creates a named copy from the editor snapshot', async () => {
     const editorRef = editor();
     const savedApi = api();
+    const saveRobot = vi.spyOn(savedApi, 'saveRobot');
     render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
 
-    expect(await screen.findByRole('button', { name: /Explorador.*Cargar/ })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /Explorador.*Cargar/ })).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: /Explorador.*Cargar/ }));
+    await useCopy(/Explorador/u);
     await waitFor(() =>
       expect(editorRef.current?.applyDraft).toHaveBeenCalledWith(
-        expect.any(Function),
+        savedRobot().draft,
         expect.objectContaining({ signal: expect.any(AbortSignal) }),
       ),
     );
-    expect(screen.getByText('Seleccionado:')).toBeTruthy();
+    expect(screen.getByRole('region', { name: 'Copia seleccionada' })).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Guardar como nueva' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar robot actual' }));
     expect(document.activeElement).toBe(screen.getByLabelText('Nombre para la nueva copia'));
     fireEvent.change(screen.getByLabelText('Nombre para la nueva copia'), {
       target: { value: 'Defensa' },
     });
     fireEvent.submit(screen.getByLabelText('Nombre para la nueva copia').closest('form')!);
     await waitFor(() =>
-      expect(savedApi.saveRobot).toHaveBeenCalledWith(
+      expect(saveRobot.mock.calls[0]?.slice(0, 4)).toEqual([
         expect.any(String),
         0,
         'Defensa',
         createDefaultDraft(),
-      ),
+      ]),
     );
     expect(await screen.findByText('Guardaste «Defensa» como robot nuevo.')).toBeTruthy();
   });
@@ -202,33 +250,35 @@ describe('SavedRobots', () => {
     const { editorRef, applyDraft, pendingApplications } = applicationEditor();
     render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
 
-    const firstButton = await screen.findByRole('button', { name: /Primero.*Cargar/ });
-    const secondButton = await screen.findByRole('button', { name: /Segunda.*Cargar/ });
+    const firstButton = await screen.findByRole('radio', { name: /Primero/u });
+    const secondButton = await screen.findByRole('radio', { name: /Segunda/u });
     firstButton.focus();
     fireEvent.click(firstButton);
     await waitFor(() => expect(getRobot).toHaveBeenCalledOnce());
+    await act(async () => {
+      firstLoad.resolve(first);
+      await Promise.resolve();
+    });
+    await useSelectedCopy();
 
     expect(applyDraft).toHaveBeenCalledWith(
-      expect.any(Function),
+      first.draft,
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     const firstSignal = applyDraft.mock.calls[0]?.[1]?.signal;
     expect(firstSignal).toBeInstanceOf(AbortSignal);
-    expect(getRobot.mock.calls[0]?.[1]).toBe(firstSignal);
     expect((secondButton as HTMLButtonElement).disabled).toBe(false);
 
     secondButton.focus();
     fireEvent.click(secondButton);
     await waitFor(() => expect(getRobot).toHaveBeenCalledTimes(2));
     expect(firstSignal?.aborted).toBe(true);
-    const secondSignal = applyDraft.mock.calls[1]?.[1]?.signal;
-    expect(secondSignal).toBeInstanceOf(AbortSignal);
-    expect(getRobot.mock.calls[1]?.[1]).toBe(secondSignal);
 
     await act(async () => {
       secondLoad.resolve(second);
       await Promise.resolve();
     });
+    await useSelectedCopy();
     await waitFor(() =>
       expect(
         pendingApplications.some(
@@ -243,29 +293,17 @@ describe('SavedRobots', () => {
       await Promise.resolve();
     });
     expect(await screen.findByText('Cargaste «Segunda».')).toBeTruthy();
-    expect(document.querySelector('.saved-robots-selected')?.textContent).toContain('Segunda');
+    expect(selectedCopyPanel().textContent).toContain('Segunda');
     const activeAfterSecondApplication = document.activeElement;
 
-    await act(async () => {
-      firstLoad.resolve(first);
-      await Promise.resolve();
-    });
-    await waitFor(() =>
-      expect(
-        pendingApplications.some(
-          (application) => application.draft.instructions === 'Primera copia.',
-        ),
-      ).toBe(true),
-    );
     await act(async () => {
       pendingApplications
         .find((application) => application.draft.instructions === 'Primera copia.')!
         .resolve(true);
       await Promise.resolve();
     });
-
     expect(screen.queryByText('Cargaste «Primero».')).toBeNull();
-    expect(document.querySelector('.saved-robots-selected')?.textContent).toContain('Segunda');
+    expect(selectedCopyPanel().textContent).toContain('Segunda');
     expect(document.activeElement).toBe(activeAfterSecondApplication);
   });
 
@@ -286,15 +324,19 @@ describe('SavedRobots', () => {
       const { editorRef, applyDraft, pendingApplications } = applicationEditor();
       const view = render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
 
-      fireEvent.click(await screen.findByRole('button', { name: /Copia pausada.*Cargar/ }));
+      await chooseCopy(/Copia pausada/u);
       await waitFor(() => expect(getRobot).toHaveBeenCalledOnce());
+      await act(async () => {
+        load.resolve(robot);
+        await Promise.resolve();
+      });
+      await useSelectedCopy();
       expect(applyDraft).toHaveBeenCalledWith(
-        expect.any(Function),
+        robot.draft,
         expect.objectContaining({ signal: expect.any(AbortSignal) }),
       );
       const signal = applyDraft.mock.calls[0]?.[1]?.signal;
       expect(signal).toBeInstanceOf(AbortSignal);
-      expect(getRobot.mock.calls[0]?.[1]).toBe(signal);
 
       if (abandonment === 'pause') {
         view.rerender(
@@ -311,10 +353,6 @@ describe('SavedRobots', () => {
       }
       expect(signal?.aborted).toBe(true);
 
-      await act(async () => {
-        load.resolve(robot);
-        await Promise.resolve();
-      });
       await waitFor(() => expect(pendingApplications).toHaveLength(1));
       await act(async () => {
         pendingApplications[0]!.resolve(true);
@@ -323,7 +361,7 @@ describe('SavedRobots', () => {
 
       if (abandonment === 'pause') {
         expect(screen.queryByText(`Cargaste «${robot.name}».`)).toBeNull();
-        expect(screen.queryByText('Seleccionado:')).toBeNull();
+        expect(screen.queryByRole('region', { name: 'Copia seleccionada' })).toBeNull();
       }
     },
   );
@@ -358,10 +396,11 @@ describe('SavedRobots', () => {
       />,
     );
 
-    fireEvent.click(await screen.findByRole('button', { name: /Explorador.*Cargar/ }));
+    await chooseCopy(/Explorador/u);
     await waitFor(() => expect(onAuthRequired).toHaveBeenCalledOnce());
     expect(screen.getByText('Volvé a ingresar.')).toBeTruthy();
-    expect(screen.queryByText('Seleccionado:')).toBeNull();
+    expect(editorRef.current?.applyDraft).not.toHaveBeenCalled();
+    expect(screen.queryByText('Cargaste «Explorador».')).toBeNull();
   });
 
   it('shows an empty state after a list retry and does not offer a mutation retry', async () => {
@@ -382,7 +421,7 @@ describe('SavedRobots', () => {
     const savedApi = api({ listRobots: vi.fn().mockResolvedValue({ robots: [] }) });
     render(<SavedRobots api={savedApi} editor={editor()} session={session()} paused locked />);
 
-    const create = await screen.findByRole('button', { name: 'Guardar como nueva' });
+    const create = await screen.findByRole('button', { name: 'Guardar robot actual' });
     expect((create as HTMLButtonElement).disabled).toBe(true);
   });
 
@@ -390,18 +429,18 @@ describe('SavedRobots', () => {
     const savedApi = api({ listRobots: vi.fn().mockResolvedValue({ robots: [] }) });
     render(<SavedRobots api={savedApi} editor={editor()} session={session()} />);
 
-    const create = await screen.findByRole('button', { name: 'Guardar como nueva' });
+    const create = await screen.findByRole('button', { name: 'Guardar robot actual' });
     await waitFor(() => expect((create as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(create);
-    expect(screen.getAllByRole('button', { name: 'Guardar como nueva' })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: 'Guardar una copia' })).toHaveLength(1);
 
     const input = screen.getByLabelText('Nombre para la nueva copia');
     fireEvent.change(input, { target: { value: 'Defensa' } });
     expect((input as HTMLInputElement).value).toBe('Defensa');
 
     fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Guardar como nueva' }));
-    expect(screen.getAllByRole('button', { name: 'Guardar como nueva' })).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar robot actual' }));
+    expect(screen.getAllByRole('button', { name: 'Guardar una copia' })).toHaveLength(1);
     expect((screen.getByLabelText('Nombre para la nueva copia') as HTMLInputElement).value).toBe(
       '',
     );
@@ -418,18 +457,18 @@ describe('SavedRobots', () => {
     const unicodeName = '🙂'.repeat(80);
     render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Guardar como nueva' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Guardar robot actual' }));
     const input = screen.getByLabelText('Nombre para la nueva copia');
     fireEvent.change(input, { target: { value: unicodeName } });
     expect((input as HTMLInputElement).value).toBe(unicodeName);
     fireEvent.submit(input.closest('form')!);
     await waitFor(() =>
-      expect(saveRobot).toHaveBeenCalledWith(
+      expect(saveRobot.mock.calls[0]?.slice(0, 4)).toEqual([
         expect.any(String),
         0,
         unicodeName,
         createDefaultDraft(),
-      ),
+      ]),
     );
   });
 
@@ -453,23 +492,23 @@ describe('SavedRobots', () => {
     const savedApi = api({ listRobots, getRobot });
     render(<SavedRobots api={savedApi} editor={editor()} session={session()} />);
 
-    expect(await screen.findAllByRole('button', { name: /Mismo nombre.*Cargar/ })).toHaveLength(2);
-    expect(screen.getByRole('button', { name: /^Mismo nombre Copia 1.*Cargar$/ })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /^Mismo nombre Copia 2.*Cargar$/ })).toBeTruthy();
+    expect(await screen.findAllByRole('radio', { name: /Mismo nombre/u })).toHaveLength(2);
+    expect(screen.getByRole('radio', { name: /^Mismo nombre Copia 1$/u })).toBeTruthy();
+    expect(screen.getByRole('radio', { name: /^Mismo nombre Copia 2$/u })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Cargar más' }));
     await waitFor(() =>
-      expect(screen.getAllByRole('button', { name: /Mismo nombre.*Cargar/ })).toHaveLength(3),
+      expect(screen.getAllByRole('radio', { name: /Mismo nombre/u })).toHaveLength(3),
     );
-    expect(screen.getByRole('button', { name: /^Mismo nombre Copia 3.*Cargar$/ })).toBeTruthy();
+    expect(screen.getByRole('radio', { name: /^Mismo nombre Copia 3$/u })).toBeTruthy();
     for (const [index, expectedId] of ['robot-a', 'robot-b', 'robot-c'].entries()) {
-      fireEvent.click(screen.getAllByRole('button', { name: /Mismo nombre.*Cargar/ })[index]!);
+      fireEvent.click(screen.getAllByRole('radio', { name: /Mismo nombre/u })[index]!);
       await waitFor(() => expect(getRobot).toHaveBeenCalledTimes(index + 1));
       expect(getRobot.mock.calls[index]?.[0]).toBe(expectedId);
     }
     expect(listRobots).toHaveBeenLastCalledWith('next');
   });
 
-  it('updates the selected copy only from the explicit Guardar action', async () => {
+  it('renames the selected copy while preserving its stored draft instead of capturing the editor', async () => {
     const changed = { ...createDefaultDraft(), instructions: 'Preferí esperar.' };
     const editorRef = editor(changed);
     const saveRobot = vi
@@ -477,18 +516,25 @@ describe('SavedRobots', () => {
       .mockResolvedValue(savedRobot({ version: 2, name: 'Explorador mejorado', draft: changed }));
     const savedApi = api({ saveRobot });
     render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
-    fireEvent.click(await screen.findByRole('button', { name: /Explorador.*Cargar/ }));
-    await waitFor(() => expect(editorRef.current?.applyDraft).toHaveBeenCalled());
+    await chooseCopy(/Explorador/u);
     expect(saveRobot).not.toHaveBeenCalled();
-
-    fireEvent.change(screen.getByLabelText('Nombre de esta copia'), {
+    openMoreActions();
+    fireEvent.click(screen.getByRole('button', { name: /Renombrar.*Explorador/u }));
+    const dialog = await screen.findByRole('dialog', { name: /Renombrar.*Explorador/u });
+    fireEvent.change(within(dialog).getByRole('textbox', { name: 'Nombre' }), {
       target: { value: 'Explorador mejorado' },
     });
-    fireEvent.click(screen.getByRole('button', { name: /^Guardar$/ }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Guardar nombre' }));
     await waitFor(() =>
-      expect(saveRobot).toHaveBeenCalledWith('robot-a', 1, 'Explorador mejorado', changed),
+      expect(saveRobot.mock.calls[0]?.slice(0, 4)).toEqual([
+        'robot-a',
+        1,
+        'Explorador mejorado',
+        savedRobot().draft,
+      ]),
     );
-    expect(screen.getByText('Guardaste «Explorador mejorado».')).toBeTruthy();
+    expect(editorRef.current?.captureSnapshot).not.toHaveBeenCalled();
+    expect(editorRef.current?.applyDraft).not.toHaveBeenCalled();
   });
 
   it('accepts a complete matching 409 current as the pending create result', async () => {
@@ -520,7 +566,7 @@ describe('SavedRobots', () => {
     });
     render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Guardar como nueva' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Guardar robot actual' }));
     fireEvent.change(screen.getByLabelText('Nombre para la nueva copia'), {
       target: { value: 'Copia pendiente' },
     });
@@ -564,7 +610,7 @@ describe('SavedRobots', () => {
     });
     const view = render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Guardar como nueva' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Guardar robot actual' }));
     fireEvent.change(screen.getByLabelText('Nombre para la nueva copia'), {
       target: { value: 'Persistente' },
     });
@@ -583,7 +629,7 @@ describe('SavedRobots', () => {
       />,
     );
     expect(
-      (screen.getByRole('button', { name: 'Guardar como nueva' }) as HTMLButtonElement).disabled,
+      (screen.getByRole('button', { name: 'Guardar una copia' }) as HTMLButtonElement).disabled,
     ).toBe(false);
     const pendingName = screen.getByLabelText('Nombre para la nueva copia') as HTMLInputElement;
     expect(pendingName.disabled).toBe(true);
@@ -633,7 +679,7 @@ describe('SavedRobots', () => {
         />,
       );
 
-      fireEvent.click(await screen.findByRole('button', { name: 'Guardar como nueva' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Guardar robot actual' }));
       fireEvent.change(screen.getByLabelText('Nombre para la nueva copia'), {
         target: { value: 'Acceso renovado' },
       });
@@ -698,7 +744,7 @@ describe('SavedRobots', () => {
         />,
       );
 
-      fireEvent.click(await screen.findByRole('button', { name: 'Guardar como nueva' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Guardar robot actual' }));
       fireEvent.change(screen.getByLabelText('Nombre para la nueva copia'), {
         target: { value: 'Esperando renovación' },
       });
@@ -782,7 +828,7 @@ describe('SavedRobots', () => {
         />,
       );
 
-      fireEvent.click(await screen.findByRole('button', { name: 'Guardar como nueva' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Guardar robot actual' }));
       fireEvent.change(screen.getByLabelText('Nombre para la nueva copia'), {
         target: { value: 'Rechazo definitivo' },
       });
@@ -841,7 +887,7 @@ describe('SavedRobots', () => {
       });
       render(<SavedRobots api={savedApi} editor={editor(draft)} session={session()} />);
 
-      fireEvent.click(await screen.findByRole('button', { name: 'Guardar como nueva' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Guardar robot actual' }));
       fireEvent.change(screen.getByLabelText('Nombre para la nueva copia'), {
         target: { value: 'Copia incierta' },
       });
@@ -889,7 +935,7 @@ describe('SavedRobots', () => {
     });
     render(<SavedRobots api={savedApi} editor={editor(draft)} session={session()} />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Guardar como nueva' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Guardar robot actual' }));
     fireEvent.change(screen.getByLabelText('Nombre para la nueva copia'), {
       target: { value: 'Sin copia remota' },
     });
@@ -936,7 +982,7 @@ describe('SavedRobots', () => {
     });
     render(<SavedRobots api={savedApi} editor={editor(draft)} session={session()} />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Guardar como nueva' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Guardar robot actual' }));
     fireEvent.change(screen.getByLabelText('Nombre para la nueva copia'), {
       target: { value: 'Guardada' },
     });
@@ -950,83 +996,6 @@ describe('SavedRobots', () => {
     expect(screen.queryByText(/misma copia/)).toBeNull();
     expect(saveRobot).toHaveBeenCalledOnce();
     expect(getRobot).toHaveBeenCalledTimes(2);
-  });
-
-  it('does not save a snapshot captured before an account switch', async () => {
-    let resolveSnapshot!: (snapshot: { version: number; draft: RobotDraft }) => void;
-    const editorRef = editor();
-    (editorRef.current?.captureSnapshot as ReturnType<typeof vi.fn>).mockReturnValue(
-      new Promise((resolve) => {
-        resolveSnapshot = resolve;
-      }),
-    );
-    const saveRobot = vi.fn();
-    const robot = savedRobot();
-    const savedApi = api({ saveRobot });
-    const view = render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
-    fireEvent.click(await screen.findByRole('button', { name: /Explorador.*Cargar/ }));
-    await waitFor(() => expect(editorRef.current?.applyDraft).toHaveBeenCalled());
-    fireEvent.click(screen.getByRole('button', { name: /^Guardar$/ }));
-
-    view.rerender(<SavedRobots api={savedApi} editor={editorRef} session={session('subject-b')} />);
-    await act(async () => {
-      resolveSnapshot({ version: 1, draft: robot.draft });
-      await Promise.resolve();
-    });
-    expect(saveRobot).not.toHaveBeenCalled();
-  });
-
-  it('reconciles an ambiguous write by reading the same UUID', async () => {
-    const robot = savedRobot();
-    const saveRobot = vi
-      .fn()
-      .mockRejectedValue(
-        new SavedRobotApiFailure('network', 'No se confirmó.', undefined, undefined, true),
-      );
-    const getRobot = vi.fn().mockResolvedValue(savedRobot({ version: 2, draft: robot.draft }));
-    const editorRef = editor();
-    const savedApi = api({ saveRobot, getRobot });
-    render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
-    fireEvent.click(await screen.findByRole('button', { name: /Explorador.*Cargar/ }));
-    await waitFor(() => expect(editorRef.current?.applyDraft).toHaveBeenCalled());
-    const changed = { ...createDefaultDraft(), instructions: 'Nueva ruta.' };
-    (editorRef.current?.captureSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue({
-      version: 1,
-      draft: changed,
-    });
-    getRobot.mockResolvedValue(savedRobot({ version: 2, draft: changed }));
-    fireEvent.click(screen.getByRole('button', { name: /^Guardar$/ }));
-    await waitFor(() => expect(screen.getByText('Guardaste «Explorador».')).toBeTruthy());
-    expect(getRobot).toHaveBeenLastCalledWith('robot-a');
-  });
-
-  it('preserves an auth failure from ambiguous save readback and scopes the error to Guardar', async () => {
-    const onAuthRequired = vi.fn();
-    const saveRobot = vi
-      .fn()
-      .mockRejectedValue(
-        new SavedRobotApiFailure('network', 'No se confirmó.', undefined, undefined, true),
-      );
-    const getRobot = vi
-      .fn()
-      .mockResolvedValueOnce(savedRobot())
-      .mockRejectedValueOnce(new SavedRobotApiFailure('authentication', 'Volvé a ingresar.', 401));
-    const editorRef = editor({ ...createDefaultDraft(), instructions: 'Cambios.' });
-    const savedApi = api({ saveRobot, getRobot });
-    render(
-      <SavedRobots
-        api={savedApi}
-        editor={editorRef}
-        session={session()}
-        onAuthRequired={onAuthRequired}
-      />,
-    );
-    fireEvent.click(await screen.findByRole('button', { name: /Explorador.*Cargar/ }));
-    await waitFor(() => expect(editorRef.current?.applyDraft).toHaveBeenCalled());
-    fireEvent.click(screen.getByRole('button', { name: /^Guardar$/ }));
-    await waitFor(() => expect(onAuthRequired).toHaveBeenCalledOnce());
-    expect(screen.getByText('Volvé a ingresar.')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Reintentar lista' })).toBeNull();
   });
 
   it('preserves an auth failure from ambiguous delete readback', async () => {
@@ -1050,152 +1019,16 @@ describe('SavedRobots', () => {
         onAuthRequired={onAuthRequired}
       />,
     );
-    fireEvent.click(await screen.findByRole('button', { name: /Explorador.*Cargar/ }));
-    await waitFor(() => expect(screen.getByText(/Seleccionado/)).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: 'Eliminar' }));
+    await chooseCopy(/Explorador/u);
+    await waitFor(() =>
+      expect(screen.getByRole('region', { name: 'Copia seleccionada' })).toBeTruthy(),
+    );
+    deleteSelectedCopy();
     await waitFor(() => expect(onAuthRequired).toHaveBeenCalledOnce());
     expect(confirm).toHaveBeenCalledOnce();
     expect(screen.getByText('Volvé a ingresar.')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Reintentar lista' })).toBeNull();
     confirm.mockRestore();
-  });
-
-  it('blocks a stale selected save until the remote version is loaded', async () => {
-    const remoteDraft = { ...createDefaultDraft(), instructions: 'Versión remota.' };
-    const changedDraft = { ...createDefaultDraft(), instructions: 'Cambios locales.' };
-    const remote = savedRobot({ version: 2, draft: remoteDraft });
-    const saveRobot = vi
-      .fn()
-      .mockRejectedValueOnce(new SavedRobotApiFailure('conflict', 'stale', 409, remote))
-      .mockResolvedValueOnce(savedRobot({ version: 3, draft: changedDraft }));
-    const editorRef = editor(changedDraft);
-    const savedApi = api({ saveRobot });
-    render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
-    fireEvent.click(await screen.findByRole('button', { name: /Explorador.*Cargar/ }));
-    await waitFor(() => expect(editorRef.current?.applyDraft).toHaveBeenCalled());
-    fireEvent.click(screen.getByRole('button', { name: /^Guardar$/ }));
-    await waitFor(() =>
-      expect(screen.getByText(/Hay una versión.*Guardar.*bloqueado/)).toBeTruthy(),
-    );
-    expect((screen.getByRole('button', { name: /^Guardar$/ }) as HTMLButtonElement).disabled).toBe(
-      true,
-    );
-    expect(screen.queryByRole('button', { name: 'Seguir con esta versión' })).toBeNull();
-    expect(
-      (screen.getByRole('button', { name: 'Guardar como nueva' }) as HTMLButtonElement).disabled,
-    ).toBe(false);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Cargar versión remota' }));
-    await waitFor(() =>
-      expect(editorRef.current?.applyDraft).toHaveBeenLastCalledWith(
-        remoteDraft,
-        expect.objectContaining({ signal: expect.any(AbortSignal) }),
-      ),
-    );
-    fireEvent.click(screen.getByRole('button', { name: /^Guardar$/ }));
-    await waitFor(() => expect(saveRobot).toHaveBeenCalledTimes(2));
-    expect(saveRobot.mock.calls[1]?.[0]).toBe('robot-a');
-    expect(saveRobot.mock.calls[1]?.[1]).toBe(2);
-  });
-
-  it('aborts a saved conflict application on pause and ignores its late result', async () => {
-    const localDraft = { ...createDefaultDraft(), instructions: 'Borrador local.' };
-    const remote = savedRobot({
-      name: 'Explorador remoto',
-      version: 2,
-      draft: { ...createDefaultDraft(), instructions: 'Versión remota.' },
-    });
-    const saveRobot = vi
-      .fn()
-      .mockRejectedValue(new SavedRobotApiFailure('conflict', 'stale', 409, remote));
-    const savedApi = api({ saveRobot });
-    const { editorRef, applyDraft, pendingApplications } = applicationEditor(localDraft);
-    const view = render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
-
-    fireEvent.click(await screen.findByRole('button', { name: /Explorador.*Cargar/ }));
-    await waitFor(() => expect(pendingApplications).toHaveLength(1));
-    await act(async () => {
-      pendingApplications[0]!.resolve(true);
-      await Promise.resolve();
-    });
-    await waitFor(() =>
-      expect(document.querySelector('.saved-robots-selected')?.textContent).toContain('Explorador'),
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: /^Guardar$/ }));
-    await screen.findByRole('button', { name: 'Cargar versión remota' });
-    fireEvent.click(screen.getByRole('button', { name: 'Cargar versión remota' }));
-    expect(applyDraft).toHaveBeenLastCalledWith(
-      remote.draft,
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
-    );
-    const signal = applyDraft.mock.calls[1]?.[1]?.signal;
-    expect(signal).toBeInstanceOf(AbortSignal);
-
-    view.rerender(
-      <SavedRobots
-        api={savedApi}
-        editor={editorRef}
-        session={session()}
-        paused
-        accessState="required"
-      />,
-    );
-    expect(signal?.aborted).toBe(true);
-    const focusAfterPause = document.activeElement;
-    await act(async () => {
-      pendingApplications[1]!.resolve(false);
-      await Promise.resolve();
-    });
-
-    expect(document.querySelector('.saved-robots-selected')?.textContent).toContain('Explorador');
-    expect(document.querySelector('.saved-robots-selected')?.textContent).not.toContain(
-      'Explorador remoto',
-    );
-    expect(screen.queryByText('Cargaste «Explorador remoto».')).toBeNull();
-    expect(
-      screen.queryByText('No se pudo cargar la versión remota porque hay cambios pendientes.'),
-    ).toBeNull();
-    expect(document.activeElement).toBe(focusAfterPause);
-  });
-
-  it('accepts a complete matching 409 current as a selected save result', async () => {
-    const changedDraft = { ...createDefaultDraft(), instructions: 'Cambios confirmados.' };
-    const current = savedRobot({
-      version: 2,
-      name: 'Nombre confirmado',
-      draft: changedDraft,
-    });
-    const saveRobot = vi
-      .fn()
-      .mockRejectedValueOnce(
-        new SavedRobotApiFailure('network', 'No se confirmó.', undefined, undefined, true),
-      )
-      .mockRejectedValueOnce(new SavedRobotApiFailure('conflict', 'stale', 409, current));
-    const getRobot = vi
-      .fn()
-      .mockResolvedValueOnce(savedRobot())
-      .mockRejectedValueOnce(new SavedRobotApiFailure('network', 'Readback no disponible.'));
-    const editorRef = editor(changedDraft);
-    const savedApi = api({ saveRobot, getRobot });
-    render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
-
-    fireEvent.click(await screen.findByRole('button', { name: /Explorador.*Cargar/ }));
-    await waitFor(() => expect(editorRef.current?.applyDraft).toHaveBeenCalled());
-    fireEvent.change(screen.getByLabelText('Nombre de esta copia'), {
-      target: { value: 'Nombre confirmado' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: /^Guardar$/ }));
-    await waitFor(() => expect(screen.getByText('No se confirmó.')).toBeTruthy());
-
-    fireEvent.click(screen.getByRole('button', { name: /^Guardar$/ }));
-    await waitFor(() => expect(screen.getByText('Guardaste «Nombre confirmado».')).toBeTruthy());
-    expect(saveRobot.mock.calls.map((call) => call.slice(0, 4))).toEqual([
-      ['robot-a', 1, 'Nombre confirmado', changedDraft],
-      ['robot-a', 1, 'Nombre confirmado', changedDraft],
-    ]);
-    expect(screen.queryByRole('button', { name: 'Cargar versión remota' })).toBeNull();
-    expect(getRobot).toHaveBeenCalledTimes(2);
   });
 
   it('retires a pending create when its listed copy is deleted before a fresh capture', async () => {
@@ -1237,13 +1070,20 @@ describe('SavedRobots', () => {
       );
     const getRobot = vi
       .fn()
-      .mockRejectedValueOnce(new SavedRobotApiFailure('not_found', 'No existe.', 404));
+      .mockRejectedValueOnce(new SavedRobotApiFailure('not_found', 'No existe.', 404))
+      .mockImplementationOnce(async () =>
+        savedRobot({
+          id: pendingId ?? 'pending-copy',
+          name: 'Copia incierta',
+          draft: initialDraft,
+        }),
+      );
     const deleteRobot = vi.fn().mockResolvedValue({ deleted: true });
     const savedApi = api({ listRobots, saveRobot, getRobot, deleteRobot });
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
     render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Guardar como nueva' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Guardar robot actual' }));
     fireEvent.change(screen.getByLabelText('Nombre para la nueva copia'), {
       target: { value: 'Copia incierta' },
     });
@@ -1254,14 +1094,12 @@ describe('SavedRobots', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
 
     fireEvent.click(screen.getByRole('button', { name: 'Cargar más' }));
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Eliminar Copia incierta' })).toBeTruthy(),
-    );
-    fireEvent.click(screen.getByRole('button', { name: 'Eliminar Copia incierta' }));
-    await waitFor(() => expect(deleteRobot).toHaveBeenCalledWith(pendingId, 1));
+    await chooseCopy(/Copia incierta/u);
+    deleteSelectedCopy();
+    await waitFor(() => expect(deleteRobot.mock.calls[0]?.slice(0, 2)).toEqual([pendingId, 1]));
     expect(screen.queryByText(/misma copia/)).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Guardar como nueva' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar robot actual' }));
     const freshName = screen.getByLabelText('Nombre para la nueva copia');
     expect((freshName as HTMLInputElement).disabled).toBe(false);
     fireEvent.change(freshName, { target: { value: 'Copia vigente' } });
@@ -1279,14 +1117,16 @@ describe('SavedRobots', () => {
   it('deletes a selected copy without changing the editor draft', async () => {
     const editorRef = editor();
     const savedApi = api();
+    const deleteRobot = vi.spyOn(savedApi, 'deleteRobot');
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
-    fireEvent.click(await screen.findByRole('button', { name: /Explorador.*Cargar/ }));
-    await waitFor(() => expect(editorRef.current?.applyDraft).toHaveBeenCalled());
-    fireEvent.click(screen.getByRole('button', { name: 'Eliminar' }));
-    await waitFor(() => expect(savedApi.deleteRobot).toHaveBeenCalledWith('robot-a', 1));
-    expect(editorRef.current?.applyDraft).toHaveBeenCalledTimes(1);
-    await waitFor(() => expect(screen.queryByText('Seleccionado:')).toBeNull());
+    await chooseCopy(/Explorador/u);
+    deleteSelectedCopy();
+    await waitFor(() => expect(deleteRobot.mock.calls[0]?.slice(0, 2)).toEqual(['robot-a', 1]));
+    expect(editorRef.current?.applyDraft).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: 'Copia seleccionada' })).toBeNull(),
+    );
   });
 
   it('does not delete when confirmation is cancelled', async () => {
@@ -1294,11 +1134,10 @@ describe('SavedRobots', () => {
     const savedApi = api();
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
     render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
-    fireEvent.click(await screen.findByRole('button', { name: /Explorador.*Cargar/ }));
-    await waitFor(() => expect(editorRef.current?.applyDraft).toHaveBeenCalled());
-    fireEvent.click(screen.getByRole('button', { name: 'Eliminar' }));
+    await chooseCopy(/Explorador/u);
+    deleteSelectedCopy();
     expect(savedApi.deleteRobot).not.toHaveBeenCalled();
-    expect(screen.getByText('Seleccionado:')).toBeTruthy();
+    expect(screen.getByRole('region', { name: 'Copia seleccionada' })).toBeTruthy();
     confirm.mockRestore();
   });
 
@@ -1316,10 +1155,11 @@ describe('SavedRobots', () => {
     const savedApi = api({ deleteRobot, getRobot });
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
     render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
-    fireEvent.click(await screen.findByRole('button', { name: /Explorador.*Cargar/ }));
-    await waitFor(() => expect(editorRef.current?.applyDraft).toHaveBeenCalled());
-    fireEvent.click(screen.getByRole('button', { name: 'Eliminar' }));
-    await waitFor(() => expect(screen.queryByText('Seleccionado:')).toBeNull());
+    await chooseCopy(/Explorador/u);
+    deleteSelectedCopy();
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: 'Copia seleccionada' })).toBeNull(),
+    );
     expect(getRobot).toHaveBeenCalledTimes(2);
     expect(screen.getByText(/Eliminaste «Explorador»/)).toBeTruthy();
     confirm.mockRestore();
@@ -1340,9 +1180,8 @@ describe('SavedRobots', () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
     render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
 
-    fireEvent.click(await screen.findByRole('button', { name: /Explorador.*Cargar/ }));
-    await waitFor(() => expect(editorRef.current?.applyDraft).toHaveBeenCalledTimes(1));
-    fireEvent.click(screen.getByRole('button', { name: 'Eliminar' }));
+    await chooseCopy(/Explorador/u);
+    deleteSelectedCopy();
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Actualizar versión para Eliminar' })).toBeTruthy(),
     );
@@ -1353,67 +1192,18 @@ describe('SavedRobots', () => {
     await waitFor(() =>
       expect(screen.getByText(/cambió.*Confirmá «Eliminar» nuevamente/)).toBeTruthy(),
     );
-    expect(editorRef.current?.applyDraft).toHaveBeenCalledTimes(1);
+    expect(editorRef.current?.applyDraft).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Eliminar' }));
+    deleteSelectedCopy();
     await waitFor(() => expect(deleteRobot).toHaveBeenLastCalledWith('robot-a', 2));
     expect(deleteRobot).toHaveBeenCalledTimes(2);
     expect(confirm).toHaveBeenCalledTimes(2);
-    expect(editorRef.current?.applyDraft).toHaveBeenCalledTimes(1);
+    expect(editorRef.current?.applyDraft).not.toHaveBeenCalled();
     expect(screen.getByText(/Eliminaste «Explorador»/)).toBeTruthy();
     confirm.mockRestore();
   });
 
-  it('switches conflict resolution from delete to save after creating a new copy', async () => {
-    const changedDraft = { ...createDefaultDraft(), instructions: 'Cambios locales.' };
-    const deleteRemote = savedRobot({ id: 'robot-a', version: 2 });
-    const newCopy = savedRobot({
-      id: 'robot-new',
-      name: 'Nueva copia',
-      version: 1,
-      draft: createDefaultDraft(),
-    });
-    const saveRemote = savedRobot({ ...newCopy, version: 2 });
-    const editorRef = editor();
-    const captureSnapshot = editorRef.current?.captureSnapshot as ReturnType<typeof vi.fn>;
-    const saveRobot = vi
-      .fn()
-      .mockResolvedValueOnce(newCopy)
-      .mockRejectedValueOnce(new SavedRobotApiFailure('conflict', 'stale', 409, saveRemote));
-    const deleteRobot = vi
-      .fn()
-      .mockRejectedValueOnce(new SavedRobotApiFailure('conflict', 'stale', 409, deleteRemote));
-    const savedApi = api({ saveRobot, deleteRobot });
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
-    render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
-
-    fireEvent.click(await screen.findByRole('button', { name: /Explorador.*Cargar/ }));
-    await waitFor(() => expect(editorRef.current?.applyDraft).toHaveBeenCalledTimes(1));
-    fireEvent.click(screen.getByRole('button', { name: 'Eliminar' }));
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Actualizar versión para Eliminar' })).toBeTruthy(),
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: 'Guardar como nueva' }));
-    fireEvent.change(screen.getByLabelText('Nombre para la nueva copia'), {
-      target: { value: 'Nueva copia' },
-    });
-    fireEvent.submit(screen.getByLabelText('Nombre para la nueva copia').closest('form')!);
-    await waitFor(() =>
-      expect(screen.getByText('Guardaste «Nueva copia» como robot nuevo.')).toBeTruthy(),
-    );
-
-    captureSnapshot.mockResolvedValue({ version: 1, draft: changedDraft });
-    fireEvent.click(screen.getByRole('button', { name: /^Guardar$/ }));
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Cargar versión remota' })).toBeTruthy(),
-    );
-    expect(screen.queryByRole('button', { name: 'Actualizar versión para Eliminar' })).toBeNull();
-    expect(editorRef.current?.applyDraft).toHaveBeenCalledTimes(1);
-    confirm.mockRestore();
-  });
-
-  it('consults a readable historical copy without requiring an available editor', async () => {
+  it('consults the full historical copy without requiring editor availability', async () => {
     const base = createDefaultDraft();
     const instructions = 'Instrucción histórica completa. '.repeat(45);
     const disabledDescription = 'Descripción histórica deshabilitada. '.repeat(17);
@@ -1442,10 +1232,7 @@ describe('SavedRobots', () => {
       />,
     );
 
-    const load = await screen.findByRole('button', { name: /Explorador.*Cargar/ });
-    expect((load as HTMLButtonElement).disabled).toBe(true);
-    const trigger = screen.getByRole('button', { name: 'Ver configuración de Explorador' });
-    fireEvent.click(trigger);
+    const trigger = await chooseCopy(/Explorador/u);
 
     await waitFor(() =>
       expect(
@@ -1460,18 +1247,14 @@ describe('SavedRobots', () => {
     expect(description).toBeTruthy();
     expect(description?.closest('li')?.textContent).toContain('deshabilitada');
     expect(description?.closest('li')?.textContent).toContain('Esperar');
-    expect(document.activeElement).toBe(
-      screen.getByRole('heading', { name: 'Configuración de Explorador' }),
-    );
+    expect(document.activeElement).toBe(trigger);
     expect(editorRef.current?.applyDraft).not.toHaveBeenCalled();
     expect(editorRef.current?.captureSnapshot).not.toHaveBeenCalled();
     expect(savedApi.saveRobot).not.toHaveBeenCalled();
-    expect(screen.queryByText(/Seleccionado:/)).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Cerrar' }));
     expect(document.activeElement).toBe(trigger);
   });
 
-  it('shows an oversized readable copy after Cargar without writing or showing an editor error', async () => {
+  it('shows an oversized readable copy on selection without applying it or writing', async () => {
     const historical = savedRobot({
       draft: { ...createDefaultDraft(), instructions: 'x'.repeat(1_190) },
     });
@@ -1482,7 +1265,7 @@ describe('SavedRobots', () => {
     });
     render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
 
-    fireEvent.click(await screen.findByRole('button', { name: /Explorador.*Cargar/ }));
+    await chooseCopy(/Explorador/u);
 
     await waitFor(() =>
       expect(
@@ -1491,31 +1274,25 @@ describe('SavedRobots', () => {
         ),
       ).toBe(true),
     );
-    expect(screen.getByRole('status').textContent).toContain('supera los límites actuales');
-    expect(screen.getByRole('status').textContent).toMatch(/1.?000 caracteres/u);
-    expect(screen.queryByRole('alert')).toBeNull();
-    expect(screen.queryByText(/Seleccionado:/)).toBeNull();
-    expect(editorRef.current?.applyDraft).toHaveBeenCalledOnce();
+    expect(selectedCopyPanel().textContent).toContain('supera los límites actuales');
+    expect(selectedCopyPanel().textContent).toMatch(/1.?000 caracteres/u);
+    expect(editorRef.current?.applyDraft).not.toHaveBeenCalled();
     expect(editorRef.current?.captureSnapshot).not.toHaveBeenCalled();
     expect(savedApi.saveRobot).not.toHaveBeenCalled();
   });
 
-  it('keeps incompatible rows deletable by listed ID/version and preserves a neighboring selection', async () => {
-    const active = savedRobot({ id: 'active-copy', name: 'Activa' });
+  it('keeps an incompatible row deletable by its listed ID/version after its read fails', async () => {
     const incompatible = savedRobot({
       id: 'incompatible-copy',
       name: 'Histórica incompatible',
       version: 7,
     });
-    const getRobot = vi.fn().mockImplementation(async (id: string) => {
-      if (id === active.id) return active;
+    const getRobot = vi.fn().mockImplementation(async () => {
       throw new SavedRobotApiFailure('server', 'La configuración guardada no es compatible.', 500);
     });
     const deleteRobot = vi.fn().mockResolvedValue({ deleted: true });
     const savedApi = api({
-      listRobots: vi
-        .fn()
-        .mockResolvedValue({ robots: [robotSummary(active), robotSummary(incompatible)] }),
+      listRobots: vi.fn().mockResolvedValue({ robots: [robotSummary(incompatible)] }),
       getRobot,
       deleteRobot,
     });
@@ -1523,31 +1300,26 @@ describe('SavedRobots', () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValue(true);
     render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
 
-    fireEvent.click(await screen.findByRole('button', { name: /Activa.*Cargar/ }));
-    await waitFor(() =>
-      expect(document.querySelector('.saved-robots-selected')?.textContent).toContain('Activa'),
-    );
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Ver configuración de Histórica incompatible' }),
-    );
+    await chooseCopy(/Histórica incompatible/u);
     expect(await screen.findByText('La configuración guardada no es compatible.')).toBeTruthy();
-    expect(getRobot).toHaveBeenCalledTimes(2);
+    expect(getRobot).toHaveBeenCalledOnce();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Eliminar Histórica incompatible' }));
+    deleteSelectedCopy();
     expect(deleteRobot).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'Eliminar Histórica incompatible' }));
+    deleteSelectedCopy();
     await waitFor(() =>
-      expect(deleteRobot).toHaveBeenCalledWith(incompatible.id, incompatible.version),
+      expect(deleteRobot.mock.calls[0]?.slice(0, 2)).toEqual([
+        incompatible.id,
+        incompatible.version,
+      ]),
     );
     expect(confirm).toHaveBeenCalledTimes(2);
-    expect(editorRef.current?.applyDraft).toHaveBeenCalledOnce();
+    expect(editorRef.current?.applyDraft).not.toHaveBeenCalled();
     expect(editorRef.current?.captureSnapshot).not.toHaveBeenCalled();
-    expect(document.querySelector('.saved-robots-selected')?.textContent).toContain('Activa');
     confirm.mockRestore();
   });
 
-  it('reconfirms a refreshed row version without applying remote content or changing another selection', async () => {
-    const active = savedRobot({ id: 'active-copy', name: 'Activa' });
+  it('reconfirms a refreshed selected-copy version without applying its remote content', async () => {
     const target = savedRobot({ id: 'delete-copy', name: 'Para borrar', version: 1 });
     const remoteSummary = {
       ...robotSummary(target),
@@ -1563,21 +1335,16 @@ describe('SavedRobots', () => {
       )
       .mockResolvedValueOnce({ deleted: true });
     const savedApi = api({
-      listRobots: vi
-        .fn()
-        .mockResolvedValue({ robots: [robotSummary(active), robotSummary(target)] }),
-      getRobot: vi.fn().mockResolvedValue(active),
+      listRobots: vi.fn().mockResolvedValue({ robots: [robotSummary(target)] }),
+      getRobot: vi.fn().mockResolvedValue(target),
       deleteRobot,
     });
     const editorRef = editor();
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
     render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
 
-    fireEvent.click(await screen.findByRole('button', { name: /Activa.*Cargar/ }));
-    await waitFor(() =>
-      expect(document.querySelector('.saved-robots-selected')?.textContent).toContain('Activa'),
-    );
-    fireEvent.click(screen.getByRole('button', { name: 'Eliminar Para borrar' }));
+    await chooseCopy(/Para borrar/u);
+    deleteSelectedCopy();
     await screen.findByRole('button', { name: 'Actualizar versión para Eliminar' });
     expect(deleteRobot).toHaveBeenCalledTimes(1);
 
@@ -1585,19 +1352,18 @@ describe('SavedRobots', () => {
     await waitFor(() =>
       expect(screen.queryByRole('button', { name: 'Actualizar versión para Eliminar' })).toBeNull(),
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Eliminar Para borrar' }));
+    deleteSelectedCopy();
     await waitFor(() => expect(deleteRobot).toHaveBeenCalledTimes(2));
-    expect(deleteRobot.mock.calls).toEqual([
+    expect(deleteRobot.mock.calls.map((call) => call.slice(0, 2))).toEqual([
       [target.id, 1],
       [target.id, 2],
     ]);
     expect(confirm).toHaveBeenCalledTimes(2);
-    expect(editorRef.current?.applyDraft).toHaveBeenCalledOnce();
-    expect(document.querySelector('.saved-robots-selected')?.textContent).toContain('Activa');
+    expect(editorRef.current?.applyDraft).not.toHaveBeenCalled();
     confirm.mockRestore();
   });
 
-  it('does not pair a summary-only delete conflict version with the selected draft for Guardar', async () => {
+  it('does not turn a summary-only delete conflict into an editor write', async () => {
     const selected = savedRobot({ version: 1 });
     const remoteSummary = { ...robotSummary(selected), version: 2 };
     const deleteRobot = vi.fn().mockRejectedValue(
@@ -1611,23 +1377,14 @@ describe('SavedRobots', () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
     render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
 
-    fireEvent.click(await screen.findByRole('button', { name: /Explorador.*Cargar/ }));
-    await waitFor(() =>
-      expect(document.querySelector('.saved-robots-selected')?.textContent).toContain('Explorador'),
-    );
-    fireEvent.click(screen.getByRole('button', { name: 'Eliminar' }));
+    await chooseCopy(/Explorador/u);
+    await waitFor(() => expect(selectedCopyPanel()).toBeTruthy());
+    deleteSelectedCopy();
     fireEvent.click(
       await screen.findByRole('button', { name: 'Actualizar versión para Eliminar' }),
     );
-    expect(editorRef.current?.applyDraft).toHaveBeenCalledOnce();
-
-    fireEvent.click(screen.getByRole('button', { name: /^Guardar$/ }));
-    await waitFor(() => expect(saveRobot).toHaveBeenCalledOnce());
-    expect(saveRobot.mock.calls[0]?.[1]).toBe(1);
-    expect(screen.getByText('stale')).toBeTruthy();
-    expect(screen.queryByText(/Guardaste/)).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Cargar versión remota' })).toBeNull();
-    expect(editorRef.current?.applyDraft).toHaveBeenCalledOnce();
+    expect(editorRef.current?.applyDraft).not.toHaveBeenCalled();
+    expect(saveRobot).not.toHaveBeenCalled();
     confirm.mockRestore();
   });
 
@@ -1650,16 +1407,18 @@ describe('SavedRobots', () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
     render(<SavedRobots api={savedApi} editor={editor()} session={session()} />);
 
-    fireEvent.click(await screen.findByRole('button', { name: /Explorador.*Cargar/ }));
-    await waitFor(() => expect(screen.getByText('Seleccionado:')).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: 'Eliminar' }));
+    await chooseCopy(/Explorador/u);
+    await waitFor(() =>
+      expect(screen.getByRole('region', { name: 'Copia seleccionada' })).toBeTruthy(),
+    );
+    deleteSelectedCopy();
     await screen.findByRole('button', { name: 'Actualizar versión para Eliminar' });
     fireEvent.click(screen.getByRole('button', { name: 'Actualizar versión para Eliminar' }));
 
     await waitFor(() => expect(screen.getByText(/Confirmá «Eliminar» nuevamente/)).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: 'Eliminar' }));
+    deleteSelectedCopy();
     await waitFor(() => expect(screen.getByText(/Eliminaste «Explorador»/)).toBeTruthy());
-    expect(deleteRobot.mock.calls).toEqual([
+    expect(deleteRobot.mock.calls.map((call) => call.slice(0, 2))).toEqual([
       [target.id, 1],
       [target.id, 2],
     ]);
@@ -1667,70 +1426,19 @@ describe('SavedRobots', () => {
     confirm.mockRestore();
   });
 
-  it('discards an inspection response after the user closes its pending preview', async () => {
+  it('does not show a late copy response from the previous identity', async () => {
     const pending = deferred<SavedRobot>();
-    const savedApi = api({ getRobot: vi.fn().mockReturnValue(pending.promise) });
-    render(<SavedRobots api={savedApi} editor={editor()} session={session()} />);
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Ver configuración de Explorador' }));
-    await screen.findByText('Consultando la copia…');
-    fireEvent.click(screen.getByRole('button', { name: 'Cerrar' }));
-    await act(async () =>
-      pending.resolve(
-        savedRobot({ draft: { ...createDefaultDraft(), instructions: 'Respuesta tardía.' } }),
-      ),
-    );
-
-    await waitFor(() => expect(screen.queryByText('Consultando la copia…')).toBeNull());
-    expect(screen.queryByText('Respuesta tardía.')).toBeNull();
-  });
-
-  it('releases only a closed inspection and keeps a newer load busy after its late finalizer', async () => {
-    const inspection = deferred<SavedRobot>();
-    const selection = deferred<SavedRobot>();
+    const first = savedRobot({
+      draft: { ...createDefaultDraft(), instructions: 'Respuesta vieja.' },
+    });
+    const second = savedRobot({
+      draft: { ...createDefaultDraft(), instructions: 'Otra identidad.' },
+    });
     const getRobot = vi
-      .fn()
-      .mockReturnValueOnce(inspection.promise)
-      .mockReturnValueOnce(selection.promise);
+      .fn<SavedRobotApi['getRobot']>()
+      .mockReturnValueOnce(pending.promise)
+      .mockResolvedValueOnce(second);
     const savedApi = api({ getRobot });
-    render(<SavedRobots api={savedApi} editor={editor()} session={session()} />);
-
-    const inspect = await screen.findByRole('button', { name: 'Ver configuración de Explorador' });
-    fireEvent.click(inspect);
-    await screen.findByText('Consultando la copia…');
-    fireEvent.click(screen.getByRole('button', { name: 'Cerrar' }));
-    await waitFor(() =>
-      expect(screen.getByRole('region', { name: 'Tus robots' }).getAttribute('aria-busy')).toBe(
-        'false',
-      ),
-    );
-    expect(document.activeElement).toBe(inspect);
-
-    fireEvent.click(screen.getByRole('button', { name: /Explorador.*Cargar/ }));
-    await waitFor(() => expect(getRobot).toHaveBeenCalledTimes(2));
-    expect(screen.getByRole('region', { name: 'Tus robots' }).getAttribute('aria-busy')).toBe(
-      'true',
-    );
-
-    await act(async () => {
-      inspection.resolve(
-        savedRobot({ draft: { ...createDefaultDraft(), instructions: 'Respuesta tardía.' } }),
-      );
-    });
-    expect(screen.queryByText('Respuesta tardía.')).toBeNull();
-    expect(screen.getByRole('region', { name: 'Tus robots' }).getAttribute('aria-busy')).toBe(
-      'true',
-    );
-
-    await act(async () => {
-      selection.resolve(savedRobot());
-    });
-    await waitFor(() => expect(screen.getByText('Seleccionado:')).toBeTruthy());
-  });
-
-  it('clears an inspection response when the signed-in identity changes', async () => {
-    const pending = deferred<SavedRobot>();
-    const savedApi = api({ getRobot: vi.fn().mockReturnValue(pending.promise) });
     const editorRef = editor();
     const renderIdentity = (currentSession: AuthSession) => (
       <SavedRobots
@@ -1742,16 +1450,14 @@ describe('SavedRobots', () => {
     );
     const view = render(renderIdentity(session('subject-a')));
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Ver configuración de Explorador' }));
-    await screen.findByText('Consultando la copia…');
+    await chooseCopy(/Explorador/u);
     view.rerender(renderIdentity(session('subject-b')));
-    await act(async () =>
-      pending.resolve(
-        savedRobot({ draft: { ...createDefaultDraft(), instructions: 'Otra identidad.' } }),
-      ),
-    );
+    await chooseCopy(/Explorador/u);
+    expect(within(selectedCopyPanel()).getByText(second.draft.instructions)).toBeTruthy();
+    await act(async () => pending.resolve(first));
 
-    expect(screen.queryByText('Otra identidad.')).toBeNull();
+    expect(within(selectedCopyPanel()).getByText(second.draft.instructions)).toBeTruthy();
+    expect(within(selectedCopyPanel()).queryByText(first.draft.instructions)).toBeNull();
   });
 
   it('keeps row actions disabled while paused or locked and forwards preview auth context', async () => {
@@ -1766,10 +1472,11 @@ describe('SavedRobots', () => {
     const lockedView = render(
       <SavedRobots api={failedApi} editor={editor()} session={session()} locked />,
     );
-    const inspect = await screen.findByRole('button', { name: 'Ver configuración de Explorador' });
-    const remove = screen.getByRole('button', { name: 'Eliminar Explorador' });
-    expect((inspect as HTMLButtonElement).disabled).toBe(true);
-    expect((remove as HTMLButtonElement).disabled).toBe(true);
+    const lockedCopy = await screen.findByRole('radio', { name: /Explorador/u });
+    expect((lockedCopy as HTMLInputElement).disabled).toBe(true);
+    expect(
+      (screen.getByRole('button', { name: 'Guardar robot actual' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
     lockedView.unmount();
 
     render(
@@ -1781,7 +1488,7 @@ describe('SavedRobots', () => {
         onAuthRequired={onAuthRequired}
       />,
     );
-    fireEvent.click(await screen.findByRole('button', { name: 'Ver configuración de Explorador' }));
+    await chooseCopy(/Explorador/u);
     await waitFor(() => expect(onAuthRequired).toHaveBeenCalledWith(42));
     expect(screen.getByText('Volvé a ingresar.')).toBeTruthy();
   });

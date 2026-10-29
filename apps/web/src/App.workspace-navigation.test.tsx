@@ -251,6 +251,20 @@ function selectTab(name: 'Preparar' | 'Historial' | 'Mis robots'): void {
   fireEvent.click(control);
 }
 
+async function selectSavedCopy(name: RegExp): Promise<HTMLElement> {
+  fireEvent.click(await screen.findByRole('radio', { name }));
+  await settle();
+  return screen.getByRole('region', { name: 'Copia seleccionada' });
+}
+
+async function applySavedCopy(name: RegExp): Promise<void> {
+  const panel = await selectSavedCopy(name);
+  fireEvent.click(within(panel).getByRole('button', { name: 'Usar este robot' }));
+  const dialog = await screen.findByRole('dialog');
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Usar este robot' }));
+  await settle();
+}
+
 async function readyForNavigation(): Promise<void> {
   await screen.findByRole('navigation', { name: 'Navegación principal' });
 }
@@ -332,13 +346,13 @@ describe('App workspace navigation acceptance', () => {
     expect(tab('Preparar').getAttribute('aria-current')).toBe('page');
     expect(screen.getByRole('heading', { name: 'Prepará tu robot' })).toBeTruthy();
     expect(screen.queryByRole('heading', { name: 'Historial' })).toBeNull();
-    expect(screen.queryByRole('heading', { name: 'Tus robots' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Mis robots' })).toBeNull();
 
     selectTab('Historial');
     expect(tab('Historial').getAttribute('aria-current')).toBe('page');
     expect(screen.getByRole('heading', { name: 'Historial' })).toBeTruthy();
     expect(screen.queryByRole('textbox', { name: 'Qué debe tener en cuenta el robot' })).toBeNull();
-    expect(screen.queryByRole('heading', { name: 'Tus robots' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Mis robots' })).toBeNull();
     expect(preparation.isConnected).toBe(true);
   });
 
@@ -691,15 +705,13 @@ describe('App workspace navigation acceptance', () => {
     await readyForPreparation();
     selectTab('Mis robots');
     fireEvent.click(await screen.findByRole('button', { name: 'Cargar más' }));
-    await screen.findByRole('button', { name: /Beta.*Cargar/ });
-    fireEvent.click(screen.getByRole('button', { name: 'Ver configuración de Beta' }));
-    expect(await screen.findByRole('heading', { name: 'Configuración de Beta' })).toBeTruthy();
-    expect(screen.getByText('Segunda página seleccionada.')).toBeTruthy();
+    const panel = await selectSavedCopy(/Beta/u);
+    expect(within(panel).getByText('Segunda página seleccionada.')).toBeTruthy();
 
     selectTab('Historial');
     selectTab('Mis robots');
-    expect(screen.getByRole('button', { name: /Beta.*Cargar/ })).toBeTruthy();
-    expect(screen.getByRole('heading', { name: 'Configuración de Beta' })).toBeTruthy();
+    expect(screen.getByRole('radio', { name: /Beta/u })).toBeTruthy();
+    expect(screen.getByRole('region', { name: 'Copia seleccionada' })).toBeTruthy();
     expect(screen.getByText('Segunda página seleccionada.')).toBeTruthy();
     expect(getRobot).toHaveBeenCalledOnce();
     expect(app.runner.createAttempt).not.toHaveBeenCalled();
@@ -803,7 +815,7 @@ describe('App workspace navigation acceptance', () => {
 
   it.each([
     ['history', 'Ver configuración'],
-    ['copy', 'Cargar'],
+    ['copy', 'Usar este robot'],
   ] as const)(
     'returns to Preparar only after the %s application write confirms',
     async (source, sourceAction) => {
@@ -838,7 +850,7 @@ describe('App workspace navigation acceptance', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Usar esta configuración' }));
         fireEvent.click(screen.getByRole('button', { name: 'Reemplazar mi robot' }));
       } else {
-        fireEvent.click(await screen.findByRole('button', { name: /Robot de prueba.*Cargar/ }));
+        await applySavedCopy(/Robot de prueba/u);
       }
       await waitFor(() => expect(putDraft).toHaveBeenCalledOnce());
       expect(
@@ -860,7 +872,7 @@ describe('App workspace navigation acceptance', () => {
     },
   );
 
-  it('cancels a saved-copy application when leaving while its source GET is pending', async () => {
+  it('cancels a saved-copy consultation when leaving while its GET is pending', async () => {
     const pending = deferred<SavedRobot>();
     const savedCopy = copy('Robot pendiente', 'copy-pending-get', 'No importar tarde.');
     const getRobot = vi.fn<SavedRobotApi['getRobot']>().mockReturnValue(pending.promise);
@@ -874,7 +886,7 @@ describe('App workspace navigation acceptance', () => {
     });
     await readyForPreparation();
     selectTab('Mis robots');
-    fireEvent.click(await screen.findByRole('button', { name: /Robot pendiente.*Cargar/ }));
+    fireEvent.click(await screen.findByRole('radio', { name: /Robot pendiente/u }));
     await waitFor(() => expect(getRobot).toHaveBeenCalledOnce());
     selectTab('Historial');
 
@@ -924,7 +936,7 @@ describe('App workspace navigation acceptance', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Usar esta configuración' }));
         fireEvent.click(screen.getByRole('button', { name: 'Reemplazar mi robot' }));
       } else {
-        fireEvent.click(await screen.findByRole('button', { name: /Robot pendiente.*Cargar/ }));
+        await applySavedCopy(/Robot pendiente/u);
       }
       await waitFor(() => expect(putDraft).toHaveBeenCalledOnce());
       selectTab(destination);
@@ -959,7 +971,7 @@ describe('App workspace navigation acceptance', () => {
 
     expect(screen.queryByRole('textbox', { name: 'Qué debe tener en cuenta el robot' })).toBeNull();
     expect(screen.queryByRole('heading', { name: 'Historial' })).toBeNull();
-    expect(screen.queryByRole('heading', { name: 'Tus robots' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Mis robots' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Probar' })).toBeNull();
     for (const name of ['Preparar', 'Historial', 'Mis robots'] as const) {
       const control = tab(name);
@@ -1048,7 +1060,7 @@ describe('App workspace navigation acceptance', () => {
     ).toBeTruthy();
     expect(screen.queryByRole('textbox', { name: 'Qué debe tener en cuenta el robot' })).toBeNull();
     expect(screen.queryByRole('heading', { name: 'Historial' })).toBeNull();
-    expect(screen.queryByRole('heading', { name: 'Tus robots' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Mis robots' })).toBeNull();
     expect(tab('Preparar').disabled).toBe(true);
     expect(tab('Historial').disabled).toBe(true);
     expect(tab('Mis robots').disabled).toBe(true);

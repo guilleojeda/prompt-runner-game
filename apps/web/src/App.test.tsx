@@ -454,7 +454,7 @@ describe('access screen', () => {
     expect(screen.getByRole('heading', { name: 'Prepará tu robot' })).toBeTruthy();
     navigate('Mis robots');
     const savedSection = screen
-      .getByRole('heading', { name: 'Tus robots' })
+      .getByRole('heading', { name: 'Mis robots' })
       .closest('section') as HTMLElement;
     const retryList = within(savedSection).getByRole('button', {
       name: 'Reintentar lista',
@@ -462,13 +462,13 @@ describe('access screen', () => {
     expect((retryList as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(retryList);
     await act(flushAuthMicrotasks);
-    const copyButton = within(savedSection).getByRole('button', {
-      name: /Explorador guardado.*Cargar/,
+    const copyButton = within(savedSection).getByRole('radio', {
+      name: /Explorador guardado/u,
     });
     const createButton = within(savedSection).getByRole('button', {
-      name: 'Guardar como nueva',
+      name: 'Guardar robot actual',
     }) as HTMLButtonElement;
-    expect((copyButton as HTMLButtonElement).disabled).toBe(true);
+    expect((copyButton as HTMLInputElement).disabled).toBe(true);
     expect(createButton.disabled).toBe(true);
 
     expect(screen.queryByRole('button', { name: 'Reintentar carga' })).toBeNull();
@@ -476,20 +476,20 @@ describe('access screen', () => {
       await vi.advanceTimersByTimeAsync(59_999);
     });
     expect(getDraft).toHaveBeenCalledOnce();
-    expect((copyButton as HTMLButtonElement).disabled).toBe(true);
+    expect((copyButton as HTMLInputElement).disabled).toBe(true);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1);
     });
     expect((document.querySelector('#robot-instructions') as HTMLTextAreaElement).value).toBe(
       createDefaultDraft().instructions,
     );
-    expect((copyButton as HTMLButtonElement).disabled).toBe(false);
+    expect((copyButton as HTMLInputElement).disabled).toBe(false);
     expect(createButton.disabled).toBe(false);
     expect(getDraft).toHaveBeenCalledTimes(2);
     expect(listRobots).toHaveBeenCalledTimes(2);
   });
 
-  it('cancels a saved-copy application when leaving Mis robots and applies only after choosing again', async () => {
+  it('cancels a pending saved-copy consultation when leaving Mis robots', async () => {
     const loadedDraft = { ...createDefaultDraft(), instructions: 'Copia guardada.' };
     const savedCopy: SavedRobot = {
       id: 'saved-copy-late',
@@ -548,9 +548,9 @@ describe('access screen', () => {
       expect((instructions.closest('fieldset') as HTMLFieldSetElement).disabled).toBe(false),
     );
     navigate('Mis robots');
-    const copyButton = await screen.findByRole('button', { name: /Explorador tardío.*Cargar/ });
-    await waitFor(() => expect((copyButton as HTMLButtonElement).disabled).toBe(false));
-    fireEvent.click(copyButton);
+    const copyRadio = await screen.findByRole('radio', { name: /Explorador tardío/u });
+    await waitFor(() => expect((copyRadio as HTMLInputElement).disabled).toBe(false));
+    fireEvent.click(copyRadio);
     await waitFor(() => expect(getRobot).toHaveBeenCalledOnce());
     const firstSignal = getRobot.mock.calls[0]?.[1];
     expect(firstSignal).toBeInstanceOf(AbortSignal);
@@ -569,18 +569,6 @@ describe('access screen', () => {
         'No se pudo cargar la copia. Revisá el estado del editor y volvé a intentarlo.',
       ),
     ).toBeNull();
-
-    navigate('Mis robots');
-    getRobot.mockResolvedValueOnce(savedCopy);
-    const secondCopyButton = await screen.findByRole('button', {
-      name: /Explorador tardío.*Cargar/,
-    });
-    fireEvent.click(secondCopyButton);
-    await waitFor(() => expect(screen.getByDisplayValue(loadedDraft.instructions)).toBeTruthy());
-    expect(await screen.findByText(`Cargaste «${savedCopy.name}».`)).toBeTruthy();
-    expect(getRobot).toHaveBeenCalledTimes(2);
-    expect(getRobot.mock.calls[1]?.[1]).toBeInstanceOf(AbortSignal);
-    expect(putDraft).toHaveBeenCalledWith(0, loadedDraft, expect.any(AbortSignal));
   });
 
   it('ignores a saved-copy response after navigation abandons its application and Probar starts', async () => {
@@ -638,7 +626,7 @@ describe('access screen', () => {
 
     await screen.findByLabelText('Qué debe tener en cuenta el robot');
     navigate('Mis robots');
-    fireEvent.click(await screen.findByRole('button', { name: /Explorador bloqueado.*Cargar/ }));
+    fireEvent.click(await screen.findByRole('radio', { name: /Explorador bloqueado/u }));
     await waitFor(() => expect(getRobot).toHaveBeenCalledOnce());
     navigate('Preparar');
     expect(getRobot.mock.calls[0]?.[1]?.aborted).toBe(true);
@@ -1983,7 +1971,7 @@ describe('access screen', () => {
     ).toBe(true);
     expectAccountTriggerLocked();
     expect(screen.queryByRole('heading', { name: 'Historial' })).toBeNull();
-    expect(screen.queryByRole('heading', { name: 'Tus robots' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Mis robots' })).toBeNull();
     expect(screen.queryByRole('heading', { name: 'Vista completa del terreno' })).toBeNull();
     expect(screen.queryByRole('heading', { name: 'Victoria' })).toBeNull();
 
@@ -2620,10 +2608,11 @@ describe('access screen', () => {
 
     await waitFor(() => {
       expect(
-        (screen.getByRole('button', { name: 'Guardar como nueva' }) as HTMLButtonElement).disabled,
+        (screen.getByRole('button', { name: 'Guardar robot actual' }) as HTMLButtonElement)
+          .disabled,
       ).toBe(false);
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Guardar como nueva' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar robot actual' }));
     fireEvent.change(screen.getByLabelText('Nombre para la nueva copia'), {
       target: { value: 'Desde intento' },
     });
