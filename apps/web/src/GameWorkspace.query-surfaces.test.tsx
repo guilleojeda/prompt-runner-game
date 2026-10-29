@@ -290,6 +290,29 @@ function selectTab(name: 'Preparar' | 'Historial' | 'Mis robots'): void {
   fireEvent.click(control);
 }
 
+async function selectSavedCopy(name: RegExp): Promise<HTMLElement> {
+  fireEvent.click(await screen.findByRole('radio', { name }));
+  await settle();
+  return screen.getByRole('region', { name: 'Copia seleccionada' });
+}
+
+async function applySavedCopy(name: RegExp): Promise<void> {
+  const panel = await selectSavedCopy(name);
+  fireEvent.click(within(panel).getByRole('button', { name: 'Usar este robot' }));
+  const dialog = await screen.findByRole('dialog');
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Usar este robot' }));
+  await settle();
+}
+
+async function replaceSelectedCopy(name: RegExp): Promise<void> {
+  const panel = await selectSavedCopy(name);
+  fireEvent.click(within(panel).getByText('Más acciones'));
+  fireEvent.click(within(panel).getByRole('button', { name: /Reemplazar con mi robot actual/u }));
+  const dialog = await screen.findByRole('dialog');
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Reemplazar copia' }));
+  await settle();
+}
+
 async function readyForNavigation(): Promise<void> {
   await screen.findByRole('navigation', { name: 'Navegación principal' });
 }
@@ -467,14 +490,10 @@ describe('Phase 12 independent accessible query diagnostics', () => {
     }
   });
 
-  it('aborts a pending saved-copy inspection when leaving and starts a fresh query on return', async () => {
+  it('aborts a pending saved-copy selection when leaving and ignores its late response', async () => {
     const listed = savedCopy('query-copy', 'Contenido consultado.');
     const oldResult = deferred<SavedRobot>();
-    const newResult = deferred<SavedRobot>();
-    const getRobot = vi
-      .fn<SavedRobotApi['getRobot']>()
-      .mockReturnValueOnce(oldResult.promise)
-      .mockReturnValueOnce(newResult.promise);
+    const getRobot = vi.fn<SavedRobotApi['getRobot']>().mockReturnValueOnce(oldResult.promise);
     renderApp({
       copies: savedRobotApi({
         listRobots: vi.fn().mockResolvedValue({ robots: [savedCopySummary(listed)] }),
@@ -484,10 +503,8 @@ describe('Phase 12 independent accessible query diagnostics', () => {
     await readyForPreparation();
     selectTab('Mis robots');
 
-    fireEvent.click(
-      await screen.findByRole('button', { name: 'Ver configuración de Copia consultada' }),
-    );
-    await screen.findByText('Consultando la copia…');
+    fireEvent.click(await screen.findByRole('radio', { name: /Copia consultada/u }));
+    await settle();
     const abandonedSignal = getRobot.mock.calls[0]?.[1];
     expect(abandonedSignal).toBeInstanceOf(AbortSignal);
 
@@ -498,22 +515,7 @@ describe('Phase 12 independent accessible query diagnostics', () => {
       await oldResult.promise;
     });
     expect(screen.queryByText('Respuesta obsoleta.')).toBeNull();
-
-    selectTab('Mis robots');
-    expect(screen.queryByText('Consultando la copia…')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Ver configuración de Copia consultada' }));
-    await screen.findByText('Consultando la copia…');
-    await waitFor(() => expect(getRobot).toHaveBeenCalledTimes(2));
-    const currentSignal = getRobot.mock.calls[1]?.[1];
-    expect(currentSignal).toBeInstanceOf(AbortSignal);
-    expect(currentSignal?.aborted).toBe(false);
-
-    await act(async () => {
-      newResult.resolve(savedCopy('query-copy', 'Respuesta vigente.'));
-      await newResult.promise;
-    });
-    expect(await screen.findByText('Respuesta vigente.')).toBeTruthy();
-    expect(screen.queryByText('Respuesta obsoleta.')).toBeNull();
+    expect(getRobot).toHaveBeenCalledOnce();
   });
 
   it('clears a current activity result after a saved-copy application confirms', async () => {
@@ -546,7 +548,7 @@ describe('Phase 12 independent accessible query diagnostics', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Probar' }));
     expect(await screen.findByRole('heading', { name: 'Derrota' })).toBeTruthy();
     selectTab('Mis robots');
-    fireEvent.click(await screen.findByRole('button', { name: /Copia consultada.*Cargar/ }));
+    await applySavedCopy(/Copia consultada/u);
     await waitFor(() => expect(app.draft.putDraft).toHaveBeenCalledOnce());
 
     const instructions = screen.getByLabelText(
@@ -660,16 +662,13 @@ describe('Phase 12 independent accessible query diagnostics', () => {
     });
     await readyForPreparation();
     selectTab('Mis robots');
-    fireEvent.click(await screen.findByRole('button', { name: /Copia consultada.*Cargar/ }));
-    await waitFor(() => expect(tab('Preparar').getAttribute('aria-current')).toBe('page'));
-
-    selectTab('Mis robots');
-    fireEvent.change(screen.getByLabelText('Nombre de esta copia'), {
-      target: { value: 'Nombre local cambiado' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: 'Guardar' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Cargar versión remota' }));
-    await waitFor(() => expect(app.draft.putDraft).toHaveBeenCalledTimes(2));
+    await replaceSelectedCopy(/Copia consultada/u);
+    expect(app.draft.putDraft).not.toHaveBeenCalled();
+    const selectedCopy = screen.getByRole('region', { name: 'Copia seleccionada' });
+    fireEvent.click(within(selectedCopy).getByRole('button', { name: 'Usar este robot' }));
+    const useDialog = await screen.findByRole('dialog', { name: /Usar.*Copia consultada/u });
+    fireEvent.click(within(useDialog).getByRole('button', { name: 'Usar este robot' }));
+    await waitFor(() => expect(app.draft.putDraft).toHaveBeenCalledOnce());
 
     const instructions = screen.getByLabelText(
       'Qué debe tener en cuenta el robot',
@@ -946,7 +945,7 @@ describe('Phase 12 independent accessible query diagnostics', () => {
       await screen.findByRole('link', { name: 'Descargar imagen' });
 
       selectTab('Mis robots');
-      await screen.findByRole('heading', { name: 'Tus robots' });
+      await screen.findByRole('heading', { name: 'Mis robots' });
       expect(screen.queryByRole('heading', { name: 'Derrota' })).toBeNull();
       expect(revokeUrl).toHaveBeenCalledWith('blob:phase12-result');
 
@@ -1111,7 +1110,7 @@ describe('Phase 12 independent accessible query diagnostics', () => {
     await waitFor(() => expect(completePresentation).toHaveBeenCalledOnce());
 
     selectTab('Mis robots');
-    await screen.findByRole('heading', { name: 'Tus robots' });
+    await screen.findByRole('heading', { name: 'Mis robots' });
     await act(async () => {
       acknowledgement.resolve({ ...terminal, presentationComplete: true });
       await acknowledgement.promise;
@@ -1119,7 +1118,7 @@ describe('Phase 12 independent accessible query diagnostics', () => {
 
     expect(createAttempt).toHaveBeenCalledOnce();
     expect(screen.queryByRole('heading', { name: 'Victoria' })).toBeNull();
-    expect(screen.getByRole('heading', { name: 'Tus robots' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Mis robots' })).toBeTruthy();
   });
 
   it('focuses the activity once when Probar cancels a pending exit and keeps later focus stable', async () => {

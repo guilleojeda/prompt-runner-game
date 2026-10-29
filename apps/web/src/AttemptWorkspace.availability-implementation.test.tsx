@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { useRef, useState } from 'react';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { User } from 'oidc-client-ts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -361,7 +361,9 @@ describe('AttemptActivity availability implementation', () => {
     );
 
     const tryButton = (await screen.findByRole('button', { name: 'Probar' })) as HTMLButtonElement;
-    await screen.findByRole('button', { name: /Explorador guardado.*Cargar/ });
+    const copyRadio = (await screen.findByRole('radio', {
+      name: /Explorador guardado/u,
+    })) as HTMLInputElement;
     await waitFor(() => expect(tryButton.disabled).toBe(false));
 
     await act(async () => {
@@ -389,10 +391,16 @@ describe('AttemptActivity availability implementation', () => {
       false,
     );
 
-    const loadCopy = screen.getByRole('button', { name: /Explorador guardado.*Cargar/ });
-    expect((loadCopy as HTMLButtonElement).disabled).toBe(false);
-    fireEvent.click(loadCopy);
+    expect(copyRadio.disabled).toBe(false);
+    fireEvent.click(copyRadio);
     await waitFor(() => expect(copiesApi.getRobot).toHaveBeenCalledOnce());
+    const selectedCopy = screen.getByRole('region', { name: 'Copia seleccionada' });
+    await waitFor(() => expect(selectedCopy.getAttribute('aria-busy')).toBe('false'));
+    const useCopy = within(selectedCopy).getByRole('button', { name: 'Usar este robot' });
+    expect((useCopy as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(useCopy);
+    const useDialog = await screen.findByRole('dialog', { name: /Usar.*Explorador guardado/u });
+    fireEvent.click(within(useDialog).getByRole('button', { name: 'Usar este robot' }));
     expect(await screen.findByDisplayValue(savedDraft.instructions)).toBeTruthy();
     const loadedInstructions = screen.getByLabelText(
       'Qué debe tener en cuenta el robot',
@@ -472,7 +480,7 @@ describe('AttemptActivity availability implementation', () => {
       false,
     );
     expect(
-      (screen.getByRole('button', { name: 'Guardar como nueva' }) as HTMLButtonElement).disabled,
+      (screen.getByRole('button', { name: 'Guardar robot actual' }) as HTMLButtonElement).disabled,
     ).toBe(false);
 
     await act(async () => {

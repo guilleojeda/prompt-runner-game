@@ -219,7 +219,7 @@ describe('preparation availability integration', () => {
     );
     navigate('Mis robots');
     expect(
-      (screen.getByRole('button', { name: 'Guardar como nueva' }) as HTMLButtonElement).disabled,
+      (screen.getByRole('button', { name: 'Guardar robot actual' }) as HTMLButtonElement).disabled,
     ).toBe(false);
     navigate('Preparar');
     expect(
@@ -233,13 +233,16 @@ describe('preparation availability integration', () => {
     expect((helpSummary.closest('details') as HTMLDetailsElement).open).toBe(true);
     expect(screen.getByText('Qué recibe el agente')).toBeTruthy();
 
-    expect(screen.queryByRole('button', { name: /Explorador disponible.*Cargar/ })).toBeNull();
+    expect(screen.queryByRole('radio', { name: /Explorador disponible/u })).toBeNull();
     navigate('Mis robots');
-    const loadCopy = screen.getByRole('button', {
-      name: /Explorador disponible.*Cargar/,
-    });
-    expect((loadCopy as HTMLButtonElement).disabled).toBe(false);
-    fireEvent.click(loadCopy);
+    const savedCopyRadio = screen.getByRole('radio', { name: /Explorador disponible/u });
+    expect((savedCopyRadio as HTMLInputElement).disabled).toBe(false);
+    fireEvent.click(savedCopyRadio);
+    await settlePreparationPromises();
+    const savedCopyPanel = screen.getByRole('region', { name: 'Copia seleccionada' });
+    fireEvent.click(within(savedCopyPanel).getByRole('button', { name: 'Usar este robot' }));
+    const useDialog = screen.getByRole('dialog');
+    fireEvent.click(within(useDialog).getByRole('button', { name: 'Usar este robot' }));
     await settlePreparationPromises();
     expect(copies.getRobot).toHaveBeenCalledOnce();
     const navigation = screen.getByRole('navigation', { name: 'Navegación principal' });
@@ -360,7 +363,7 @@ describe('preparation availability integration', () => {
     );
     navigate('Mis robots');
     expect(
-      (screen.getByRole('button', { name: 'Guardar como nueva' }) as HTMLButtonElement).disabled,
+      (screen.getByRole('button', { name: 'Guardar robot actual' }) as HTMLButtonElement).disabled,
     ).toBe(false);
     navigate('Preparar');
     fireEvent.click(tryButton);
@@ -532,7 +535,7 @@ describe('preparation availability integration', () => {
     );
     navigate('Mis robots');
     expect(
-      (screen.getByRole('button', { name: 'Guardar como nueva' }) as HTMLButtonElement).disabled,
+      (screen.getByRole('button', { name: 'Guardar robot actual' }) as HTMLButtonElement).disabled,
     ).toBe(false);
     navigate('Preparar');
     expect(runner.createAttempt).not.toHaveBeenCalled();

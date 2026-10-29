@@ -446,7 +446,8 @@ h1 {
 }
 
 .saved-robots {
-  width: min(100%, 62rem);
+  width: min(100%, 72rem);
+  min-width: 0;
   overflow-wrap: anywhere;
   padding: 1.5rem;
   border: 1px solid rgba(242, 239, 232, 0.14);
@@ -464,21 +465,40 @@ h1 {
 }
 
 .saved-robots-heading h2 {
-  margin-bottom: 0.45rem;
+  margin-bottom: 0;
   color: #f7f1e1;
   font-size: clamp(1.5rem, 3vw, 2rem);
 }
 
-.saved-robots-intro {
-  max-width: 42rem;
-  margin-bottom: 0;
-  color: #b9b4a8;
-  line-height: 1.5;
+.saved-robots-layout {
+  display: grid;
+  grid-template-columns: minmax(15rem, 0.8fr) minmax(0, 1.2fr);
+  align-items: start;
+  gap: 1rem;
+}
+
+.saved-robots-list-panel,
+.saved-robots-detail {
+  min-width: 0;
+  padding: 1rem;
+  border: 1px solid rgba(242, 239, 232, 0.14);
+  border-radius: 0.7rem;
+  background: rgba(20, 19, 15, 0.3);
+}
+
+.saved-robots-list-panel h3,
+.saved-robots-detail h3 {
+  margin: 0;
+  color: #f7f1e1;
+  font-size: 1.05rem;
 }
 
 .saved-robots-list-wrap {
   display: grid;
   gap: 0.75rem;
+  max-height: min(34rem, 68vh);
+  margin-top: 0.8rem;
+  overflow-y: auto;
 }
 
 .saved-robots-list {
@@ -489,109 +509,132 @@ h1 {
   list-style: none;
 }
 
-.saved-robot-row {
+.saved-robot-choice {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
-  gap: 0.45rem 0.8rem;
-}
-
-.saved-robot-item {
-  display: flex;
-  flex-wrap: wrap;
-  width: 100%;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
+  gap: 0.7rem;
+  min-width: 0;
   padding: 0.8rem;
   border: 1px solid rgba(242, 239, 232, 0.14);
   border-radius: 0.55rem;
   color: #f7f1e1;
   background: rgba(20, 19, 15, 0.3);
-  text-align: left;
   cursor: pointer;
 }
 
-.saved-robot-row-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 0.25rem 0.65rem;
-}
-
-.saved-robots .text-button,
-.attempt-configuration .text-button {
-  min-height: 2.75rem;
-  padding: 0.5rem 0.25rem;
-}
-
-.saved-robot-item:hover:not(:disabled),
-.saved-robot-item:focus-visible,
-.saved-robot-item.is-selected {
+.saved-robot-choice:hover,
+.saved-robot-choice:focus-within,
+.saved-robot-choice.is-selected {
   border-color: #f2c879;
   background: rgba(216, 179, 106, 0.14);
 }
 
-.saved-robot-item-main {
-  display: grid;
-  flex: 1 1 18rem;
-  min-width: 0;
-  gap: 0.25rem;
+.saved-robot-choice input[type='radio'] {
+  width: 1.1rem;
+  height: 1.1rem;
+  margin: 0;
+  accent-color: #f2c879;
 }
 
-.saved-robot-item-main span,
-.saved-robot-item-date {
+.saved-robot-choice-copy {
+  display: grid;
+  min-width: 0;
+  gap: 0.22rem;
+}
+
+.saved-robot-choice-copy strong {
+  color: #f7f1e1;
+  overflow-wrap: anywhere;
+}
+
+.saved-robot-choice-copy span {
   color: #b9b4a8;
   font-size: 0.82rem;
   line-height: 1.35;
 }
 
-.saved-robot-item-date,
-.saved-robot-item-load {
-  flex: 0 0 auto;
-  text-align: right;
+.saved-robots-detail {
+  display: grid;
+  gap: 0.85rem;
+  border-color: rgba(216, 179, 106, 0.4);
 }
 
-.saved-robot-item-load {
-  padding: 0.35rem 0.55rem;
-  border: 1px solid rgba(216, 179, 106, 0.65);
-  border-radius: 0.4rem;
-  color: #f2c879;
-  font-size: 0.8rem;
-  font-weight: 700;
-}
-
-.saved-robot-inspection {
-  margin-top: 1rem;
-  padding: 1rem;
-  border: 1px solid rgba(216, 179, 106, 0.45);
-  border-radius: 0.65rem;
-  background: rgba(20, 19, 15, 0.36);
-}
-
-.saved-robot-inspection-heading {
+.saved-robots-detail-heading {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 0.5rem 1rem;
-  margin-bottom: 0.8rem;
+  gap: 0.75rem;
 }
 
-.saved-robot-inspection-heading h3 {
-  margin: 0;
-  color: #f7f1e1;
-  font-size: 1rem;
+.saved-robots-detail-heading .card-kicker,
+.saved-robots-detail-empty .card-kicker {
+  margin-bottom: 0.3rem;
+}
+
+.saved-robots-detail-empty p:last-child {
+  margin-bottom: 0;
+  color: #b9b4a8;
+  line-height: 1.5;
 }
 
 .saved-robot-inspection-facts {
-  margin-bottom: 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem 1.2rem;
+  margin: 0;
+}
+
+.saved-robot-inspection-facts div {
+  min-width: 0;
+}
+
+.saved-robot-inspection-facts dt {
+  color: #b9b4a8;
+  font-size: 0.78rem;
+}
+
+.saved-robot-inspection-facts dd {
+  margin: 0.15rem 0 0;
+  color: #f2efe8;
+  font-size: 0.86rem;
 }
 
 .saved-robot-inspection-notice {
+  margin: 0;
   color: #f2c879;
   line-height: 1.45;
+}
+
+.saved-robot-preview {
+  min-width: 0;
+  margin: 0;
+  padding: 0.9rem;
+  border-radius: 0.55rem;
+  background: rgba(0, 0, 0, 0.16);
+}
+
+.saved-robot-preview h4 {
+  margin: 0.9rem 0 0.35rem;
+  color: #f2efe8;
+}
+
+.saved-robot-preview h4:first-child {
+  margin-top: 0;
+}
+
+.saved-robot-preview p {
+  margin: 0;
+  color: #ded9ca;
+  line-height: 1.5;
+}
+
+.saved-robot-preview ul {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0;
+  padding-left: 1.25rem;
+  color: #ded9ca;
 }
 
 .configuration-preview-literal {
@@ -604,11 +647,46 @@ h1 {
   flex-wrap: wrap;
   gap: 0.65rem;
   align-items: center;
-  margin-top: 1rem;
+  margin-top: 0.25rem;
 }
 
-.saved-robots-name-form,
-.saved-robots-selected-form {
+.saved-robots-primary-actions .primary-button {
+  min-height: 2.85rem;
+}
+
+.saved-robots-more-actions {
+  border-top: 1px solid rgba(242, 239, 232, 0.14);
+  padding-top: 0.7rem;
+}
+
+.saved-robots-more-actions > summary {
+  width: fit-content;
+  min-height: 2.6rem;
+  padding: 0.6rem 0.2rem;
+  color: #f2c879;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.saved-robots-more-actions > summary:focus-visible {
+  outline: 3px solid rgba(242, 200, 121, 0.55);
+  outline-offset: 2px;
+}
+
+.saved-robots-more-actions-content {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.75rem;
+  align-items: center;
+}
+
+.saved-robots .text-button,
+.attempt-configuration .text-button {
+  min-height: 2.75rem;
+  padding: 0.5rem 0.25rem;
+}
+
+.saved-robots-name-form {
   display: grid;
   gap: 0.55rem;
   margin-top: 1rem;
@@ -619,14 +697,14 @@ h1 {
 }
 
 .saved-robots-name-form label,
-.saved-robots-selected-form label {
+.saved-robots-dialog-content label {
   color: #f2efe8;
   font-size: 0.9rem;
   font-weight: 700;
 }
 
 .saved-robots-name-form input,
-.saved-robots-selected-form input {
+.saved-robots-dialog-content input {
   width: 100%;
   min-height: 2.7rem;
   padding: 0.6rem 0.7rem;
@@ -638,14 +716,13 @@ h1 {
 }
 
 .saved-robots-name-form input:focus,
-.saved-robots-selected-form input:focus {
+.saved-robots-dialog-content input:focus {
   border-color: #d8b36a;
   outline: 3px solid rgba(242, 200, 121, 0.3);
   outline-offset: 1px;
 }
 
 .saved-robots-empty,
-.saved-robots-selected,
 .saved-robots-message,
 .saved-robots-error {
   margin: 0 0 1rem;
@@ -691,13 +768,6 @@ h1 {
   line-height: 1.45;
 }
 
-.saved-robots-selected {
-  margin-top: 1rem;
-  margin-bottom: 0;
-  color: #bde0bf;
-  font-size: 0.88rem;
-}
-
 .saved-robots-pending {
   margin: 0;
   color: #ead6a7;
@@ -712,7 +782,45 @@ h1 {
   line-height: 1.45;
 }
 
-.danger-button {
+.saved-robots-dialog {
+  width: min(34rem, calc(100% - 2rem));
+  max-height: min(82vh, 48rem);
+  margin: auto;
+  padding: 1.25rem;
+  overflow-y: auto;
+  border: 1px solid rgba(242, 200, 121, 0.55);
+  border-radius: 0.85rem;
+  color: #f2efe8;
+  background: #20251c;
+  box-shadow: 0 1.5rem 5rem rgba(0, 0, 0, 0.45);
+}
+
+.saved-robots-dialog::backdrop {
+  background: rgba(8, 9, 7, 0.74);
+}
+
+.saved-robots-dialog-content {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.saved-robots-dialog-content h3 {
+  margin: 0;
+  color: #f7f1e1;
+  font-size: 1.2rem;
+}
+
+.saved-robots-dialog-content p {
+  margin: 0;
+  color: #ded9ca;
+  line-height: 1.5;
+}
+
+.saved-robots-dialog-content .editor-actions {
+  justify-content: flex-end;
+}
+
+.saved-robots .danger-button {
   color: #f0b0a2;
 }
 
@@ -2529,18 +2637,22 @@ button:disabled {
     padding: 0.75rem;
   }
 
-  .saved-robot-row {
+  .saved-robots-layout {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .saved-robot-row-actions {
-    justify-content: flex-start;
+  .saved-robots-list-panel,
+  .saved-robots-detail,
+  .saved-robots-name-form {
+    padding: 0.75rem;
   }
 
-  .saved-robot-inspection,
-  .saved-robots-name-form,
-  .saved-robots-selected-form {
-    padding: 0.75rem;
+  .saved-robots-list-wrap {
+    max-height: min(20rem, 42vh);
+  }
+
+  .saved-robots-dialog {
+    padding: 1rem;
   }
 
   .shell {
