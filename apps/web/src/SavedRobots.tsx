@@ -27,11 +27,17 @@ import { SavedRobotApiFailure, type SavedRobotApi } from './saved-robot-api.js';
 
 type NameFormMode = 'new' | null;
 type SavedOperation = 'load' | 'save' | 'delete' | null;
-type ErrorKind = 'list' | 'load' | 'save' | 'new' | 'delete' | null;
+type ConsultStatus = 'idle' | 'loading' | 'ready' | 'error';
+type CopyWriteKind = 'rename' | 'replace';
+type LibraryDialog =
+  | { readonly kind: 'use'; readonly target: SavedRobot }
+  | { readonly kind: 'rename'; readonly target: SavedRobot; readonly name: string }
+  | { readonly kind: 'replace'; readonly target: SavedRobot };
 
 interface SavedApplication {
   readonly id: number;
   readonly label: string;
+  readonly copyId: string;
   readonly identitySub: string;
   readonly controller: AbortController;
 }
@@ -44,6 +50,15 @@ interface PendingCreate {
   readonly id: string;
   readonly name: string;
   readonly draft: RobotDraft;
+}
+
+interface PendingCopyWrite {
+  readonly kind: CopyWriteKind;
+  readonly target: SavedRobot;
+  readonly identitySub: string;
+  readonly name: string;
+  readonly draft: RobotDraft;
+  readonly retryAuthorized: boolean;
 }
 
 class StaleSavedOperation extends Error {
@@ -62,16 +77,6 @@ class PendingCreateReadbackFailure extends Error {
       { cause },
     );
     this.name = 'PendingCreateReadbackFailure';
-  }
-}
-
-class OversizedSavedDraft extends Error {
-  public constructor(
-    public readonly robot: SavedRobot,
-    public readonly limitMessage: string,
-  ) {
-    super(limitMessage);
-    this.name = 'OversizedSavedDraft';
   }
 }
 
@@ -167,13 +172,38 @@ function mergeSummary(
   current: readonly SavedRobotSummary[],
   incoming: SavedRobotSummary,
 ): SavedRobotSummary[] {
-  return current.some((robot) => robot.id === incoming.id)
+  const existing = current.find((robot) => robot.id === incoming.id);
+  if (existing && existing.version > incoming.version) return [...current];
+  return existing
     ? current.map((robot) => (robot.id === incoming.id ? incoming : robot))
     : [incoming, ...current];
 }
 
 function sameSavedContent(robot: SavedRobot, id: string, name: string, draft: RobotDraft): boolean {
   return robot.id === id && robot.name === name && draftsEqual(robot.draft, draft);
+}
+
+function sameSavedBase(robot: SavedRobot, target: SavedRobot): boolean {
+  return (
+    robot.id === target.id &&
+    robot.version === target.version &&
+    robot.name === target.name &&
+    draftsEqual(robot.draft, target.draft)
+  );
+}
+
+function copyDraft(draft: RobotDraft): RobotDraft {
+  return {
+    schemaVersion: draft.schemaVersion,
+    catalogVersion: draft.catalogVersion,
+    modelKey: draft.modelKey,
+    instructions: draft.instructions,
+    skills: draft.skills.map((skill) =>
+      Object.prototype.hasOwnProperty.call(skill, 'description')
+        ? { id: skill.id, enabled: skill.enabled, description: skill.description }
+        : { id: skill.id, enabled: skill.enabled },
+    ),
+  };
 }
 
 export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(function SavedRobots(
@@ -191,45 +221,49 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
   ref,
 ) {
   const [robots, setRobots] = useState<SavedRobotSummary[]>([]);
+  const [selectedSummary, setSelectedSummary] = useState<SavedRobotSummary | null>(null);
   const [selected, setSelected] = useState<SavedRobot | null>(null);
+  const [consultStatus, setConsultStatus] = useState<ConsultStatus>('idle');
+  const [consultError, setConsultError] = useState<string | null>(null);
   const [nextCursor, setNextCursor] = useState<string | undefined>();
   const [listBusy, setListBusy] = useState(true);
   const [operation, setOperation] = useState<SavedOperation>(null);
   const [nameMode, setNameMode] = useState<NameFormMode>(null);
-  const [name, setName] = useState('');
   const [newName, setNewName] = useState('');
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [errorKind, setErrorKind] = useState<ErrorKind>(null);
-  const [conflict, setConflict] = useState<SavedRobot | null>(null);
+  const [errorKind, setErrorKind] = useState<'list' | 'save' | 'new' | 'delete' | null>(null);
   const [deleteConflict, setDeleteConflict] = useState<DeleteConflict | null>(null);
-  const [inspection, setInspection] = useState<SavedRobot | null>(null);
-  const [inspectionLoadingId, setInspectionLoadingId] = useState<string | null>(null);
-  const [inspectionError, setInspectionError] = useState<string | null>(null);
-  const [inspectionNotice, setInspectionNotice] = useState<string | null>(null);
   const [application, setApplication] = useState<SavedApplication | null>(null);
+  const [dialog, setDialog] = useState<LibraryDialog | null>(null);
+  const [pendingCreate, setPendingCreate] = useState<PendingCreate | null>(null);
+  const [pendingCopyWrite, setPendingCopyWrite] = useState<PendingCopyWrite | null>(null);
   const [listAttempt, setListAttempt] = useState(0);
   const generationRef = useRef(0);
-  const inspectionRequestRef = useRef(0);
+  const consultRequestRef = useRef(0);
+  const consultControllerRef = useRef<AbortController | null>(null);
+  const selectedIdRef = useRef<string | null>(null);
+  const consultStatusRef = useRef<ConsultStatus>('idle');
   const applicationIdRef = useRef(0);
   const applicationRef = useRef<SavedApplication | null>(null);
   const operationTokenRef = useRef(0);
   const operationOwnerRef = useRef<number | null>(null);
-  const inspectionOperationRef = useRef<number | null>(null);
-  const inspectionControllerRef = useRef<AbortController | null>(null);
-  const inspectionHeadingRef = useRef<HTMLHeadingElement | null>(null);
-  const inspectionTriggerRef = useRef<HTMLButtonElement | null>(null);
-  const inspectionOpeningRef = useRef(false);
-  const inputRef = useRef<HTMLInputElement | null>(null);
-  const selectedNameInputRef = useRef<HTMLInputElement | null>(null);
   const pendingCreateRef = useRef<PendingCreate | null>(null);
-  const [pendingCreate, setPendingCreate] = useState<PendingCreate | null>(null);
+  const pendingCopyWriteRef = useRef<PendingCopyWrite | null>(null);
   const identitySubRef = useRef(session.identity.sub);
   const unavailableRef = useRef(paused || locked);
-  useLayoutEffect(() => {
-    identitySubRef.current = session.identity.sub;
-    unavailableRef.current = paused || locked;
-  }, [locked, paused, session.identity.sub]);
+  const previousIdentityRef = useRef(session.identity.sub);
+  const dialogRef = useRef<HTMLDialogElement | null>(null);
+  const dialogTriggerRef = useRef<HTMLElement | null>(null);
+  const detailsSummaryRef = useRef<HTMLElement | null>(null);
+  const renameInputRef = useRef<HTMLInputElement | null>(null);
+  const newNameInputRef = useRef<HTMLInputElement | null>(null);
+
+  const setConsult = (status: ConsultStatus): void => {
+    consultStatusRef.current = status;
+    setConsultStatus(status);
+  };
+
   const isCurrent = useCallback(
     (generation: number): boolean => generationRef.current === generation,
     [],
@@ -244,11 +278,44 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
     setApplication(null);
   }, []);
 
-  const beginApplication = (label: string): SavedApplication => {
+  const deactivatePendingCopyWrite = useCallback((): void => {
+    const pending = pendingCopyWriteRef.current;
+    if (!pending?.retryAuthorized) return;
+    const inactive = { ...pending, retryAuthorized: false };
+    pendingCopyWriteRef.current = inactive;
+    setPendingCopyWrite(inactive);
+  }, []);
+
+  const closeDialog = useCallback(
+    (restoreFocus = true): void => {
+      if (dialogRef.current?.open) {
+        if (typeof dialogRef.current.close === 'function') dialogRef.current.close();
+        else dialogRef.current.removeAttribute('open');
+      }
+      setDialog(null);
+      deactivatePendingCopyWrite();
+      const trigger = dialogTriggerRef.current;
+      const triggerIsInActions =
+        trigger !== null && detailsSummaryRef.current?.closest('details')?.contains(trigger);
+      dialogTriggerRef.current = null;
+      if (!restoreFocus) return;
+      queueMicrotask(() => {
+        if (triggerIsInActions && detailsSummaryRef.current?.isConnected) {
+          detailsSummaryRef.current.focus();
+        } else if (trigger?.isConnected) {
+          trigger.focus();
+        }
+      });
+    },
+    [deactivatePendingCopyWrite],
+  );
+
+  const beginApplication = (label: string, copyId: string): SavedApplication => {
     cancelApplication();
     const intent = {
       id: applicationIdRef.current + 1,
       label,
+      copyId,
       identitySub: session.identity.sub,
       controller: new AbortController(),
     };
@@ -260,6 +327,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
 
   const isCurrentApplication = (intent: SavedApplication, generation: number): boolean =>
     applicationRef.current?.id === intent.id &&
+    selectedIdRef.current === intent.copyId &&
     !intent.controller.signal.aborted &&
     !unavailableRef.current &&
     identitySubRef.current === intent.identitySub &&
@@ -288,14 +356,64 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
   }, []);
 
   useEffect(() => {
-    if (
-      inspectionOpeningRef.current &&
-      (inspectionLoadingId !== null || inspectionError !== null || inspection !== null)
-    ) {
-      inspectionHeadingRef.current?.focus();
-      inspectionOpeningRef.current = false;
+    if (!dialog) return;
+    const element = dialogRef.current;
+    if (element && !element.open) {
+      if (typeof element.showModal === 'function') element.showModal();
+      else element.setAttribute('open', '');
     }
-  }, [inspection, inspectionError, inspectionLoadingId]);
+    if (dialog.kind === 'rename') {
+      renameInputRef.current?.focus();
+      renameInputRef.current?.select();
+    }
+  }, [dialog]);
+
+  useEffect(() => {
+    if (!nameMode) return;
+    newNameInputRef.current?.focus();
+    newNameInputRef.current?.select();
+  }, [nameMode]);
+
+  useLayoutEffect(() => {
+    const identityChanged = previousIdentityRef.current !== session.identity.sub;
+    previousIdentityRef.current = session.identity.sub;
+    identitySubRef.current = session.identity.sub;
+    unavailableRef.current = paused || locked;
+    if (identityChanged) {
+      generationRef.current += 1;
+      consultRequestRef.current += 1;
+      consultControllerRef.current?.abort();
+      consultControllerRef.current = null;
+      selectedIdRef.current = null;
+      consultStatusRef.current = 'idle';
+      setRobots([]);
+      setSelectedSummary(null);
+      setSelected(null);
+      setConsultStatus('idle');
+      setConsultError(null);
+      setListBusy(true);
+      setOperation(null);
+      operationOwnerRef.current = null;
+      cancelApplication();
+      closeDialog(false);
+      setMessage(null);
+      setError(null);
+      setErrorKind(null);
+      setDeleteConflict(null);
+      pendingCreateRef.current = null;
+      setPendingCreate(null);
+      pendingCopyWriteRef.current = null;
+      setPendingCopyWrite(null);
+    } else if (paused || locked) {
+      cancelApplication();
+      consultRequestRef.current += 1;
+      consultControllerRef.current?.abort();
+      consultControllerRef.current = null;
+      setSelected(null);
+      setConsult('idle');
+      closeDialog(false);
+    }
+  }, [cancelApplication, closeDialog, locked, paused, session.identity.sub]);
 
   useEffect(() => {
     const generation = generationRef.current + 1;
@@ -322,40 +440,26 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
     };
   }, [api, isCurrent, listAttempt, onAuthRequired, session.identity.sub]);
 
-  useEffect(() => {
-    if (!nameMode) return;
-    inputRef.current?.focus();
-    inputRef.current?.select();
-  }, [nameMode]);
-
-  useEffect(() => {
-    if (
-      paused ||
-      locked ||
-      (applicationRef.current !== null &&
-        applicationRef.current.identitySub !== session.identity.sub)
-    ) {
-      cancelApplication();
-    }
-  }, [cancelApplication, locked, paused, session.identity.sub]);
-
   useEffect(
     () => () => {
       const current = applicationRef.current;
       applicationRef.current = null;
       current?.controller.abort();
-      inspectionRequestRef.current += 1;
-      inspectionControllerRef.current?.abort();
-      inspectionControllerRef.current = null;
+      consultRequestRef.current += 1;
+      consultControllerRef.current?.abort();
+      consultControllerRef.current = null;
     },
     [],
   );
 
   const busy = paused || locked || listBusy || operation !== null;
-  const selectedSummary = selected ? summaryFromRobot(selected) : null;
-  const selectedManagementSummary = selected
-    ? (robots.find((robot) => robot.id === selected.id) ?? selectedSummary)
-    : null;
+  const radioLocked = paused || locked || listBusy;
+  const selectedSummaryRef = useRef<SavedRobotSummary | null>(selectedSummary);
+  selectedSummaryRef.current = selectedSummary;
+  const selectedDocumentRef = useRef<SavedRobot | null>(selected);
+  selectedDocumentRef.current = selected;
+  const robotsRef = useRef(robots);
+  robotsRef.current = robots;
   const copiesByName = new Map<string, number>();
   const copyNumbers = new Map<string, number>();
   for (const robot of robots) {
@@ -364,6 +468,153 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
     copyNumbers.set(robot.id, number);
   }
 
+  const updateListWithSummary = (summary: SavedRobotSummary): void => {
+    setRobots((current) => mergeSummary(current, summary));
+  };
+
+  const updateListWith = (robot: SavedRobot): void => {
+    updateListWithSummary(summaryFromRobot(robot));
+  };
+
+  const setSelectedCopy = (
+    summary: SavedRobotSummary | null,
+    robot: SavedRobot | null,
+    status: ConsultStatus,
+  ): void => {
+    selectedIdRef.current = summary?.id ?? null;
+    selectedSummaryRef.current = summary;
+    setSelectedSummary(summary);
+    setSelected(robot);
+    setConsult(status);
+    setConsultError(null);
+  };
+
+  const loadSelectedCopy = async (summary: SavedRobotSummary): Promise<void> => {
+    const requestId = consultRequestRef.current + 1;
+    consultRequestRef.current = requestId;
+    consultControllerRef.current?.abort();
+    const controller = new AbortController();
+    consultControllerRef.current = controller;
+    selectedIdRef.current = summary.id;
+    selectedSummaryRef.current = summary;
+    setSelectedSummary(summary);
+    setSelected(null);
+    setConsult('loading');
+    setConsultError(null);
+    setError(null);
+    setErrorKind(null);
+    setMessage(null);
+    const generation = generationRef.current;
+    try {
+      const robot = await api.getRobot(summary.id, controller.signal);
+      if (
+        controller.signal.aborted ||
+        !isCurrent(generation) ||
+        consultRequestRef.current !== requestId ||
+        selectedIdRef.current !== summary.id ||
+        identitySubRef.current !== session.identity.sub
+      )
+        return;
+      const currentDocument = selectedDocumentRef.current;
+      if (currentDocument?.id === summary.id && currentDocument.version > robot.version) {
+        setConsultError(null);
+        setConsult('ready');
+        return;
+      }
+      const freshestSummary = [
+        selectedSummaryRef.current?.id === summary.id ? selectedSummaryRef.current : null,
+        robotsRef.current.find((robot) => robot.id === summary.id) ?? null,
+      ].reduce<SavedRobotSummary | null>(
+        (freshest, candidate) =>
+          candidate && (!freshest || candidate.version > freshest.version) ? candidate : freshest,
+        null,
+      );
+      if (freshestSummary && freshestSummary.version > robot.version) {
+        selectedSummaryRef.current = freshestSummary;
+        setSelectedSummary(freshestSummary);
+        setSelected((current) =>
+          current?.id === summary.id && current.version > robot.version ? current : null,
+        );
+        setConsultError(
+          'La copia cambió mientras la consultabas. Seleccionala de nuevo para actualizarla.',
+        );
+        setConsult('error');
+        return;
+      }
+      const refreshedSummary = summaryFromRobot(robot);
+      selectedSummaryRef.current = refreshedSummary;
+      setSelectedSummary(refreshedSummary);
+      setSelected(robot);
+      setConsult('ready');
+      updateListWith(robot);
+    } catch (loadError) {
+      if (
+        controller.signal.aborted ||
+        !isCurrent(generation) ||
+        consultRequestRef.current !== requestId ||
+        selectedIdRef.current !== summary.id ||
+        identitySubRef.current !== session.identity.sub
+      )
+        return;
+      setConsultError(apiErrorMessage(loadError, 'No se pudo consultar esta copia.'));
+      setConsult('error');
+      if (isMissingError(loadError)) {
+        setRobots((current) => current.filter((item) => item.id !== summary.id));
+        setSelectedCopy(null, null, 'idle');
+      }
+      if (isAuthError(loadError)) onAuthRequired?.(loadError.authContext);
+    } finally {
+      if (consultRequestRef.current === requestId) {
+        if (consultStatusRef.current === 'loading') setConsult('idle');
+        if (consultControllerRef.current === controller) consultControllerRef.current = null;
+      }
+    }
+  };
+
+  const handleSelect = (summary: SavedRobotSummary): void => {
+    if (radioLocked) return;
+    const alreadySelected = selectedIdRef.current === summary.id;
+    if (alreadySelected && (selected !== null || consultStatusRef.current === 'loading')) return;
+    cancelApplication();
+    editor.current?.cancelApplication?.();
+    if (!alreadySelected) {
+      selectedIdRef.current = summary.id;
+      selectedSummaryRef.current = summary;
+      setSelectedSummary(summary);
+      setSelected(null);
+      setConsult('idle');
+      setConsultError(null);
+      setDeleteConflict(null);
+      setMessage(null);
+    }
+    if (dialogRef.current?.open || dialog !== null) closeDialog(false);
+    setError(null);
+    setErrorKind(null);
+    void loadSelectedCopy(summary);
+  };
+
+  const invalidateConsult = useCallback((clearDocument: boolean): boolean => {
+    const hadPendingRequest = consultControllerRef.current !== null;
+    consultRequestRef.current += 1;
+    consultControllerRef.current?.abort();
+    consultControllerRef.current = null;
+    if (hadPendingRequest) {
+      setConsult('idle');
+      if (clearDocument) setSelected(null);
+    }
+    return hadPendingRequest;
+  }, []);
+
+  const leaveSurface = useCallback((): void => {
+    const hadApplication = applicationRef.current !== null;
+    cancelApplication();
+    if (hadApplication) editor.current?.cancelApplication?.();
+    invalidateConsult(true);
+    closeDialog(false);
+  }, [cancelApplication, closeDialog, editor, invalidateConsult]);
+
+  useImperativeHandle(ref, () => ({ leaveSurface }), [leaveSurface]);
+
   const handleLoadMore = async (): Promise<void> => {
     if (!nextCursor || busy) return;
     const operationToken = beginOperation('load');
@@ -371,7 +622,6 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
     setErrorKind(null);
     const generation = generationRef.current;
     try {
-      if (!isCurrent(generation)) return;
       const page = await api.listRobots(nextCursor);
       if (!isCurrent(generation)) return;
       setRobots((current) => mergeSummaries(current, page.robots));
@@ -383,165 +633,6 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
       if (isAuthError(loadError)) onAuthRequired?.(loadError.authContext);
     } finally {
       if (isCurrent(generation)) finishOperation(operationToken);
-    }
-  };
-
-  const invalidateInspection = useCallback((): {
-    readonly operationToken: number | null;
-    readonly hadPendingRequest: boolean;
-  } => {
-    const operationToken = inspectionOperationRef.current;
-    const hadPendingRequest = inspectionControllerRef.current !== null;
-    inspectionRequestRef.current += 1;
-    inspectionControllerRef.current?.abort();
-    inspectionControllerRef.current = null;
-    inspectionOperationRef.current = null;
-    inspectionOpeningRef.current = false;
-    return { operationToken, hadPendingRequest };
-  }, []);
-
-  const clearInspection = (returnFocus: boolean): void => {
-    cancelApplication();
-    const { operationToken } = invalidateInspection();
-    if (operationToken !== null) finishOperation(operationToken);
-    const trigger = inspectionTriggerRef.current;
-    inspectionTriggerRef.current = null;
-    setInspection(null);
-    setInspectionLoadingId(null);
-    setInspectionError(null);
-    setInspectionNotice(null);
-    if (returnFocus && trigger) {
-      if (trigger.isConnected) trigger.focus();
-      queueMicrotask(() => {
-        if (trigger.isConnected) trigger.focus();
-      });
-    }
-  };
-
-  const leaveSurface = useCallback((): void => {
-    const hadApplication = applicationRef.current !== null;
-    cancelApplication();
-    if (hadApplication) editor.current?.cancelApplication?.();
-    const { operationToken, hadPendingRequest } = invalidateInspection();
-    if (operationToken !== null) finishOperation(operationToken);
-    if (hadPendingRequest) setInspectionLoadingId(null);
-  }, [cancelApplication, editor, finishOperation, invalidateInspection]);
-
-  useImperativeHandle(ref, () => ({ leaveSurface }), [leaveSurface]);
-
-  const handleInspect = async (
-    summary: SavedRobotSummary,
-    trigger: HTMLButtonElement,
-  ): Promise<void> => {
-    if (busy) return;
-    const requestId = inspectionRequestRef.current + 1;
-    inspectionRequestRef.current = requestId;
-    inspectionTriggerRef.current = trigger;
-    inspectionOpeningRef.current = true;
-    const operationToken = beginOperation('load');
-    const controller = new AbortController();
-    inspectionControllerRef.current?.abort();
-    inspectionControllerRef.current = controller;
-    inspectionOperationRef.current = operationToken;
-    setInspection(null);
-    setInspectionLoadingId(summary.id);
-    setInspectionError(null);
-    setInspectionNotice(null);
-    setError(null);
-    setErrorKind(null);
-    const generation = generationRef.current;
-    try {
-      const robot = await api.getRobot(summary.id, controller.signal);
-      if (
-        controller.signal.aborted ||
-        !isCurrent(generation) ||
-        inspectionRequestRef.current !== requestId
-      )
-        return;
-      setInspection(robot);
-    } catch (loadError) {
-      if (
-        controller.signal.aborted ||
-        !isCurrent(generation) ||
-        inspectionRequestRef.current !== requestId
-      )
-        return;
-      setInspectionError(apiErrorMessage(loadError, 'No se pudo consultar esta copia.'));
-      if (isAuthError(loadError)) onAuthRequired?.(loadError.authContext);
-    } finally {
-      if (isCurrent(generation)) {
-        if (inspectionRequestRef.current === requestId) setInspectionLoadingId(null);
-        if (inspectionOperationRef.current === operationToken) {
-          inspectionOperationRef.current = null;
-        }
-        finishOperation(operationToken);
-      }
-      if (inspectionControllerRef.current === controller) inspectionControllerRef.current = null;
-    }
-  };
-
-  const handleSelect = async (
-    summary: SavedRobotSummary,
-    trigger: HTMLButtonElement,
-  ): Promise<void> => {
-    if (busy || !configurationAvailable) return;
-    clearInspection(false);
-    setError(null);
-    setErrorKind(null);
-    setMessage(null);
-    setConflict(null);
-    const generation = generationRef.current;
-    const intent = beginApplication(summary.name);
-    try {
-      if (!isCurrentApplication(intent, generation)) return;
-      const loadedRobotRef = { current: null as SavedRobot | null };
-      const applied = await editor.current?.applyDraft(
-        async (operationSignal) => {
-          const robot = await api.getRobot(summary.id, operationSignal);
-          loadedRobotRef.current = robot;
-          const limitMessage = draftLimitMessage(robot.draft);
-          if (limitMessage) throw new OversizedSavedDraft(robot, limitMessage);
-          return robot.draft;
-        },
-        { signal: intent.controller.signal },
-      );
-      if (!isCurrentApplication(intent, generation) || applied !== true) return;
-      const robot = loadedRobotRef.current;
-      if (!robot) {
-        setError('No se pudo cargar el robot guardado.');
-        setErrorKind('load');
-        return;
-      }
-      setSelected(robot);
-      setName(robot.name);
-      setMessage(`Cargaste «${robot.name}».`);
-      finishApplication(intent);
-      if (onReturnToEditor) onReturnToEditor();
-      else editor.current?.focusEditor?.();
-    } catch (loadError) {
-      if (!isCurrentApplication(intent, generation)) return;
-      if (loadError instanceof OversizedSavedDraft) {
-        inspectionTriggerRef.current = trigger;
-        inspectionOpeningRef.current = true;
-        setInspection(loadError.robot);
-        setInspectionNotice(
-          `Esta copia supera los límites actuales para cargarla al editor: ${loadError.limitMessage} Podés consultar su contenido completo aquí; no se aplicó al editor.`,
-        );
-        setError(null);
-        setErrorKind(null);
-        return;
-      }
-      setError(apiErrorMessage(loadError, 'No se pudo cargar el robot guardado.'));
-      setErrorKind('load');
-      if (isMissingError(loadError)) {
-        setRobots((current) => current.filter((robot) => robot.id !== summary.id));
-        if (selected?.id === summary.id) {
-          setSelected(null);
-          setName('');
-        }
-      }
-    } finally {
-      finishApplication(intent);
     }
   };
 
@@ -578,15 +669,11 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
       try {
         const remote = await api.getRobot(id);
         if (!isCurrent(generation)) throw new StaleSavedOperation();
-        if (isCurrent(generation) && sameSavedContent(remote, id, desiredName, desiredDraft)) {
-          return remote;
-        }
+        if (sameSavedContent(remote, id, desiredName, desiredDraft)) return remote;
       } catch (readError) {
         if (readError instanceof StaleSavedOperation) throw readError;
         if (isAuthError(readError)) {
-          if (expectedVersion === 0) {
-            throw new PendingCreateReadbackFailure(readError);
-          }
+          if (expectedVersion === 0) throw new PendingCreateReadbackFailure(readError);
           throw readError;
         }
         if (isMissingError(readError)) throw saveError;
@@ -615,20 +702,10 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
       if (readError instanceof SavedRobotApiFailure && readError.code === 'conflict') {
         throw readError;
       }
-      if (!isMissingError(readError)) {
-        throw new PendingCreateReadbackFailure(readError);
-      }
+      if (!isMissingError(readError)) throw new PendingCreateReadbackFailure(readError);
       if (!isCurrent(generation)) throw new StaleSavedOperation();
       return reconcileSave(intent.id, 0, intent.name, intent.draft, generation);
     }
-  };
-
-  const updateListWith = (robot: SavedRobot): void => {
-    updateListWithSummary(summaryFromRobot(robot));
-  };
-
-  const updateListWithSummary = (summary: SavedRobotSummary): void => {
-    setRobots((current) => mergeSummary(current, summary));
   };
 
   const removeListedRobot = (id: string): void => {
@@ -638,73 +715,412 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
       setPendingCreate(null);
       setNewName('');
     }
-    if (selected?.id === id) {
-      setSelected(null);
-      setName('');
+    if (selectedIdRef.current === id) {
+      setSelectedCopy(null, null, 'idle');
+      invalidateConsult(false);
     }
-    if (inspection?.id === id || inspectionLoadingId === id) clearInspection(false);
     setDeleteConflict((current) => (current?.summary.id === id ? null : current));
-    setConflict((current) => (current?.id === id ? null : current));
   };
 
-  const saveSelected = async (
-    desiredName: string,
-    draft: RobotDraft,
-    operationToken: number,
-  ): Promise<void> => {
-    const current = selected;
-    if (!current) return;
-    const generation = generationRef.current;
-    if (!isCurrent(generation)) return;
-    setError(null);
-    setErrorKind(null);
-    setMessage(null);
-    setDeleteConflict(null);
-    try {
-      const saved = await reconcileSave(
-        current.id,
-        current.version,
-        desiredName,
-        draft,
-        generation,
-      );
-      if (!isCurrent(generation)) return;
+  const completeCopyWrite = (intent: PendingCopyWrite, saved: SavedRobot): void => {
+    if (identitySubRef.current !== intent.identitySub) return;
+    pendingCopyWriteRef.current = null;
+    setPendingCopyWrite(null);
+    updateListWith(saved);
+    if (selectedIdRef.current === intent.target.id && !unavailableRef.current) {
+      selectedSummaryRef.current = summaryFromRobot(saved);
+      setSelectedSummary(summaryFromRobot(saved));
       setSelected(saved);
-      setName(saved.name);
-      updateListWith(saved);
-      setConflict(null);
-      setNameMode(null);
-      setMessage(`Guardaste «${saved.name}».`);
-    } catch (saveError) {
-      if (!isCurrent(generation)) return;
-      if (saveError instanceof SavedRobotApiFailure && saveError.code === 'conflict') {
-        setConflict(saveError.current ?? null);
-        setError(
-          saveError.current
-            ? 'El robot guardado cambió en otra pestaña. Cargá la versión remota o usá «Guardar como nueva» para conservar el borrador visible. «Guardar» está bloqueado hasta resolver el conflicto.'
-            : saveError.message,
-        );
-        setErrorKind('save');
-      } else {
-        setError(apiErrorMessage(saveError, 'No se pudo guardar el robot guardado.'));
-        setErrorKind('save');
-        if (isMissingError(saveError)) {
-          setSelected(null);
-          setName('');
-          setRobots((currentItems) => currentItems.filter((item) => item.id !== current.id));
-        }
+      setConsult('ready');
+      setConsultError(null);
+      setError(null);
+      setErrorKind(null);
+      setMessage(
+        intent.kind === 'rename'
+          ? 'Cambiaste el nombre de «' + saved.name + '».'
+          : 'Reemplazaste el contenido de «' + saved.name + '».',
+      );
+    }
+    setDeleteConflict(null);
+    closeDialog();
+  };
+
+  const showWriteConflict = (
+    intent: PendingCopyWrite,
+    remote: SavedRobot,
+    detail: string,
+  ): void => {
+    pendingCopyWriteRef.current = null;
+    setPendingCopyWrite(null);
+    updateListWith(remote);
+    if (selectedIdRef.current === intent.target.id) {
+      selectedSummaryRef.current = summaryFromRobot(remote);
+      setSelectedSummary(summaryFromRobot(remote));
+      setSelected(remote);
+      setConsult('ready');
+      setConsultError(null);
+      setError(detail);
+      setErrorKind('save');
+      setMessage(null);
+    }
+    closeDialog();
+  };
+
+  const reportCopyWriteFailure = (
+    intent: PendingCopyWrite,
+    failure: unknown,
+    keepIntent: boolean,
+  ): void => {
+    if (identitySubRef.current !== intent.identitySub) return;
+    if (!keepIntent) {
+      pendingCopyWriteRef.current = null;
+      setPendingCopyWrite(null);
+    }
+    if (selectedIdRef.current === intent.target.id && !unavailableRef.current) {
+      setError(apiErrorMessage(failure, 'No se pudo guardar esta copia.'));
+      setErrorKind('save');
+      setMessage(null);
+    }
+    const authError = reportedAuthError(failure);
+    if (authError) onAuthRequired?.(authError.authContext);
+  };
+
+  const runCopyWrite = async (
+    intent: PendingCopyWrite,
+    operationToken: number,
+    reconcileFirst: boolean,
+    retrySameIntent: boolean,
+  ): Promise<void> => {
+    const generation = generationRef.current;
+    const currentIdentity = (): boolean => identitySubRef.current === intent.identitySub;
+    const resolveRemote = (remote: SavedRobot): 'committed' | 'unchanged' | 'changed' => {
+      if (sameSavedContent(remote, intent.target.id, intent.name, intent.draft)) {
+        completeCopyWrite(intent, remote);
+        return 'committed';
       }
-      if (isAuthError(saveError)) onAuthRequired?.(saveError.authContext);
+      if (sameSavedBase(remote, intent.target)) return 'unchanged';
+      showWriteConflict(
+        intent,
+        remote,
+        'La copia guardada cambió en otra pestaña. Compará la versión actual y confirmá de nuevo.',
+      );
+      return 'changed';
+    };
+    const reconcile = async (
+      retryIfUnchanged: boolean,
+      retainIfUnchanged: boolean,
+    ): Promise<void> => {
+      try {
+        if (!currentIdentity() || unavailableRef.current) return;
+        const remote = await api.getRobot(intent.target.id);
+        if (!currentIdentity() || unavailableRef.current) return;
+        const result = resolveRemote(remote);
+        if (result !== 'unchanged') return;
+        if (retryIfUnchanged) {
+          await sendWrite();
+        } else if (retainIfUnchanged) {
+          reportCopyWriteFailure(
+            intent,
+            new Error(
+              'No se confirmó el cambio. La misma operación quedó pendiente; reintentá para conciliarla.',
+            ),
+            true,
+          );
+        } else {
+          reportCopyWriteFailure(
+            intent,
+            new Error('El cambio anterior no se aplicó. Podés iniciar una nueva acción.'),
+            false,
+          );
+          closeDialog();
+        }
+      } catch (readError) {
+        if (!currentIdentity() || unavailableRef.current) return;
+        if (isMissingError(readError)) {
+          pendingCopyWriteRef.current = null;
+          setPendingCopyWrite(null);
+          removeListedRobot(intent.target.id);
+        }
+        reportCopyWriteFailure(intent, readError, !isMissingError(readError));
+      }
+    };
+    const sendWrite = async (): Promise<void> => {
+      if (!currentIdentity() || !isCurrent(generation) || unavailableRef.current) return;
+      const retainedIntent = pendingCopyWriteRef.current;
+      if (retainedIntent?.target.id !== intent.target.id || retainedIntent.retryAuthorized !== true)
+        return;
+      try {
+        const saved = await api.saveRobot(
+          intent.target.id,
+          intent.target.version,
+          intent.name,
+          intent.draft,
+        );
+        if (!currentIdentity()) return;
+        completeCopyWrite(intent, saved);
+      } catch (writeError) {
+        if (!currentIdentity()) return;
+        if (
+          writeError instanceof SavedRobotApiFailure &&
+          writeError.code === 'conflict' &&
+          writeError.current
+        ) {
+          if (sameSavedContent(writeError.current, intent.target.id, intent.name, intent.draft)) {
+            completeCopyWrite(intent, writeError.current);
+          } else {
+            showWriteConflict(intent, writeError.current, writeError.message);
+          }
+          return;
+        }
+        if (
+          writeError instanceof SavedRobotApiFailure &&
+          writeError.ambiguous &&
+          !isDefinitiveWriteRejection(writeError)
+        ) {
+          const retainedIntent = pendingCopyWriteRef.current;
+          const pending = {
+            ...intent,
+            retryAuthorized:
+              retainedIntent?.target.id === intent.target.id && retainedIntent.retryAuthorized,
+          };
+          pendingCopyWriteRef.current = pending;
+          setPendingCopyWrite(pending);
+          if (unavailableRef.current) {
+            reportCopyWriteFailure(
+              intent,
+              new Error('Se conserva el cambio enviado para conciliarlo cuando vuelva el acceso.'),
+              true,
+            );
+            return;
+          }
+          await reconcile(false, true);
+          return;
+        }
+        reportCopyWriteFailure(intent, writeError, false);
+      }
+    };
+
+    if (!currentIdentity() || !isCurrent(generation) || unavailableRef.current) return;
+    try {
+      if (reconcileFirst) await reconcile(retrySameIntent, false);
+      else await sendWrite();
     } finally {
       if (isCurrent(generation)) finishOperation(operationToken);
     }
   };
 
-  const handleSaveAsNew = async (event: FormEvent): Promise<void> => {
+  const sendCopyIntent = async (
+    intent: PendingCopyWrite,
+    operationToken: number,
+  ): Promise<void> => {
+    pendingCopyWriteRef.current = intent;
+    setPendingCopyWrite(intent);
+    await runCopyWrite(intent, operationToken, false, false);
+  };
+
+  const beginCopyWrite = async (
+    kind: CopyWriteKind,
+    target: SavedRobot,
+    desiredName: string,
+    candidate: RobotDraft,
+  ): Promise<void> => {
+    const pending = pendingCopyWriteRef.current;
+    if (pending) {
+      if (pending.target.id !== target.id || pending.kind !== kind) {
+        setError(
+          'Hay un cambio pendiente para otra copia. Volvé a esa copia para conciliarlo antes de iniciar otro.',
+        );
+        setErrorKind('save');
+        return;
+      }
+      const token = beginOperation('save');
+      setError(null);
+      setErrorKind(null);
+      setMessage(null);
+      await runCopyWrite(pending, token, true, pending.retryAuthorized);
+      return;
+    }
+    const limit = draftLimitMessage(candidate);
+    if (limit) {
+      setError('Esta copia no se puede escribir sin cambiar su contenido: ' + limit);
+      setErrorKind('save');
+      return;
+    }
+    const intent: PendingCopyWrite = {
+      kind,
+      target,
+      identitySub: session.identity.sub,
+      name: desiredName,
+      draft: copyDraft(candidate),
+      retryAuthorized: true,
+    };
+    const token = beginOperation('save');
+    setError(null);
+    setErrorKind(null);
+    setMessage(null);
+    setDeleteConflict(null);
+    await sendCopyIntent(intent, token);
+  };
+
+  const handleUseConfirmed = async (target: SavedRobot): Promise<void> => {
+    closeDialog();
+    const generation = generationRef.current;
+    const intent = beginApplication(target.name, target.id);
+    setError(null);
+    setErrorKind(null);
+    setMessage(null);
+    try {
+      if (!isCurrentApplication(intent, generation)) return;
+      const limit = draftLimitMessage(target.draft);
+      if (limit) {
+        setError('Esta copia supera los límites actuales para usarla: ' + limit);
+        setErrorKind('save');
+        return;
+      }
+      const applied = await editor.current?.applyDraft(target.draft, {
+        signal: intent.controller.signal,
+      });
+      if (!isCurrentApplication(intent, generation) || applied !== true) return;
+      finishApplication(intent);
+      setMessage('Cargaste «' + target.name + '».');
+      if (onReturnToEditor) onReturnToEditor();
+      else editor.current?.focusEditor?.();
+    } catch (applyError) {
+      if (isCurrentApplication(intent, generation)) {
+        setError(apiErrorMessage(applyError, 'No se pudo aplicar esta copia.'));
+        setErrorKind('save');
+      }
+    } finally {
+      finishApplication(intent);
+    }
+  };
+
+  const handleRenameSubmit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
+    if (dialog?.kind !== 'rename' || operation !== null || paused || locked) return;
+    const target = dialog.target;
+    const pending = pendingCopyWriteRef.current;
+    if (pending) {
+      if (pending.target.id !== target.id || pending.kind !== 'rename') {
+        setError(
+          'Hay un cambio pendiente para otra acción. Volvé a esa copia para conciliarlo antes de iniciar otro.',
+        );
+        setErrorKind('save');
+        return;
+      }
+      const token = beginOperation('save');
+      setError(null);
+      setErrorKind(null);
+      setMessage(null);
+      await runCopyWrite(pending, token, true, pending.retryAuthorized);
+      return;
+    }
+    let nextName: string;
+    try {
+      nextName = validateSavedRobotName(dialog.name);
+    } catch (validationError) {
+      setError(apiErrorMessage(validationError, 'Ingresá un nombre válido para el robot.'));
+      setErrorKind('save');
+      return;
+    }
+    const limit = draftLimitMessage(target.draft);
+    if (limit) {
+      setError('Esta copia no se puede renombrar sin cambiar su contenido: ' + limit);
+      setErrorKind('save');
+      return;
+    }
+    if (nextName === target.name) {
+      closeDialog();
+      setMessage('No hay cambios para guardar en esta copia.');
+      return;
+    }
+    await beginCopyWrite('rename', target, nextName, target.draft);
+  };
+
+  const handleReplaceConfirmed = async (target: SavedRobot): Promise<void> => {
+    if (operation !== null || paused || locked) return;
+    const pending = pendingCopyWriteRef.current;
+    if (pending) {
+      if (pending.target.id !== target.id || pending.kind !== 'replace') {
+        setError(
+          'Hay un cambio pendiente para otra acción. Volvé a esa copia para conciliarlo antes de iniciar otro.',
+        );
+        setErrorKind('save');
+        return;
+      }
+      const token = beginOperation('save');
+      setError(null);
+      setErrorKind(null);
+      setMessage(null);
+      await runCopyWrite(pending, token, true, pending.retryAuthorized);
+      return;
+    }
+    const generation = generationRef.current;
+    const token = beginOperation('save');
+    setError(null);
+    setErrorKind(null);
+    setMessage(null);
+    try {
+      const snapshot: DraftSnapshot | null = (await editor.current?.captureSnapshot()) ?? null;
+      if (!snapshot) {
+        setError(
+          'No se pudo confirmar la configuración actual. Terminá o reintentá el guardado pendiente.',
+        );
+        setErrorKind('save');
+        return;
+      }
+      if (
+        !isCurrent(generation) ||
+        unavailableRef.current ||
+        selectedIdRef.current !== target.id ||
+        !dialogRef.current?.open ||
+        identitySubRef.current !== session.identity.sub
+      )
+        return;
+      const limit = draftLimitMessage(snapshot.draft);
+      if (limit) {
+        setError('La configuración actual no se puede guardar como copia: ' + limit);
+        setErrorKind('save');
+        return;
+      }
+      if (draftsEqual(target.draft, snapshot.draft)) {
+        closeDialog();
+        setMessage('La copia ya tiene la configuración actual.');
+        return;
+      }
+      const intent: PendingCopyWrite = {
+        kind: 'replace',
+        target,
+        identitySub: session.identity.sub,
+        name: target.name,
+        draft: copyDraft(snapshot.draft),
+        retryAuthorized: true,
+      };
+      await sendCopyIntent(intent, token);
+    } catch (captureError) {
+      if (isCurrent(generation)) {
+        setError(apiErrorMessage(captureError, 'No se pudo confirmar la configuración actual.'));
+        setErrorKind('save');
+      }
+    } finally {
+      if (isCurrent(generation)) finishOperation(token);
+    }
+  };
+
+  const handleSaveAsNew = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault();
+    if (pendingCopyWriteRef.current) {
+      setError(
+        'Hay un cambio pendiente para una copia. Conciliá esa operación antes de crear otra.',
+      );
+      setErrorKind('new');
+      return;
+    }
     let intent = pendingCreateRef.current;
     const retryingPendingCreate = intent !== null;
     if (!configurationAvailable && !retryingPendingCreate) return;
+    if (listBusy && !retryingPendingCreate) return;
+    const selectionAtStart = selectedIdRef.current;
     let createId = intent?.id;
     let createName = intent?.name;
     if (!intent) {
@@ -747,13 +1163,18 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
       if (!isCurrent(generation)) return;
       pendingCreateRef.current = null;
       setPendingCreate(null);
-      setSelected(saved);
-      setName(saved.name);
       setNewName('');
       setNameMode(null);
       updateListWith(saved);
-      setConflict(null);
-      setMessage(`Guardaste «${saved.name}» como robot nuevo.`);
+      if (
+        selectedIdRef.current === selectionAtStart &&
+        identitySubRef.current === session.identity.sub
+      ) {
+        setSelectedCopy(summaryFromRobot(saved), saved, 'ready');
+      }
+      setError(null);
+      setErrorKind(null);
+      setMessage('Guardaste «' + saved.name + '» como robot nuevo.');
     } catch (saveError) {
       if (!isCurrent(generation)) return;
       const preservePending =
@@ -769,11 +1190,12 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
         pendingCreateRef.current = null;
         setPendingCreate(null);
       }
-      setError(apiErrorMessage(saveError, 'No se pudo guardar el robot nuevo.'));
+      setError(
+        saveError instanceof SavedRobotApiFailure && saveError.code === 'conflict'
+          ? 'Hay una versión más nueva de esta copia. Revisá la lista antes de volver a intentar.'
+          : apiErrorMessage(saveError, 'No se pudo guardar el robot nuevo.'),
+      );
       setErrorKind('new');
-      if (saveError instanceof SavedRobotApiFailure && saveError.code === 'conflict') {
-        setConflict(saveError.current ?? null);
-      }
       const authError = reportedAuthError(saveError);
       if (authError) onAuthRequired?.(authError.authContext);
     } finally {
@@ -781,52 +1203,15 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
     }
   };
 
-  const handleSave = async (): Promise<void> => {
-    if (!selected) return;
-    const generation = generationRef.current;
-    const operationToken = beginOperation('save');
-    setError(null);
-    let desiredName: string;
-    try {
-      desiredName = validateSavedRobotName(name);
-    } catch (validationError) {
-      setError(apiErrorMessage(validationError, 'Ingresá un nombre válido para el robot.'));
-      setErrorKind('save');
-      finishOperation(operationToken);
-      return;
-    }
-    let snapshot: DraftSnapshot | null;
-    try {
-      snapshot = (await editor.current?.captureSnapshot()) ?? null;
-    } catch (captureError) {
-      setError(apiErrorMessage(captureError, 'No se pudo capturar la configuración actual.'));
-      setErrorKind('save');
-      finishOperation(operationToken);
-      return;
-    }
-    if (!snapshot) {
-      setError(
-        'No se pudo capturar la configuración actual. Reintentá cuando termine el guardado.',
-      );
-      setErrorKind('save');
-      finishOperation(operationToken);
-      return;
-    }
-    if (!isCurrent(generation)) {
-      finishOperation(operationToken);
-      return;
-    }
-    if (selected.name === desiredName && draftsEqual(selected.draft, snapshot.draft)) {
-      setMessage('No hay cambios para guardar en este robot.');
-      finishOperation(operationToken);
-      return;
-    }
-    await saveSelected(desiredName, snapshot.draft, operationToken);
-  };
-
   const handleDelete = async (target: SavedRobotSummary): Promise<void> => {
-    if (busy) return;
-    if (!window.confirm(`¿Eliminar «${target.name}»? Esta acción no se puede deshacer.`)) return;
+    if (paused || locked || operation !== null) return;
+    if (pendingCopyWriteRef.current) {
+      setError('Hay un cambio pendiente para una copia. Conciliá esa operación antes de eliminar.');
+      setErrorKind('save');
+      return;
+    }
+    if (!window.confirm('¿Eliminar «' + target.name + '»? Esta acción no se puede deshacer.'))
+      return;
     const generation = generationRef.current;
     const operationToken = beginOperation('delete');
     setError(null);
@@ -838,12 +1223,11 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
       if (!isCurrent(generation)) return;
       removeListedRobot(target.id);
       setMessage(
-        `Eliminaste «${target.name}». Tu configuración actual y tus intentos siguen intactos.`,
+        'Eliminaste «' + target.name + '». Tu configuración actual y tus intentos siguen intactos.',
       );
     } catch (deleteError) {
       if (!isCurrent(generation)) return;
       if (deleteError instanceof SavedRobotApiFailure && deleteError.ambiguous) {
-        if (!isCurrent(generation)) return;
         try {
           await api.getRobot(target.id);
           if (!isCurrent(generation)) return;
@@ -861,30 +1245,29 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
           }
           if (isMissingError(readError)) {
             removeListedRobot(target.id);
-            setMessage(`Eliminaste «${target.name}».`);
+            setMessage('Eliminaste «' + target.name + '».');
           } else {
             setError(apiErrorMessage(deleteError, 'No se pudo confirmar la eliminación.'));
             setErrorKind('delete');
           }
         }
-      } else {
-        if (
-          deleteError instanceof SavedRobotApiFailure &&
-          deleteError.code === 'conflict' &&
-          (deleteError.currentSummary || deleteError.current)
-        ) {
-          const robot = deleteError.current;
-          const summary = deleteError.currentSummary ?? (robot ? summaryFromRobot(robot) : null);
-          if (summary) setDeleteConflict({ summary });
-          setError(null);
-          setErrorKind(null);
-        } else {
-          setError(apiErrorMessage(deleteError, 'No se pudo eliminar el robot guardado.'));
-          setErrorKind('delete');
-          if (isMissingError(deleteError)) {
-            removeListedRobot(target.id);
-          }
+      } else if (
+        deleteError instanceof SavedRobotApiFailure &&
+        deleteError.code === 'conflict' &&
+        (deleteError.currentSummary || deleteError.current)
+      ) {
+        const robot = deleteError.current;
+        const summary = deleteError.currentSummary ?? (robot ? summaryFromRobot(robot) : null);
+        if (summary) {
+          setDeleteConflict({ summary });
+          updateListWithSummary(summary);
         }
+        setError(null);
+        setErrorKind(null);
+      } else {
+        setError(apiErrorMessage(deleteError, 'No se pudo eliminar el robot guardado.'));
+        setErrorKind('delete');
+        if (isMissingError(deleteError)) removeListedRobot(target.id);
       }
       if (isAuthError(deleteError)) onAuthRequired?.(deleteError.authContext);
     } finally {
@@ -894,75 +1277,77 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
 
   const handleUseDeleteConflict = (): void => {
     if (!deleteConflict || busy) return;
-    cancelApplication();
-    editor.current?.cancelApplication?.();
     const { summary } = deleteConflict;
     updateListWithSummary(summary);
+    if (selectedIdRef.current === summary.id) {
+      selectedSummaryRef.current = summary;
+      setSelectedSummary(summary);
+    }
     setDeleteConflict(null);
     setMessage(
-      `La copia «${summary.name}» cambió. Confirmá «Eliminar» nuevamente para borrarla. Tu configuración actual sigue intacta.`,
+      'La copia «' +
+        summary.name +
+        '» cambió. Confirmá «Eliminar» nuevamente para borrarla. Tu configuración actual sigue intacta.',
     );
   };
 
-  const handleUseConflict = async (): Promise<void> => {
-    if (!conflict || busy) return;
-    const generation = generationRef.current;
-    const selectedConflict = conflict;
-    const intent = beginApplication(selectedConflict.name);
+  const openUse = (trigger: HTMLButtonElement): void => {
+    if (!selected || !selectedSummary || paused || locked || operation !== null) return;
+    dialogTriggerRef.current = trigger;
     setError(null);
     setErrorKind(null);
-    try {
-      if (!isCurrentApplication(intent, generation)) return;
-      const applied = await editor.current?.applyDraft(selectedConflict.draft, {
-        signal: intent.controller.signal,
-      });
-      if (!isCurrentApplication(intent, generation) || applied !== true) return;
-      setSelected(selectedConflict);
-      setName(selectedConflict.name);
-      updateListWith(selectedConflict);
-      setConflict(null);
-      setMessage(`Cargaste la versión remota de «${selectedConflict.name}».`);
-      finishApplication(intent);
-      if (onReturnToEditor) onReturnToEditor();
-      else editor.current?.focusEditor?.();
-    } catch (loadError) {
-      if (isCurrentApplication(intent, generation)) {
-        setError(apiErrorMessage(loadError, 'No se pudo cargar la versión remota.'));
-        setErrorKind('load');
-      }
-    } finally {
-      finishApplication(intent);
-    }
+    setDialog({ kind: 'use', target: selected });
   };
 
-  const canEdit =
+  const openRename = (trigger: HTMLButtonElement): void => {
+    if (!selected || paused || locked || operation !== null) return;
+    dialogTriggerRef.current = trigger;
+    setError(null);
+    setErrorKind(null);
+    const pending = pendingCopyWriteRef.current;
+    setDialog({
+      kind: 'rename',
+      target: selected,
+      name:
+        pending?.target.id === selected.id && pending.kind === 'rename'
+          ? pending.name
+          : selected.name,
+    });
+  };
+
+  const openReplace = (trigger: HTMLButtonElement): void => {
+    if (!selected || paused || locked || operation !== null) return;
+    dialogTriggerRef.current = trigger;
+    setError(null);
+    setErrorKind(null);
+    setDialog({ kind: 'replace', target: selected });
+  };
+
+  const canSaveAsNew = configurationAvailable || pendingCreate !== null;
+  const canStartNew =
     !paused &&
     !locked &&
-    !listBusy &&
     operation === null &&
-    selected !== null &&
-    nameMode === null &&
-    conflict === null;
-  const canSaveAsNew = configurationAvailable || pendingCreate !== null;
+    pendingCopyWrite === null &&
+    !listBusy &&
+    canSaveAsNew;
+  const selectedLimit = selected ? draftLimitMessage(selected.draft) : null;
+  const globalErrorVisible = error !== null && (errorKind === 'list' || errorKind === 'delete');
   return (
     <section
       className="saved-robots"
       aria-labelledby="saved-robots-title"
       aria-busy={busy || application !== null}
     >
-      <div className="saved-robots-heading">
+      <header className="saved-robots-heading">
         <div>
           <p className="card-kicker">Copias guardadas</p>
           <h2 id="saved-robots-title" tabIndex={-1}>
-            Tus robots
+            Mis robots
           </h2>
-          <p className="saved-robots-intro">
-            Guardá configuraciones con nombre para volver a cargarlas cuando quieras. Editar la
-            configuración actual no cambia una copia hasta que pulses «Guardar».
-          </p>
         </div>
         {listBusy && <span className="spinner" aria-label="Cargando robots guardados" />}
-      </div>
+      </header>
 
       {paused && (
         <p className="editor-paused" role="status">
@@ -970,6 +1355,28 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
             ? 'El acceso a tu cuenta fue rechazado. Volvé a ingresar para continuar. Tus robots guardados siguen protegidos.'
             : 'Verificando tu sesión… Tus robots guardados siguen protegidos.'}
         </p>
+      )}
+      {globalErrorVisible && (
+        <div className="saved-robots-error" role="alert" aria-live="assertive">
+          <p>{error}</p>
+          {errorKind === 'list' && (
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => {
+                cancelApplication();
+                setListBusy(true);
+                setError(null);
+                setErrorKind(null);
+                setMessage(null);
+                setListAttempt((attempt) => attempt + 1);
+              }}
+              disabled={busy}
+            >
+              Reintentar lista
+            </button>
+          )}
+        </div>
       )}
       {application && (
         <div className="saved-robots-message" role="status" aria-live="polite">
@@ -984,93 +1391,78 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
           </button>
         </div>
       )}
-      {error &&
-        (errorKind === 'list' ||
-          errorKind === 'load' ||
-          errorKind === 'delete' ||
-          ((errorKind === 'save' || errorKind === 'new') &&
-            selected === null &&
-            nameMode !== 'new')) && (
-          <div className="saved-robots-error" role="alert" aria-live="assertive">
-            <p>{error}</p>
-            {errorKind === 'list' && (
-              <button
-                className="secondary-button"
-                type="button"
-                onClick={() => {
-                  cancelApplication();
-                  setListBusy(true);
-                  setError(null);
-                  setErrorKind(null);
-                  setMessage(null);
-                  setListAttempt((attempt) => attempt + 1);
-                }}
-                disabled={busy}
-              >
-                Reintentar lista
-              </button>
-            )}
-          </div>
-        )}
       {message && (
         <p className="saved-robots-message" role="status" aria-live="polite">
           {message}
         </p>
       )}
 
-      {!listBusy && robots.length === 0 && !error && (
-        <p className="saved-robots-empty">Todavía no guardaste ninguna copia.</p>
-      )}
-      {robots.length > 0 && (
-        <div className="saved-robots-list-wrap">
-          <ul className="saved-robots-list" aria-label="Robots guardados">
-            {robots.map((robot) => {
-              const duplicate = (copiesByName.get(robot.name) ?? 0) > 1;
-              const copyLabel = `${robot.name}${duplicate ? ` Copia ${copyNumbers.get(robot.id)}` : ''}`;
-              const hasDeleteConflict = deleteConflict?.summary.id === robot.id;
-              return (
-                <li key={robot.id}>
-                  <div className="saved-robot-row">
-                    <button
-                      className={`saved-robot-item${selected?.id === robot.id ? ' is-selected' : ''}`}
-                      type="button"
-                      onClick={(event) => void handleSelect(robot, event.currentTarget)}
-                      disabled={busy || !configurationAvailable}
-                      aria-pressed={selected?.id === robot.id}
+      <div className="saved-robots-layout">
+        <section className="saved-robots-list-panel" aria-label="Robots guardados">
+          <h3>Robots guardados</h3>
+          {!listBusy && robots.length === 0 && !errorKind && (
+            <p className="saved-robots-empty">Todavía no guardaste ninguna copia.</p>
+          )}
+          <div className="saved-robots-list-wrap">
+            <ul className="saved-robots-list" aria-label="Robots guardados">
+              {robots.map((robot) => {
+                const duplicate = (copiesByName.get(robot.name) ?? 0) > 1;
+                const copyNumber = copyNumbers.get(robot.id);
+                const copyLabel = duplicate
+                  ? robot.name + ' Copia ' + copyNumber
+                  : robot.name + ' guardado';
+                return (
+                  <li key={robot.id}>
+                    <label
+                      className={
+                        'saved-robot-choice' +
+                        (selectedSummary?.id === robot.id ? ' is-selected' : '')
+                      }
                     >
-                      <span className="saved-robot-item-main">
-                        <strong>{robot.name}</strong>
-                        {duplicate && <span>Copia {copyNumbers.get(robot.id)}</span>}
-                        <span>
-                          {modelLabel(robot.modelKey)}, actualizado {formatDate(robot.updatedAt)}
-                        </span>
+                      <input
+                        type="radio"
+                        name="saved-robot-selection"
+                        value={robot.id}
+                        checked={selectedSummary?.id === robot.id}
+                        aria-label={
+                          duplicate
+                            ? copyLabel
+                            : copyLabel +
+                              ', ' +
+                              modelLabel(robot.modelKey) +
+                              ', actualizado ' +
+                              formatDate(robot.updatedAt)
+                        }
+                        disabled={radioLocked}
+                        onChange={(event) => {
+                          if (event.currentTarget.checked) {
+                            event.currentTarget.focus();
+                            handleSelect(robot);
+                          }
+                        }}
+                        onClick={() => {
+                          if (
+                            selectedIdRef.current === robot.id &&
+                            !selected &&
+                            consultStatusRef.current !== 'loading'
+                          ) {
+                            handleSelect(robot);
+                          }
+                        }}
+                      />
+                      <span className="saved-robot-choice-copy">
+                        <strong>
+                          {robot.name}
+                          {duplicate ? ' · Copia ' + copyNumber : ''}
+                        </strong>
+                        <span>{modelLabel(robot.modelKey)}</span>
+                        <span>Actualizado {formatDate(robot.updatedAt)}</span>
                       </span>
-                      <span className="saved-robot-item-date">
+                      <span className="saved-robot-choice-date">
                         Creado {formatDate(robot.createdAt)}
                       </span>
-                      <span className="saved-robot-item-load">Cargar</span>
-                    </button>
-                    <div className="saved-robot-row-actions">
-                      <button
-                        className="text-button"
-                        type="button"
-                        onClick={(event) => void handleInspect(robot, event.currentTarget)}
-                        disabled={busy}
-                        aria-label={`Ver configuración de ${copyLabel}`}
-                      >
-                        Ver configuración
-                      </button>
-                      <button
-                        className="text-button danger-button"
-                        type="button"
-                        onClick={() => void handleDelete(robot)}
-                        disabled={busy}
-                        aria-label={`Eliminar ${copyLabel}`}
-                      >
-                        Eliminar
-                      </button>
-                    </div>
-                    {hasDeleteConflict && (
+                    </label>
+                    {deleteConflict?.summary.id === robot.id && (
                       <div className="saved-robots-conflict" role="alert">
                         <p>
                           La copia «{deleteConflict.summary.name}» cambió en otra pestaña. Actualizá
@@ -1087,229 +1479,413 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
                         </button>
                       </div>
                     )}
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-          {nextCursor && (
-            <button
-              className="text-button"
-              type="button"
-              onClick={() => void handleLoadMore()}
-              disabled={busy}
-            >
-              {operation === 'load' ? 'Cargando…' : 'Cargar más'}
-            </button>
-          )}
-        </div>
-      )}
-
-      {(inspectionLoadingId || inspectionError || inspection) && (
-        <section className="saved-robot-inspection" aria-labelledby="saved-robot-inspection-title">
-          <div className="saved-robot-inspection-heading">
-            <h3 id="saved-robot-inspection-title" ref={inspectionHeadingRef} tabIndex={-1}>
-              {inspection ? `Configuración de ${inspection.name}` : 'Consultar configuración'}
-            </h3>
-            <button className="text-button" type="button" onClick={() => clearInspection(true)}>
-              Cerrar
-            </button>
+                  </li>
+                );
+              })}
+            </ul>
+            {nextCursor && (
+              <button
+                className="text-button"
+                type="button"
+                onClick={() => void handleLoadMore()}
+                disabled={busy}
+              >
+                {operation === 'load' ? 'Cargando…' : 'Cargar más'}
+              </button>
+            )}
           </div>
-          {inspectionLoadingId && <p role="status">Consultando la copia…</p>}
-          {inspectionError && <p role="alert">{inspectionError}</p>}
-          {inspection && (
+        </section>
+
+        <section
+          className="saved-robots-detail"
+          role="region"
+          aria-label="Copia seleccionada"
+          aria-busy={consultStatus === 'loading'}
+        >
+          {selectedSummary ? (
             <>
-              {inspectionNotice && (
-                <p className="saved-robot-inspection-notice" role="status">
-                  {inspectionNotice}
-                </p>
-              )}
+              <div className="saved-robots-detail-heading">
+                <div>
+                  <p className="card-kicker">Copia seleccionada</p>
+                  <h3>{selectedSummary.name}</h3>
+                </div>
+                {consultStatus === 'loading' && (
+                  <span className="spinner" aria-label="Consultando la copia" />
+                )}
+              </div>
               <dl className="saved-robot-inspection-facts">
                 <div>
                   <dt>Modelo</dt>
-                  <dd>{modelLabel(inspection.modelKey)}</dd>
+                  <dd>{modelLabel(selectedSummary.modelKey)}</dd>
                 </div>
                 <div>
                   <dt>Actualizado</dt>
-                  <dd>{formatDate(inspection.updatedAt)}</dd>
+                  <dd>{formatDate(selectedSummary.updatedAt)}</dd>
+                </div>
+                <div>
+                  <dt>Versión</dt>
+                  <dd>{selectedSummary.version}</dd>
                 </div>
               </dl>
-              <div className="configuration-preview-copy">
-                <h4>Instrucciones</h4>
-                <p>{inspection.draft.instructions}</p>
-                <h4>Habilidades</h4>
-                <ul>
-                  {inspection.draft.skills.map((skill) => {
-                    const hasDescription = Object.prototype.hasOwnProperty.call(
-                      skill,
-                      'description',
-                    );
-                    const description = hasDescription
-                      ? skill.description === ''
-                        ? '(descripción vacía)'
-                        : skill.description
-                      : '(sin descripción)';
-                    return (
-                      <li key={skill.id}>
-                        <strong>
-                          {ROBOT_CATALOG.find((entry) => entry.id === skill.id)?.name ??
-                            'Habilidad'}
-                        </strong>
-                        : {skill.enabled ? 'habilitada' : 'deshabilitada'}; descripción:{' '}
-                        <span className="configuration-preview-literal">{description}</span>
-                      </li>
-                    );
-                  })}
-                </ul>
+              {consultStatus === 'loading' && <p role="status">Consultando la copia…</p>}
+              {consultError && (
+                <p className="saved-robots-error" role="alert">
+                  {consultError}
+                </p>
+              )}
+              {selected && (
+                <div className="configuration-preview-copy saved-robot-preview">
+                  <h4>Instrucciones</h4>
+                  <p className="configuration-preview-literal">{selected.draft.instructions}</p>
+                  <h4>Habilidades</h4>
+                  <ul>
+                    {selected.draft.skills.map((skill) => {
+                      const hasDescription = Object.prototype.hasOwnProperty.call(
+                        skill,
+                        'description',
+                      );
+                      const description = hasDescription
+                        ? skill.description === ''
+                          ? '(descripción vacía)'
+                          : skill.description
+                        : '(sin descripción)';
+                      return (
+                        <li key={skill.id}>
+                          <strong>
+                            {ROBOT_CATALOG.find((entry) => entry.id === skill.id)?.name ??
+                              'Habilidad'}
+                          </strong>
+                          : {skill.enabled ? 'habilitada' : 'deshabilitada'}; descripción:{' '}
+                          <span className="configuration-preview-literal">{description}</span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              )}
+              {selectedLimit && selected && (
+                <p className="saved-robot-inspection-notice" role="status">
+                  Esta copia supera los límites actuales para usarla o escribirla: {selectedLimit}
+                </p>
+              )}
+              {error && errorKind === 'save' && selectedSummary.id === selectedIdRef.current && (
+                <p className="saved-robots-control-error" role="alert" aria-live="assertive">
+                  {error}
+                </p>
+              )}
+              {pendingCopyWrite?.target.id === selectedSummary.id && (
+                <p className="saved-robots-pending" role="status">
+                  El resultado de{' '}
+                  {pendingCopyWrite.kind === 'rename' ? 'este cambio de nombre' : 'este reemplazo'}{' '}
+                  todavía no se confirmó. La misma copia y el mismo contenido quedan pendientes de
+                  conciliación.
+                </p>
+              )}
+              {pendingCopyWrite && pendingCopyWrite.target.id !== selectedSummary.id && (
+                <p className="saved-robots-pending" role="status">
+                  Hay un cambio pendiente en «{pendingCopyWrite.target.name}». Elegí esa copia para
+                  conciliarlo antes de iniciar otra modificación.
+                </p>
+              )}
+              <div className="saved-robots-actions saved-robots-primary-actions">
+                <button
+                  className="primary-button"
+                  type="button"
+                  onClick={(event) => openUse(event.currentTarget)}
+                  disabled={!selected || paused || locked || operation !== null || !!selectedLimit}
+                >
+                  Usar este robot
+                </button>
               </div>
+              <details
+                className="saved-robots-more-actions"
+                onKeyDown={(event) => {
+                  if (event.key !== 'Escape' || !event.currentTarget.open) return;
+                  event.preventDefault();
+                  event.currentTarget.open = false;
+                  event.currentTarget.querySelector('summary')?.focus();
+                }}
+              >
+                <summary ref={detailsSummaryRef}>Más acciones</summary>
+                <div className="saved-robots-more-actions-content">
+                  <button
+                    className="text-button"
+                    type="button"
+                    onClick={(event) => openRename(event.currentTarget)}
+                    disabled={
+                      !selected ||
+                      paused ||
+                      locked ||
+                      operation !== null ||
+                      (pendingCopyWrite !== null &&
+                        (pendingCopyWrite.target.id !== selectedSummary.id ||
+                          pendingCopyWrite.kind !== 'rename'))
+                    }
+                  >
+                    Renombrar
+                  </button>
+                  <button
+                    className="text-button"
+                    type="button"
+                    onClick={(event) => openReplace(event.currentTarget)}
+                    disabled={
+                      !selected ||
+                      paused ||
+                      locked ||
+                      operation !== null ||
+                      !configurationAvailable ||
+                      (pendingCopyWrite !== null &&
+                        (pendingCopyWrite.target.id !== selectedSummary.id ||
+                          pendingCopyWrite.kind !== 'replace'))
+                    }
+                  >
+                    Reemplazar con mi robot actual…
+                  </button>
+                  <button
+                    className="text-button danger-button"
+                    type="button"
+                    onClick={() => void handleDelete(selectedSummary)}
+                    disabled={paused || locked || operation !== null || pendingCopyWrite !== null}
+                  >
+                    Eliminar copia…
+                  </button>
+                </div>
+              </details>
             </>
+          ) : (
+            <div className="saved-robots-detail-empty">
+              <p className="card-kicker">Copia seleccionada</p>
+              <h3>Elegí una copia</h3>
+              <p>Elegí un robot guardado para consultar su configuración.</p>
+              {pendingCopyWrite && (
+                <p className="saved-robots-pending" role="status">
+                  Hay un cambio pendiente en «{pendingCopyWrite.target.name}». Elegí esa copia para
+                  conciliarlo antes de iniciar otra modificación.
+                </p>
+              )}
+            </div>
+          )}
+
+          {nameMode === 'new' && (
+            <form
+              className="saved-robots-name-form"
+              onSubmit={(event) => void handleSaveAsNew(event)}
+            >
+              <label htmlFor="saved-robot-name">Nombre para la nueva copia</label>
+              <input
+                ref={newNameInputRef}
+                id="saved-robot-name"
+                type="text"
+                value={newName}
+                onChange={(event) => setNewName(event.target.value)}
+                required
+                disabled={
+                  paused ||
+                  locked ||
+                  operation !== null ||
+                  pendingCreate !== null ||
+                  pendingCopyWrite !== null ||
+                  !configurationAvailable
+                }
+              />
+              {error && errorKind === 'new' && (
+                <p className="saved-robots-control-error" role="alert">
+                  {error}
+                </p>
+              )}
+              {pendingCreate && (
+                <p className="saved-robots-pending" role="status">
+                  No se confirmó la respuesta. Reintentá esta acción para consultar la misma copia
+                  sin crear otra.
+                </p>
+              )}
+              <div className="editor-actions">
+                <button
+                  className="primary-button"
+                  type="submit"
+                  disabled={
+                    paused ||
+                    locked ||
+                    listBusy ||
+                    operation !== null ||
+                    pendingCopyWrite !== null ||
+                    !canSaveAsNew
+                  }
+                >
+                  Guardar una copia
+                </button>
+                <button
+                  className="text-button"
+                  type="button"
+                  onClick={() => setNameMode(null)}
+                  disabled={operation !== null}
+                >
+                  Cancelar
+                </button>
+              </div>
+            </form>
+          )}
+          {nameMode !== 'new' && (
+            <div className="saved-robots-actions saved-robots-create-action">
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() => {
+                  setNameMode('new');
+                  setNewName(pendingCreate?.name ?? '');
+                  setError(null);
+                  setErrorKind(null);
+                  setMessage(null);
+                }}
+                disabled={!canStartNew}
+              >
+                Guardar robot actual
+              </button>
+            </div>
           )}
         </section>
-      )}
+      </div>
 
-      {nameMode !== 'new' && (
-        <div className="saved-robots-actions">
-          <button
-            className="primary-button"
-            type="button"
-            onClick={() => {
-              setNameMode('new');
-              setNewName(pendingCreate?.name ?? '');
-              setError(null);
-              setErrorKind(null);
-              setMessage(null);
-            }}
-            disabled={paused || locked || listBusy || operation !== null || !canSaveAsNew}
+      <dialog
+        ref={dialogRef}
+        className="saved-robots-dialog"
+        aria-labelledby="saved-robots-dialog-title"
+        onCancel={(event) => {
+          event.preventDefault();
+          closeDialog();
+        }}
+      >
+        {dialog?.kind === 'use' && (
+          <div className="saved-robots-dialog-content">
+            <h3 id="saved-robots-dialog-title">Usar «{dialog.target.name}»</h3>
+            <p>
+              Se reemplazarán las instrucciones y habilidades actuales del editor por la
+              configuración consultada de «{dialog.target.name}».
+            </p>
+            <div className="editor-actions">
+              <button className="secondary-button" type="button" onClick={() => closeDialog()}>
+                Cancelar
+              </button>
+              <button
+                className="primary-button"
+                type="button"
+                onClick={() => void handleUseConfirmed(dialog.target)}
+              >
+                Usar este robot
+              </button>
+            </div>
+          </div>
+        )}
+        {dialog?.kind === 'rename' && (
+          <form
+            className="saved-robots-dialog-content"
+            onSubmit={(event) => void handleRenameSubmit(event)}
           >
-            Guardar como nueva
-          </button>
-        </div>
-      )}
-
-      {selected && (
-        <form
-          className="saved-robots-selected-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void handleSave();
-          }}
-        >
-          <label htmlFor="saved-robot-selected-name">Nombre de esta copia</label>
-          <input
-            ref={selectedNameInputRef}
-            id="saved-robot-selected-name"
-            type="text"
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-            required
-            disabled={!canEdit}
-          />
-          {error && errorKind === 'save' && (
-            <p className="saved-robots-control-error" role="alert" aria-live="assertive">
-              {error}
+            <h3 id="saved-robots-dialog-title">Renombrar «{dialog.target.name}»</h3>
+            <label htmlFor="saved-robots-rename-name">Nombre</label>
+            <input
+              ref={renameInputRef}
+              id="saved-robots-rename-name"
+              type="text"
+              value={dialog.name}
+              maxLength={160}
+              onChange={(event) =>
+                setDialog((current) =>
+                  current?.kind === 'rename' ? { ...current, name: event.target.value } : current,
+                )
+              }
+              required
+              disabled={
+                operation !== null ||
+                paused ||
+                locked ||
+                (pendingCopyWrite?.target.id === dialog.target.id &&
+                  pendingCopyWrite.kind === 'rename' &&
+                  !pendingCopyWrite.retryAuthorized)
+              }
+            />
+            {error && errorKind === 'save' && (
+              <p className="saved-robots-control-error" role="alert">
+                {error}
+              </p>
+            )}
+            {pendingCopyWrite?.target.id === dialog.target.id &&
+              pendingCopyWrite.kind === 'rename' &&
+              !pendingCopyWrite.retryAuthorized && (
+                <p className="saved-robots-pending" role="status">
+                  Este diálogo sólo puede conciliar el cambio ya enviado. Después podrás iniciar un
+                  cambio nuevo.
+                </p>
+              )}
+            <p>Solo cambia el nombre. El contenido de esta copia se conserva exactamente.</p>
+            <div className="editor-actions">
+              <button
+                className="text-button"
+                type="button"
+                onClick={() => closeDialog()}
+                disabled={operation !== null}
+              >
+                Cancelar
+              </button>
+              <button
+                className="primary-button"
+                type="submit"
+                disabled={operation !== null || paused || locked}
+              >
+                {pendingCopyWrite?.target.id === dialog.target.id &&
+                pendingCopyWrite.kind === 'rename' &&
+                !pendingCopyWrite.retryAuthorized
+                  ? 'Comprobar cambio pendiente'
+                  : 'Guardar nombre'}
+              </button>
+            </div>
+          </form>
+        )}
+        {dialog?.kind === 'replace' && (
+          <div className="saved-robots-dialog-content">
+            <h3 id="saved-robots-dialog-title">Reemplazar «{dialog.target.name}»</h3>
+            <p>
+              El contenido de «{dialog.target.name}» se reemplazará por las instrucciones y
+              habilidades actuales, confirmadas en el editor.
             </p>
-          )}
-          <div className="saved-robots-actions">
-            <button className="secondary-button" type="submit" disabled={!canEdit}>
-              Guardar
-            </button>
-            <button
-              className="secondary-button"
-              type="button"
-              onClick={() => {
-                selectedNameInputRef.current?.focus();
-                selectedNameInputRef.current?.select();
-              }}
-              disabled={!canEdit}
-            >
-              Renombrar
-            </button>
-            <button
-              className="text-button danger-button"
-              type="button"
-              onClick={() => void handleDelete(selectedManagementSummary!)}
-              disabled={!canEdit}
-            >
-              Eliminar
-            </button>
+            {error && errorKind === 'save' && (
+              <p className="saved-robots-control-error" role="alert">
+                {error}
+              </p>
+            )}
+            {pendingCopyWrite?.target.id === dialog.target.id &&
+              pendingCopyWrite.kind === 'replace' &&
+              !pendingCopyWrite.retryAuthorized && (
+                <p className="saved-robots-pending" role="status">
+                  Esta confirmación sólo puede conciliar el cambio ya enviado. Después podrás
+                  iniciar un reemplazo nuevo.
+                </p>
+              )}
+            <div className="editor-actions">
+              <button
+                className="text-button"
+                type="button"
+                onClick={() => closeDialog()}
+                disabled={operation !== null}
+              >
+                Cancelar
+              </button>
+              <button
+                className="primary-button"
+                type="button"
+                onClick={() => void handleReplaceConfirmed(dialog.target)}
+                disabled={operation !== null || paused || locked || !configurationAvailable}
+              >
+                {pendingCopyWrite?.target.id === dialog.target.id &&
+                pendingCopyWrite.kind === 'replace' &&
+                !pendingCopyWrite.retryAuthorized
+                  ? 'Comprobar cambio pendiente'
+                  : 'Reemplazar copia'}
+              </button>
+            </div>
           </div>
-        </form>
-      )}
-
-      {nameMode === 'new' && (
-        <form className="saved-robots-name-form" onSubmit={(event) => void handleSaveAsNew(event)}>
-          <label htmlFor="saved-robot-name">Nombre para la nueva copia</label>
-          <input
-            ref={inputRef}
-            id="saved-robot-name"
-            type="text"
-            value={newName}
-            onChange={(event) => setNewName(event.target.value)}
-            required
-            disabled={
-              paused ||
-              locked ||
-              operation !== null ||
-              pendingCreate !== null ||
-              !configurationAvailable
-            }
-          />
-          {error && errorKind === 'new' && (
-            <p className="saved-robots-control-error" role="alert" aria-live="assertive">
-              {error}
-            </p>
-          )}
-          {pendingCreate && (
-            <p className="saved-robots-pending" role="status">
-              No se confirmó la respuesta. Reintentá esta acción para consultar la misma copia sin
-              crear otra.
-            </p>
-          )}
-          <div className="editor-actions">
-            <button
-              className="primary-button"
-              type="submit"
-              disabled={paused || locked || operation !== null || !canSaveAsNew}
-            >
-              Guardar como nueva
-            </button>
-            <button
-              className="text-button"
-              type="button"
-              onClick={() => setNameMode(null)}
-              disabled={operation !== null}
-            >
-              Cancelar
-            </button>
-          </div>
-        </form>
-      )}
-
-      {conflict && (
-        <div className="saved-robots-conflict" role="alert">
-          <p>
-            Hay una versión más nueva de «{conflict.name}» guardada en otra pestaña. «Guardar» está
-            bloqueado hasta que cargues esa versión o guardes el borrador visible como una copia
-            nueva.
-          </p>
-          <div className="editor-actions">
-            <button
-              className="secondary-button"
-              type="button"
-              onClick={() => void handleUseConflict()}
-              disabled={busy}
-            >
-              Cargar versión remota
-            </button>
-          </div>
-        </div>
-      )}
-
-      {selected && selectedSummary && (
-        <p className="saved-robots-selected" role="status">
-          Seleccionado: <strong>{selectedSummary.name}</strong>
-        </p>
-      )}
+        )}
+      </dialog>
     </section>
   );
 });
