@@ -304,6 +304,7 @@ export const GameWorkspace = forwardRef<GameWorkspaceHandle, GameWorkspaceProps>
               api={savedRobotApi}
               editor={editor}
               session={session}
+              active={!hiddenLibrary}
               configurationAvailable={configurationAvailable && !authPaused}
               accessState={accessState}
               paused={authPaused}
