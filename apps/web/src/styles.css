@@ -1147,6 +1147,11 @@ h1 {
   font-size: 0.9rem;
 }
 
+.decision-action-list .decision-action-id {
+  color: #b9b4a8;
+  font-weight: 400;
+}
+
 .decision-action-list span {
   color: #b9b4a8;
   font-size: 0.87rem;
@@ -1155,10 +1160,74 @@ h1 {
   overflow-wrap: anywhere;
 }
 
-.decision-parameters {
-  margin-top: 0.4rem !important;
-  color: #d8b36a !important;
+.decision-options {
+  min-width: 0;
+  border: 1px solid rgba(242, 239, 232, 0.14);
+  border-radius: 0.45rem;
+  background: rgba(20, 19, 15, 0.24);
+}
+
+.decision-options summary {
+  min-height: 2.75rem;
+  padding: 0.65rem;
+  color: #f7f1e1;
+  font-weight: 700;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.decision-options summary:focus-visible {
+  outline: 3px solid #f2c879;
+  outline-offset: 2px;
+  border-radius: 0.35rem;
+}
+
+.decision-options[open] > summary {
+  margin-bottom: 0.6rem;
+}
+
+.decision-options-content {
+  display: grid;
+  min-width: 0;
+  gap: 0.7rem;
+  padding: 0 0.65rem 0.65rem;
+}
+
+.decision-choice-id {
+  margin: 0;
+  color: #b9b4a8;
   overflow-wrap: anywhere;
+}
+
+.decision-choice-id code {
+  color: #f7f1e1;
+  overflow-wrap: anywhere;
+}
+
+.decision-literal-data {
+  min-width: 0;
+}
+
+.decision-literal-data h4 {
+  margin: 0 0 0.4rem;
+  color: #d8b36a;
+  font-size: 0.88rem;
+  overflow-wrap: anywhere;
+}
+
+.decision-literal-data pre {
+  max-width: 100%;
+  margin: 0;
+  padding: 0.6rem;
+  overflow: auto;
+  border: 1px solid rgba(242, 239, 232, 0.1);
+  border-radius: 0.35rem;
+  color: #ddd7c8;
+  background: rgba(8, 8, 7, 0.32);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  white-space: pre;
 }
 
 .decision-inspector-empty {

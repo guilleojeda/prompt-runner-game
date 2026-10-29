@@ -78,28 +78,58 @@ const directionLabel = (direction: string): string => {
   return direction;
 };
 
-const actionText = (
-  action: unknown,
-  opaqueId?: string,
-  options?: { readonly showInternalDirection?: boolean },
-): string => {
+const actionText = (action: unknown, opaqueId?: string, parameters?: unknown): string => {
   if (!isRecord(action)) {
     const catalogEntry = opaqueId ? catalogByOpaqueId.get(opaqueId) : undefined;
-    return catalogEntry ? `${catalogEntry.opaqueId} (${catalogEntry.name})` : 'Acción registrada';
+    return catalogEntry?.name ?? 'Acción registrada';
   }
   const id = typeof action.opaqueId === 'string' ? action.opaqueId : opaqueId;
   const catalogEntry = id ? catalogByOpaqueId.get(id) : undefined;
   const kind = typeof action.kind === 'string' ? action.kind : undefined;
   const kindEntry = kind ? humanEntryFor({ kind }) : undefined;
   const label = catalogEntry?.name ?? kindEntry?.name ?? 'Acción registrada';
-  const identifier = id ?? catalogEntry?.opaqueId;
-  const parameters: string[] = [];
-  if (options?.showInternalDirection && typeof action.direction === 'string') {
-    parameters.push(`dirección: ${directionLabel(action.direction)}`);
+  const parameterDirection = isRecord(parameters) ? parameters.direction : undefined;
+  const direction =
+    typeof action.direction === 'string'
+      ? action.direction
+      : typeof parameterDirection === 'string'
+        ? parameterDirection
+        : undefined;
+  return `${label}${direction ? `, dirección: ${directionLabel(direction)}` : ''}`;
+};
+
+interface DecisionLiteralData {
+  readonly labels: string[];
+  readonly json: string;
+}
+
+const literalDecisionData = (detail: DecisionDetail): DecisionLiteralData[] => {
+  const choice = detail.choice;
+  const values: Array<{ readonly label: string; readonly value: unknown }> = [
+    ...(choice?.state === 'selected'
+      ? [
+          { label: 'Acción de la elección', value: choice.action },
+          { label: 'Parámetros de la elección', value: choice.parameters },
+        ]
+      : choice?.state === 'invalid' && choice.parameters !== undefined
+        ? [{ label: 'Parámetros de la elección', value: choice.parameters }]
+        : []),
+    ...(detail.result.kind === 'action'
+      ? [
+          { label: 'Acción registrada', value: detail.result.action },
+          { label: 'Resolución registrada', value: detail.result.resolution },
+        ]
+      : []),
+  ];
+  const entries = new Map<string, DecisionLiteralData>();
+  for (const { label, value } of values) {
+    const json = JSON.stringify(value, null, 2);
+    if (json === undefined) continue;
+    const existing = entries.get(json);
+    if (existing) existing.labels.push(label);
+    else entries.set(json, { labels: [label], json });
   }
-  return `${identifier ? `${identifier} (${label})` : label}${
-    parameters.length > 0 ? `, ${parameters.join(', ')}` : ''
-  }`;
+  return [...entries.values()];
 };
 
 const resolutionLabel = (resolution: unknown): string | null => {
@@ -179,12 +209,6 @@ const observationText = (observation: DecisionObservation | null): string[] => {
   ];
 };
 
-const hasMeaningfulParameters = (parameters: unknown): boolean => {
-  if (isRecord(parameters)) return Object.keys(parameters).length > 0;
-  if (Array.isArray(parameters)) return parameters.length > 0;
-  return parameters !== undefined && parameters !== null;
-};
-
 const resultCodeLabel = (code: string): string => {
   const labels: Record<string, string> = {
     invalid_input: 'entrada inválida',
@@ -218,7 +242,7 @@ const actionResultText = (result: DecisionResult, choice: DecisionChoice | null)
     ];
     return details;
   }
-  const recordedAction = actionText(result.action, undefined, { showInternalDirection: true });
+  const recordedAction = actionText(result.action);
   const details = [
     ...(choice?.state === 'unknown' && recordedAction !== 'Acción registrada'
       ? [`Acción registrada: ${recordedAction}.`]
@@ -360,15 +384,21 @@ function DecisionDetailCard({ detail }: { readonly detail: DecisionDetail | null
     );
   }
   const choice = detail.choice;
-  const selectedChoice = choice?.state === 'selected';
   const choiceText = !choice
     ? 'No hubo una elección registrada.'
     : choice.state === 'invalid'
       ? 'La elección registrada fue inválida.'
       : choice.state === 'unknown'
         ? 'No se conoce la elección registrada.'
-        : `Elección válida: ${actionText(choice.action, choice.opaqueId)}.`;
+        : `Elección válida: ${actionText(choice.action, choice.opaqueId, choice.parameters)}.`;
+  const choiceId =
+    choice?.state === 'selected'
+      ? choice.opaqueId
+      : choice?.state === 'invalid'
+        ? choice.opaqueId
+        : undefined;
   const available = detail.availableActions;
+  const literalData = literalDecisionData(detail);
   return (
     <section className="decision-detail" aria-label={`Ficha de decisión ${detail.item.number}`}>
       <div className="decision-fact">
@@ -380,49 +410,63 @@ function DecisionDetailCard({ detail }: { readonly detail: DecisionDetail | null
         </div>
       </div>
       <div className="decision-fact">
-        <h4>Acciones disponibles</h4>
-        {available === null ? (
-          <p>Acciones no disponibles en el registro.</p>
-        ) : available.length === 0 ? (
-          <p>No había acciones disponibles.</p>
-        ) : (
-          <ul className="decision-action-list">
-            {available.map((action: DecisionAvailableAction) => {
-              const description =
-                action.description === undefined
-                  ? 'Descripción omitida.'
-                  : action.description === ''
-                    ? 'Descripción vacía.'
-                    : action.description;
-              return (
-                <li key={action.opaqueId}>
-                  <strong>
-                    {action.opaqueId} ({action.label})
-                  </strong>
-                  <span>{description}</span>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </div>
-      <div className="decision-fact">
         <h4>Acción elegida</h4>
         <p>{choiceText}</p>
-        {selectedChoice &&
-          choice.parameters !== undefined &&
-          hasMeaningfulParameters(choice.parameters) && (
-            <p className="decision-parameters">Parámetros: {JSON.stringify(choice.parameters)}</p>
-          )}
       </div>
       <div className="decision-fact">
-        <h4>Resultado</h4>
+        <h4>Resolución</h4>
         <div className="decision-fact-copy">
           {actionResultText(detail.result, detail.choice).map((line) => (
             <p key={line}>{line}</p>
           ))}
         </div>
       </div>
+      <details className="decision-options" key={detail.item.number}>
+        <summary>Opciones y datos literales</summary>
+        <div className="decision-options-content">
+          {choiceId && (
+            <p className="decision-choice-id">
+              ID de la elección: <code>{choiceId}</code>
+            </p>
+          )}
+          <div className="decision-fact">
+            <h4>Acciones disponibles</h4>
+            {available === null ? (
+              <p>Acciones no disponibles en el registro.</p>
+            ) : available.length === 0 ? (
+              <p>No había acciones disponibles.</p>
+            ) : (
+              <ul className="decision-action-list">
+                {available.map((action: DecisionAvailableAction) => {
+                  const description =
+                    action.description === undefined
+                      ? 'Descripción omitida.'
+                      : action.description === ''
+                        ? 'Descripción vacía.'
+                        : action.description;
+                  return (
+                    <li key={action.opaqueId}>
+                      <strong>
+                        {action.label}{' '}
+                        <span className="decision-action-id">({action.opaqueId})</span>
+                      </strong>
+                      <span>{description}</span>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+          {literalData.map(({ labels, json }) => (
+            <section className="decision-literal-data" key={labels.join(' / ')}>
+              <h4>{labels.join(' / ')}</h4>
+              <pre>
+                <code>{json}</code>
+              </pre>
+            </section>
+          ))}
+        </div>
+      </details>
     </section>
   );
 }

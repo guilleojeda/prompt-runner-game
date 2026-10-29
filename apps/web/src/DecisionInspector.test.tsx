@@ -132,9 +132,10 @@ describe('DecisionInspector', () => {
     expect(screen.getAllByRole('button', { name: /Decisión [123]/ })).toHaveLength(5);
     expect(await screen.findByRole('heading', { name: 'Observación' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Decisión 1, casilla 2' })).toBeTruthy();
-    expect(screen.getByRole('heading', { name: 'Acciones disponibles' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Acción elegida' })).toBeTruthy();
-    expect(screen.getByRole('heading', { name: 'Resultado' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Resolución' })).toBeTruthy();
+    fireEvent.click(screen.getByText('Opciones y datos literales'));
+    expect(screen.getByRole('heading', { name: 'Acciones disponibles' })).toBeTruthy();
     expect(screen.getByText('Descripción vacía.')).toBeTruthy();
     expect(screen.getByText('Descripción omitida.')).toBeTruthy();
     expect(screen.getByText(/Avance personalizado/)).toBeTruthy();
@@ -595,12 +596,23 @@ describe('DecisionInspector', () => {
     const api = inspectorApi({ getDecision: vi.fn().mockResolvedValue(detailWithParameters) });
     render(<DecisionInspector api={api} attemptId="attempt-1" onClose={vi.fn()} />);
 
-    expect(await screen.findByText('Elección válida: tool_3 (Saltar).')).toBeTruthy();
-    expect(
-      screen.getByText('Parámetros: {"direction":"derecha","modo":"experimental"}'),
-    ).toBeTruthy();
-    expect(screen.queryByText(/right/)).toBeNull();
-    expect(screen.queryByText('Parámetros: {}')).toBeNull();
+    await screen.findByRole('heading', { name: 'Observación' });
+    const choice = screen.getByRole('heading', { name: 'Acción elegida' }).parentElement!;
+    expect(choice.textContent).toContain('Saltar');
+    expect(choice.textContent).toContain('derecha');
+    expect(choice.textContent).not.toContain('right');
+    expect(choice.textContent).not.toContain('Parámetros: {}');
+
+    const disclosure = screen.getByText('Opciones y datos literales');
+    fireEvent.click(disclosure);
+    const literal = disclosure.closest('details')!;
+    const json = JSON.stringify(
+      Array.from(literal.querySelectorAll('pre')).map((entry) =>
+        JSON.parse(entry.textContent ?? 'null'),
+      ),
+    );
+    expect(json).toContain('"direction":"derecha"');
+    expect(json).toContain('"modo":"experimental"');
   });
 
   it('translates an internal direction only for an unknown recorded action', async () => {
