@@ -1455,11 +1455,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
                           {robot.name}
                           {duplicate ? ' · Copia ' + copyNumber : ''}
                         </strong>
-                        <span>{modelLabel(robot.modelKey)}</span>
                         <span>Actualizado {formatDate(robot.updatedAt)}</span>
-                      </span>
-                      <span className="saved-robot-choice-date">
-                        Creado {formatDate(robot.createdAt)}
                       </span>
                     </label>
                     {deleteConflict?.summary.id === robot.id && (
@@ -1521,10 +1517,6 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
                 <div>
                   <dt>Actualizado</dt>
                   <dd>{formatDate(selectedSummary.updatedAt)}</dd>
-                </div>
-                <div>
-                  <dt>Versión</dt>
-                  <dd>{selectedSummary.version}</dd>
                 </div>
               </dl>
               {consultStatus === 'loading' && <p role="status">Consultando la copia…</p>}

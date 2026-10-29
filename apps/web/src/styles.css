@@ -509,7 +509,7 @@ h1 {
 
 .saved-robot-choice {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 0.7rem;
   min-width: 0;
@@ -546,15 +546,10 @@ h1 {
   overflow-wrap: anywhere;
 }
 
-.saved-robot-choice-copy span,
-.saved-robot-choice-date {
+.saved-robot-choice-copy span {
   color: #b9b4a8;
   font-size: 0.82rem;
   line-height: 1.35;
-}
-
-.saved-robot-choice-date {
-  text-align: right;
 }
 
 .saved-robots-detail {
@@ -2648,15 +2643,6 @@ button:disabled {
   .saved-robots-detail,
   .saved-robots-name-form {
     padding: 0.75rem;
-  }
-
-  .saved-robot-choice {
-    grid-template-columns: auto minmax(0, 1fr);
-  }
-
-  .saved-robot-choice-date {
-    grid-column: 2;
-    text-align: left;
   }
 
   .saved-robots-dialog {

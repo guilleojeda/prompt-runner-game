@@ -279,7 +279,6 @@ describe('SavedRobots pending-write regressions', () => {
       await Promise.resolve();
     });
     expect(within(selectedPanel()).getByRole('heading', { name: committed.name })).toBeTruthy();
-    expect(within(selectedPanel()).getByText('2')).toBeTruthy();
     expect(saveRobot).toHaveBeenCalledOnce();
 
     openMoreActions();
