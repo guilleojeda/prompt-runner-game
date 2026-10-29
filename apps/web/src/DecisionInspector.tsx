@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { LEVEL, type LevelSegment } from '../../../shared/game.js';
 import { ROBOT_CATALOG, type RobotCatalogEntry, type RobotSkillId } from '../../../shared/robot.js';
 import {
@@ -14,10 +14,19 @@ import {
   type DecisionResult,
 } from './attempt-api.js';
 import type { ApiAuthRequired } from './api-auth.js';
+import { useAttemptReadRecovery, type AttemptReadResource } from './useAttemptReadRecovery.js';
+
+interface DecisionDetailResource extends AttemptReadResource {
+  readonly decisionNumber: number;
+}
 
 interface DecisionInspectorProps {
   readonly api: AttemptApi;
   readonly attemptId: string;
+  readonly identity?: string;
+  readonly surface?: string;
+  readonly active?: boolean;
+  readonly authPaused?: boolean;
   readonly targetLabel?: string;
   readonly initialSelection?: 'first' | 'last-action-or-decision' | 'last-decision';
   readonly onAuthRequired?: ApiAuthRequired;
@@ -258,7 +267,18 @@ const actionResultText = (result: DecisionResult, choice: DecisionChoice | null)
 
 const errorText = (error: unknown): string => {
   if (error instanceof AttemptApiFailure) return error.message;
-  return 'No se pudo cargar la inspección. Podés reintentar.';
+  return 'No se pudo cargar la inspección.';
+};
+
+const recoveryText = (
+  resource: 'mapa' | 'ficha',
+  reason: 'transient' | 'pending' | 'authentication',
+): string => {
+  if (reason === 'authentication') return 'Se necesita recuperar el acceso para continuar.';
+  if (reason === 'pending') {
+    return 'Las decisiones todavía no están listas. Se volverán a consultar automáticamente.';
+  }
+  return `No se pudo cargar ${resource === 'mapa' ? 'el mapa' : 'la ficha'}. Se volverá a consultar automáticamente.`;
 };
 
 const mapSupportLabel = (
@@ -474,22 +494,32 @@ function DecisionDetailCard({ detail }: { readonly detail: DecisionDetail | null
 export function DecisionInspector({
   api,
   attemptId,
+  identity,
+  surface = 'historial',
+  active = true,
+  authPaused = false,
   targetLabel,
   initialSelection = 'first',
   onAuthRequired,
   onClose,
 }: DecisionInspectorProps) {
+  const recoveryIdentity = identity ?? 'decision-inspector';
   const [index, setIndex] = useState<DecisionIndex | null>(null);
   const [selectedSupport, setSelectedSupport] = useState<number | null>(null);
   const [selectedNumber, setSelectedNumber] = useState<number | null>(null);
   const [detail, setDetail] = useState<DecisionDetail | null>(null);
-  const [detailRetry, setDetailRetry] = useState(0);
   const [loadingIndex, setLoadingIndex] = useState(true);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
-  const indexRequestRef = useRef(0);
-  const indexControllerRef = useRef<AbortController | null>(null);
+  const [indexRecoveryMessage, setIndexRecoveryMessage] = useState<string | null>(null);
+  const [detailRecoveryMessage, setDetailRecoveryMessage] = useState<string | null>(null);
+  const indexResourceRef = useRef<AttemptReadResource | null>(null);
+  const detailResourceRef = useRef<DecisionDetailResource | null>(null);
+  const selectedNumberRef = useRef<number | null>(null);
+  const openingIdentityRef = useRef(recoveryIdentity);
+  const openingSurfaceRef = useRef(surface);
+  const abandonedRef = useRef(false);
   const initialScrollNumberRef = useRef<number | null>(null);
   const detailContainerRef = useRef<HTMLDivElement | null>(null);
   const headingRef = useRef<HTMLHeadingElement | null>(null);
@@ -498,105 +528,231 @@ export function DecisionInspector({
     headingRef.current?.focus();
   }, [attemptId]);
 
-  const loadIndex = useCallback(
-    async (signal?: AbortSignal): Promise<void> => {
-      const requestId = ++indexRequestRef.current;
-      const ownedController = signal ? null : new AbortController();
-      if (ownedController) {
-        indexControllerRef.current?.abort();
-        indexControllerRef.current = ownedController;
-      }
-      const requestSignal = signal ?? ownedController?.signal;
-      setLoadingIndex(true);
-      setError(null);
-      try {
-        const loaded = await api.getDecisionIndex(attemptId, requestSignal);
-        if (requestSignal?.aborted || indexRequestRef.current !== requestId) return;
-        if (loaded.attemptId !== attemptId || loaded.levelId !== LEVEL.id) {
-          throw new AttemptApiFailure('server', 'El índice no coincide con el intento abierto.');
-        }
-        setIndex(loaded);
-        const selected = initialDecision(loaded, initialSelection);
-        initialScrollNumberRef.current =
-          initialSelection === 'first' ? null : (selected?.number ?? null);
-        setSelectedSupport(selected?.originSupport ?? null);
-        setSelectedNumber(selected?.number ?? null);
-        setDetail(null);
-        setDetailError(null);
-        if (!selected) setLoadingDetail(false);
-        setDetailRetry((value) => value + 1);
-      } catch (loadError) {
-        if (requestSignal?.aborted || indexRequestRef.current !== requestId) return;
-        if (loadError instanceof AttemptApiFailure && loadError.code === 'authentication') {
-          onAuthRequired?.(loadError.authContext);
-        }
-        setError(errorText(loadError));
-      } finally {
-        if (indexRequestRef.current === requestId && !requestSignal?.aborted) {
-          if (ownedController && indexControllerRef.current === ownedController) {
-            indexControllerRef.current = null;
-          }
-          setLoadingIndex(false);
-        }
-      }
-    },
-    [api, attemptId, initialSelection, onAuthRequired],
-  );
-
-  const loadDecision = useCallback(
-    async (number: number, signal: AbortSignal): Promise<void> => {
-      if (signal.aborted) return;
+  const detailRecovery = useAttemptReadRecovery<DecisionDetailResource, DecisionDetail>({
+    active,
+    authPaused,
+    identity: recoveryIdentity,
+    surface,
+    onAuthRequired,
+    read: (resource, signal) => api.getDecision(resource.targetId, resource.decisionNumber, signal),
+    isPendingFailure: (loadError) =>
+      loadError instanceof AttemptApiFailure && loadError.code === 'pending',
+    onStart: (resource) => {
+      if (detailResourceRef.current !== resource) return;
       setLoadingDetail(true);
       setDetailError(null);
-      try {
-        const loaded = await api.getDecision(attemptId, number, signal);
-        if (signal.aborted) return;
-        if (
-          loaded.attemptId !== attemptId ||
-          loaded.levelId !== LEVEL.id ||
-          loaded.item.number !== number
-        ) {
-          setDetailError('La ficha recibida no coincide con la decisión elegida.');
-          return;
-        }
-        setDetail(loaded);
-      } catch (loadError: unknown) {
-        if (signal.aborted) return;
-        if (loadError instanceof AttemptApiFailure && loadError.code === 'authentication') {
-          onAuthRequired?.(loadError.authContext);
-        }
-        setDetailError(errorText(loadError));
-        setDetail(null);
-      } finally {
-        if (!signal.aborted) setLoadingDetail(false);
-      }
+      setDetailRecoveryMessage(null);
     },
-    [api, attemptId, onAuthRequired],
-  );
+    onValue: (loaded, resource, _signal, isCurrent) => {
+      if (
+        !isCurrent() ||
+        detailResourceRef.current !== resource ||
+        selectedNumberRef.current !== resource.decisionNumber ||
+        resource.targetId !== attemptId ||
+        resource.identity !== recoveryIdentity
+      ) {
+        return false;
+      }
+      if (
+        loaded.attemptId !== resource.targetId ||
+        loaded.levelId !== LEVEL.id ||
+        loaded.item.number !== resource.decisionNumber
+      ) {
+        throw new AttemptApiFailure(
+          'server',
+          'La ficha recibida no coincide con la decisión elegida.',
+          200,
+        );
+      }
+      setDetail(loaded);
+      setDetailError(null);
+      setDetailRecoveryMessage(null);
+      setLoadingDetail(false);
+      return true;
+    },
+    onRecovering: (resource, _loadError, reason) => {
+      if (detailResourceRef.current !== resource) return;
+      setLoadingDetail(false);
+      setDetail(null);
+      setDetailError(null);
+      setDetailRecoveryMessage(recoveryText('ficha', reason));
+    },
+    onPaused: (resource) => {
+      if (detailResourceRef.current !== resource) return;
+      setLoadingDetail(false);
+      setDetailRecoveryMessage(
+        authPaused
+          ? recoveryText('ficha', 'authentication')
+          : 'La consulta se retomará cuando vuelva a estar disponible.',
+      );
+    },
+    onError: (resource, loadError) => {
+      if (detailResourceRef.current !== resource) return;
+      setLoadingDetail(false);
+      setDetailRecoveryMessage(null);
+      setDetailError(errorText(loadError));
+      setDetail(null);
+    },
+  });
 
-  useEffect(() => {
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => void loadIndex(controller.signal), 0);
-    return () => {
-      window.clearTimeout(timer);
-      controller.abort();
-      indexRequestRef.current += 1;
-      indexControllerRef.current?.abort();
-      indexControllerRef.current = null;
-    };
-  }, [loadIndex]);
-
-  useEffect(() => {
-    if (!selectedNumber) {
-      return undefined;
+  const openDetail = (number: number | null): void => {
+    if (number === null) {
+      detailRecovery.clear();
+      detailResourceRef.current = null;
+      selectedNumberRef.current = null;
+      setSelectedNumber(null);
+      setDetail(null);
+      setDetailError(null);
+      setDetailRecoveryMessage(null);
+      setLoadingDetail(false);
+      return;
     }
-    const controller = new AbortController();
-    const number = selectedNumber;
-    void Promise.resolve().then(() => loadDecision(number, controller.signal));
-    return () => {
-      controller.abort();
+
+    const indexResource = indexResourceRef.current;
+    selectedNumberRef.current = number;
+    setSelectedNumber(number);
+    setDetail(null);
+    setDetailError(null);
+    setDetailRecoveryMessage(null);
+    const resource = indexResource ? { ...indexResource, decisionNumber: number } : null;
+    detailResourceRef.current = resource;
+    if (!resource) {
+      detailRecovery.clear();
+      setLoadingDetail(false);
+      return;
+    }
+    void detailRecovery.open(resource);
+  };
+
+  const indexRecovery = useAttemptReadRecovery<AttemptReadResource, DecisionIndex>({
+    active,
+    authPaused,
+    identity: recoveryIdentity,
+    surface,
+    onAuthRequired,
+    read: (resource, signal) => api.getDecisionIndex(resource.targetId, signal),
+    isPendingFailure: (loadError) =>
+      loadError instanceof AttemptApiFailure && loadError.code === 'pending',
+    onStart: (resource) => {
+      if (indexResourceRef.current !== resource) return;
+      setLoadingIndex(true);
+      setError(null);
+      setIndexRecoveryMessage(null);
+    },
+    onValue: (loaded, resource, _signal, isCurrent) => {
+      if (
+        !isCurrent() ||
+        indexResourceRef.current !== resource ||
+        resource.targetId !== attemptId ||
+        resource.identity !== recoveryIdentity
+      ) {
+        return false;
+      }
+      if (loaded.attemptId !== resource.targetId || loaded.levelId !== LEVEL.id) {
+        throw new AttemptApiFailure('server', 'El índice no coincide con el intento abierto.', 200);
+      }
+
+      const selected = initialDecision(loaded, initialSelection);
+      setIndex(loaded);
+      setError(null);
+      setIndexRecoveryMessage(null);
+      setLoadingIndex(false);
+      initialScrollNumberRef.current =
+        initialSelection === 'first' ? null : (selected?.number ?? null);
+      setSelectedSupport(selected?.originSupport ?? null);
+      if (selected) openDetail(selected.number);
+      else openDetail(null);
+      return true;
+    },
+    onRecovering: (resource, _loadError, reason) => {
+      if (indexResourceRef.current !== resource) return;
+      setLoadingIndex(false);
+      setError(null);
+      setIndexRecoveryMessage(recoveryText('mapa', reason));
+    },
+    onPaused: (resource) => {
+      if (indexResourceRef.current !== resource) return;
+      setLoadingIndex(false);
+      setIndexRecoveryMessage(
+        authPaused
+          ? recoveryText('mapa', 'authentication')
+          : 'La consulta se retomará cuando vuelva a estar disponible.',
+      );
+    },
+    onError: (resource, loadError) => {
+      if (indexResourceRef.current !== resource) return;
+      setLoadingIndex(false);
+      setIndexRecoveryMessage(null);
+      setError(errorText(loadError));
+    },
+  });
+
+  useLayoutEffect(() => {
+    if (recoveryIdentity === openingIdentityRef.current && surface === openingSurfaceRef.current) {
+      return;
+    }
+    abandonedRef.current = true;
+    indexRecovery.clear();
+    detailRecovery.clear();
+    indexResourceRef.current = null;
+    detailResourceRef.current = null;
+    selectedNumberRef.current = null;
+    setIndex(null);
+    setSelectedSupport(null);
+    setSelectedNumber(null);
+    setDetail(null);
+    setLoadingIndex(false);
+    setLoadingDetail(false);
+    setError(null);
+    setDetailError(null);
+    setIndexRecoveryMessage(null);
+    setDetailRecoveryMessage(null);
+  }, [detailRecovery.clear, indexRecovery.clear, recoveryIdentity, surface]);
+
+  useLayoutEffect(() => {
+    if (abandonedRef.current) return;
+    indexRecovery.clear();
+    detailRecovery.clear();
+    setIndex(null);
+    setSelectedSupport(null);
+    setSelectedNumber(null);
+    selectedNumberRef.current = null;
+    setDetail(null);
+    setLoadingIndex(true);
+    setLoadingDetail(false);
+    setError(null);
+    setDetailError(null);
+    setIndexRecoveryMessage(null);
+    setDetailRecoveryMessage(null);
+    initialScrollNumberRef.current = null;
+
+    const resource: AttemptReadResource = {
+      identity: openingIdentityRef.current,
+      targetId: attemptId,
+      surface: openingSurfaceRef.current,
     };
-  }, [detailRetry, loadDecision, selectedNumber]);
+    indexResourceRef.current = resource;
+    void indexRecovery.open(resource);
+
+    return () => {
+      indexRecovery.clear();
+      detailRecovery.clear();
+      if (indexResourceRef.current === resource) {
+        indexResourceRef.current = null;
+        detailResourceRef.current = null;
+        selectedNumberRef.current = null;
+      }
+    };
+  }, [attemptId, detailRecovery.clear, indexRecovery.clear, indexRecovery.open, initialSelection]);
+
+  const closeInspector = (): void => {
+    indexRecovery.clear();
+    detailRecovery.clear();
+    indexResourceRef.current = null;
+    detailResourceRef.current = null;
+    selectedNumberRef.current = null;
+    onClose();
+  };
 
   const bySupport = useMemo(
     () => index?.decisions.filter((item) => item.originSupport === selectedSupport) ?? [],
@@ -607,30 +763,51 @@ export function DecisionInspector({
     initialScrollNumberRef.current = null;
     setSelectedSupport(support);
     const first = index?.decisions.find((item) => item.originSupport === support);
-    if (selectedNumber === (first?.number ?? null)) return;
-    setSelectedNumber(first?.number ?? null);
-    setDetail(null);
-    setDetailError(null);
-    if (!first) setLoadingDetail(false);
+    if (selectedNumberRef.current === (first?.number ?? null)) return;
+    openDetail(first?.number ?? null);
   };
   const selectDecision = (item: DecisionIndexItem): void => {
     initialScrollNumberRef.current = null;
     setSelectedSupport(item.originSupport);
-    if (selectedNumber === item.number) return;
-    setSelectedNumber(item.number);
-    setDetail(null);
-    setDetailError(null);
+    if (selectedNumberRef.current === item.number) return;
+    openDetail(item.number);
   };
   const navigateToDetail = (): void => {
     initialScrollNumberRef.current = null;
     detailContainerRef.current?.focus({ preventScroll: true });
   };
 
+  const [visibilityRevision, setVisibilityRevision] = useState(0);
+
+  useEffect(() => {
+    const handleWake = (): void => {
+      if (
+        initialScrollNumberRef.current === null ||
+        document.hidden ||
+        document.visibilityState === 'hidden'
+      ) {
+        return;
+      }
+      setVisibilityRevision((revision) => revision + 1);
+    };
+    window.addEventListener('focus', handleWake);
+    document.addEventListener('visibilitychange', handleWake);
+    return () => {
+      window.removeEventListener('focus', handleWake);
+      document.removeEventListener('visibilitychange', handleWake);
+    };
+  }, []);
+
   useEffect(() => {
     if (
       !detail ||
       loadingDetail ||
       detailError ||
+      authPaused ||
+      !active ||
+      document.hidden ||
+      document.visibilityState === 'hidden' ||
+      detail.item.number !== selectedNumberRef.current ||
       initialScrollNumberRef.current !== detail.item.number
     ) {
       return;
@@ -642,7 +819,7 @@ export function DecisionInspector({
         ? 'instant'
         : 'smooth',
     });
-  }, [detail, detailError, loadingDetail]);
+  }, [active, authPaused, detail, detailError, loadingDetail, visibilityRevision]);
 
   return (
     <section className="decision-inspector" aria-labelledby="decision-inspector-title">
@@ -657,21 +834,28 @@ export function DecisionInspector({
           )}
           <p>Consultá las decisiones guardadas del recorrido sin volver a ejecutarlo.</p>
         </div>
-        <button className="secondary-button" type="button" onClick={onClose}>
+        <button className="secondary-button" type="button" onClick={closeInspector}>
           Cerrar inspección
         </button>
       </div>
+      {authPaused && (
+        <p className="attempt-message" role="status">
+          Se conserva la inspección hasta recuperar el acceso.
+        </p>
+      )}
       {loadingIndex && (
         <p className="attempt-message" role="status">
           Cargando el mapa de decisiones…
         </p>
       )}
+      {!authPaused && !loadingIndex && indexRecoveryMessage && (
+        <p className="attempt-message" role="status">
+          {indexRecoveryMessage}
+        </p>
+      )}
       {error && (
         <div className="attempt-error" role="alert">
           <p>{error}</p>
-          <button className="secondary-button" type="button" onClick={() => void loadIndex()}>
-            Reintentar inspección
-          </button>
         </div>
       )}
       {!loadingIndex && !error && index && (
@@ -729,22 +913,19 @@ export function DecisionInspector({
                       Cargando la ficha…
                     </p>
                   )}
+                  {!authPaused && !loadingDetail && detailRecoveryMessage && (
+                    <p className="attempt-message" role="status">
+                      {detailRecoveryMessage}
+                    </p>
+                  )}
                   {detailError && (
                     <div className="attempt-error" role="alert">
                       <p>{detailError}</p>
-                      <button
-                        className="secondary-button"
-                        type="button"
-                        onClick={() => {
-                          navigateToDetail();
-                          setDetailRetry((value) => value + 1);
-                        }}
-                      >
-                        Reintentar ficha
-                      </button>
                     </div>
                   )}
-                  {!loadingDetail && !detailError && <DecisionDetailCard detail={detail} />}
+                  {!loadingDetail && !detailError && !detailRecoveryMessage && (
+                    <DecisionDetailCard detail={detail} />
+                  )}
                 </div>
               </div>
               <section

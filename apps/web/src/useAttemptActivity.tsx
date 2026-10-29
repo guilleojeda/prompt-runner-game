@@ -144,6 +144,7 @@ export interface AttemptActivityController {
   readonly historyResultOpen: boolean;
   readonly configurationOpen: boolean;
   readonly inspectorOpen: boolean;
+  readonly inspectorActive: boolean;
   readonly historyQueryOpen: boolean;
   readonly tryAvailable: boolean;
   readonly controls: ReactNode;
@@ -308,6 +309,7 @@ export function useAttemptActivity({
     decisionInspectorTarget,
     decisionInspectorSelection,
     decisionInspectorOpenVersion,
+    decisionInspectorActive,
     queryVisible,
     openConfiguration,
     requestConfigurationConfirmation,
@@ -1914,11 +1916,15 @@ export function useAttemptActivity({
   ) : null;
 
   const inspectorView =
-    decisionInspectorTarget && !authPaused ? (
+    decisionInspectorTarget && decisionInspectorActive ? (
       <DecisionInspector
         key={`${sessionSub}:${decisionInspectorTarget.id}:${decisionInspectorOpenVersion}`}
         api={api}
         attemptId={decisionInspectorTarget.id}
+        identity={sessionSub}
+        surface={surface}
+        active={decisionInspectorActive}
+        authPaused={authPaused}
         targetLabel={`${statusLabel(decisionInspectorTarget.status)}, ${formatDateTime(decisionInspectorTarget.createdAt)}`}
         initialSelection={decisionInspectorSelection}
         onAuthRequired={handleDecisionInspectorAuthRequired}
@@ -1991,6 +1997,7 @@ export function useAttemptActivity({
     historyResultOpen,
     configurationOpen: configurationState !== null,
     inspectorOpen: decisionInspectorTarget !== null,
+    inspectorActive: decisionInspectorActive,
     historyQueryOpen: resultQuery !== null,
     tryAvailable,
     controls: attemptControls,

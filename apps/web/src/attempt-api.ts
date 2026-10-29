@@ -955,16 +955,17 @@ export class AttemptApiClient implements AttemptApi {
       });
     }
     const parsed = await readBody(response);
+    const code = responseCode(parsed);
     if (!response.ok) {
       // A native gateway 429 is not player quota; only our explicit code means that.
-      if (response.status === 429 && responseCode(parsed) === 'quota_exceeded') {
+      if (response.status === 429 && code === 'quota_exceeded') {
         throw new AttemptApiFailure(
           'quota_exceeded',
           errorMessage(parsed, 'Alcanzaste la cuota diaria.'),
           response.status,
         );
       }
-      if (responseCode(parsed) === 'attempt_unavailable') {
+      if (code === 'attempt_unavailable') {
         throw new AttemptApiFailure(
           'attempt_unavailable',
           errorMessage(
@@ -983,7 +984,7 @@ export class AttemptApiClient implements AttemptApi {
           false,
         );
       }
-      if (response.status === 500 && responseCode(parsed) === 'stored_attempt_incompatible') {
+      if (response.status === 500 && code === 'stored_attempt_incompatible') {
         throw new AttemptApiFailure(
           'incompatible',
           errorMessage(parsed, invalidMessage),
@@ -1008,14 +1009,17 @@ export class AttemptApiClient implements AttemptApi {
           response.status,
         );
       }
-      if (response.status === 409 && responseCode(parsed) === 'configuration_pending') {
+      if (
+        response.status === 409 &&
+        (code === 'configuration_pending' || code === 'decisions_pending')
+      ) {
         throw new AttemptApiFailure(
           'pending',
           errorMessage(parsed, invalidMessage),
           response.status,
         );
       }
-      if (response.status === 409 && responseCode(parsed) === 'configuration_incompatible') {
+      if (response.status === 409 && code === 'configuration_incompatible') {
         throw new AttemptApiFailure(
           'incompatible',
           errorMessage(parsed, invalidMessage),

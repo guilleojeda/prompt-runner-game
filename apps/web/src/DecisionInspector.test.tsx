@@ -22,6 +22,9 @@ const index: DecisionIndex = {
   ],
 };
 
+const MINUTE = 60_000;
+const TEST_NOW = new Date('2026-10-28T12:00:00.000Z');
+
 const detail = (number: number): DecisionDetail => ({
   attemptId: 'attempt-1',
   levelId: LEVEL.id,
@@ -88,6 +91,33 @@ function stubScrollIntoView() {
       else Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
     },
   };
+}
+
+async function advance(milliseconds: number): Promise<void> {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(milliseconds);
+  });
+}
+
+function expectDiscreteRecovery(loadingMessage: string): void {
+  const status = screen
+    .queryAllByRole('status')
+    .find((element) => !element.textContent?.includes(loadingMessage));
+  expect(status).toBeTruthy();
+  expect(screen.queryByRole('alert')).toBeNull();
+  expect(screen.queryByRole('button', { name: /Reintentar (inspección|ficha)/ })).toBeNull();
+}
+
+function clickWithoutNativeNavigation(link: HTMLElement): void {
+  const preventDefault = (event: Event): void => {
+    if (event.target === link) event.preventDefault();
+  };
+  document.addEventListener('click', preventDefault, true);
+  try {
+    fireEvent.click(link);
+  } finally {
+    document.removeEventListener('click', preventDefault, true);
+  }
 }
 
 afterEach(() => {
@@ -221,7 +251,7 @@ describe('DecisionInspector', () => {
     expect(getDecision).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps both selected-row links on one focusable destination through load, error, retry, and success', async () => {
+  it('keeps both selected-row links on one focusable destination through load, error, automatic recovery, and success', async () => {
     const crowdedIndex: DecisionIndex = {
       ...index,
       decisions: Array.from({ length: 8 }, (_, position) => ({
@@ -278,18 +308,6 @@ describe('DecisionInspector', () => {
       destination.focus();
       expect(document.activeElement).toBe(destination);
     };
-    const clickWithoutNativeNavigation = (link: HTMLElement): void => {
-      const preventDefault = (event: Event): void => {
-        if (event.target === link) event.preventDefault();
-      };
-      document.addEventListener('click', preventDefault, true);
-      try {
-        fireEvent.click(link);
-      } finally {
-        document.removeEventListener('click', preventDefault, true);
-      }
-    };
-
     try {
       render(<DecisionInspector api={api} attemptId="attempt-1" onClose={vi.fn()} />);
 
@@ -316,11 +334,12 @@ describe('DecisionInspector', () => {
       expect(readLinksAndDestination().destination).toBe(loading.destination);
 
       await act(async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(TEST_NOW);
         rejectInitial(new Error('detalle no disponible'));
         await Promise.resolve();
       });
-      expect(await screen.findByRole('alert')).toBeTruthy();
-      expect(screen.getByRole('button', { name: 'Reintentar ficha' })).toBeTruthy();
+      expectDiscreteRecovery('Cargando la ficha…');
       const failed = readLinksAndDestination();
       expect(failed.href).toBe(loading.href);
       expect(failed.destination).toBe(loading.destination);
@@ -329,18 +348,17 @@ describe('DecisionInspector', () => {
 
       clickWithoutNativeNavigation(failed.links[0]!);
       expect(getDecision).toHaveBeenCalledTimes(1);
-      expect(screen.getByRole('button', { name: 'Reintentar ficha' })).toBeTruthy();
-
-      const retryButton = screen.getByRole('button', { name: 'Reintentar ficha' });
-      retryButton.focus();
-      expect(document.activeElement).toBe(retryButton);
-      fireEvent.click(retryButton);
-      expect(await screen.findByText('Cargando la ficha…')).toBeTruthy();
+      expectDiscreteRecovery('Cargando la ficha…');
+      await advance(MINUTE - 1);
+      expect(getDecision).toHaveBeenCalledTimes(1);
+      expect(document.activeElement).toBe(loading.destination);
+      await advance(1);
+      expect(screen.getByText('Cargando la ficha…')).toBeTruthy();
       expect(getDecision).toHaveBeenCalledTimes(2);
-      const retrying = readLinksAndDestination();
-      expect(retrying.href).toBe(loading.href);
-      expect(retrying.destination).toBe(loading.destination);
-      expect(document.activeElement).toBe(retrying.destination);
+      const recovering = readLinksAndDestination();
+      expect(recovering.href).toBe(loading.href);
+      expect(recovering.destination).toBe(loading.destination);
+      expect(document.activeElement).toBe(recovering.destination);
       const scrollCallsBeforeSuccess = scroll.scrollIntoView.mock.calls.length;
 
       const selectedDetail: DecisionDetail = {
@@ -351,7 +369,7 @@ describe('DecisionInspector', () => {
         resolveRetry(selectedDetail);
       });
 
-      expect(await screen.findByRole('heading', { name: 'Decisión 1, casilla 2' })).toBeTruthy();
+      expect(screen.getByRole('heading', { name: 'Decisión 1, casilla 2' })).toBeTruthy();
       expect(screen.getAllByRole('heading', { name: 'Observación' })).toHaveLength(1);
       const loaded = readLinksAndDestination();
       expect(loaded.href).toBe(loading.href);
@@ -365,35 +383,50 @@ describe('DecisionInspector', () => {
     }
   });
 
-  it('does not move focus back to a retried detail after a later decision is selected', async () => {
-    let resolveRetry!: (loaded: DecisionDetail) => void;
+  it('does not move focus back to an automatically recovered detail after a later decision is selected', async () => {
+    let rejectInitial!: (reason: unknown) => void;
+    let resolveRecovery!: (loaded: DecisionDetail) => void;
     const getDecision = vi
       .fn()
-      .mockRejectedValueOnce(new Error('detalle no disponible'))
+      .mockImplementationOnce(
+        () =>
+          new Promise<DecisionDetail>((_resolve, reject) => {
+            rejectInitial = reject;
+          }),
+      )
       .mockImplementationOnce(
         () =>
           new Promise<DecisionDetail>((resolve) => {
-            resolveRetry = resolve;
+            resolveRecovery = resolve;
           }),
       )
       .mockImplementation((_id: string, number: number) => Promise.resolve(detail(number)));
     const api = inspectorApi({ getDecision });
     render(<DecisionInspector api={api} attemptId="attempt-1" onClose={vi.fn()} />);
 
-    const retryButton = await screen.findByRole('button', { name: 'Reintentar ficha' });
-    retryButton.focus();
-    expect(document.activeElement).toBe(retryButton);
-    fireEvent.click(retryButton);
     expect(await screen.findByText('Cargando la ficha…')).toBeTruthy();
+    vi.useFakeTimers();
+    vi.setSystemTime(TEST_NOW);
+    await act(async () => {
+      rejectInitial(new Error('detalle no disponible'));
+      await Promise.resolve();
+    });
+    expectDiscreteRecovery('Cargando la ficha…');
+    const failedDecision = screen.getAllByRole('button', { name: /Decisión 1/ })[0]!;
+    failedDecision.focus();
+    await advance(MINUTE);
+    expect(getDecision).toHaveBeenCalledTimes(2);
+    expect(screen.getByText('Cargando la ficha…')).toBeTruthy();
+    expect(document.activeElement).toBe(failedDecision);
 
     const laterDecision = screen.getAllByRole('button', { name: /Decisión 3/ })[0]!;
     laterDecision.focus();
     fireEvent.click(laterDecision);
-    expect(await screen.findByRole('heading', { name: 'Decisión 3, casilla 5' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Decisión 3, casilla 5' })).toBeTruthy();
     expect(document.activeElement).toBe(laterDecision);
 
     await act(async () => {
-      resolveRetry(detail(1));
+      resolveRecovery(detail(1));
     });
 
     expect(screen.getByRole('heading', { name: 'Decisión 3, casilla 5' })).toBeTruthy();
@@ -403,38 +436,56 @@ describe('DecisionInspector', () => {
     expect(getDecision).toHaveBeenCalledTimes(3);
   });
 
-  it('keeps the detail focused when a retry fails again', async () => {
-    let rejectRetry!: (reason: unknown) => void;
+  it('keeps the detail focused when an automatic recovery fails again', async () => {
+    let rejectInitial!: (reason: unknown) => void;
+    let rejectRecovery!: (reason: unknown) => void;
     const getDecision = vi
       .fn()
-      .mockRejectedValueOnce(new Error('primer fallo'))
       .mockImplementationOnce(
         () =>
           new Promise<DecisionDetail>((_resolve, reject) => {
-            rejectRetry = reject;
+            rejectInitial = reject;
           }),
-      );
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise<DecisionDetail>((_resolve, reject) => {
+            rejectRecovery = reject;
+          }),
+      )
+      .mockResolvedValue(detail(1));
     const api = inspectorApi({ getDecision });
     render(<DecisionInspector api={api} attemptId="attempt-1" onClose={vi.fn()} />);
 
-    const retryButton = await screen.findByRole('button', { name: 'Reintentar ficha' });
-    retryButton.focus();
-    fireEvent.click(retryButton);
     expect(await screen.findByText('Cargando la ficha…')).toBeTruthy();
-
     const destination = document.getElementById('decision-detail');
     expect(destination).not.toBeNull();
+    destination?.focus();
+    vi.useFakeTimers();
+    vi.setSystemTime(TEST_NOW);
+    await act(async () => {
+      rejectInitial(new Error('primer fallo'));
+      await Promise.resolve();
+    });
+    expectDiscreteRecovery('Cargando la ficha…');
+    await advance(MINUTE);
+    expect(getDecision).toHaveBeenCalledTimes(2);
+    expect(screen.getByText('Cargando la ficha…')).toBeTruthy();
     expect(document.activeElement).toBe(destination);
 
     await act(async () => {
-      rejectRetry(new Error('segundo fallo'));
+      rejectRecovery(new Error('segundo fallo'));
+      await Promise.resolve();
     });
 
-    expect(await screen.findByRole('alert')).toBeTruthy();
-    expect(screen.getByText('No se pudo cargar la inspección. Podés reintentar.')).toBeTruthy();
+    expectDiscreteRecovery('Cargando la ficha…');
     expect(document.activeElement).toBe(destination);
-    expect(screen.getByRole('button', { name: 'Reintentar ficha' })).toBeTruthy();
+    await advance(MINUTE - 1);
     expect(getDecision).toHaveBeenCalledTimes(2);
+    await advance(1);
+    expect(getDecision).toHaveBeenCalledTimes(3);
+    expect(screen.getByRole('heading', { name: 'Decisión 1, casilla 2' })).toBeTruthy();
+    expect(document.activeElement).toBe(destination);
   });
 
   it.each(['decision list', 'selected support on the map'] as const)(
@@ -462,27 +513,42 @@ describe('DecisionInspector', () => {
     },
   );
 
-  it('keeps the retry control when reselecting a decision whose detail failed', async () => {
+  it('preserves the failed detail deadline when reselecting the same decision', async () => {
+    let rejectInitial!: (reason: unknown) => void;
     const getDecision = vi
       .fn()
-      .mockRejectedValueOnce(new Error('local transient failure'))
+      .mockImplementationOnce(
+        () =>
+          new Promise<DecisionDetail>((_resolve, reject) => {
+            rejectInitial = reject;
+          }),
+      )
       .mockResolvedValue(detail(1));
     const api = inspectorApi({ getDecision });
     render(<DecisionInspector api={api} attemptId="attempt-1" onClose={vi.fn()} />);
 
-    await screen.findByRole('button', { name: 'Reintentar ficha' });
-    expect(screen.getByRole('button', { name: 'Reintentar ficha' })).toBeTruthy();
+    expect(await screen.findByText('Cargando la ficha…')).toBeTruthy();
     expect(getDecision).toHaveBeenCalledTimes(1);
+    vi.useFakeTimers();
+    vi.setSystemTime(TEST_NOW);
+    await act(async () => {
+      rejectInitial(new Error('local transient failure'));
+      await Promise.resolve();
+    });
+    expectDiscreteRecovery('Cargando la ficha…');
+    await advance(MINUTE / 2);
 
     fireEvent.click(screen.getAllByRole('button', { name: /Decisión 1/ })[0]!);
     await act(async () => {
       await Promise.resolve();
     });
 
-    expect(screen.getByRole('button', { name: 'Reintentar ficha' })).toBeTruthy();
+    expectDiscreteRecovery('Cargando la ficha…');
     expect(getDecision).toHaveBeenCalledTimes(1);
-    fireEvent.click(screen.getByRole('button', { name: 'Reintentar ficha' }));
-    expect(await screen.findByRole('heading', { name: 'Decisión 1, casilla 2' })).toBeTruthy();
+    await advance(MINUTE / 2 - 1);
+    expect(getDecision).toHaveBeenCalledTimes(1);
+    await advance(1);
+    expect(screen.getByRole('heading', { name: 'Decisión 1, casilla 2' })).toBeTruthy();
     expect(getDecision).toHaveBeenCalledTimes(2);
   });
 
@@ -864,17 +930,17 @@ describe('DecisionInspector', () => {
     }
   });
 
-  it('cancels the pending latest-detail scroll when retrying a failed initial detail', async () => {
-    let resolveRetry!: (loaded: DecisionDetail) => void;
+  it('cancels pending latest-detail scroll through the explicit detail link before recovery', async () => {
+    let rejectInitial!: (reason: unknown) => void;
     const getDecision = vi
       .fn()
-      .mockRejectedValueOnce(new Error('initial detail unavailable'))
       .mockImplementationOnce(
         () =>
-          new Promise<DecisionDetail>((resolve) => {
-            resolveRetry = resolve;
+          new Promise<DecisionDetail>((_resolve, reject) => {
+            rejectInitial = reject;
           }),
-      );
+      )
+      .mockResolvedValueOnce(detail(3));
     const api = inspectorApi({ getDecision });
     const scroll = stubScrollIntoView();
 
@@ -888,23 +954,27 @@ describe('DecisionInspector', () => {
         />,
       );
 
-      const retryButton = await screen.findByRole('button', { name: 'Reintentar ficha' });
+      expect(await screen.findByText('Cargando la ficha…')).toBeTruthy();
       const destination = document.getElementById('decision-detail');
       expect(destination).not.toBeNull();
       expect(getDecision).toHaveBeenCalledWith('attempt-1', 3, expect.any(AbortSignal));
       expect(scroll.scrollIntoView).not.toHaveBeenCalled();
 
-      retryButton.focus();
-      fireEvent.click(retryButton);
-      expect(await screen.findByText('Cargando la ficha…')).toBeTruthy();
+      vi.useFakeTimers();
+      vi.setSystemTime(TEST_NOW);
+      await act(async () => {
+        rejectInitial(new Error('initial detail unavailable'));
+        await Promise.resolve();
+      });
+      expectDiscreteRecovery('Cargando la ficha…');
+      const detailLink = screen.getAllByRole('link', { name: 'Ver ficha seleccionada' })[0]!;
+      clickWithoutNativeNavigation(detailLink);
       expect(document.activeElement).toBe(destination);
       expect(scroll.scrollIntoView).not.toHaveBeenCalled();
 
-      await act(async () => {
-        resolveRetry(detail(3));
-      });
+      await advance(MINUTE);
 
-      expect(await screen.findByRole('heading', { name: 'Decisión 3, casilla 5' })).toBeTruthy();
+      expect(screen.getByRole('heading', { name: 'Decisión 3, casilla 5' })).toBeTruthy();
       expect(document.activeElement).toBe(destination);
       expect(scroll.scrollIntoView).not.toHaveBeenCalled();
       expect(getDecision).toHaveBeenCalledTimes(2);
@@ -1067,37 +1137,77 @@ describe('DecisionInspector', () => {
     );
   });
 
-  it('shows honest empty and recoverable error states', async () => {
+  it('shows empty state, recovers a transient index error, and keeps definitive errors visible', async () => {
     const empty: DecisionIndex = { attemptId: 'attempt-1', levelId: LEVEL.id, decisions: [] };
     const api = inspectorApi({ getDecisionIndex: vi.fn().mockResolvedValue(empty) });
     render(<DecisionInspector api={api} attemptId="attempt-1" onClose={vi.fn()} />);
     expect(await screen.findByText(/no tiene decisiones guardadas/)).toBeTruthy();
 
     cleanup();
+    let rejectIndex!: (reason: unknown) => void;
+    const indexFailure = new Promise<DecisionIndex>((_resolve, reject) => {
+      rejectIndex = reject;
+    });
     const getDecisionIndex = vi
       .fn()
-      .mockRejectedValueOnce(new Error('sin red'))
+      .mockImplementationOnce(() => indexFailure)
       .mockResolvedValueOnce(index);
     const failingApi = inspectorApi({ getDecisionIndex });
     render(<DecisionInspector api={failingApi} attemptId="attempt-1" onClose={vi.fn()} />);
-    expect(await screen.findByRole('alert')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Reintentar inspección' }));
+    await waitFor(() => expect(getDecisionIndex).toHaveBeenCalledOnce());
+    vi.useFakeTimers();
+    vi.setSystemTime(TEST_NOW);
+    await act(async () => {
+      rejectIndex(new Error('sin red'));
+      await Promise.resolve();
+    });
+    expectDiscreteRecovery('Cargando el mapa de decisiones…');
+    await advance(MINUTE - 1);
+    expect(getDecisionIndex).toHaveBeenCalledOnce();
+    await advance(1);
     expect(
-      await screen.findByRole('button', {
+      screen.getByRole('button', {
         name: /Casilla 2, Casilla, Tramo 1[–-]2: pozo, recompensa, 2 decisiones/,
       }),
     ).toBeTruthy();
     expect(getDecisionIndex).toHaveBeenCalledTimes(2);
+
+    cleanup();
+    vi.useRealTimers();
+    const definitiveFailure = new AttemptApiFailure(
+      'invalid',
+      'El índice guardado no es válido.',
+      400,
+    );
+    const getDefinitiveIndex = vi.fn().mockRejectedValue(definitiveFailure);
+    render(
+      <DecisionInspector
+        api={inspectorApi({ getDecisionIndex: getDefinitiveIndex })}
+        attemptId="attempt-1"
+        onClose={vi.fn()}
+      />,
+    );
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    expect(screen.getByText(definitiveFailure.message)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Reintentar inspección' })).toBeNull();
+    vi.useFakeTimers();
+    await advance(MINUTE * 2);
+    expect(getDefinitiveIndex).toHaveBeenCalledOnce();
+    expect(screen.getByText(definitiveFailure.message)).toBeTruthy();
   });
 
-  it('ignores a late index retry after the inspector is closed', async () => {
-    let finishRetry!: (error: unknown) => void;
+  it('ignores a late index recovery after the inspector is closed', async () => {
+    let rejectInitial!: (error: unknown) => void;
+    let finishRecovery!: (error: unknown) => void;
+    const initialFailure = new Promise<DecisionIndex>((_resolve, reject) => {
+      rejectInitial = reject;
+    });
     const lateRetry = new Promise<DecisionIndex>((_resolve, reject) => {
-      finishRetry = reject;
+      finishRecovery = reject;
     });
     const getDecisionIndex = vi
       .fn()
-      .mockRejectedValueOnce(new Error('sin red'))
+      .mockReturnValueOnce(initialFailure)
       .mockReturnValueOnce(lateRetry);
     const onAuthRequired = vi.fn();
     const view = render(
@@ -1109,40 +1219,68 @@ describe('DecisionInspector', () => {
       />,
     );
 
-    expect(await screen.findByRole('alert')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Reintentar inspección' }));
-    await waitFor(() => expect(getDecisionIndex).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(getDecisionIndex).toHaveBeenCalledOnce());
+    vi.useFakeTimers();
+    vi.setSystemTime(TEST_NOW);
+    await act(async () => {
+      rejectInitial(new Error('sin red'));
+      await Promise.resolve();
+    });
+    expectDiscreteRecovery('Cargando el mapa de decisiones…');
+    await advance(MINUTE);
+    expect(getDecisionIndex).toHaveBeenCalledTimes(2);
+    const recoverySignal = getDecisionIndex.mock.calls[1]?.[1];
+    expect(recoverySignal).toBeInstanceOf(AbortSignal);
     view.unmount();
+    expect(recoverySignal?.aborted).toBe(true);
 
     await act(async () => {
-      finishRetry(new AttemptApiFailure('authentication', 'La sesión venció.', 401));
+      finishRecovery(new AttemptApiFailure('authentication', 'La sesión venció.', 401));
       await Promise.resolve();
     });
     expect(onAuthRequired).not.toHaveBeenCalled();
   });
 
-  it('retries a failed decision detail without losing the selected decision', async () => {
+  it('recovers a failed decision detail without losing the selected decision', async () => {
+    let rejectInitial!: (reason: unknown) => void;
+    const initialFailure = new Promise<DecisionDetail>((_resolve, reject) => {
+      rejectInitial = reject;
+    });
     const getDecision = vi
       .fn()
-      .mockRejectedValueOnce(new Error('detalle no disponible'))
+      .mockReturnValueOnce(initialFailure)
       .mockResolvedValueOnce(detail(1));
     const api = inspectorApi({ getDecision });
     render(<DecisionInspector api={api} attemptId="attempt-1" onClose={vi.fn()} />);
 
-    expect(await screen.findByRole('alert')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Reintentar ficha' }));
-    expect(await screen.findByRole('heading', { name: 'Observación' })).toBeTruthy();
+    expect(await screen.findByText('Cargando la ficha…')).toBeTruthy();
+    vi.useFakeTimers();
+    vi.setSystemTime(TEST_NOW);
+    await act(async () => {
+      rejectInitial(new Error('detalle no disponible'));
+      await Promise.resolve();
+    });
+    expectDiscreteRecovery('Cargando la ficha…');
+    await advance(MINUTE);
+    expect(screen.getByRole('heading', { name: 'Observación' })).toBeTruthy();
     expect(getDecision).toHaveBeenCalledTimes(2);
   });
 
-  it('surfaces a synchronous detail failure and clears its loading state', async () => {
+  it('keeps a definitive synchronous detail failure visible without an automatic retry', async () => {
     const getDecision = vi.fn(() => {
-      throw new Error('fallo síncrono');
+      throw new AttemptApiFailure('invalid', 'El detalle no es válido.', 400);
     });
     const api = inspectorApi({ getDecision });
     render(<DecisionInspector api={api} attemptId="attempt-1" onClose={vi.fn()} />);
 
     expect(await screen.findByRole('alert')).toBeTruthy();
+    expect(screen.getByText('El detalle no es válido.')).toBeTruthy();
     expect(screen.queryByRole('status', { name: 'Cargando la ficha…' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Reintentar ficha' })).toBeNull();
+    expect(getDecision).toHaveBeenCalledOnce();
+    vi.useFakeTimers();
+    await advance(MINUTE * 2);
+    expect(getDecision).toHaveBeenCalledOnce();
+    expect(screen.getByText('El detalle no es válido.')).toBeTruthy();
   });
 });
