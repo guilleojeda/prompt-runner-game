@@ -1093,7 +1093,14 @@ describe('SavedRobots', () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
     render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Guardar robot actual' }));
+    await screen.findByRole('button', { name: 'Guardar robot actual' });
+    await waitFor(() =>
+      expect(
+        (screen.getByRole('button', { name: 'Guardar robot actual' }) as HTMLButtonElement)
+          .disabled,
+      ).toBe(false),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar robot actual' }));
     fireEvent.change(screen.getByLabelText('Nombre para la nueva copia'), {
       target: { value: 'Copia incierta' },
     });
