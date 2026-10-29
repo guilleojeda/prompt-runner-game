@@ -2195,6 +2195,8 @@ describe('access screen', () => {
   });
 
   it('recovers an old real-client 401 after renewal without pausing new access', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-29T12:00:00.000Z'));
     window.sessionStorage.clear();
     let releaseOldResponse!: (response: Response) => void;
     const oldResponse = new Promise<Response>((resolve) => {
@@ -2204,7 +2206,7 @@ describe('access screen', () => {
       .fn<typeof fetch>()
       .mockReturnValueOnce(oldResponse)
       .mockResolvedValueOnce(new Response(JSON.stringify({ robots: [] }), { status: 200 }));
-    const firstSession = session('a@example.com', Math.floor(Date.now() / 1000), 'old-token');
+    const firstSession = session('a@example.com', Math.floor(Date.now() / 1000) + 5, 'old-token');
     const renewedSession = session(
       'a@example.com',
       Math.floor(Date.now() / 1000) + 600,
@@ -2230,21 +2232,30 @@ describe('access screen', () => {
       />,
     );
 
-    await screen.findByRole('button', { name: 'Cuenta' });
+    await act(flushAuthMicrotasks);
+    expect(screen.getByRole('button', { name: 'Cuenta' })).toBeTruthy();
     expect(fetchImpl).not.toHaveBeenCalled();
     navigate('Mis robots');
-    await waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce());
-    await waitFor(() => expect(initialize).toHaveBeenCalledTimes(2));
-    vi.useFakeTimers();
-
+    await act(flushAuthMicrotasks);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({
+      headers: expect.objectContaining({ Authorization: 'Bearer old-token' }),
+    });
+    expect(initialize).toHaveBeenCalledOnce();
+    window.setTimeout(
+      () =>
+        releaseOldResponse(
+          new Response(JSON.stringify({ message: 'Volvé a ingresar para continuar.' }), {
+            status: 401,
+          }),
+        ),
+      5_000,
+    );
     await act(async () => {
-      releaseOldResponse(
-        new Response(JSON.stringify({ message: 'Volvé a ingresar para continuar.' }), {
-          status: 401,
-        }),
-      );
+      vi.advanceTimersByTime(5_000);
       await flushAuthMicrotasks();
     });
+    expect(initialize).toHaveBeenCalledTimes(2);
 
     const savedSection = screen
       .getByRole('heading', { name: 'Mis robots' })
@@ -2282,7 +2293,9 @@ describe('access screen', () => {
     expect(within(savedSection).queryByRole('button', { name: 'Reintentar lista' })).toBeNull();
   });
 
-  it('accepts an old real-client rejection during pending renewal, then clears only its global gate', async () => {
+  it('ignores a late old real-client rejection after renewal pauses the library read', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-29T12:00:00.000Z'));
     window.sessionStorage.clear();
     let releaseOldResponse!: (response: Response) => void;
     const oldResponse = new Promise<Response>((resolve) => {
@@ -2300,7 +2313,7 @@ describe('access screen', () => {
       .fn<typeof fetch>()
       .mockReturnValueOnce(oldResponse)
       .mockReturnValueOnce(recoveryResponse);
-    const firstSession = session('a@example.com', Math.floor(Date.now() / 1000), 'old-token');
+    const firstSession = session('a@example.com', Math.floor(Date.now() / 1000) + 5, 'old-token');
     const renewedSession = session(
       'a@example.com',
       Math.floor(Date.now() / 1000) + 600,
@@ -2326,38 +2339,61 @@ describe('access screen', () => {
       />,
     );
 
-    await screen.findByRole('button', { name: 'Cuenta' });
+    await act(flushAuthMicrotasks);
+    expect(screen.getByRole('button', { name: 'Cuenta' })).toBeTruthy();
     expect(fetchImpl).not.toHaveBeenCalled();
     navigate('Mis robots');
-    await waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce());
-    await waitFor(() => expect(initialize).toHaveBeenCalledTimes(2));
+    await act(flushAuthMicrotasks);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({
+      headers: expect.objectContaining({ Authorization: 'Bearer old-token' }),
+    });
+    expect(initialize).toHaveBeenCalledOnce();
     await act(async () => {
-      releaseOldResponse(new Response('{}', { status: 403 }));
+      vi.advanceTimersByTime(5_000);
       await flushAuthMicrotasks();
     });
+    expect(initialize).toHaveBeenCalledTimes(2);
+    const firstSignal = fetchImpl.mock.calls[0]?.[1]?.signal;
+    expect(firstSignal?.aborted).toBe(true);
+    expect(fetchImpl).toHaveBeenCalledOnce();
 
+    const savedSection = screen
+      .getByRole('heading', { name: 'Mis robots' })
+      .closest('section') as HTMLElement;
+    const libraryNavigation = screen.getByRole('navigation', { name: 'Navegación principal' });
+    const libraryButton = within(libraryNavigation).getByRole('button', {
+      name: 'Mis robots',
+    }) as HTMLButtonElement;
+    libraryButton.focus();
+    expect(document.activeElement).toBe(libraryButton);
+    releaseOldResponse(new Response('{}', { status: 403 }));
+    await act(flushAuthMicrotasks);
     expect(
-      await screen.findByText('El acceso fue rechazado para esta operación. Podés reintentar.'),
-    ).toBeTruthy();
-    expect(screen.getByText(/La sesión dejó de tener acceso/)).toBeTruthy();
+      screen.queryByText('El acceso fue rechazado para esta operación. Podés reintentar.'),
+    ).toBeNull();
+    expect(screen.queryByText(/La sesión dejó de tener acceso/)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Volver a ingresar' })).toBeNull();
+    expect(within(savedSection).queryByRole('alert')).toBeNull();
+    expect(within(savedSection).queryByText('Todavía no guardaste ninguna copia.')).toBeNull();
     expect(fetchImpl).toHaveBeenCalledOnce();
     expect(initialize).toHaveBeenCalledTimes(2);
+    expect(document.activeElement).toBe(libraryButton);
 
     await act(async () => {
       releaseRenewal(renewedSession);
       await flushAuthMicrotasks();
     });
-    await waitFor(() => expect(screen.queryByText(/La sesión dejó de tener acceso/)).toBeNull());
-    await waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(2));
-    const savedSection = screen
-      .getByRole('heading', { name: 'Mis robots' })
-      .closest('section') as HTMLElement;
+    await act(flushAuthMicrotasks);
+    expect(screen.queryByText(/La sesión dejó de tener acceso/)).toBeNull();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(fetchImpl.mock.calls[1]?.[0]).toBe('https://api.example.test/robots');
     expect(fetchImpl.mock.calls[1]?.[1]).toMatchObject({
       headers: expect.objectContaining({ Authorization: 'Bearer new-token' }),
     });
     expect(within(savedSection).queryByText('Todavía no guardaste ninguna copia.')).toBeNull();
     expect(initialize).toHaveBeenCalledTimes(2);
+    expect(document.activeElement).toBe(libraryButton);
 
     await act(async () => {
       releaseRecoveryResponse(new Response(JSON.stringify({ robots: [] }), { status: 200 }));

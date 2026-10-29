@@ -538,7 +538,9 @@ describe('SavedRobots', () => {
       await waitFor(() => expect(getRobot).toHaveBeenCalledTimes(index + 1));
       expect(getRobot.mock.calls[index]?.[0]).toBe(expectedId);
     }
-    expect(listRobots).toHaveBeenLastCalledWith('next');
+    const lastListRequest = listRobots.mock.calls.at(-1);
+    expect(lastListRequest?.[0]).toBe('next');
+    expect(lastListRequest?.[1]).toBeInstanceOf(AbortSignal);
   });
 
   it('renames the selected copy while preserving its stored draft instead of capturing the editor', async () => {
