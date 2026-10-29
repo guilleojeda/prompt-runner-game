@@ -1,24 +1,24 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
-import { AttemptApiFailure, isTransientReadFailure } from './attempt-api.js';
 import type { ApiAuthRequired } from './api-auth.js';
+import type { ReadFailureClassification } from './read-recovery.js';
 
 const RECOVERY_DELAY_MS = 60_000;
 const MAX_TIMEOUT_MS = 2_147_483_647;
 
-export interface AttemptReadResource {
+export interface ReadResource {
   readonly identity: string;
   readonly targetId: string;
   readonly surface: string;
 }
 
-export interface AttemptReadRecoveryOptions<Resource extends AttemptReadResource, Value> {
+export interface ReadRecoveryOptions<Resource extends ReadResource, Value> {
   readonly active: boolean;
   readonly authPaused: boolean;
   readonly identity: string;
   readonly surface: string;
   readonly onAuthRequired?: ApiAuthRequired;
   readonly read: (resource: Resource, signal: AbortSignal) => Promise<Value>;
-  readonly isPendingFailure?: (error: unknown, resource: Resource) => boolean;
+  readonly classifyFailure: (error: unknown, resource: Resource) => ReadFailureClassification;
   readonly onStart: (resource: Resource) => void;
   readonly onValue: (
     value: Value,
@@ -41,19 +41,20 @@ interface FailedRead<Resource> {
   readonly deadline: number;
 }
 
-export interface AttemptReadRecovery<Resource extends AttemptReadResource> {
+export interface ReadRecovery<Resource extends ReadResource> {
   open(resource: Resource): Promise<void>;
   clear(): void;
+  pause(): void;
 }
 
 /**
- * Owns the shared lifecycle for selected attempt GETs. Each caller retains its
- * state, validation and continuation; this hook owns only identity, abort,
- * access/visibility pauses and the retry deadline.
+ * Owns the shared lifecycle for an active GET. Each caller retains its state,
+ * validation and continuation; this hook owns identity, abort, access and
+ * visibility pauses, and the retry deadline.
  */
-export function useAttemptReadRecovery<Resource extends AttemptReadResource, Value>(
-  options: AttemptReadRecoveryOptions<Resource, Value>,
-): AttemptReadRecovery<Resource> {
+export function useReadRecovery<Resource extends ReadResource, Value>(
+  options: ReadRecoveryOptions<Resource, Value>,
+): ReadRecovery<Resource> {
   const optionsRef = useRef(options);
   const mountedRef = useRef(false);
   const resourceRef = useRef<Resource | null>(null);
@@ -109,6 +110,7 @@ export function useAttemptReadRecovery<Resource extends AttemptReadResource, Val
 
   const pause = useCallback((): void => {
     clearTimer();
+    openingResourceRef.current = null;
     const resource = resourceRef.current;
     const controller = controllerRef.current;
     if (!resource || !controller) return;
@@ -223,10 +225,10 @@ export function useAttemptReadRecovery<Resource extends AttemptReadResource, Val
         }
 
         const currentOptions = optionsRef.current;
-        const authenticationFailure =
-          error instanceof AttemptApiFailure && error.code === 'authentication';
-        if (authenticationFailure) {
-          const accepted = currentOptions.onAuthRequired?.(error.authContext);
+        const failure = currentOptions.classifyFailure(error, resource);
+        let recoveryReason: 'transient' | 'pending' | 'authentication' | null = null;
+        if (failure.kind === 'authentication') {
+          const accepted = currentOptions.onAuthRequired?.(failure.authContext);
           if (!isCurrentOperation()) return;
           if (accepted !== false) {
             authBlockedRef.current = true;
@@ -234,22 +236,16 @@ export function useAttemptReadRecovery<Resource extends AttemptReadResource, Val
             currentOptions.onRecovering(resource, error, 'authentication');
             return;
           }
+          recoveryReason = 'transient';
+        } else if (failure.kind === 'transient' || failure.kind === 'pending') {
+          recoveryReason = failure.kind;
         }
 
-        if (
-          authenticationFailure ||
-          currentOptions.isPendingFailure?.(error, resource) === true ||
-          isTransientReadFailure(error)
-        ) {
-          const reason = authenticationFailure
-            ? 'transient'
-            : currentOptions.isPendingFailure?.(error, resource)
-              ? 'pending'
-              : 'transient';
+        if (recoveryReason !== null) {
           failedRef.current = { resource, deadline: Date.now() + RECOVERY_DELAY_MS };
           authBlockedRef.current = false;
           needsFreshReadRef.current = false;
-          currentOptions.onRecovering(resource, error, reason);
+          currentOptions.onRecovering(resource, error, recoveryReason);
           return;
         }
 
@@ -353,5 +349,5 @@ export function useAttemptReadRecovery<Resource extends AttemptReadResource, Val
     [clear, isVisible],
   );
 
-  return useMemo(() => ({ open, clear }), [clear, open]);
+  return useMemo(() => ({ open, clear, pause }), [clear, open, pause]);
 }

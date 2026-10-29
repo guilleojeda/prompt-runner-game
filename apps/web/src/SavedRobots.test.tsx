@@ -190,7 +190,10 @@ function deleteSelectedCopy(): void {
   fireEvent.click(screen.getByRole('button', { name: /Eliminar copia/u }));
 }
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 describe('SavedRobots', () => {
   it('uses a copy only after confirmation, then creates a named copy from the editor snapshot', async () => {
@@ -411,7 +414,9 @@ describe('SavedRobots', () => {
     expect(screen.queryByText('Cargaste «Explorador».')).toBeNull();
   });
 
-  it('shows an empty state after a list retry and does not offer a mutation retry', async () => {
+  it('keeps a discreet status for a transient list failure and confirms empty only after recovery', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-27T12:00:00.000Z'));
     const listRobots = vi
       .fn()
       .mockRejectedValueOnce(new SavedRobotApiFailure('network', 'No hay conexión.'))
@@ -419,10 +424,28 @@ describe('SavedRobots', () => {
     const savedApi = api({ listRobots });
     render(<SavedRobots api={savedApi} editor={editor()} session={session()} />);
 
-    expect(await screen.findByText('No hay conexión.')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Reintentar lista' }));
-    expect(await screen.findByText('Todavía no guardaste ninguna copia.')).toBeTruthy();
+    await act(async () => {
+      for (let index = 0; index < 12; index += 1) await Promise.resolve();
+    });
+    const savedSection = screen.getByRole('region', { name: /Mis robots/u });
+    expect(within(savedSection).getByRole('status')).toBeTruthy();
+    expect(listRobots).toHaveBeenCalledOnce();
+    expect(within(savedSection).queryByRole('button', { name: 'Reintentar lista' })).toBeNull();
+    expect(within(savedSection).queryByRole('alert')).toBeNull();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(59_999);
+    });
+    expect(listRobots).toHaveBeenCalledOnce();
+    expect(within(savedSection).getByRole('status')).toBeTruthy();
+    expect(screen.queryByText('Todavía no guardaste ninguna copia.')).toBeNull();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(screen.getByText('Todavía no guardaste ninguna copia.')).toBeTruthy();
     expect(listRobots).toHaveBeenCalledTimes(2);
+    expect(listRobots.mock.calls.map(([cursor]) => cursor)).toEqual([undefined, undefined]);
   });
 
   it('keeps creation disabled while paused or locked', async () => {
@@ -515,7 +538,9 @@ describe('SavedRobots', () => {
       await waitFor(() => expect(getRobot).toHaveBeenCalledTimes(index + 1));
       expect(getRobot.mock.calls[index]?.[0]).toBe(expectedId);
     }
-    expect(listRobots).toHaveBeenLastCalledWith('next');
+    const lastListRequest = listRobots.mock.calls.at(-1);
+    expect(lastListRequest?.[0]).toBe('next');
+    expect(lastListRequest?.[1]).toBeInstanceOf(AbortSignal);
   });
 
   it('renames the selected copy while preserving its stored draft instead of capturing the editor', async () => {
@@ -1310,13 +1335,19 @@ describe('SavedRobots', () => {
   });
 
   it('keeps an incompatible row deletable by its listed ID/version after its read fails', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-27T12:00:00.000Z'));
     const incompatible = savedRobot({
       id: 'incompatible-copy',
       name: 'Histórica incompatible',
       version: 7,
     });
     const getRobot = vi.fn().mockImplementation(async () => {
-      throw new SavedRobotApiFailure('server', 'La configuración guardada no es compatible.', 500);
+      throw new SavedRobotApiFailure(
+        'incompatible',
+        'La configuración guardada no es compatible.',
+        500,
+      );
     });
     const deleteRobot = vi.fn().mockResolvedValue({ deleted: true });
     const savedApi = api({
@@ -1328,19 +1359,27 @@ describe('SavedRobots', () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValue(true);
     render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
 
-    await chooseCopy(/Histórica incompatible/u);
-    expect(await screen.findByText('La configuración guardada no es compatible.')).toBeTruthy();
+    await act(async () => {
+      for (let index = 0; index < 12; index += 1) await Promise.resolve();
+    });
+    fireEvent.click(screen.getByRole('radio', { name: /Histórica incompatible/u }));
+    await act(async () => {
+      for (let index = 0; index < 12; index += 1) await Promise.resolve();
+    });
+    expect(screen.getByText('La configuración guardada no es compatible.')).toBeTruthy();
+    expect(getRobot).toHaveBeenCalledOnce();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
     expect(getRobot).toHaveBeenCalledOnce();
 
     deleteSelectedCopy();
     expect(deleteRobot).not.toHaveBeenCalled();
     deleteSelectedCopy();
-    await waitFor(() =>
-      expect(deleteRobot.mock.calls[0]?.slice(0, 2)).toEqual([
-        incompatible.id,
-        incompatible.version,
-      ]),
-    );
+    await act(async () => {
+      for (let index = 0; index < 12; index += 1) await Promise.resolve();
+    });
+    expect(deleteRobot.mock.calls[0]?.slice(0, 2)).toEqual([incompatible.id, incompatible.version]);
     expect(confirm).toHaveBeenCalledTimes(2);
     expect(editorRef.current?.applyDraft).not.toHaveBeenCalled();
     expect(editorRef.current?.captureSnapshot).not.toHaveBeenCalled();

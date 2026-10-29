@@ -25,6 +25,7 @@ import {
 import { isModelKey, type ModelKey } from '../../../shared/models.js';
 import type { AuthConfig } from './auth.js';
 import { API_ACCESS_REJECTED_MESSAGE, resolveApiToken, type ApiTokenProvider } from './api-auth.js';
+import type { ReadFailureClassification } from './read-recovery.js';
 
 export type { AttemptStatus, AttemptSummary } from '../../../shared/attempt.js';
 export type {
@@ -124,6 +125,16 @@ export function isTransientReadFailure(error: unknown): boolean {
     error.code === 'attempt_unavailable' &&
     (error.status === 429 || error.status === undefined || error.status >= 500)
   );
+}
+
+export function classifyAttemptReadFailure(error: unknown): ReadFailureClassification {
+  if (error instanceof AttemptApiFailure && error.code === 'authentication') {
+    return { kind: 'authentication', authContext: error.authContext };
+  }
+  if (error instanceof AttemptApiFailure && error.code === 'pending') {
+    return { kind: 'pending' };
+  }
+  return isTransientReadFailure(error) ? { kind: 'transient' } : { kind: 'definitive' };
 }
 
 export type AttemptTokenProvider = ApiTokenProvider;

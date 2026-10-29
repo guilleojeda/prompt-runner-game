@@ -3,6 +3,7 @@ import { LEVEL, type LevelSegment } from '../../../shared/game.js';
 import { ROBOT_CATALOG, type RobotCatalogEntry, type RobotSkillId } from '../../../shared/robot.js';
 import {
   AttemptApiFailure,
+  classifyAttemptReadFailure,
   type AttemptApi,
   type DecisionAvailableAction,
   type DecisionChoice,
@@ -14,9 +15,9 @@ import {
   type DecisionResult,
 } from './attempt-api.js';
 import type { ApiAuthRequired } from './api-auth.js';
-import { useAttemptReadRecovery, type AttemptReadResource } from './useAttemptReadRecovery.js';
+import { useReadRecovery, type ReadResource } from './useReadRecovery.js';
 
-interface DecisionDetailResource extends AttemptReadResource {
+interface DecisionDetailResource extends ReadResource {
   readonly decisionNumber: number;
 }
 
@@ -514,7 +515,7 @@ export function DecisionInspector({
   const [detailError, setDetailError] = useState<string | null>(null);
   const [indexRecoveryMessage, setIndexRecoveryMessage] = useState<string | null>(null);
   const [detailRecoveryMessage, setDetailRecoveryMessage] = useState<string | null>(null);
-  const indexResourceRef = useRef<AttemptReadResource | null>(null);
+  const indexResourceRef = useRef<ReadResource | null>(null);
   const detailResourceRef = useRef<DecisionDetailResource | null>(null);
   const selectedNumberRef = useRef<number | null>(null);
   const openingIdentityRef = useRef(recoveryIdentity);
@@ -528,15 +529,14 @@ export function DecisionInspector({
     headingRef.current?.focus();
   }, [attemptId]);
 
-  const detailRecovery = useAttemptReadRecovery<DecisionDetailResource, DecisionDetail>({
+  const detailRecovery = useReadRecovery<DecisionDetailResource, DecisionDetail>({
     active,
     authPaused,
     identity: recoveryIdentity,
     surface,
     onAuthRequired,
     read: (resource, signal) => api.getDecision(resource.targetId, resource.decisionNumber, signal),
-    isPendingFailure: (loadError) =>
-      loadError instanceof AttemptApiFailure && loadError.code === 'pending',
+    classifyFailure: classifyAttemptReadFailure,
     onStart: (resource) => {
       if (detailResourceRef.current !== resource) return;
       setLoadingDetail(true);
@@ -624,15 +624,14 @@ export function DecisionInspector({
     void detailRecovery.open(resource);
   };
 
-  const indexRecovery = useAttemptReadRecovery<AttemptReadResource, DecisionIndex>({
+  const indexRecovery = useReadRecovery<ReadResource, DecisionIndex>({
     active,
     authPaused,
     identity: recoveryIdentity,
     surface,
     onAuthRequired,
     read: (resource, signal) => api.getDecisionIndex(resource.targetId, signal),
-    isPendingFailure: (loadError) =>
-      loadError instanceof AttemptApiFailure && loadError.code === 'pending',
+    classifyFailure: classifyAttemptReadFailure,
     onStart: (resource) => {
       if (indexResourceRef.current !== resource) return;
       setLoadingIndex(true);
@@ -726,7 +725,7 @@ export function DecisionInspector({
     setDetailRecoveryMessage(null);
     initialScrollNumberRef.current = null;
 
-    const resource: AttemptReadResource = {
+    const resource: ReadResource = {
       identity: openingIdentityRef.current,
       targetId: attemptId,
       surface: openingSurfaceRef.current,

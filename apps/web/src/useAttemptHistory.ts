@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObje
 import type { ApiAuthRequired } from './api-auth.js';
 import {
   AttemptApiFailure,
+  classifyAttemptReadFailure,
   isTransientReadFailure,
   type AttemptApi,
   type AttemptConfiguration,
@@ -10,7 +11,7 @@ import {
 } from './attempt-api.js';
 import type { RobotEditorHandle } from './RobotEditor.js';
 import type { ResultSource } from './attempt-display.js';
-import { useAttemptReadRecovery, type AttemptReadResource } from './useAttemptReadRecovery.js';
+import { useReadRecovery, type ReadResource } from './useReadRecovery.js';
 
 export interface AttemptDisplayContext {
   readonly source: ResultSource;
@@ -161,7 +162,7 @@ interface FailedHistoryPage {
   readonly deadline: number;
 }
 
-interface HistoryResultResource extends AttemptReadResource {
+interface HistoryResultResource extends ReadResource {
   readonly identity: string;
   readonly targetId: string;
   readonly surface: 'historial';
@@ -169,7 +170,7 @@ interface HistoryResultResource extends AttemptReadResource {
   readonly handleActivityTarget: ActivityTargetHandler;
 }
 
-interface HistoryConfigurationResource extends AttemptReadResource {
+interface HistoryConfigurationResource extends ReadResource {
   readonly displayContext?: AttemptDisplayContext;
   readonly focusVersion: number;
 }
@@ -528,85 +529,88 @@ export function useAttemptHistory({
     });
   }, []);
 
-  const configurationRecovery = useAttemptReadRecovery<
-    HistoryConfigurationResource,
-    AttemptConfiguration
-  >({
-    active:
-      configurationState !== null && decisionInspectorTarget === null && !activityBusy.current,
-    authPaused,
-    identity,
-    surface,
-    onAuthRequired: (authContext) => authRequiredRef.current?.(authContext),
-    read: (resource, signal) => apiRef.current.getConfiguration(resource.targetId, signal),
-    isPendingFailure: (error) => error instanceof AttemptApiFailure && error.code === 'pending',
-    onStart: (resource) =>
-      setConfigurationState((state) =>
-        state?.targetId === resource.targetId && state.focusVersion === resource.focusVersion
-          ? { ...state, status: 'loading', message: undefined }
-          : {
-              targetId: resource.targetId,
-              displayContext: resource.displayContext,
-              focusVersion: resource.focusVersion,
-              status: 'loading',
-            },
-      ),
-    onValue: (configuration, resource) => {
-      if (configuration.attemptId !== resource.targetId) {
-        throw new AttemptApiFailure(
-          'server',
-          'La configuración recibida no coincide con el intento consultado.',
-          200,
-        );
-      }
-      setConfigurationState({
-        targetId: resource.targetId,
-        displayContext: resource.displayContext,
-        focusVersion: resource.focusVersion,
-        status: 'ready',
-        configuration,
-      });
-      return false;
-    },
-    onRecovering: (resource, error, reason) =>
-      setConfigurationState((state) => {
-        if (state?.targetId !== resource.targetId || state.focusVersion !== resource.focusVersion) {
-          return state;
+  const configurationRecovery = useReadRecovery<HistoryConfigurationResource, AttemptConfiguration>(
+    {
+      active:
+        configurationState !== null && decisionInspectorTarget === null && !activityBusy.current,
+      authPaused,
+      identity,
+      surface,
+      onAuthRequired: (authContext) => authRequiredRef.current?.(authContext),
+      read: (resource, signal) => apiRef.current.getConfiguration(resource.targetId, signal),
+      classifyFailure: classifyAttemptReadFailure,
+      onStart: (resource) =>
+        setConfigurationState((state) =>
+          state?.targetId === resource.targetId && state.focusVersion === resource.focusVersion
+            ? { ...state, status: 'loading', message: undefined }
+            : {
+                targetId: resource.targetId,
+                displayContext: resource.displayContext,
+                focusVersion: resource.focusVersion,
+                status: 'loading',
+              },
+        ),
+      onValue: (configuration, resource) => {
+        if (configuration.attemptId !== resource.targetId) {
+          throw new AttemptApiFailure(
+            'server',
+            'La configuración recibida no coincide con el intento consultado.',
+            200,
+          );
         }
-        return {
-          ...state,
-          status: reason === 'pending' ? 'pending' : 'recovering',
-          message:
-            reason === 'pending' || reason === 'authentication'
-              ? errorMessage(error)
-              : 'Volveremos a consultar la configuración guardada.',
-        };
-      }),
-    onPaused: (resource) =>
-      setConfigurationState((state) =>
-        state?.targetId === resource.targetId && state.focusVersion === resource.focusVersion
-          ? {
-              ...state,
-              status: 'recovering',
-              message: 'Volveremos a consultar la configuración guardada cuando esté disponible.',
-            }
-          : state,
-      ),
-    onError: (resource, error) =>
-      setConfigurationState((state) =>
-        state?.targetId === resource.targetId && state.focusVersion === resource.focusVersion
-          ? { ...state, status: 'error', message: errorMessage(error) }
-          : state,
-      ),
-  });
+        setConfigurationState({
+          targetId: resource.targetId,
+          displayContext: resource.displayContext,
+          focusVersion: resource.focusVersion,
+          status: 'ready',
+          configuration,
+        });
+        return false;
+      },
+      onRecovering: (resource, error, reason) =>
+        setConfigurationState((state) => {
+          if (
+            state?.targetId !== resource.targetId ||
+            state.focusVersion !== resource.focusVersion
+          ) {
+            return state;
+          }
+          return {
+            ...state,
+            status: reason === 'pending' ? 'pending' : 'recovering',
+            message:
+              reason === 'pending' || reason === 'authentication'
+                ? errorMessage(error)
+                : 'Volveremos a consultar la configuración guardada.',
+          };
+        }),
+      onPaused: (resource) =>
+        setConfigurationState((state) =>
+          state?.targetId === resource.targetId && state.focusVersion === resource.focusVersion
+            ? {
+                ...state,
+                status: 'recovering',
+                message: 'Volveremos a consultar la configuración guardada cuando esté disponible.',
+              }
+            : state,
+        ),
+      onError: (resource, error) =>
+        setConfigurationState((state) =>
+          state?.targetId === resource.targetId && state.focusVersion === resource.focusVersion
+            ? { ...state, status: 'error', message: errorMessage(error) }
+            : state,
+        ),
+    },
+  );
 
-  const resultRecovery = useAttemptReadRecovery<HistoryResultResource, AttemptSummary>({
+  const resultRecovery = useReadRecovery<HistoryResultResource, AttemptSummary>({
     active: resultQueryVisible && !activityBusy.current,
     authPaused,
     identity,
     surface,
     onAuthRequired: (authContext) => authRequiredRef.current?.(authContext),
     read: (resource, signal) => apiRef.current.getAttempt(resource.targetId, signal),
+    classifyFailure: classifyAttemptReadFailure,
     onStart: (resource) =>
       setResultQuery({
         targetId: resource.targetId,

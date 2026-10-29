@@ -9,6 +9,7 @@ import {
 import { isModelKey } from '../../../shared/models.js';
 import type { AuthConfig } from './auth.js';
 import { API_ACCESS_REJECTED_MESSAGE, resolveApiToken, type ApiTokenProvider } from './api-auth.js';
+import type { ReadFailureClassification } from './read-recovery.js';
 
 export interface SavedRobotsPage {
   readonly robots: readonly SavedRobotSummary[];
@@ -47,6 +48,21 @@ export class SavedRobotApiFailure extends Error {
 
   public readonly authContext?: number;
   public readonly currentSummary?: SavedRobotSummary;
+}
+
+export function classifySavedRobotReadFailure(error: unknown): ReadFailureClassification {
+  if (!(error instanceof SavedRobotApiFailure)) return { kind: 'definitive' };
+  if (error.code === 'authentication') {
+    return { kind: 'authentication', authContext: error.authContext };
+  }
+  if (
+    error.code === 'network' ||
+    (error.code === 'server' && (error.status === undefined || error.status >= 500)) ||
+    (error.code === 'rate_limited' && error.status === 429)
+  ) {
+    return { kind: 'transient' };
+  }
+  return { kind: 'definitive' };
 }
 
 export interface SavedRobotApi {

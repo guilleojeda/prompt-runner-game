@@ -23,11 +23,16 @@ import { ROBOT_CATALOG } from '../../../shared/robot.js';
 import type { AuthSession } from './auth.js';
 import type { ApiAuthRequired } from './api-auth.js';
 import { type RobotEditorHandle } from './RobotEditor.js';
-import { SavedRobotApiFailure, type SavedRobotApi } from './saved-robot-api.js';
+import {
+  classifySavedRobotReadFailure,
+  SavedRobotApiFailure,
+  type SavedRobotApi,
+} from './saved-robot-api.js';
+import { useReadRecovery, type ReadResource } from './useReadRecovery.js';
 
 type NameFormMode = 'new' | null;
-type SavedOperation = 'load' | 'save' | 'delete' | null;
-type ConsultStatus = 'idle' | 'loading' | 'ready' | 'error';
+type SavedOperation = 'save' | 'delete' | null;
+type ConsultStatus = 'idle' | 'loading' | 'recovering' | 'ready' | 'error';
 type CopyWriteKind = 'rename' | 'replace';
 type LibraryDialog =
   | { readonly kind: 'use'; readonly target: SavedRobot }
@@ -61,6 +66,25 @@ interface PendingCopyWrite {
   readonly retryAuthorized: boolean;
 }
 
+interface SavedListReadResource extends ReadResource {
+  readonly cursor: string | undefined;
+}
+
+interface SavedCopyReadResource extends ReadResource {
+  readonly summary: SavedRobotSummary;
+}
+
+interface SavedListFailure {
+  readonly error: unknown;
+  readonly cursor: string | undefined;
+}
+
+interface PendingPaginationFocus {
+  readonly identity: string;
+  readonly trigger: HTMLButtonElement;
+  readonly targetId: string | null;
+}
+
 class StaleSavedOperation extends Error {
   public constructor() {
     super('La sesión cambió mientras se procesaba la operación.');
@@ -84,6 +108,7 @@ export interface SavedRobotsProps {
   api: SavedRobotApi;
   editor: RefObject<RobotEditorHandle | null>;
   session: AuthSession;
+  active?: boolean;
   configurationAvailable?: boolean;
   paused?: boolean;
   accessState?: 'ready' | 'checking' | 'required';
@@ -164,7 +189,10 @@ function mergeSummaries(
   incoming: readonly SavedRobotSummary[],
 ): SavedRobotSummary[] {
   const byId = new Map(current.map((robot) => [robot.id, robot]));
-  incoming.forEach((robot) => byId.set(robot.id, robot));
+  incoming.forEach((robot) => {
+    const existing = byId.get(robot.id);
+    if (!existing || robot.version >= existing.version) byId.set(robot.id, robot);
+  });
   return [...byId.values()];
 }
 
@@ -211,6 +239,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
     api,
     editor,
     session,
+    active = true,
     configurationAvailable = true,
     paused = false,
     accessState = 'checking',
@@ -225,31 +254,45 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
   const [selected, setSelected] = useState<SavedRobot | null>(null);
   const [consultStatus, setConsultStatus] = useState<ConsultStatus>('idle');
   const [consultError, setConsultError] = useState<string | null>(null);
+  const [consultRecoveryMessage, setConsultRecoveryMessage] = useState<string | null>(null);
   const [nextCursor, setNextCursor] = useState<string | undefined>();
   const [listBusy, setListBusy] = useState(true);
+  const [listPageLoading, setListPageLoading] = useState(false);
+  const [listLoaded, setListLoaded] = useState(false);
+  const [listFailure, setListFailure] = useState<SavedListFailure | null>(null);
+  const [listRecoveryMessage, setListRecoveryMessage] = useState<string | null>(null);
+  const [libraryNotice, setLibraryNotice] = useState<string | null>(null);
   const [operation, setOperation] = useState<SavedOperation>(null);
   const [nameMode, setNameMode] = useState<NameFormMode>(null);
   const [newName, setNewName] = useState('');
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [errorKind, setErrorKind] = useState<'list' | 'save' | 'new' | 'delete' | null>(null);
+  const [errorKind, setErrorKind] = useState<'save' | 'new' | 'delete' | null>(null);
   const [deleteConflict, setDeleteConflict] = useState<DeleteConflict | null>(null);
   const [application, setApplication] = useState<SavedApplication | null>(null);
   const [dialog, setDialog] = useState<LibraryDialog | null>(null);
   const [pendingCreate, setPendingCreate] = useState<PendingCreate | null>(null);
   const [pendingCopyWrite, setPendingCopyWrite] = useState<PendingCopyWrite | null>(null);
-  const [listAttempt, setListAttempt] = useState(0);
   const generationRef = useRef(0);
-  const consultRequestRef = useRef(0);
-  const consultControllerRef = useRef<AbortController | null>(null);
   const selectedIdRef = useRef<string | null>(null);
   const consultStatusRef = useRef<ConsultStatus>('idle');
+  const selectedSummaryRef = useRef<SavedRobotSummary | null>(selectedSummary);
+  selectedSummaryRef.current = selectedSummary;
+  const selectedDocumentRef = useRef<SavedRobot | null>(selected);
+  selectedDocumentRef.current = selected;
+  const robotsRef = useRef(robots);
+  robotsRef.current = robots;
+  const listResourceRef = useRef<SavedListReadResource | null>(null);
+  const selectedResourceRef = useRef<SavedCopyReadResource | null>(null);
+  const listLoadedRef = useRef(false);
+  const needsSelectedReadRef = useRef(false);
   const applicationIdRef = useRef(0);
   const applicationRef = useRef<SavedApplication | null>(null);
   const operationTokenRef = useRef(0);
   const operationOwnerRef = useRef<number | null>(null);
   const pendingCreateRef = useRef<PendingCreate | null>(null);
   const pendingCopyWriteRef = useRef<PendingCopyWrite | null>(null);
+  const pendingPaginationFocusRef = useRef<PendingPaginationFocus | null>(null);
   const identitySubRef = useRef(session.identity.sub);
   const unavailableRef = useRef(paused || locked);
   const previousIdentityRef = useRef(session.identity.sub);
@@ -259,12 +302,220 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const newNameInputRef = useRef<HTMLInputElement | null>(null);
   const newCopyTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const listRef = useRef<HTMLUListElement | null>(null);
+  const listHeadingRef = useRef<HTMLHeadingElement | null>(null);
+  const loadMoreButtonRef = useRef<HTMLButtonElement | null>(null);
   const hadNewNameModeRef = useRef(false);
 
   const setConsult = (status: ConsultStatus): void => {
     consultStatusRef.current = status;
     setConsultStatus(status);
   };
+
+  const readersActive = active && operation === null;
+  const managementBusy = operation !== null || listPageLoading;
+
+  const listRecovery = useReadRecovery<
+    SavedListReadResource,
+    Awaited<ReturnType<SavedRobotApi['listRobots']>>
+  >({
+    active: readersActive,
+    authPaused: paused,
+    identity: session.identity.sub,
+    surface: 'mis-robots',
+    onAuthRequired,
+    read: (resource, signal) => api.listRobots(resource.cursor, signal),
+    classifyFailure: classifySavedRobotReadFailure,
+    onStart: (resource) => {
+      if (listResourceRef.current !== resource) return;
+      setListRecoveryMessage(null);
+      setListFailure(null);
+      if (resource.cursor === undefined) setListBusy(true);
+      else setListPageLoading(true);
+    },
+    onValue: (page, resource) => {
+      if (
+        listResourceRef.current !== resource ||
+        identitySubRef.current !== resource.identity ||
+        (resource.cursor !== undefined && nextCursor !== resource.cursor)
+      ) {
+        return true;
+      }
+      if (resource.cursor !== undefined && page.nextCursor === undefined) {
+        const trigger = loadMoreButtonRef.current;
+        if (trigger && document.activeElement === trigger) {
+          const firstAdded = page.robots.find(
+            (candidate) => !robotsRef.current.some((robot) => robot.id === candidate.id),
+          );
+          pendingPaginationFocusRef.current = {
+            identity: resource.identity,
+            trigger,
+            targetId: firstAdded?.id ?? robotsRef.current[0]?.id ?? null,
+          };
+        }
+      }
+      if (resource.cursor === undefined) {
+        setRobots([...page.robots]);
+        setNextCursor(page.nextCursor);
+      } else {
+        setRobots((current) => mergeSummaries(current, page.robots));
+        setNextCursor(page.nextCursor);
+      }
+      listLoadedRef.current = true;
+      setListLoaded(true);
+      return true;
+    },
+    onComplete: (resource) => {
+      if (listResourceRef.current !== resource) return;
+      listResourceRef.current = null;
+      setListBusy(false);
+      setListPageLoading(false);
+      setListFailure(null);
+      setListRecoveryMessage(null);
+    },
+    onRecovering: (resource, _error, reason) => {
+      if (listResourceRef.current !== resource) return;
+      setListBusy(false);
+      setListPageLoading(false);
+      setListFailure(null);
+      setListRecoveryMessage(
+        reason === 'authentication' && paused
+          ? null
+          : 'Volveremos a consultar tus robots guardados.',
+      );
+    },
+    onPaused: (resource) => {
+      if (listResourceRef.current !== resource) return;
+      setListBusy(false);
+      setListPageLoading(false);
+      setListRecoveryMessage(
+        paused ? null : 'La consulta se retomará cuando vuelvas a Mis robots.',
+      );
+    },
+    onError: (resource, error) => {
+      if (listResourceRef.current !== resource) return;
+      setListBusy(false);
+      setListPageLoading(false);
+      setListRecoveryMessage(null);
+      setListFailure({ error, cursor: resource.cursor });
+    },
+  });
+
+  const selectedCopyRecovery = useReadRecovery<SavedCopyReadResource, SavedRobot>({
+    active: readersActive,
+    authPaused: paused,
+    identity: session.identity.sub,
+    surface: 'mis-robots',
+    onAuthRequired,
+    read: async (resource, signal) => {
+      const robot = await api.getRobot(resource.targetId, signal);
+      if (robot.id !== resource.targetId) {
+        throw new SavedRobotApiFailure(
+          'server',
+          'La copia recibida no coincide con la seleccionada.',
+          200,
+        );
+      }
+      return robot;
+    },
+    classifyFailure: classifySavedRobotReadFailure,
+    onStart: (resource) => {
+      if (selectedResourceRef.current !== resource || selectedIdRef.current !== resource.targetId) {
+        return;
+      }
+      setConsult('loading');
+      setConsultError(null);
+      setConsultRecoveryMessage(null);
+    },
+    onValue: (robot, resource) => {
+      if (
+        selectedResourceRef.current !== resource ||
+        selectedIdRef.current !== resource.targetId ||
+        identitySubRef.current !== resource.identity
+      ) {
+        return true;
+      }
+      const currentDocument = selectedDocumentRef.current;
+      if (currentDocument?.id === resource.targetId && currentDocument.version > robot.version) {
+        setConsultError(null);
+        setConsultRecoveryMessage(null);
+        setConsult('ready');
+        return true;
+      }
+      const freshestSummary = [
+        selectedSummaryRef.current?.id === resource.targetId ? selectedSummaryRef.current : null,
+        robotsRef.current.find((item) => item.id === resource.targetId) ?? null,
+      ].reduce<SavedRobotSummary | null>(
+        (freshest, candidate) =>
+          candidate && (!freshest || candidate.version > freshest.version) ? candidate : freshest,
+        null,
+      );
+      if (freshestSummary && freshestSummary.version > robot.version) {
+        selectedSummaryRef.current = freshestSummary;
+        setSelectedSummary(freshestSummary);
+        setSelected((current) =>
+          current?.id === resource.targetId && current.version > robot.version ? current : null,
+        );
+        setConsultError(
+          'La copia cambió mientras la consultabas. Seleccionala de nuevo para actualizarla.',
+        );
+        setConsultRecoveryMessage(null);
+        setConsult('error');
+        return true;
+      }
+      const refreshedSummary = summaryFromRobot(robot);
+      selectedSummaryRef.current = refreshedSummary;
+      setSelectedSummary(refreshedSummary);
+      setSelected(robot);
+      setConsultError(null);
+      setConsultRecoveryMessage(null);
+      setConsult('ready');
+      setRobots((current) => mergeSummary(current, refreshedSummary));
+      return true;
+    },
+    onComplete: (resource) => {
+      if (selectedResourceRef.current === resource) selectedResourceRef.current = null;
+    },
+    onRecovering: (resource, error, reason) => {
+      if (selectedResourceRef.current !== resource) return;
+      setConsultError(null);
+      setConsult('recovering');
+      setConsultRecoveryMessage(
+        reason === 'authentication' && !paused
+          ? apiErrorMessage(error, 'Volvé a ingresar para consultar esta copia.')
+          : paused
+            ? null
+            : 'Volveremos a consultar esta copia.',
+      );
+    },
+    onPaused: (resource) => {
+      if (selectedResourceRef.current !== resource) return;
+      setConsultError(null);
+      setConsult('recovering');
+      setConsultRecoveryMessage('La consulta se retomará cuando vuelva a estar disponible.');
+    },
+    onError: (resource, error) => {
+      if (selectedResourceRef.current !== resource) return;
+      setConsultError(apiErrorMessage(error, 'No se pudo consultar esta copia.'));
+      setConsultRecoveryMessage(null);
+      setConsult('error');
+      setSelected(null);
+      if (isMissingError(error)) {
+        setRobots((current) => current.filter((item) => item.id !== resource.targetId));
+        setLibraryNotice(
+          `La copia «${resource.summary.name}» ya no está disponible y se quitó de la lista.`,
+        );
+        selectedIdRef.current = null;
+        selectedSummaryRef.current = null;
+        setSelectedSummary(null);
+        setConsult('idle');
+        setConsultError(null);
+        selectedDocumentRef.current = null;
+        selectedResourceRef.current = null;
+        needsSelectedReadRef.current = false;
+      }
+    },
+  });
 
   const isCurrent = useCallback(
     (generation: number): boolean => generationRef.current === generation,
@@ -357,6 +608,35 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
     setOperation(null);
   }, []);
 
+  const openListRead = useCallback(
+    (cursor: string | undefined): void => {
+      const resource: SavedListReadResource = {
+        identity: session.identity.sub,
+        targetId: cursor ?? 'first-page',
+        surface: 'mis-robots',
+        cursor,
+      };
+      listResourceRef.current = resource;
+      void listRecovery.open(resource);
+    },
+    [listRecovery, session.identity.sub],
+  );
+
+  const openSelectedCopyRead = useCallback(
+    (summary: SavedRobotSummary): void => {
+      const resource: SavedCopyReadResource = {
+        identity: session.identity.sub,
+        targetId: summary.id,
+        surface: 'mis-robots',
+        summary,
+      };
+      selectedResourceRef.current = resource;
+      needsSelectedReadRef.current = false;
+      void selectedCopyRecovery.open(resource);
+    },
+    [selectedCopyRecovery, session.identity.sub],
+  );
+
   useEffect(() => {
     if (!dialog) return;
     const element = dialogRef.current;
@@ -387,10 +667,14 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
     identitySubRef.current = session.identity.sub;
     unavailableRef.current = paused || locked;
     if (identityChanged) {
+      pendingPaginationFocusRef.current = null;
+      listRecovery.clear();
+      selectedCopyRecovery.clear();
+      listResourceRef.current = null;
+      selectedResourceRef.current = null;
+      listLoadedRef.current = false;
+      needsSelectedReadRef.current = false;
       generationRef.current += 1;
-      consultRequestRef.current += 1;
-      consultControllerRef.current?.abort();
-      consultControllerRef.current = null;
       selectedIdRef.current = null;
       consultStatusRef.current = 'idle';
       setRobots([]);
@@ -398,7 +682,14 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
       setSelected(null);
       setConsultStatus('idle');
       setConsultError(null);
+      setConsultRecoveryMessage(null);
+      setNextCursor(undefined);
       setListBusy(true);
+      setListPageLoading(false);
+      setListLoaded(false);
+      setListFailure(null);
+      setListRecoveryMessage(null);
+      setLibraryNotice(null);
       setOperation(null);
       operationOwnerRef.current = null;
       cancelApplication();
@@ -411,62 +702,90 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
       setPendingCreate(null);
       pendingCopyWriteRef.current = null;
       setPendingCopyWrite(null);
-    } else if (paused || locked) {
-      cancelApplication();
-      consultRequestRef.current += 1;
-      consultControllerRef.current?.abort();
-      consultControllerRef.current = null;
-      setSelected(null);
-      setConsult('idle');
-      closeDialog(false);
     }
-  }, [cancelApplication, closeDialog, locked, paused, session.identity.sub]);
+
+    if (!readersActive) listRecovery.pause();
+    if (!active) {
+      pendingPaginationFocusRef.current = null;
+      const selectedReadWasPending = selectedResourceRef.current !== null;
+      selectedCopyRecovery.clear();
+      selectedResourceRef.current = null;
+      needsSelectedReadRef.current =
+        selectedSummaryRef.current !== null && selectedDocumentRef.current === null;
+      if (selectedReadWasPending && needsSelectedReadRef.current) {
+        setConsult('idle');
+        setConsultError(null);
+        setConsultRecoveryMessage(null);
+      }
+    } else if (paused) {
+      selectedCopyRecovery.pause();
+      cancelApplication();
+      closeDialog(false);
+    } else if (locked) {
+      cancelApplication();
+      closeDialog(false);
+    } else if (operation !== null) {
+      selectedCopyRecovery.pause();
+    }
+  }, [
+    active,
+    cancelApplication,
+    closeDialog,
+    listRecovery,
+    locked,
+    operation,
+    paused,
+    readersActive,
+    selectedCopyRecovery,
+    session.identity.sub,
+  ]);
+
+  useLayoutEffect(() => {
+    const pendingFocus = pendingPaginationFocusRef.current;
+    if (!pendingFocus) return;
+    pendingPaginationFocusRef.current = null;
+    if (
+      !active ||
+      identitySubRef.current !== pendingFocus.identity ||
+      (document.activeElement !== document.body && document.activeElement !== pendingFocus.trigger)
+    ) {
+      return;
+    }
+    const radios = listRef.current?.querySelectorAll<HTMLInputElement>('input[type="radio"]');
+    const target = pendingFocus.targetId
+      ? Array.from(radios ?? []).find((radio) => radio.value === pendingFocus.targetId)
+      : undefined;
+    (target ?? listHeadingRef.current)?.focus({ preventScroll: true });
+  }, [active, robots, session.identity.sub]);
 
   useEffect(() => {
-    const generation = generationRef.current + 1;
-    generationRef.current = generation;
-    const controller = new AbortController();
-    void api
-      .listRobots(undefined, controller.signal)
-      .then((page) => {
-        if (!isCurrent(generation) || controller.signal.aborted) return;
-        setRobots([...page.robots]);
-        setNextCursor(page.nextCursor);
-        setListBusy(false);
-      })
-      .catch((loadError: unknown) => {
-        if (!isCurrent(generation) || controller.signal.aborted) return;
-        setListBusy(false);
-        setError(apiErrorMessage(loadError, 'No se pudieron cargar tus robots guardados.'));
-        setErrorKind('list');
-        if (isAuthError(loadError)) onAuthRequired?.(loadError.authContext);
-      });
-    return () => {
-      generationRef.current += 1;
-      controller.abort();
-    };
-  }, [api, isCurrent, listAttempt, onAuthRequired, session.identity.sub]);
+    if (!readersActive || paused || listLoadedRef.current || listResourceRef.current) return;
+    openListRead(undefined);
+  }, [openListRead, paused, readersActive, session.identity.sub]);
+
+  useEffect(() => {
+    if (!readersActive || paused || !needsSelectedReadRef.current) return;
+    const summary = selectedSummaryRef.current;
+    if (!summary || selectedDocumentRef.current) {
+      needsSelectedReadRef.current = false;
+      return;
+    }
+    if (selectedResourceRef.current) return;
+    needsSelectedReadRef.current = false;
+    openSelectedCopyRead(summary);
+  }, [openSelectedCopyRead, paused, readersActive, session.identity.sub]);
 
   useEffect(
     () => () => {
       const current = applicationRef.current;
       applicationRef.current = null;
       current?.controller.abort();
-      consultRequestRef.current += 1;
-      consultControllerRef.current?.abort();
-      consultControllerRef.current = null;
     },
     [],
   );
 
-  const busy = paused || locked || listBusy || operation !== null;
+  const busy = paused || locked || listBusy || listPageLoading || operation !== null;
   const radioLocked = paused || locked || listBusy;
-  const selectedSummaryRef = useRef<SavedRobotSummary | null>(selectedSummary);
-  selectedSummaryRef.current = selectedSummary;
-  const selectedDocumentRef = useRef<SavedRobot | null>(selected);
-  selectedDocumentRef.current = selected;
-  const robotsRef = useRef(robots);
-  robotsRef.current = robots;
   const copiesByName = new Map<string, number>();
   const copyNumbers = new Map<string, number>();
   for (const robot of robots) {
@@ -488,159 +807,97 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
     robot: SavedRobot | null,
     status: ConsultStatus,
   ): void => {
+    selectedCopyRecovery.clear();
+    selectedResourceRef.current = null;
+    needsSelectedReadRef.current = false;
     selectedIdRef.current = summary?.id ?? null;
     selectedSummaryRef.current = summary;
+    selectedDocumentRef.current = robot;
     setSelectedSummary(summary);
     setSelected(robot);
     setConsult(status);
     setConsultError(null);
-  };
-
-  const loadSelectedCopy = async (summary: SavedRobotSummary): Promise<void> => {
-    const requestId = consultRequestRef.current + 1;
-    consultRequestRef.current = requestId;
-    consultControllerRef.current?.abort();
-    const controller = new AbortController();
-    consultControllerRef.current = controller;
-    selectedIdRef.current = summary.id;
-    selectedSummaryRef.current = summary;
-    setSelectedSummary(summary);
-    setSelected(null);
-    setConsult('loading');
-    setConsultError(null);
-    setError(null);
-    setErrorKind(null);
-    setMessage(null);
-    const generation = generationRef.current;
-    try {
-      const robot = await api.getRobot(summary.id, controller.signal);
-      if (
-        controller.signal.aborted ||
-        !isCurrent(generation) ||
-        consultRequestRef.current !== requestId ||
-        selectedIdRef.current !== summary.id ||
-        identitySubRef.current !== session.identity.sub
-      )
-        return;
-      const currentDocument = selectedDocumentRef.current;
-      if (currentDocument?.id === summary.id && currentDocument.version > robot.version) {
-        setConsultError(null);
-        setConsult('ready');
-        return;
-      }
-      const freshestSummary = [
-        selectedSummaryRef.current?.id === summary.id ? selectedSummaryRef.current : null,
-        robotsRef.current.find((robot) => robot.id === summary.id) ?? null,
-      ].reduce<SavedRobotSummary | null>(
-        (freshest, candidate) =>
-          candidate && (!freshest || candidate.version > freshest.version) ? candidate : freshest,
-        null,
-      );
-      if (freshestSummary && freshestSummary.version > robot.version) {
-        selectedSummaryRef.current = freshestSummary;
-        setSelectedSummary(freshestSummary);
-        setSelected((current) =>
-          current?.id === summary.id && current.version > robot.version ? current : null,
-        );
-        setConsultError(
-          'La copia cambió mientras la consultabas. Seleccionala de nuevo para actualizarla.',
-        );
-        setConsult('error');
-        return;
-      }
-      const refreshedSummary = summaryFromRobot(robot);
-      selectedSummaryRef.current = refreshedSummary;
-      setSelectedSummary(refreshedSummary);
-      setSelected(robot);
-      setConsult('ready');
-      updateListWith(robot);
-    } catch (loadError) {
-      if (
-        controller.signal.aborted ||
-        !isCurrent(generation) ||
-        consultRequestRef.current !== requestId ||
-        selectedIdRef.current !== summary.id ||
-        identitySubRef.current !== session.identity.sub
-      )
-        return;
-      setConsultError(apiErrorMessage(loadError, 'No se pudo consultar esta copia.'));
-      setConsult('error');
-      if (isMissingError(loadError)) {
-        setRobots((current) => current.filter((item) => item.id !== summary.id));
-        setSelectedCopy(null, null, 'idle');
-      }
-      if (isAuthError(loadError)) onAuthRequired?.(loadError.authContext);
-    } finally {
-      if (consultRequestRef.current === requestId) {
-        if (consultStatusRef.current === 'loading') setConsult('idle');
-        if (consultControllerRef.current === controller) consultControllerRef.current = null;
-      }
-    }
+    setConsultRecoveryMessage(null);
   };
 
   const handleSelect = (summary: SavedRobotSummary): void => {
     if (radioLocked) return;
     const alreadySelected = selectedIdRef.current === summary.id;
-    if (alreadySelected && (selected !== null || consultStatusRef.current === 'loading')) return;
+    if (
+      alreadySelected &&
+      (selected !== null ||
+        consultStatusRef.current === 'loading' ||
+        consultStatusRef.current === 'recovering')
+    )
+      return;
     cancelApplication();
     editor.current?.cancelApplication?.();
+    selectedCopyRecovery.clear();
+    selectedResourceRef.current = null;
+    needsSelectedReadRef.current = false;
     if (!alreadySelected) {
       selectedIdRef.current = summary.id;
       selectedSummaryRef.current = summary;
       setSelectedSummary(summary);
       setSelected(null);
+      setLibraryNotice(null);
       setConsult('idle');
       setConsultError(null);
+      setConsultRecoveryMessage(null);
       setDeleteConflict(null);
       setMessage(null);
     }
     if (dialogRef.current?.open || dialog !== null) closeDialog(false);
     setError(null);
     setErrorKind(null);
-    void loadSelectedCopy(summary);
+    openSelectedCopyRead(summary);
   };
 
-  const invalidateConsult = useCallback((clearDocument: boolean): boolean => {
-    const hadPendingRequest = consultControllerRef.current !== null;
-    consultRequestRef.current += 1;
-    consultControllerRef.current?.abort();
-    consultControllerRef.current = null;
-    if (hadPendingRequest) {
-      setConsult('idle');
-      if (clearDocument) setSelected(null);
-    }
-    return hadPendingRequest;
-  }, []);
-
   const leaveSurface = useCallback((): void => {
+    pendingPaginationFocusRef.current = null;
     const hadApplication = applicationRef.current !== null;
     cancelApplication();
     if (hadApplication) editor.current?.cancelApplication?.();
-    invalidateConsult(true);
+    listRecovery.pause();
+    const hadSelectedRead = selectedResourceRef.current !== null;
+    selectedCopyRecovery.clear();
+    selectedResourceRef.current = null;
+    needsSelectedReadRef.current =
+      selectedSummaryRef.current !== null && selectedDocumentRef.current === null;
+    if (hadSelectedRead && needsSelectedReadRef.current) {
+      setConsult('idle');
+      setConsultError(null);
+      setConsultRecoveryMessage(null);
+    }
     closeDialog(false);
-  }, [cancelApplication, closeDialog, editor, invalidateConsult]);
+  }, [cancelApplication, closeDialog, editor, listRecovery, selectedCopyRecovery]);
 
   useImperativeHandle(ref, () => ({ leaveSurface }), [leaveSurface]);
 
-  const handleLoadMore = async (): Promise<void> => {
-    if (!nextCursor || busy) return;
-    const operationToken = beginOperation('load');
-    setError(null);
-    setErrorKind(null);
-    const generation = generationRef.current;
-    try {
-      const page = await api.listRobots(nextCursor);
-      if (!isCurrent(generation)) return;
-      setRobots((current) => mergeSummaries(current, page.robots));
-      setNextCursor(page.nextCursor);
-    } catch (loadError) {
-      if (!isCurrent(generation)) return;
-      setError(apiErrorMessage(loadError, 'No se pudieron cargar más robots.'));
-      setErrorKind('list');
-      if (isAuthError(loadError)) onAuthRequired?.(loadError.authContext);
-    } finally {
-      if (isCurrent(generation)) finishOperation(operationToken);
+  const handleLoadMore = (): void => {
+    if (!nextCursor || busy || listRecoveryMessage || listFailure) return;
+    pendingPaginationFocusRef.current = null;
+    openListRead(nextCursor);
+  };
+
+  const retryListFailure = (): void => {
+    if (!listFailure || busy) return;
+    const restartFromFirstPage =
+      listFailure.cursor !== undefined &&
+      listFailure.error instanceof SavedRobotApiFailure &&
+      listFailure.error.code === 'invalid';
+    if (restartFromFirstPage) {
+      listRecovery.clear();
+      listResourceRef.current = null;
+      listLoadedRef.current = false;
+      setListLoaded(false);
+      setRobots([]);
+      setNextCursor(undefined);
+      setListBusy(true);
+      openListRead(undefined);
+      return;
     }
+    openListRead(listFailure.cursor);
   };
 
   const reconcileSave = async (
@@ -716,6 +973,12 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
   };
 
   const removeListedRobot = (id: string): void => {
+    listRecovery.clear();
+    listResourceRef.current = null;
+    setListBusy(false);
+    setListPageLoading(false);
+    setListRecoveryMessage(null);
+    setListFailure(null);
     setRobots((items) => items.filter((item) => item.id !== id));
     if (pendingCreateRef.current?.id === id) {
       pendingCreateRef.current = null;
@@ -724,22 +987,31 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
     }
     if (selectedIdRef.current === id) {
       setSelectedCopy(null, null, 'idle');
-      invalidateConsult(false);
     }
     setDeleteConflict((current) => (current?.summary.id === id ? null : current));
   };
 
+  const clearSelectedReadFor = (id: string): void => {
+    if (selectedIdRef.current !== id) return;
+    selectedCopyRecovery.clear();
+    selectedResourceRef.current = null;
+    needsSelectedReadRef.current = false;
+  };
+
   const completeCopyWrite = (intent: PendingCopyWrite, saved: SavedRobot): void => {
     if (identitySubRef.current !== intent.identitySub) return;
+    clearSelectedReadFor(intent.target.id);
     pendingCopyWriteRef.current = null;
     setPendingCopyWrite(null);
     updateListWith(saved);
     if (selectedIdRef.current === intent.target.id && !unavailableRef.current) {
       selectedSummaryRef.current = summaryFromRobot(saved);
+      selectedDocumentRef.current = saved;
       setSelectedSummary(summaryFromRobot(saved));
       setSelected(saved);
       setConsult('ready');
       setConsultError(null);
+      setConsultRecoveryMessage(null);
       setError(null);
       setErrorKind(null);
       setMessage(
@@ -757,15 +1029,18 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
     remote: SavedRobot,
     detail: string,
   ): void => {
+    clearSelectedReadFor(intent.target.id);
     pendingCopyWriteRef.current = null;
     setPendingCopyWrite(null);
     updateListWith(remote);
     if (selectedIdRef.current === intent.target.id) {
       selectedSummaryRef.current = summaryFromRobot(remote);
+      selectedDocumentRef.current = remote;
       setSelectedSummary(summaryFromRobot(remote));
       setSelected(remote);
       setConsult('ready');
       setConsultError(null);
+      setConsultRecoveryMessage(null);
       setError(detail);
       setErrorKind('save');
       setMessage(null);
@@ -1004,7 +1279,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
 
   const handleRenameSubmit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
-    if (dialog?.kind !== 'rename' || operation !== null || paused || locked) return;
+    if (dialog?.kind !== 'rename' || managementBusy || paused || locked) return;
     const target = dialog.target;
     const pending = pendingCopyWriteRef.current;
     if (pending) {
@@ -1045,7 +1320,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
   };
 
   const handleReplaceConfirmed = async (target: SavedRobot): Promise<void> => {
-    if (operation !== null || paused || locked) return;
+    if (managementBusy || paused || locked) return;
     const pending = pendingCopyWriteRef.current;
     if (pending) {
       if (pending.target.id !== target.id || pending.kind !== 'replace') {
@@ -1126,7 +1401,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
     let intent = pendingCreateRef.current;
     const retryingPendingCreate = intent !== null;
     if (!configurationAvailable && !retryingPendingCreate) return;
-    if (listBusy && !retryingPendingCreate) return;
+    if ((listBusy || listPageLoading) && !retryingPendingCreate) return;
     const selectionAtStart = selectedIdRef.current;
     let createId = intent?.id;
     let createName = intent?.name;
@@ -1211,7 +1486,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
   };
 
   const handleDelete = async (target: SavedRobotSummary): Promise<void> => {
-    if (paused || locked || operation !== null) return;
+    if (paused || locked || managementBusy) return;
     if (pendingCopyWriteRef.current) {
       setError('Hay un cambio pendiente para una copia. Conciliá esa operación antes de eliminar.');
       setErrorKind('save');
@@ -1299,7 +1574,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
   };
 
   const openUse = (trigger: HTMLButtonElement): void => {
-    if (!selected || !selectedSummary || paused || locked || operation !== null) return;
+    if (!selected || !selectedSummary || paused || locked || managementBusy) return;
     dialogTriggerRef.current = trigger;
     setError(null);
     setErrorKind(null);
@@ -1307,7 +1582,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
   };
 
   const openRename = (trigger: HTMLButtonElement): void => {
-    if (!selected || paused || locked || operation !== null) return;
+    if (!selected || paused || locked || managementBusy) return;
     dialogTriggerRef.current = trigger;
     setError(null);
     setErrorKind(null);
@@ -1323,7 +1598,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
   };
 
   const openReplace = (trigger: HTMLButtonElement): void => {
-    if (!selected || paused || locked || operation !== null) return;
+    if (!selected || paused || locked || managementBusy) return;
     dialogTriggerRef.current = trigger;
     setError(null);
     setErrorKind(null);
@@ -1335,11 +1610,14 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
     !paused &&
     !locked &&
     operation === null &&
+    !listPageLoading &&
     pendingCopyWrite === null &&
     !listBusy &&
     canSaveAsNew;
   const selectedLimit = selected ? draftLimitMessage(selected.draft) : null;
-  const globalErrorVisible = error !== null && (errorKind === 'list' || errorKind === 'delete');
+  const loadMoreBlocked = busy || !!listRecoveryMessage || !!listFailure;
+  const keepLoadMoreFocusable = listPageLoading || !!listRecoveryMessage || !!listFailure;
+  const globalErrorVisible = error !== null && errorKind === 'delete';
   const openNewCopy = (): void => {
     setNameMode('new');
     setNewName(pendingCreate?.name ?? '');
@@ -1382,26 +1660,28 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
             : 'Verificando tu sesión… Tus robots guardados siguen protegidos.'}
         </p>
       )}
+      {listFailure && (
+        <div className="saved-robots-error" role="alert" aria-live="assertive">
+          <p>
+            {apiErrorMessage(listFailure.error, 'No se pudieron consultar tus robots guardados.')}
+          </p>
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={retryListFailure}
+            disabled={busy}
+          >
+            {listFailure.cursor !== undefined &&
+            listFailure.error instanceof SavedRobotApiFailure &&
+            listFailure.error.code === 'invalid'
+              ? 'Volver a cargar la lista'
+              : 'Reintentar consulta'}
+          </button>
+        </div>
+      )}
       {globalErrorVisible && (
         <div className="saved-robots-error" role="alert" aria-live="assertive">
           <p>{error}</p>
-          {errorKind === 'list' && (
-            <button
-              className="secondary-button"
-              type="button"
-              onClick={() => {
-                cancelApplication();
-                setListBusy(true);
-                setError(null);
-                setErrorKind(null);
-                setMessage(null);
-                setListAttempt((attempt) => attempt + 1);
-              }}
-              disabled={busy}
-            >
-              Reintentar lista
-            </button>
-          )}
         </div>
       )}
       {application && (
@@ -1425,12 +1705,24 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
 
       <div className="saved-robots-layout">
         <section className="saved-robots-list-panel" aria-label="Robots guardados">
-          <h3>Robots guardados</h3>
-          {!listBusy && robots.length === 0 && !errorKind && (
+          <h3 ref={listHeadingRef} tabIndex={-1}>
+            Robots guardados
+          </h3>
+          {!paused && listRecoveryMessage && (
+            <p className="saved-robots-message" role="status" aria-live="polite">
+              {listRecoveryMessage}
+            </p>
+          )}
+          {libraryNotice && (
+            <p className="saved-robots-message" role="status" aria-live="polite">
+              {libraryNotice}
+            </p>
+          )}
+          {listLoaded && robots.length === 0 && !listFailure && (
             <p className="saved-robots-empty">Todavía no guardaste ninguna copia.</p>
           )}
           <div className="saved-robots-list-wrap">
-            <ul className="saved-robots-list" aria-label="Robots guardados">
+            <ul ref={listRef} className="saved-robots-list" aria-label="Robots guardados">
               {robots.map((robot) => {
                 const duplicate = (copiesByName.get(robot.name) ?? 0) > 1;
                 const copyNumber = copyNumbers.get(robot.id);
@@ -1507,12 +1799,14 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
             </ul>
             {nextCursor && (
               <button
+                ref={loadMoreButtonRef}
                 className="text-button"
                 type="button"
-                onClick={() => void handleLoadMore()}
-                disabled={busy}
+                onClick={handleLoadMore}
+                disabled={loadMoreBlocked && !keepLoadMoreFocusable}
+                aria-disabled={loadMoreBlocked ? true : undefined}
               >
-                {operation === 'load' ? 'Cargando…' : 'Cargar más'}
+                {listPageLoading ? 'Cargando…' : 'Cargar más'}
               </button>
             )}
           </div>
@@ -1546,6 +1840,11 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
                 </div>
               </dl>
               {consultStatus === 'loading' && <p role="status">Consultando la copia…</p>}
+              {!paused && consultRecoveryMessage && (
+                <p className="saved-robots-message" role="status" aria-live="polite">
+                  {consultRecoveryMessage}
+                </p>
+              )}
               {consultError && (
                 <p className="saved-robots-error" role="alert">
                   {consultError}
@@ -1610,7 +1909,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
                   className="primary-button"
                   type="button"
                   onClick={(event) => openUse(event.currentTarget)}
-                  disabled={!selected || paused || locked || operation !== null || !!selectedLimit}
+                  disabled={!selected || paused || locked || managementBusy || !!selectedLimit}
                 >
                   Usar este robot
                 </button>
@@ -1634,7 +1933,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
                       !selected ||
                       paused ||
                       locked ||
-                      operation !== null ||
+                      managementBusy ||
                       (pendingCopyWrite !== null &&
                         (pendingCopyWrite.target.id !== selectedSummary.id ||
                           pendingCopyWrite.kind !== 'rename'))
@@ -1650,7 +1949,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
                       !selected ||
                       paused ||
                       locked ||
-                      operation !== null ||
+                      managementBusy ||
                       !configurationAvailable ||
                       (pendingCopyWrite !== null &&
                         (pendingCopyWrite.target.id !== selectedSummary.id ||
@@ -1663,7 +1962,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
                     className="text-button danger-button"
                     type="button"
                     onClick={() => void handleDelete(selectedSummary)}
-                    disabled={paused || locked || operation !== null || pendingCopyWrite !== null}
+                    disabled={paused || locked || managementBusy || pendingCopyWrite !== null}
                   >
                     Eliminar copia…
                   </button>
@@ -1700,7 +1999,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
                 disabled={
                   paused ||
                   locked ||
-                  operation !== null ||
+                  managementBusy ||
                   pendingCreate !== null ||
                   pendingCopyWrite !== null ||
                   !configurationAvailable
@@ -1725,7 +2024,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
                     paused ||
                     locked ||
                     listBusy ||
-                    operation !== null ||
+                    managementBusy ||
                     pendingCopyWrite !== null ||
                     !canSaveAsNew
                   }
@@ -1736,7 +2035,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
                   className="text-button"
                   type="button"
                   onClick={() => setNameMode(null)}
-                  disabled={operation !== null}
+                  disabled={managementBusy}
                 >
                   Cancelar
                 </button>
@@ -1799,7 +2098,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
               }
               required
               disabled={
-                operation !== null ||
+                managementBusy ||
                 paused ||
                 locked ||
                 (pendingCopyWrite?.target.id === dialog.target.id &&
@@ -1826,14 +2125,14 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
                 className="text-button"
                 type="button"
                 onClick={() => closeDialog()}
-                disabled={operation !== null}
+                disabled={managementBusy}
               >
                 Cancelar
               </button>
               <button
                 className="primary-button"
                 type="submit"
-                disabled={operation !== null || paused || locked}
+                disabled={managementBusy || paused || locked}
               >
                 {pendingCopyWrite?.target.id === dialog.target.id &&
                 pendingCopyWrite.kind === 'rename' &&
@@ -1869,7 +2168,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
                 className="text-button"
                 type="button"
                 onClick={() => closeDialog()}
-                disabled={operation !== null}
+                disabled={managementBusy}
               >
                 Cancelar
               </button>
@@ -1877,7 +2176,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
                 className="primary-button"
                 type="button"
                 onClick={() => void handleReplaceConfirmed(dialog.target)}
-                disabled={operation !== null || paused || locked || !configurationAvailable}
+                disabled={managementBusy || paused || locked || !configurationAvailable}
               >
                 {pendingCopyWrite?.target.id === dialog.target.id &&
                 pendingCopyWrite.kind === 'replace' &&

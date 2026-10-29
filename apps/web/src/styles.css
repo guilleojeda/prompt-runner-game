@@ -2543,12 +2543,13 @@ h1 {
   justify-self: start;
 }
 
-.text-button:hover:not(:disabled),
+.text-button:hover:not(:disabled):not([aria-disabled='true']),
 .text-button:focus-visible {
   color: #f2c879;
 }
 
-button:disabled {
+button:disabled,
+.text-button[aria-disabled='true'] {
   cursor: wait;
   opacity: 0.65;
 }
