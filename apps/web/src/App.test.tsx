@@ -8,7 +8,11 @@ import { installHtmlDialogTestShim } from './configuration-confirmation.test-sup
 import { App } from './App.js';
 import { AuthFailure, type AuthClient, type AuthConfig, type AuthSession } from './auth.js';
 import { DraftApiClient, DraftApiFailure, type DraftApi } from './draft-api.js';
-import { SavedRobotApiClient, type SavedRobotApi } from './saved-robot-api.js';
+import {
+  SavedRobotApiClient,
+  SavedRobotApiFailure,
+  type SavedRobotApi,
+} from './saved-robot-api.js';
 import { AttemptApiFailure, type AttemptApi, type AttemptSummary } from './attempt-api.js';
 import { historyAction, historyActions } from './History.test-support.js';
 import {
@@ -404,6 +408,11 @@ describe('access screen', () => {
 
   it('keeps saved-copy mutations unavailable until the editor configuration loads', async () => {
     vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-26T12:00:00.000Z'));
+    let resolveRecoveredDraft!: (snapshot: DraftSnapshot) => void;
+    const recoveredDraft = new Promise<DraftSnapshot>((resolve) => {
+      resolveRecoveredDraft = resolve;
+    });
     const savedDraft = { ...createDefaultDraft(), instructions: 'Configuración guardada.' };
     const savedCopy: SavedRobot = {
       id: 'saved-copy',
@@ -417,11 +426,11 @@ describe('access screen', () => {
     const getDraft = vi
       .fn()
       .mockRejectedValueOnce(new DraftApiFailure('network', 'No se pudo cargar.'))
-      .mockResolvedValueOnce({ version: 0, draft: createDefaultDraft() });
+      .mockReturnValueOnce(recoveredDraft);
     const draftApi: DraftApi = { getDraft, putDraft: vi.fn() };
     const listRobots = vi
       .fn()
-      .mockRejectedValueOnce(new Error('No se pudo cargar la lista.'))
+      .mockRejectedValueOnce(new SavedRobotApiFailure('network', 'No se pudo cargar la lista.'))
       .mockResolvedValueOnce({
         robots: [
           {
@@ -452,16 +461,32 @@ describe('access screen', () => {
 
     await act(flushAuthMicrotasks);
     expect(screen.getByRole('heading', { name: 'Prepará tu robot' })).toBeTruthy();
+    expect(listRobots).not.toHaveBeenCalled();
     navigate('Mis robots');
+    await act(flushAuthMicrotasks);
     const savedSection = screen
       .getByRole('heading', { name: 'Mis robots' })
       .closest('section') as HTMLElement;
-    const retryList = within(savedSection).getByRole('button', {
-      name: 'Reintentar lista',
+    expect(listRobots).toHaveBeenCalledOnce();
+    expect(within(savedSection).queryByRole('button', { name: 'Reintentar lista' })).toBeNull();
+    expect(within(savedSection).queryByRole('alert')).toBeNull();
+    expect(within(savedSection).queryByRole('radio', { name: /Explorador guardado/u })).toBeNull();
+    const createButtonBeforeRecovery = within(savedSection).getByRole('button', {
+      name: 'Guardar robot actual',
+    }) as HTMLButtonElement;
+    expect(createButtonBeforeRecovery.disabled).toBe(true);
+
+    expect(screen.queryByRole('button', { name: 'Reintentar carga' })).toBeNull();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(59_999);
     });
-    expect((retryList as HTMLButtonElement).disabled).toBe(false);
-    fireEvent.click(retryList);
-    await act(flushAuthMicrotasks);
+    expect(getDraft).toHaveBeenCalledOnce();
+    expect(listRobots).toHaveBeenCalledOnce();
+    expect(within(savedSection).queryByRole('radio', { name: /Explorador guardado/u })).toBeNull();
+    expect(createButtonBeforeRecovery.disabled).toBe(true);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
     const copyButton = within(savedSection).getByRole('radio', {
       name: /Explorador guardado/u,
     });
@@ -470,15 +495,12 @@ describe('access screen', () => {
     }) as HTMLButtonElement;
     expect((copyButton as HTMLInputElement).disabled).toBe(false);
     expect(createButton.disabled).toBe(true);
+    expect(getDraft).toHaveBeenCalledTimes(2);
+    expect(listRobots).toHaveBeenCalledTimes(2);
 
-    expect(screen.queryByRole('button', { name: 'Reintentar carga' })).toBeNull();
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(59_999);
-    });
-    expect(getDraft).toHaveBeenCalledOnce();
-    expect((copyButton as HTMLInputElement).disabled).toBe(false);
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(1);
+      resolveRecoveredDraft({ version: 0, draft: createDefaultDraft() });
+      await flushAuthMicrotasks();
     });
     expect((document.querySelector('#robot-instructions') as HTMLTextAreaElement).value).toBe(
       createDefaultDraft().instructions,
@@ -487,6 +509,7 @@ describe('access screen', () => {
     expect(createButton.disabled).toBe(false);
     expect(getDraft).toHaveBeenCalledTimes(2);
     expect(listRobots).toHaveBeenCalledTimes(2);
+    expect(listRobots.mock.calls.map(([cursor]) => cursor)).toEqual([undefined, undefined]);
   });
 
   it('cancels a pending saved-copy consultation when leaving Mis robots', async () => {
@@ -2171,7 +2194,7 @@ describe('access screen', () => {
     expect(screen.getByRole('button', { name: 'Volver a ingresar' })).toBeTruthy();
   });
 
-  it('keeps an old real-client rejection local after same-account renewal and retries with the new token', async () => {
+  it('recovers an old real-client 401 after renewal without pausing new access', async () => {
     window.sessionStorage.clear();
     let releaseOldResponse!: (response: Response) => void;
     const oldResponse = new Promise<Response>((resolve) => {
@@ -2208,8 +2231,11 @@ describe('access screen', () => {
     );
 
     await screen.findByRole('button', { name: 'Cuenta' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    navigate('Mis robots');
     await waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce());
     await waitFor(() => expect(initialize).toHaveBeenCalledTimes(2));
+    vi.useFakeTimers();
 
     await act(async () => {
       releaseOldResponse(
@@ -2220,21 +2246,40 @@ describe('access screen', () => {
       await flushAuthMicrotasks();
     });
 
-    expect(
-      await screen.findByText('El acceso fue rechazado para esta operación. Podés reintentar.'),
-    ).toBeTruthy();
+    const savedSection = screen
+      .getByRole('heading', { name: 'Mis robots' })
+      .closest('section') as HTMLElement;
+    expect(within(savedSection).getByRole('status')).toBeTruthy();
+    expect(within(savedSection).queryByRole('alert')).toBeNull();
+    expect(within(savedSection).queryByRole('button', { name: 'Reintentar lista' })).toBeNull();
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(initialize).toHaveBeenCalledTimes(2);
     expect(screen.queryByText(/La sesión dejó de tener acceso/)).toBeNull();
     expect(screen.queryByRole('button', { name: 'Volver a ingresar' })).toBeNull();
+    expect(getAccountTrigger().disabled).toBe(false);
 
-    navigate('Mis robots');
-    fireEvent.click(await screen.findByRole('button', { name: 'Reintentar lista' }));
-    await waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(59_999);
+    });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(within(savedSection).getByRole('status')).toBeTruthy();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+      await flushAuthMicrotasks();
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(initialize).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([
+      'https://api.example.test/robots',
+      'https://api.example.test/robots',
+    ]);
     expect(fetchImpl.mock.calls[1]?.[1]).toMatchObject({
       headers: expect.objectContaining({ Authorization: 'Bearer new-token' }),
     });
-    expect(
-      screen.queryByText('El acceso fue rechazado para esta operación. Podés reintentar.'),
-    ).toBeNull();
+    expect(within(savedSection).getByText('Todavía no guardaste ninguna copia.')).toBeTruthy();
+    expect(within(savedSection).queryByRole('alert')).toBeNull();
+    expect(within(savedSection).queryByRole('button', { name: 'Reintentar lista' })).toBeNull();
   });
 
   it('accepts an old real-client rejection during pending renewal, then clears only its global gate', async () => {
@@ -2247,7 +2292,14 @@ describe('access screen', () => {
     const renewal = new Promise<AuthSession>((resolve) => {
       releaseRenewal = resolve;
     });
-    const fetchImpl = vi.fn<typeof fetch>().mockReturnValueOnce(oldResponse);
+    let releaseRecoveryResponse!: (response: Response) => void;
+    const recoveryResponse = new Promise<Response>((resolve) => {
+      releaseRecoveryResponse = resolve;
+    });
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockReturnValueOnce(oldResponse)
+      .mockReturnValueOnce(recoveryResponse);
     const firstSession = session('a@example.com', Math.floor(Date.now() / 1000), 'old-token');
     const renewedSession = session(
       'a@example.com',
@@ -2275,6 +2327,8 @@ describe('access screen', () => {
     );
 
     await screen.findByRole('button', { name: 'Cuenta' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    navigate('Mis robots');
     await waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce());
     await waitFor(() => expect(initialize).toHaveBeenCalledTimes(2));
     await act(async () => {
@@ -2286,15 +2340,38 @@ describe('access screen', () => {
       await screen.findByText('El acceso fue rechazado para esta operación. Podés reintentar.'),
     ).toBeTruthy();
     expect(screen.getByText(/La sesión dejó de tener acceso/)).toBeTruthy();
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(initialize).toHaveBeenCalledTimes(2);
 
     await act(async () => {
       releaseRenewal(renewedSession);
       await flushAuthMicrotasks();
     });
     await waitFor(() => expect(screen.queryByText(/La sesión dejó de tener acceso/)).toBeNull());
+    await waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(2));
+    const savedSection = screen
+      .getByRole('heading', { name: 'Mis robots' })
+      .closest('section') as HTMLElement;
+    expect(fetchImpl.mock.calls[1]?.[0]).toBe('https://api.example.test/robots');
+    expect(fetchImpl.mock.calls[1]?.[1]).toMatchObject({
+      headers: expect.objectContaining({ Authorization: 'Bearer new-token' }),
+    });
+    expect(within(savedSection).queryByText('Todavía no guardaste ninguna copia.')).toBeNull();
+    expect(initialize).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      releaseRecoveryResponse(new Response(JSON.stringify({ robots: [] }), { status: 200 }));
+      await flushAuthMicrotasks();
+    });
+    expect(within(savedSection).getByText('Todavía no guardaste ninguna copia.')).toBeTruthy();
     expect(
-      screen.getByText('El acceso fue rechazado para esta operación. Podés reintentar.'),
-    ).toBeTruthy();
+      screen.queryByText('El acceso fue rechazado para esta operación. Podés reintentar.'),
+    ).toBeNull();
+    expect(screen.queryByText(/La sesión dejó de tener acceso/)).toBeNull();
+    expect(within(savedSection).queryByRole('alert')).toBeNull();
+    expect(within(savedSection).queryByRole('button', { name: 'Reintentar lista' })).toBeNull();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(initialize).toHaveBeenCalledTimes(2);
     expect(screen.queryByRole('button', { name: 'Volver a ingresar' })).toBeNull();
   });
 
