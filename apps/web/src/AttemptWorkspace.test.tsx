@@ -721,7 +721,7 @@ describe('AttemptActivity', () => {
     expect(window.sessionStorage.getItem('prompt-runner:attempt-recovery')).toBeNull();
   });
 
-  it('keeps inspection available for a complete terminal record through query failures and hides it after auth loss', async () => {
+  it('keeps history inspection recoverable through query and auth failures', async () => {
     const completeTerminalRecord = {
       ...summary('victory'),
       turnsUsed: 1,
@@ -733,8 +733,13 @@ describe('AttemptActivity', () => {
       .mockRejectedValueOnce(
         new AttemptApiFailure('server', 'No se pudo consultar el índice de decisiones.', 500),
       )
-      .mockRejectedValueOnce(new AttemptApiFailure('authentication', 'La sesión venció.', 401));
-    const onAuthRequired = vi.fn();
+      .mockRejectedValueOnce(new AttemptApiFailure('authentication', 'La sesión venció.', 401))
+      .mockResolvedValue({
+        attemptId: completeTerminalRecord.id,
+        levelId: LEVEL.id,
+        decisions: [{ number: 1, decisionId: 'decision-1', originSupport: 0, hasAction: true }],
+      });
+    const onAuthRequired = vi.fn().mockReturnValue(true);
     const attemptApi = api({
       listAttempts: vi.fn().mockResolvedValue({ attempts: [completeTerminalRecord] }),
       getAttempt: vi.fn().mockResolvedValue(completeTerminalRecord),
@@ -753,21 +758,34 @@ describe('AttemptActivity', () => {
     );
 
     await screen.findByRole('heading', { name: 'Historial' });
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-28T12:00:00.000Z'));
     fireEvent.click(await historyAction('Inspeccionar decisiones'));
-    expect(await screen.findByRole('heading', { name: 'Inspeccionar decisiones' })).toBeTruthy();
-    await screen.findByRole('alert');
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    await settleWorkspacePromises();
+    expect(screen.getByRole('heading', { name: 'Inspeccionar decisiones' })).toBeTruthy();
+    expect(screen.getByRole('status')).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Reintentar inspección' })).toBeNull();
+    expect(getDecisionIndex).toHaveBeenCalledOnce();
     expect(onAuthRequired).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'Cerrar inspección' }));
 
+    // Closing the first inspection remains an explicit way to end its pending query intent.
+    fireEvent.click(screen.getByRole('button', { name: 'Cerrar inspección' }));
+    expect(screen.queryByRole('heading', { name: 'Inspeccionar decisiones' })).toBeNull();
     fireEvent.click(await historyAction('Abrir'));
-    expect(await screen.findByRole('heading', { name: 'Victoria' })).toBeTruthy();
+    await settleWorkspacePromises();
+    expect(screen.getByRole('heading', { name: 'Victoria' })).toBeTruthy();
     fireEvent.click(
       within(
         screen.getByRole('heading', { name: 'Victoria' }).closest('section') as HTMLElement,
       ).getByRole('button', { name: 'Inspeccionar decisiones' }),
     );
-    await waitFor(() => expect(onAuthRequired).toHaveBeenCalledOnce());
-    expect(screen.queryByRole('heading', { name: 'Inspeccionar decisiones' })).toBeNull();
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    await settleWorkspacePromises();
+    expect(getDecisionIndex).toHaveBeenCalledTimes(2);
+    expect(onAuthRequired).toHaveBeenCalledOnce();
+    expect(onAuthRequired).toHaveBeenCalledWith(undefined);
 
     view.rerender(
       <AttemptActivity
@@ -778,22 +796,36 @@ describe('AttemptActivity', () => {
         onAuthRequired={onAuthRequired}
       />,
     );
-    await waitFor(() =>
-      expect(screen.queryByRole('heading', { name: 'Inspeccionar decisiones' })).toBeNull(),
-    );
+    expect(screen.getByRole('heading', { name: 'Inspeccionar decisiones' })).toBeTruthy();
+    expect(screen.getByText(/Intento inspeccionado: Victoria/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Reintentar inspección' })).toBeNull();
+    await act(async () => vi.advanceTimersByTimeAsync(2 * 60_000));
+    await settleWorkspacePromises();
+    expect(getDecisionIndex).toHaveBeenCalledTimes(2);
+
     view.rerender(
       <AttemptActivity
         api={attemptApi}
         editor={editor}
-        session={session()}
+        session={session('a@example.com', Math.floor(Date.now() / 1000) + 600, 'token-refreshed')}
         authPaused={false}
         onAuthRequired={onAuthRequired}
       />,
     );
-    expect(screen.queryByRole('heading', { name: 'Inspeccionar decisiones' })).toBeNull();
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    await settleWorkspacePromises();
+    expect(getDecisionIndex).toHaveBeenCalledTimes(3);
+    expect(getDecisionIndex.mock.calls.map(([id]) => id)).toEqual([
+      completeTerminalRecord.id,
+      completeTerminalRecord.id,
+      completeTerminalRecord.id,
+    ]);
+    expect(screen.getByRole('button', { name: /Casilla 0, Inicio, 1 decisión/ })).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Reintentar inspección' })).toBeNull();
   });
 
-  it('keeps the inspector open when App rejects a stale auth callback and recovers on retry', async () => {
+  it('recovers a stale auth callback automatically for the same inspected attempt', async () => {
     const terminal = {
       ...summary('victory'),
       turnsUsed: 1,
@@ -830,18 +862,30 @@ describe('AttemptActivity', () => {
     );
 
     await screen.findByRole('heading', { name: 'Historial' });
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-28T12:00:00.000Z'));
     fireEvent.click(await historyAction('Inspeccionar decisiones'));
-    expect(await screen.findByRole('heading', { name: 'Inspeccionar decisiones' })).toBeTruthy();
-    expect((await screen.findByRole('alert')).textContent).toContain('La sesión venció.');
-    expect(onAuthRequired).toHaveBeenCalledWith(9);
-    expect(screen.getByRole('button', { name: 'Reintentar inspección' })).toBeTruthy();
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    await settleWorkspacePromises();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Reintentar inspección' }));
-    expect(
-      await screen.findByRole('button', {
-        name: /Casilla 0, Inicio, 1 decisión/,
-      }),
-    ).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Inspeccionar decisiones' })).toBeTruthy();
+    expect(onAuthRequired).toHaveBeenCalledWith(9);
+    expect(screen.getByRole('status')).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Reintentar inspección' })).toBeNull();
+    expect(getDecisionIndex).toHaveBeenCalledOnce();
+
+    await act(async () => vi.advanceTimersByTimeAsync(59_999));
+    await settleWorkspacePromises();
+    expect(getDecisionIndex).toHaveBeenCalledOnce();
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    await settleWorkspacePromises();
+
+    expect(getDecisionIndex).toHaveBeenCalledTimes(2);
+    expect(getDecisionIndex.mock.calls.map(([id]) => id)).toEqual([terminal.id, terminal.id]);
+    expect(screen.getByRole('button', { name: /Casilla 0, Inicio, 1 decisión/ })).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Reintentar inspección' })).toBeNull();
   });
 
   it('closes the inspector before starting a new presentation', async () => {
