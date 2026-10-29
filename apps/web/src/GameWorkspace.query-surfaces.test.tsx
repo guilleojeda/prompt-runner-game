@@ -663,7 +663,11 @@ describe('Phase 12 independent accessible query diagnostics', () => {
     await readyForPreparation();
     selectTab('Mis robots');
     await replaceSelectedCopy(/Copia consultada/u);
-    fireEvent.click(await screen.findByRole('button', { name: 'Cargar versión remota' }));
+    expect(app.draft.putDraft).not.toHaveBeenCalled();
+    const selectedCopy = screen.getByRole('region', { name: 'Copia seleccionada' });
+    fireEvent.click(within(selectedCopy).getByRole('button', { name: 'Usar este robot' }));
+    const useDialog = await screen.findByRole('dialog', { name: /Usar.*Copia consultada/u });
+    fireEvent.click(within(useDialog).getByRole('button', { name: 'Usar este robot' }));
     await waitFor(() => expect(app.draft.putDraft).toHaveBeenCalledOnce());
 
     const instructions = screen.getByLabelText(

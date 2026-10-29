@@ -165,7 +165,7 @@ function selectedCopyPanel(): HTMLElement {
   return screen.getByRole('region', { name: 'Copia seleccionada' });
 }
 
-async function useSelectedCopy(): Promise<void> {
+async function applySelectedCopy(): Promise<void> {
   const panel = selectedCopyPanel();
   fireEvent.click(within(panel).getByRole('button', { name: 'Usar este robot' }));
   const dialog = await screen.findByRole('dialog');
@@ -174,7 +174,7 @@ async function useSelectedCopy(): Promise<void> {
 
 async function useCopy(matcher: RegExp): Promise<HTMLElement> {
   const radio = await chooseCopy(matcher);
-  await useSelectedCopy();
+  await applySelectedCopy();
   return radio;
 }
 
@@ -259,7 +259,7 @@ describe('SavedRobots', () => {
       firstLoad.resolve(first);
       await Promise.resolve();
     });
-    await useSelectedCopy();
+    await applySelectedCopy();
 
     expect(applyDraft).toHaveBeenCalledWith(
       first.draft,
@@ -278,7 +278,7 @@ describe('SavedRobots', () => {
       secondLoad.resolve(second);
       await Promise.resolve();
     });
-    await useSelectedCopy();
+    await applySelectedCopy();
     await waitFor(() =>
       expect(
         pendingApplications.some(
@@ -330,7 +330,7 @@ describe('SavedRobots', () => {
         load.resolve(robot);
         await Promise.resolve();
       });
-      await useSelectedCopy();
+      await applySelectedCopy();
       expect(applyDraft).toHaveBeenCalledWith(
         robot.draft,
         expect.objectContaining({ signal: expect.any(AbortSignal) }),
@@ -361,7 +361,15 @@ describe('SavedRobots', () => {
 
       if (abandonment === 'pause') {
         expect(screen.queryByText(`Cargaste «${robot.name}».`)).toBeNull();
-        expect(screen.queryByRole('region', { name: 'Copia seleccionada' })).toBeNull();
+        const selected = screen.getByRole('region', { name: 'Copia seleccionada' });
+        expect(
+          within(selected)
+            .getByRole('button', { name: 'Usar este robot' })
+            .hasAttribute('disabled'),
+        ).toBe(true);
+        expect(
+          screen.getByRole('button', { name: 'Guardar robot actual' }).hasAttribute('disabled'),
+        ).toBe(true);
       }
     },
   );
@@ -488,7 +496,9 @@ describe('SavedRobots', () => {
         nextCursor: 'next',
       })
       .mockResolvedValueOnce({ robots: [summary('robot-a', 2), summary('robot-c', 1)] });
-    const getRobot = vi.fn().mockImplementation(async (id: string) => savedRobot({ id }));
+    const getRobot = vi
+      .fn()
+      .mockImplementation(async (id: string) => savedRobot({ id, name: 'Mismo nombre' }));
     const savedApi = api({ listRobots, getRobot });
     render(<SavedRobots api={savedApi} editor={editor()} session={session()} />);
 
@@ -519,7 +529,7 @@ describe('SavedRobots', () => {
     await chooseCopy(/Explorador/u);
     expect(saveRobot).not.toHaveBeenCalled();
     openMoreActions();
-    fireEvent.click(screen.getByRole('button', { name: /Renombrar.*Explorador/u }));
+    fireEvent.click(within(selectedCopyPanel()).getByRole('button', { name: 'Renombrar' }));
     const dialog = await screen.findByRole('dialog', { name: /Renombrar.*Explorador/u });
     fireEvent.change(within(dialog).getByRole('textbox', { name: 'Nombre' }), {
       target: { value: 'Explorador mejorado' },
@@ -1118,15 +1128,21 @@ describe('SavedRobots', () => {
     const editorRef = editor();
     const savedApi = api();
     const deleteRobot = vi.spyOn(savedApi, 'deleteRobot');
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
     render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
     await chooseCopy(/Explorador/u);
     deleteSelectedCopy();
     await waitFor(() => expect(deleteRobot.mock.calls[0]?.slice(0, 2)).toEqual(['robot-a', 1]));
     expect(editorRef.current?.applyDraft).not.toHaveBeenCalled();
-    await waitFor(() =>
-      expect(screen.queryByRole('region', { name: 'Copia seleccionada' })).toBeNull(),
-    );
+    await waitFor(() => expect(screen.queryByRole('radio', { name: /Explorador/u })).toBeNull());
+    const selected = screen.getByRole('region', { name: 'Copia seleccionada' });
+    expect(within(selected).getByRole('heading', { name: 'Elegí una copia' })).toBeTruthy();
+    expect(
+      within(selected).queryByText(savedRobot().draft.instructions, {
+        normalizer: (text) => text,
+      }),
+    ).toBeNull();
+    confirm.mockRestore();
   });
 
   it('does not delete when confirmation is cancelled', async () => {
@@ -1157,9 +1173,14 @@ describe('SavedRobots', () => {
     render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
     await chooseCopy(/Explorador/u);
     deleteSelectedCopy();
-    await waitFor(() =>
-      expect(screen.queryByRole('region', { name: 'Copia seleccionada' })).toBeNull(),
-    );
+    await waitFor(() => expect(screen.queryByRole('radio', { name: /Explorador/u })).toBeNull());
+    const selected = screen.getByRole('region', { name: 'Copia seleccionada' });
+    expect(within(selected).getByRole('heading', { name: 'Elegí una copia' })).toBeTruthy();
+    expect(
+      within(selected).queryByText(savedRobot().draft.instructions, {
+        normalizer: (text) => text,
+      }),
+    ).toBeNull();
     expect(getRobot).toHaveBeenCalledTimes(2);
     expect(screen.getByText(/Eliminaste «Explorador»/)).toBeTruthy();
     confirm.mockRestore();

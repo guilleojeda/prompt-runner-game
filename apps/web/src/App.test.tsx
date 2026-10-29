@@ -402,7 +402,7 @@ describe('access screen', () => {
     expect(draftApi.putDraft).not.toHaveBeenCalled();
   });
 
-  it('keeps saved-copy actions unavailable until the editor configuration loads', async () => {
+  it('keeps saved-copy mutations unavailable until the editor configuration loads', async () => {
     vi.useFakeTimers();
     const savedDraft = { ...createDefaultDraft(), instructions: 'Configuración guardada.' };
     const savedCopy: SavedRobot = {
@@ -468,7 +468,7 @@ describe('access screen', () => {
     const createButton = within(savedSection).getByRole('button', {
       name: 'Guardar robot actual',
     }) as HTMLButtonElement;
-    expect((copyButton as HTMLInputElement).disabled).toBe(true);
+    expect((copyButton as HTMLInputElement).disabled).toBe(false);
     expect(createButton.disabled).toBe(true);
 
     expect(screen.queryByRole('button', { name: 'Reintentar carga' })).toBeNull();
@@ -476,7 +476,7 @@ describe('access screen', () => {
       await vi.advanceTimersByTimeAsync(59_999);
     });
     expect(getDraft).toHaveBeenCalledOnce();
-    expect((copyButton as HTMLInputElement).disabled).toBe(true);
+    expect((copyButton as HTMLInputElement).disabled).toBe(false);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1);
     });
