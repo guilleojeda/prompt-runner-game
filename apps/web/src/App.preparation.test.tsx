@@ -218,6 +218,7 @@ describe('preparation availability integration', () => {
       false,
     );
     navigate('Mis robots');
+    await settlePreparationPromises();
     expect(
       (screen.getByRole('button', { name: 'Guardar robot actual' }) as HTMLButtonElement).disabled,
     ).toBe(false);
@@ -362,6 +363,7 @@ describe('preparation availability integration', () => {
       false,
     );
     navigate('Mis robots');
+    await settlePreparationPromises();
     expect(
       (screen.getByRole('button', { name: 'Guardar robot actual' }) as HTMLButtonElement).disabled,
     ).toBe(false);
@@ -534,6 +536,7 @@ describe('preparation availability integration', () => {
       false,
     );
     navigate('Mis robots');
+    await settlePreparationPromises();
     expect(
       (screen.getByRole('button', { name: 'Guardar robot actual' }) as HTMLButtonElement).disabled,
     ).toBe(false);

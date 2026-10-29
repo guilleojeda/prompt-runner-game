@@ -139,7 +139,8 @@ describe('App session and draft transitions', () => {
       }),
       putDraft,
     };
-    const savedApi = savedRobotApi(vi.fn().mockReturnValue(listPending.promise));
+    const listRobots = vi.fn<SavedRobotApi['listRobots']>().mockReturnValue(listPending.promise);
+    const savedApi = savedRobotApi(listRobots);
     render(
       <App
         authClient={auth}
@@ -161,10 +162,18 @@ describe('App session and draft transitions', () => {
     await advance(600);
     expect(putDraft).toHaveBeenCalledOnce();
 
-    await advance(4_400);
-    expect(auth.initialize).toHaveBeenCalledTimes(2);
+    fireEvent.click(screen.getByRole('button', { name: 'Mis robots' }));
+    await settle();
+    expect(listRobots).toHaveBeenCalledOnce();
+    expect(auth.initialize).toHaveBeenCalledOnce();
     listPending.reject(new SavedRobotApiFailure('authentication', 'Acceso rechazado', 401));
     await settle();
+    fireEvent.click(screen.getByRole('button', { name: 'Preparar' }));
+    await settle();
+    expect(screen.getByRole('button', { name: 'Volver a ingresar' })).toBeTruthy();
+
+    await advance(4_400);
+    expect(auth.initialize).toHaveBeenCalledTimes(2);
     expect(screen.getByRole('button', { name: 'Volver a ingresar' })).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'Volver a ingresar' }));

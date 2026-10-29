@@ -125,6 +125,12 @@ async function settle(): Promise<void> {
   });
 }
 
+async function openLibrary(): Promise<void> {
+  navigate('Mis robots');
+  await settle();
+  expect(screen.getByRole('radio', { name: /Copia A/u })).toBeTruthy();
+}
+
 async function advance(milliseconds: number): Promise<void> {
   await act(async () => {
     await vi.advanceTimersByTimeAsync(milliseconds);
@@ -233,7 +239,7 @@ async function apply(source: Source): Promise<void> {
     fireEvent.click(button('Usar esta configuración'));
     fireEvent.click(screen.getByRole('button', { name: 'Reemplazar mi robot' }));
   } else {
-    navigate('Mis robots');
+    await openLibrary();
     fireEvent.click(screen.getByRole('radio', { name: /Copia A/u }));
     await settle();
     const panel = screen.getByRole('region', { name: 'Copia seleccionada' });
@@ -435,7 +441,7 @@ describe('candidate source and history cancellation', () => {
     const pending = deferred<SavedRobot>();
     const getRobot = vi.fn<SavedRobotApi['getRobot']>().mockReturnValue(pending.promise);
     const { copies, draftApi, runnerApi } = await mount({ savedApi: { getRobot } });
-    navigate('Mis robots');
+    await openLibrary();
     fireEvent.click(screen.getByRole('radio', { name: /Copia A/u }));
     await settle();
     const signal = getRobot.mock.calls[0]?.[1];
@@ -460,7 +466,7 @@ describe('candidate source and history cancellation', () => {
       .fn<SavedRobotApi['getRobot']>()
       .mockRejectedValue(new SavedRobotApiFailure('authentication', 'Acceso rechazado.', 401));
     const { draftApi, runnerApi } = await mount({ savedApi: { getRobot } });
-    navigate('Mis robots');
+    await openLibrary();
     fireEvent.click(screen.getByRole('radio', { name: /Copia A/u }));
     await settle();
 
@@ -479,7 +485,7 @@ describe('candidate source and history cancellation', () => {
       .fn<SavedRobotApi['getRobot']>()
       .mockResolvedValue(copy('copy-a', 'Copia A', historical));
     const { draftApi, runnerApi } = await mount({ savedApi: { getRobot } });
-    navigate('Mis robots');
+    await openLibrary();
     fireEvent.click(screen.getByRole('radio', { name: /Copia A/u }));
     await settle();
     const panel = screen.getByRole('region', { name: 'Copia seleccionada' });
@@ -493,18 +499,32 @@ describe('candidate source and history cancellation', () => {
     expect(runnerApi.createAttempt).not.toHaveBeenCalled();
   });
 
-  it('keeps a failed copy consultation manual instead of retrying it in phase21', async () => {
+  it('recovers a transient copy consultation after one minute without applying it', async () => {
     const getRobot = vi
       .fn<SavedRobotApi['getRobot']>()
-      .mockRejectedValue(new SavedRobotApiFailure('network', 'Copia temporalmente inaccesible.'));
-    const { draftApi, runnerApi } = await mount({ savedApi: { getRobot } });
-    navigate('Mis robots');
+      .mockRejectedValueOnce(
+        new SavedRobotApiFailure('network', 'Copia temporalmente inaccesible.'),
+      );
+    const { copies, draftApi, runnerApi } = await mount({ savedApi: { getRobot } });
+    getRobot.mockResolvedValueOnce(copies[0]!);
+    await openLibrary();
     fireEvent.click(screen.getByRole('radio', { name: /Copia A/u }));
     await settle();
     expectEditable();
-    expect(screen.getByRole('alert').textContent).toContain('Copia temporalmente inaccesible.');
-    await advance(180_000);
     expect(getRobot).toHaveBeenCalledOnce();
+    expect(screen.getByText('Volveremos a consultar esta copia.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Reintentar consulta' })).toBeNull();
+    await advance(59_999);
+    expect(getRobot).toHaveBeenCalledOnce();
+    await advance(1);
+    await settle();
+    expect(getRobot).toHaveBeenCalledTimes(2);
+    const panel = screen.getByRole('region', { name: 'Copia seleccionada' });
+    expect(
+      within(panel).getByText(copies[0]!.draft.instructions, { normalizer: (text) => text }),
+    ).toBeTruthy();
+    await advance(180_000);
+    expect(getRobot).toHaveBeenCalledTimes(2);
     expect(draftApi.putDraft).not.toHaveBeenCalled();
     expect(instructions().value).toBe(original.instructions);
     expect(runnerApi.createAttempt).not.toHaveBeenCalled();
@@ -514,7 +534,7 @@ describe('candidate source and history cancellation', () => {
     const pending = deferred<SavedRobot>();
     const getRobot = vi.fn<SavedRobotApi['getRobot']>().mockReturnValue(pending.promise);
     const { copies, draftApi } = await mount({ savedApi: { getRobot } });
-    navigate('Mis robots');
+    await openLibrary();
     fireEvent.click(screen.getByRole('radio', { name: /Copia A/u }));
     await settle();
     expectEditable();

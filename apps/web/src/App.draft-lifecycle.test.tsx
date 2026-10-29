@@ -428,13 +428,14 @@ describe('draft recovery and account departure', () => {
     const pendingSave = deferred<DraftSnapshot>();
     const pendingAccess = deferred<Awaited<ReturnType<SavedRobotApi['listRobots']>>>();
     const putDraft = vi.fn<DraftApi['putDraft']>().mockReturnValue(pendingSave.promise);
+    const listRobots = vi.fn<SavedRobotApi['listRobots']>().mockReturnValue(pendingAccess.promise);
     let abortedAtLogin = false;
     const beginLogin = vi.fn(async () => {
       abortedAtLogin = putDraft.mock.calls[0]?.[2]?.aborted === true;
     });
-    const { currentDraft } = await mount({
+    const { auth, currentDraft } = await mount({
       draftApi: { putDraft },
-      savedApi: { listRobots: vi.fn().mockReturnValue(pendingAccess.promise) },
+      savedApi: { listRobots },
       authClient: { beginLogin },
     });
     expect((screen.getByRole('button', { name: 'Probar' }) as HTMLButtonElement).disabled).toBe(
@@ -443,7 +444,13 @@ describe('draft recovery and account departure', () => {
     edit('Enviada y pendiente al volver a ingresar');
     await advance(600);
     expect(putDraft).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole('button', { name: 'Mis robots' }));
+    await settle();
+    expect(listRobots).toHaveBeenCalledOnce();
+    expect(auth.initialize).toHaveBeenCalledOnce();
     pendingAccess.reject(new SavedRobotApiFailure('authentication', 'Acceso rechazado', 401));
+    await settle();
+    fireEvent.click(screen.getByRole('button', { name: 'Preparar' }));
     await settle();
     fireEvent.click(screen.getByRole('button', { name: 'Volver a ingresar' }));
     await settle();

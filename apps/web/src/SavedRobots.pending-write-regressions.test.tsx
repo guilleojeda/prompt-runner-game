@@ -353,6 +353,7 @@ describe('SavedRobots pending-write regressions', () => {
     const view = render(<SavedRobots api={savedApi} editor={editor} session={session()} />);
 
     await chooseCopy(target.name);
+    expect(getRobot).toHaveBeenCalledOnce();
     openMoreActions();
     fireEvent.click(renameButton());
     const dialog = await screen.findByRole('dialog', { name: /Renombrar.*Robot A/u });
@@ -383,6 +384,7 @@ describe('SavedRobots pending-write regressions', () => {
 
     view.rerender(<SavedRobots api={savedApi} editor={editor} session={session()} />);
     await chooseCopy(target.name);
+    expect(getRobot).toHaveBeenCalledOnce();
     openMoreActions();
     fireEvent.click(renameButton());
     const reconcileDialog = await screen.findByRole('dialog', {
@@ -391,8 +393,14 @@ describe('SavedRobots pending-write regressions', () => {
     fireEvent.click(
       within(reconcileDialog).getByRole('button', { name: 'Comprobar cambio pendiente' }),
     );
-    await waitFor(() => expect(getRobot).toHaveBeenCalledTimes(3));
-    expect(getRobot.mock.calls.map(([id]) => id)).toEqual([target.id, target.id, target.id]);
+    await waitFor(() => expect(getRobot).toHaveBeenCalledTimes(2));
+    expect(getRobot.mock.calls.map(([id]) => id)).toEqual([target.id, target.id]);
     expect(saveRobot).toHaveBeenCalledOnce();
+    expect(saveRobot.mock.calls[0]).toEqual([
+      target.id,
+      target.version,
+      'Nombre incierto',
+      target.draft,
+    ]);
   });
 });
