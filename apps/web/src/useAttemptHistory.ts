@@ -189,6 +189,7 @@ export interface AttemptHistoryController {
   readonly decisionInspectorTarget: AttemptSummary | null;
   readonly decisionInspectorSelection: DecisionInitialSelection;
   readonly decisionInspectorOpenVersion: number;
+  readonly decisionInspectorActive: boolean;
   readonly queryVisible: boolean;
   selectHistoryView(view: HistoryView): void;
   rememberHistoryOrigin(attemptId: string, action: string): void;
@@ -325,6 +326,10 @@ export function useAttemptHistory({
   const [decisionInspectorOpenVersion, setDecisionInspectorOpenVersion] = useState(0);
   const decisionInspectorTriggerRef = useRef<HTMLElement | null>(null);
   const pendingDecisionFocusRef = useRef<HTMLElement | null>(null);
+  const decisionInspectorOwnerRef = useRef<{
+    readonly identity: string;
+    readonly surface: UseAttemptHistoryOptions['surface'];
+  } | null>(null);
   const historyListVisible =
     historyVisible &&
     configurationState === null &&
@@ -478,6 +483,7 @@ export function useAttemptHistory({
     (restoreFocus = true): void => {
       const trigger = decisionInspectorTriggerRef.current;
       const targetId = decisionInspectorTarget?.id;
+      decisionInspectorOwnerRef.current = null;
       decisionInspectorTriggerRef.current = null;
       setDecisionInspectorTarget(null);
       const origin = historyOriginRef.current;
@@ -984,6 +990,7 @@ export function useAttemptHistory({
       if (surface === 'historial') {
         rememberHistoryOrigin(target.id, selection === 'first' ? 'inspect' : 'inspect-last');
       }
+      decisionInspectorOwnerRef.current = { identity, surface };
       decisionInspectorTriggerRef.current =
         document.activeElement instanceof HTMLElement ? document.activeElement : null;
       setDecisionInspectorTarget(target);
@@ -995,6 +1002,7 @@ export function useAttemptHistory({
       cancelConfigurationApplication,
       clearConfiguration,
       editor,
+      identity,
       rememberHistoryOrigin,
       surface,
     ],
@@ -1020,11 +1028,9 @@ export function useAttemptHistory({
   const handleDecisionInspectorAuthRequired = useCallback(
     (authContext?: number): boolean => {
       const accepted = onAuthRequired?.(authContext);
-      if (accepted === false) return false;
-      clearDecisionInspector(false);
-      return true;
+      return accepted !== false;
     },
-    [clearDecisionInspector, onAuthRequired],
+    [onAuthRequired],
   );
 
   useLayoutEffect(() => {
@@ -1374,13 +1380,7 @@ export function useAttemptHistory({
     if (!authPaused) return;
     clearPendingConfigurationConfirmation();
     cancelConfigurationApplication();
-    clearDecisionInspector(false);
-  }, [
-    authPaused,
-    cancelConfigurationApplication,
-    clearDecisionInspector,
-    clearPendingConfigurationConfirmation,
-  ]);
+  }, [authPaused, cancelConfigurationApplication, clearPendingConfigurationConfirmation]);
 
   const loadBootstrapPage = useCallback(
     async (signal: AbortSignal, isCurrent: () => boolean): Promise<void> => {
@@ -1473,6 +1473,11 @@ export function useAttemptHistory({
     decisionInspectorTarget,
     decisionInspectorSelection,
     decisionInspectorOpenVersion,
+    decisionInspectorActive:
+      decisionInspectorTarget !== null &&
+      decisionInspectorOwnerRef.current?.identity === identity &&
+      decisionInspectorOwnerRef.current?.surface === surface &&
+      !activityBusy.current,
     resultQuery,
     queryVisible:
       configurationState !== null || decisionInspectorTarget !== null || resultQuery !== null,

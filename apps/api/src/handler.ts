@@ -815,14 +815,26 @@ export const handleRequest = async (
     if (isAttemptDecisions) {
       const attemptId = decodeURIComponent(parts[1]);
       const decisionNumber = decisionNumberInput(event);
-      if (decisionNumber === undefined) {
-        const index = await attemptStore.getDecisionIndex(identity.sub, attemptId);
-        if (!index) throw new ApiError(404, 'not_found', 'Intento no encontrado.');
-        return respond(event, 200, 'ok', index);
+      try {
+        if (decisionNumber === undefined) {
+          const index = await attemptStore.getDecisionIndex(identity.sub, attemptId);
+          if (!index) throw new ApiError(404, 'not_found', 'Intento no encontrado.');
+          return respond(event, 200, 'ok', index);
+        }
+        const detail = await attemptStore.getDecision(identity.sub, attemptId, decisionNumber);
+        if (!detail) throw new ApiError(404, 'not_found', 'Decisión no encontrada.');
+        return respond(event, 200, 'ok', detail);
+      } catch (error) {
+        if (error instanceof AttemptStoredIncompatibleError) {
+          throw new ApiError(
+            500,
+            'stored_attempt_incompatible',
+            STORED_ATTEMPT_INCOMPATIBLE_MESSAGE,
+            { cause: error },
+          );
+        }
+        throw error;
       }
-      const detail = await attemptStore.getDecision(identity.sub, attemptId, decisionNumber);
-      if (!detail) throw new ApiError(404, 'not_found', 'Decisión no encontrada.');
-      return respond(event, 200, 'ok', detail);
     }
     if (isPresentationComplete) {
       const attemptId = decodeURIComponent(parts[1]);

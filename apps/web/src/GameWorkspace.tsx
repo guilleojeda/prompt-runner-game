@@ -205,7 +205,7 @@ export const GameWorkspace = forwardRef<GameWorkspaceHandle, GameWorkspaceProps>
       activity.inspectorOpen;
     const hiddenConfiguration =
       !activity.configurationOpen || attemptForeground || activity.inspectorOpen;
-    const hiddenInspector = !activity.inspectorOpen || attemptForeground;
+    const hiddenInspector = !activity.inspectorActive || attemptForeground;
 
     return (
       <div className="game-workspace">
