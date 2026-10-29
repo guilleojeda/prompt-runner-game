@@ -258,6 +258,8 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
   const detailsSummaryRef = useRef<HTMLElement | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const newNameInputRef = useRef<HTMLInputElement | null>(null);
+  const newCopyTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const hadNewNameModeRef = useRef(false);
 
   const setConsult = (status: ConsultStatus): void => {
     consultStatusRef.current = status;
@@ -369,7 +371,12 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
   }, [dialog]);
 
   useEffect(() => {
-    if (!nameMode) return;
+    if (!nameMode) {
+      if (hadNewNameModeRef.current) newCopyTriggerRef.current?.focus();
+      hadNewNameModeRef.current = false;
+      return;
+    }
+    hadNewNameModeRef.current = true;
     newNameInputRef.current?.focus();
     newNameInputRef.current?.select();
   }, [nameMode]);
@@ -1333,6 +1340,24 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
     canSaveAsNew;
   const selectedLimit = selected ? draftLimitMessage(selected.draft) : null;
   const globalErrorVisible = error !== null && (errorKind === 'list' || errorKind === 'delete');
+  const openNewCopy = (): void => {
+    setNameMode('new');
+    setNewName(pendingCreate?.name ?? '');
+    setError(null);
+    setErrorKind(null);
+    setMessage(null);
+  };
+  const newCopyButton = (
+    <button
+      ref={newCopyTriggerRef}
+      className="secondary-button"
+      type="button"
+      onClick={openNewCopy}
+      disabled={!canStartNew}
+    >
+      Guardar robot actual
+    </button>
+  );
   return (
     <section
       className="saved-robots"
@@ -1346,6 +1371,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
             Mis robots
           </h2>
         </div>
+        {robots.length > 0 && nameMode !== 'new' && newCopyButton}
         {listBusy && <span className="spinner" aria-label="Cargando robots guardados" />}
       </header>
 
@@ -1717,23 +1743,8 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
               </div>
             </form>
           )}
-          {nameMode !== 'new' && (
-            <div className="saved-robots-actions saved-robots-create-action">
-              <button
-                className="secondary-button"
-                type="button"
-                onClick={() => {
-                  setNameMode('new');
-                  setNewName(pendingCreate?.name ?? '');
-                  setError(null);
-                  setErrorKind(null);
-                  setMessage(null);
-                }}
-                disabled={!canStartNew}
-              >
-                Guardar robot actual
-              </button>
-            </div>
+          {robots.length === 0 && nameMode !== 'new' && (
+            <div className="saved-robots-actions saved-robots-create-action">{newCopyButton}</div>
           )}
         </section>
       </div>

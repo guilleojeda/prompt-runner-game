@@ -496,7 +496,9 @@ h1 {
 .saved-robots-list-wrap {
   display: grid;
   gap: 0.75rem;
+  max-height: min(34rem, 68vh);
   margin-top: 0.8rem;
+  overflow-y: auto;
 }
 
 .saved-robots-list {
@@ -2643,6 +2645,10 @@ button:disabled {
   .saved-robots-detail,
   .saved-robots-name-form {
     padding: 0.75rem;
+  }
+
+  .saved-robots-list-wrap {
+    max-height: min(20rem, 42vh);
   }
 
   .saved-robots-dialog {
