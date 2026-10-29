@@ -202,7 +202,7 @@ describe('DecisionInspector read recovery acceptance', () => {
     await advance(1);
     expect(getDecision).toHaveBeenCalledTimes(2);
     expect(getDecisionIndex).toHaveBeenCalledTimes(2);
-    expect(await screen.findByRole('heading', { name: 'Observación' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Observación' })).toBeTruthy();
 
     await advance(3 * MINUTE);
     expect(getDecisionIndex).toHaveBeenCalledTimes(2);
@@ -255,14 +255,17 @@ describe('DecisionInspector read recovery acceptance', () => {
     await openInspector(inspectorApi({ getDecisionIndex, getDecision }));
 
     expect(getDecision).toHaveBeenCalledOnce();
+    if (expectedReads === 2) {
+      expect.soft(screen.queryByRole('alert')).toBeNull();
+      expect.soft(screen.queryByRole('button', { name: /Reintentar/i })).toBeNull();
+      expect.soft(screen.queryByRole('status')).not.toBeNull();
+    }
     await advance(MINUTE);
 
     expect(getDecision).toHaveBeenCalledTimes(expectedReads);
     expect(getDecisionIndex).toHaveBeenCalledOnce();
     if (expectedReads === 2) {
-      expect.soft(screen.queryByRole('alert')).toBeNull();
-      expect.soft(screen.queryByRole('button', { name: /Reintentar/i })).toBeNull();
-      expect.soft(screen.queryByRole('status')).not.toBeNull();
+      expect(screen.getByRole('heading', { name: 'Observación' })).toBeTruthy();
     }
   });
 
@@ -482,7 +485,7 @@ describe('DecisionInspector read recovery acceptance', () => {
     fireEvent.focus(window);
     await settle();
     expect(getDecisionIndex).toHaveBeenCalledTimes(2);
-    expect(await screen.findByRole('heading', { name: 'Observación' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Observación' })).toBeTruthy();
 
     fireEvent(document, new Event('visibilitychange'));
     fireEvent.focus(window);

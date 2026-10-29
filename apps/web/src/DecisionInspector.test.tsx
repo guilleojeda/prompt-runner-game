@@ -369,7 +369,7 @@ describe('DecisionInspector', () => {
         resolveRetry(selectedDetail);
       });
 
-      expect(await screen.findByRole('heading', { name: 'Decisión 1, casilla 2' })).toBeTruthy();
+      expect(screen.getByRole('heading', { name: 'Decisión 1, casilla 2' })).toBeTruthy();
       expect(screen.getAllByRole('heading', { name: 'Observación' })).toHaveLength(1);
       const loaded = readLinksAndDestination();
       expect(loaded.href).toBe(loading.href);
@@ -422,7 +422,7 @@ describe('DecisionInspector', () => {
     const laterDecision = screen.getAllByRole('button', { name: /Decisión 3/ })[0]!;
     laterDecision.focus();
     fireEvent.click(laterDecision);
-    expect(await screen.findByRole('heading', { name: 'Decisión 3, casilla 5' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Decisión 3, casilla 5' })).toBeTruthy();
     expect(document.activeElement).toBe(laterDecision);
 
     await act(async () => {
@@ -974,7 +974,7 @@ describe('DecisionInspector', () => {
 
       await advance(MINUTE);
 
-      expect(await screen.findByRole('heading', { name: 'Decisión 3, casilla 5' })).toBeTruthy();
+      expect(screen.getByRole('heading', { name: 'Decisión 3, casilla 5' })).toBeTruthy();
       expect(document.activeElement).toBe(destination);
       expect(scroll.scrollIntoView).not.toHaveBeenCalled();
       expect(getDecision).toHaveBeenCalledTimes(2);
