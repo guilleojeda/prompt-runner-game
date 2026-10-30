@@ -129,7 +129,7 @@ interface PendingCreateFocusHandoff {
 interface PendingDeleteFocusHandoff {
   readonly identity: string;
   readonly owner: number;
-  readonly trigger: HTMLButtonElement;
+  readonly trigger: HTMLElement;
 }
 
 class StaleSavedOperation extends Error {
@@ -422,7 +422,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
 
   const stageDeleteFocusHandoff = (
     intent: PendingDelete,
-    trigger: HTMLButtonElement | null,
+    trigger: HTMLElement | null,
     triggerWasFocused: boolean,
   ): void => {
     if (
@@ -439,6 +439,26 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
     pendingDeleteFocusHandoffRef.current = {
       identity: intent.identitySub,
       owner: intent.owner,
+      trigger,
+    };
+  };
+
+  const stageRemovedRowFocusHandoff = (id: string): void => {
+    const radio = Array.from(
+      listRef.current?.querySelectorAll<HTMLInputElement>('input[type="radio"]') ?? [],
+    ).find((candidate) => candidate.value === id);
+    const focusedRadio = radio && document.activeElement === radio ? radio : null;
+    const focusedActionsSummary =
+      selectedIdRef.current === id && detailsSummaryRef.current === document.activeElement
+        ? detailsSummaryRef.current
+        : null;
+    const trigger = focusedRadio ?? focusedActionsSummary;
+    if (!trigger || !activeSurfaceRef.current || pausedRef.current) {
+      return;
+    }
+    pendingDeleteFocusHandoffRef.current = {
+      identity: identitySubRef.current,
+      owner: deleteOwnerIdRef.current,
       trigger,
     };
   };
@@ -1337,6 +1357,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
   };
 
   const removeListedRobot = (id: string): void => {
+    stageRemovedRowFocusHandoff(id);
     listRecovery.clear();
     listResourceRef.current = null;
     setListBusy(false);

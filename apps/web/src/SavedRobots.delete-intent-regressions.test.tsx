@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { User } from 'oidc-client-ts';
 import { createRef } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -119,6 +119,67 @@ afterEach(() => {
 });
 
 describe('SavedRobots delete intent regressions', () => {
+  it.each(['radio', 'actions summary'])(
+    'returns focus to the library when the currently focused deleted %s disappears',
+    async (focusedControl) => {
+      const first = robot('copy-a', 'Robot A', 'Literal A.');
+      const second = robot('copy-b', 'Robot B', 'Literal B.');
+      const pendingDelete = deferred<{ deleted: true }>();
+      const deleteRobot = vi
+        .fn<SavedRobotApi['deleteRobot']>()
+        .mockReturnValue(pendingDelete.promise);
+      const getRobot = vi
+        .fn<SavedRobotApi['getRobot']>()
+        .mockImplementation(async (id) => (id === first.id ? first : second));
+      const savedApi = api({
+        listRobots: vi.fn().mockResolvedValue({ robots: [summary(first), summary(second)] }),
+        getRobot,
+        deleteRobot,
+      });
+      const editorRef = editor();
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+      render(<SavedRobots api={savedApi} editor={editorRef} session={session()} />);
+
+      const firstRadio = (await screen.findByRole('radio', {
+        name: /Robot A/u,
+      })) as HTMLInputElement;
+      fireEvent.click(firstRadio);
+      await waitFor(() => expect(firstRadio.checked).toBe(true));
+      startDelete();
+      await waitFor(() => expect(deleteRobot).toHaveBeenCalledOnce());
+
+      const secondRadio = screen.getByRole('radio', { name: /Robot B/u }) as HTMLInputElement;
+      fireEvent.click(secondRadio);
+      await waitFor(() => expect(secondRadio.checked).toBe(true));
+      fireEvent.click(firstRadio);
+      await waitFor(() => expect(firstRadio.checked).toBe(true));
+      const focusTarget =
+        focusedControl === 'radio'
+          ? firstRadio
+          : screen.getByText('Más acciones', { selector: 'summary' });
+      focusTarget.focus();
+
+      await act(async () => {
+        pendingDelete.resolve({ deleted: true });
+        await pendingDelete.promise;
+      });
+
+      await waitFor(() => expect(screen.queryByRole('radio', { name: /Robot A/u })).toBeNull());
+      expect(screen.getByRole('radio', { name: /Robot B/u })).toHaveProperty('checked', false);
+      expect(document.activeElement).toBe(
+        screen.getByRole('heading', { name: 'Robots guardados' }),
+      );
+      expect(
+        within(screen.getByRole('region', { name: 'Copia seleccionada' })).getByRole('heading', {
+          name: 'Elegí una copia',
+        }),
+      ).toBeTruthy();
+      expect(editorRef.current?.captureSnapshot).not.toHaveBeenCalled();
+      expect(editorRef.current?.applyDraft).not.toHaveBeenCalled();
+      expect(confirm).toHaveBeenCalledOnce();
+    },
+  );
+
   it.each([
     { change: 'leaving and returning to the library', leave: true },
     { change: 'changing the selected copy', leave: false },
@@ -209,7 +270,9 @@ describe('SavedRobots delete intent regressions', () => {
       expect(secondRadio.checked).toBe(true);
       expect(document.activeElement).toBe(secondRadio);
     } else {
-      expect(document.activeElement).toBe(document.body);
+      expect(document.activeElement).toBe(
+        screen.getByRole('heading', { name: 'Robots guardados' }),
+      );
     }
     expect(screen.queryByText(/ya no está disponible y se quitó de la lista/u)).toBeNull();
     expect(deleteRobot).toHaveBeenCalledOnce();
