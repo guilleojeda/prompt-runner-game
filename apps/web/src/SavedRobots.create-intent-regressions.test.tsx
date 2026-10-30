@@ -180,6 +180,8 @@ describe('SavedRobots create intent implementation regressions', () => {
     const rejectedId = saveRobot.mock.calls[0]?.[0];
     fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
     await waitFor(() => expect(screen.queryByLabelText('Nombre para la nueva copia')).toBeNull());
+    const check = await screen.findByRole('button', { name: 'Comprobar guardado' });
+    expect(document.activeElement).toBe(check);
 
     await act(async () => {
       write.reject(
@@ -189,6 +191,11 @@ describe('SavedRobots create intent implementation regressions', () => {
     });
     await waitFor(() =>
       expect(screen.queryByRole('button', { name: 'Comprobar guardado' })).toBeNull(),
+    );
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole('button', { name: 'Guardar robot actual' }),
+      ),
     );
     expect(getRobot).not.toHaveBeenCalled();
     expect(saveRobot).toHaveBeenCalledOnce();
@@ -235,6 +242,8 @@ describe('SavedRobots create intent implementation regressions', () => {
     const missingId = saveRobot.mock.calls[0]?.[0];
     fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
     await waitFor(() => expect(screen.queryByLabelText('Nombre para la nueva copia')).toBeNull());
+    const check = await screen.findByRole('button', { name: 'Comprobar guardado' });
+    expect(document.activeElement).toBe(check);
 
     await act(async () => {
       write.reject(
@@ -246,6 +255,8 @@ describe('SavedRobots create intent implementation regressions', () => {
     await waitFor(() =>
       expect(screen.queryByRole('button', { name: 'Comprobar guardado' })).toBeNull(),
     );
+    const createButton = screen.getByRole('button', { name: 'Guardar robot actual' });
+    await waitFor(() => expect(document.activeElement).toBe(createButton));
     expect(saveRobot).toHaveBeenCalledOnce();
     expect(captureSnapshot).toHaveBeenCalledOnce();
     expect(screen.queryByText(/Guardaste «Copia ausente»/u)).toBeNull();
@@ -303,11 +314,131 @@ describe('SavedRobots create intent implementation regressions', () => {
     expect(editorState.current.captureSnapshot).toHaveBeenCalledOnce();
 
     view.rerender(<SavedRobots api={savedApi} editor={editorState.ref} session={sessionState} />);
+    check.focus();
     fireEvent.click(check);
     await waitFor(() => expect(getRobot.mock.calls.map((call) => call[0])).toEqual([id]));
     await waitFor(() =>
       expect(screen.queryByRole('button', { name: 'Comprobar guardado' })).toBeNull(),
     );
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole('button', { name: 'Guardar robot actual' }),
+      ),
+    );
+    expect(saveRobot).toHaveBeenCalledOnce();
+    expect(editorState.current.captureSnapshot).toHaveBeenCalledOnce();
+  });
+
+  it('hands focus to the create trigger when an explicit check finds the canceled copy', async () => {
+    const write = deferred<SavedRobot>();
+    const capturedDraft = { ...createDefaultDraft(), instructions: 'Copia confirmada.' };
+    let createdId: string | undefined;
+    const getRobot = vi
+      .fn<SavedRobotApi['getRobot']>()
+      .mockRejectedValueOnce(new SavedRobotApiFailure('network', 'Intentá comprobar de nuevo.'))
+      .mockImplementationOnce(async (id) => robot(id, 'Copia confirmada', capturedDraft));
+    const saveRobot = vi.fn<SavedRobotApi['saveRobot']>().mockImplementation((id) => {
+      createdId = id;
+      return write.promise;
+    });
+    const captureSnapshot = vi.fn<RobotEditorHandle['captureSnapshot']>().mockResolvedValue({
+      version: 4,
+      draft: capturedDraft,
+    });
+    const editorState = editor();
+    editorState.current.captureSnapshot = captureSnapshot;
+    const savedApi = api({ getRobot, saveRobot });
+    render(<SavedRobots api={savedApi} editor={editorState.ref} session={session()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Guardar robot actual' }));
+    fireEvent.change(screen.getByLabelText('Nombre para la nueva copia'), {
+      target: { value: 'Copia confirmada' },
+    });
+    fireEvent.submit(screen.getByLabelText('Nombre para la nueva copia').closest('form')!);
+    await waitFor(() => expect(saveRobot).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
+    const check = await screen.findByRole('button', { name: 'Comprobar guardado' });
+    expect(document.activeElement).toBe(check);
+
+    await act(async () => {
+      write.reject(
+        new SavedRobotApiFailure('network', 'No se confirmó el envío.', undefined, undefined, true),
+      );
+      await write.promise.catch(() => undefined);
+    });
+    await waitFor(() => expect(getRobot).toHaveBeenCalledOnce());
+    expect(screen.getByRole('button', { name: 'Comprobar guardado' })).toBe(check);
+    fireEvent.click(check);
+    await waitFor(() => expect(getRobot).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Comprobar guardado' })).toBeNull(),
+    );
+
+    const createButton = screen.getByRole('button', { name: 'Guardar robot actual' });
+    await waitFor(() => expect(document.activeElement).toBe(createButton));
+    const createdRadio = await screen.findByRole('radio', { name: /Copia confirmada/u });
+    expect(createdRadio.getAttribute('value')).toBe(createdId);
+    expect((createdRadio as HTMLInputElement).checked).toBe(false);
+    expect(saveRobot).toHaveBeenCalledOnce();
+    expect(captureSnapshot).toHaveBeenCalledOnce();
+    expect(screen.queryByText('Guardaste «Copia confirmada» como robot nuevo.')).toBeNull();
+  });
+
+  it('preserves focus moved to another control before a late debt readback retires its button', async () => {
+    const existing = robot('saved-copy', 'Robot existente', createDefaultDraft());
+    const write = deferred<SavedRobot>();
+    const readback = deferred<SavedRobot>();
+    let createdId: string | undefined;
+    const getRobot = vi.fn<SavedRobotApi['getRobot']>().mockImplementation(async (id) => {
+      if (id === existing.id) return existing;
+      return readback.promise;
+    });
+    const saveRobot = vi.fn<SavedRobotApi['saveRobot']>().mockImplementation((id) => {
+      createdId = id;
+      return write.promise;
+    });
+    const savedApi = api({
+      getRobot,
+      listRobots: vi.fn().mockResolvedValue({ robots: [summary(existing)] }),
+      saveRobot,
+    });
+    const editorState = editor();
+    render(<SavedRobots api={savedApi} editor={editorState.ref} session={session()} />);
+
+    const radio = (await screen.findByRole('radio', {
+      name: /Robot existente/u,
+    })) as HTMLInputElement;
+    fireEvent.click(radio);
+    await screen.findByRole('heading', { name: existing.name });
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar robot actual' }));
+    fireEvent.change(screen.getByLabelText('Nombre para la nueva copia'), {
+      target: { value: 'Copia con respuesta tardía' },
+    });
+    fireEvent.submit(screen.getByLabelText('Nombre para la nueva copia').closest('form')!);
+    await waitFor(() => expect(saveRobot).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
+    const check = await screen.findByRole('button', { name: 'Comprobar guardado' });
+    expect(document.activeElement).toBe(check);
+
+    await act(async () => {
+      write.reject(
+        new SavedRobotApiFailure('network', 'No se confirmó el envío.', undefined, undefined, true),
+      );
+      await write.promise.catch(() => undefined);
+    });
+    await waitFor(() =>
+      expect(getRobot.mock.calls.map((call) => call[0])).toEqual([existing.id, createdId]),
+    );
+    radio.focus();
+    await act(async () => {
+      readback.reject(new SavedRobotApiFailure('not_found', 'La copia no existe.', 404));
+      await readback.promise.catch(() => undefined);
+    });
+
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Comprobar guardado' })).toBeNull(),
+    );
+    expect(document.activeElement).toBe(radio);
     expect(saveRobot).toHaveBeenCalledOnce();
     expect(editorState.current.captureSnapshot).toHaveBeenCalledOnce();
   });
@@ -358,6 +489,11 @@ describe('SavedRobots create intent implementation regressions', () => {
     await waitFor(() => expect(getRobot).toHaveBeenCalledTimes(2));
     await waitFor(() =>
       expect(screen.queryByRole('button', { name: 'Comprobar guardado' })).toBeNull(),
+    );
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole('button', { name: 'Guardar robot actual' }),
+      ),
     );
     expect(getRobot.mock.calls.map((call) => call[0])).toEqual([uncertainId, uncertainId]);
     expect(saveRobot).toHaveBeenCalledOnce();

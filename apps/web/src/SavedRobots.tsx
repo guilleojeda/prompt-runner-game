@@ -103,6 +103,12 @@ interface PendingPaginationFocus {
   readonly targetId: string | null;
 }
 
+interface PendingCreateFocusHandoff {
+  readonly identity: string;
+  readonly owner: number;
+  readonly trigger: HTMLButtonElement;
+}
+
 class StaleSavedOperation extends Error {
   public constructor() {
     super('La sesión cambió mientras se procesaba la operación.');
@@ -328,6 +334,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
   const pendingCreateRef = useRef<PendingCreate | null>(null);
   const pendingCopyWriteRef = useRef<PendingCopyWrite | null>(null);
   const pendingPaginationFocusRef = useRef<PendingPaginationFocus | null>(null);
+  const pendingCreateFocusHandoffRef = useRef<PendingCreateFocusHandoff | null>(null);
   const identitySubRef = useRef(session.identity.sub);
   const unavailableRef = useRef(paused || locked);
   const activeSurfaceRef = useRef(active);
@@ -578,6 +585,29 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
 
   const isCurrentCreateDebt = (intent: CreateIntent, generation: number): boolean =>
     pendingCreateRef.current?.owner === intent.owner && createIdentityIsCurrent(intent, generation);
+
+  const clearCreateDebt = (intent: PendingCreate, generation: number): void => {
+    if (!isCurrentCreateDebt(intent, generation)) return;
+    const trigger = createDebtCheckRef.current;
+    if (
+      trigger &&
+      trigger.isConnected &&
+      document.activeElement === trigger &&
+      activeSurfaceRef.current &&
+      !unavailableRef.current &&
+      identitySubRef.current === intent.identitySub
+    ) {
+      pendingCreateFocusHandoffRef.current = {
+        identity: intent.identitySub,
+        owner: intent.owner,
+        trigger,
+      };
+    }
+    pendingCreateRef.current = null;
+    setPendingCreate(null);
+    setPendingCreateError(null);
+    if (!newNameInputRef.current?.isConnected) setNewName('');
+  };
 
   const cancelApplication = useCallback((): void => {
     const current = applicationRef.current;
@@ -857,6 +887,42 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
     paused,
     readersActive,
     selectedCopyRecovery,
+    session.identity.sub,
+  ]);
+
+  useLayoutEffect(() => {
+    const handoff = pendingCreateFocusHandoffRef.current;
+    if (!handoff) return;
+    if (
+      !active ||
+      paused ||
+      locked ||
+      unavailableRef.current ||
+      identitySubRef.current !== handoff.identity ||
+      nameMode === 'new'
+    ) {
+      pendingCreateFocusHandoffRef.current = null;
+      return;
+    }
+    if (createDebtCheckRef.current?.isConnected) return;
+    if (pendingCreateRef.current?.owner === handoff.owner) return;
+    if (document.activeElement !== document.body && document.activeElement !== handoff.trigger) {
+      pendingCreateFocusHandoffRef.current = null;
+      return;
+    }
+    const target = newCopyTriggerRef.current;
+    if (!target || target.disabled) return;
+    pendingCreateFocusHandoffRef.current = null;
+    target.focus();
+  }, [
+    active,
+    configurationAvailable,
+    locked,
+    nameMode,
+    operation,
+    paused,
+    pendingCreate,
+    robots,
     session.identity.sub,
   ]);
 
@@ -1142,12 +1208,8 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
     setListRecoveryMessage(null);
     setListFailure(null);
     setRobots((items) => items.filter((item) => item.id !== id));
-    if (pendingCreateRef.current?.id === id) {
-      pendingCreateRef.current = null;
-      setPendingCreate(null);
-      setPendingCreateError(null);
-      setNewName('');
-    }
+    const pendingCreate = pendingCreateRef.current;
+    if (pendingCreate?.id === id) clearCreateDebt(pendingCreate, generationRef.current);
     if (selectedIdRef.current === id) {
       setSelectedCopy(null, null, 'idle');
     }
@@ -1558,9 +1620,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
     const currentDebt = isCurrentCreateDebt(intent, generation);
     if (!activeIntent && !currentDebt) return;
 
-    pendingCreateRef.current = null;
-    setPendingCreate(null);
-    setPendingCreateError(null);
+    clearCreateDebt(intent, generation);
     if (createIntentRef.current?.owner === intent.owner) createIntentRef.current = null;
     updateListWith(saved);
     if (!activeIntent) return;
@@ -1573,14 +1633,6 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
     setError(null);
     setErrorKind(null);
     setMessage('Guardaste «' + saved.name + '» como robot nuevo.');
-  };
-
-  const clearCreateDebt = (intent: PendingCreate, generation: number): void => {
-    if (!isCurrentCreateDebt(intent, generation)) return;
-    pendingCreateRef.current = null;
-    setPendingCreate(null);
-    setPendingCreateError(null);
-    setNewName('');
   };
 
   const handleSaveAsNew = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
@@ -1707,15 +1759,12 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
         pendingCreateRef.current = retry;
         setPendingCreate(retry);
         if (current && !preservePending) {
-          pendingCreateRef.current = null;
-          setPendingCreate(null);
+          clearCreateDebt(sentIntent, generation);
           createIntentRef.current = null;
         } else if (current) {
           createIntentRef.current = retry;
         } else if (debt && !preservePending && definitiveRejection) {
-          pendingCreateRef.current = null;
-          setPendingCreate(null);
-          setPendingCreateError(null);
+          clearCreateDebt(sentIntent, generation);
           if (createIntentRef.current?.owner === sentIntent.owner) {
             createIntentRef.current = null;
           }
@@ -1777,20 +1826,11 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
       if (!isCurrentCreateDebt(checking, generation)) return;
       if (result.kind === 'match') {
         updateListWith(result.saved);
-        pendingCreateRef.current = null;
-        setPendingCreate(null);
-        setPendingCreateError(null);
-        setNewName('');
+        clearCreateDebt(checking, generation);
       } else if (result.kind === 'missing') {
-        pendingCreateRef.current = null;
-        setPendingCreate(null);
-        setPendingCreateError(null);
-        setNewName('');
+        clearCreateDebt(checking, generation);
       } else if (result.kind === 'conflict') {
-        pendingCreateRef.current = null;
-        setPendingCreate(null);
-        setPendingCreateError(null);
-        setNewName('');
+        clearCreateDebt(checking, generation);
         setLibraryNotice(
           `La copia «${checking.name}» ya existe con otro contenido. No se modificó esa copia; podés iniciar una acción nueva.`,
         );
