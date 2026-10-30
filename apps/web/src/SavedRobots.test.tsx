@@ -1017,6 +1017,9 @@ describe('SavedRobots', () => {
       let readCount = 0;
       const getRobot = vi.fn().mockImplementation(async (id: string) => {
         readCount += 1;
+        if (readCount === 1) {
+          throw new SavedRobotApiFailure('network', 'No se pudo comprobar todavía.');
+        }
         if (keepsPending && readCount === 2) return foreignReadback.promise;
         return remote(id, draft);
       });
