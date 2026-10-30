@@ -51,6 +51,23 @@ interface DeleteConflict {
   readonly summary: SavedRobotSummary;
 }
 
+interface PendingDelete {
+  readonly target: SavedRobotSummary;
+  readonly identitySub: string;
+  readonly owner: number;
+  readonly retryAuthorized: boolean;
+  readonly inFlight: boolean;
+  readonly incompatible: boolean;
+  readonly error: string | null;
+}
+
+type DeleteReadback =
+  | { readonly kind: 'same'; readonly robot: SavedRobot }
+  | { readonly kind: 'changed'; readonly robot: SavedRobot }
+  | { readonly kind: 'missing' }
+  | { readonly kind: 'incompatible' }
+  | { readonly kind: 'foreign' };
+
 interface CreateIntent {
   readonly id: string;
   readonly name: string;
@@ -107,6 +124,12 @@ interface PendingCreateFocusHandoff {
   readonly identity: string;
   readonly owner: number;
   readonly trigger: HTMLButtonElement;
+}
+
+interface PendingDeleteFocusHandoff {
+  readonly identity: string;
+  readonly owner: number;
+  readonly trigger: HTMLElement;
 }
 
 class StaleSavedOperation extends Error {
@@ -307,6 +330,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
   const [error, setError] = useState<string | null>(null);
   const [errorKind, setErrorKind] = useState<'save' | 'new' | 'delete' | null>(null);
   const [deleteConflict, setDeleteConflict] = useState<DeleteConflict | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
   const [application, setApplication] = useState<SavedApplication | null>(null);
   const [dialog, setDialog] = useState<LibraryDialog | null>(null);
   const [pendingCreate, setPendingCreate] = useState<PendingCreate | null>(null);
@@ -329,14 +353,20 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
   const applicationRef = useRef<SavedApplication | null>(null);
   const operationTokenRef = useRef(0);
   const operationOwnerRef = useRef<number | null>(null);
+  const deleteOwnerIdRef = useRef(0);
+  const pendingDeleteRef = useRef<PendingDelete | null>(null);
   const createOwnerIdRef = useRef(0);
   const createIntentRef = useRef<CreateIntent | null>(null);
   const pendingCreateRef = useRef<PendingCreate | null>(null);
   const pendingCopyWriteRef = useRef<PendingCopyWrite | null>(null);
   const pendingPaginationFocusRef = useRef<PendingPaginationFocus | null>(null);
   const pendingCreateFocusHandoffRef = useRef<PendingCreateFocusHandoff | null>(null);
+  const pendingDeleteFocusHandoffRef = useRef<PendingDeleteFocusHandoff | null>(null);
+  const deleteFeedbackGenerationRef = useRef(0);
+  const previousActiveSurfaceRef = useRef(active);
   const identitySubRef = useRef(session.identity.sub);
   const unavailableRef = useRef(paused || locked);
+  const pausedRef = useRef(paused);
   const activeSurfaceRef = useRef(active);
   const mountedRef = useRef(true);
   const previousIdentityRef = useRef(session.identity.sub);
@@ -347,6 +377,8 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
   const newNameInputRef = useRef<HTMLInputElement | null>(null);
   const newCopyTriggerRef = useRef<HTMLButtonElement | null>(null);
   const createDebtCheckRef = useRef<HTMLButtonElement | null>(null);
+  const deleteDebtCheckRef = useRef<HTMLButtonElement | null>(null);
+  const deleteButtonRef = useRef<HTMLButtonElement | null>(null);
   const listRef = useRef<HTMLUListElement | null>(null);
   const listHeadingRef = useRef<HTMLHeadingElement | null>(null);
   const loadMoreButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -356,6 +388,89 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
   const setConsult = (status: ConsultStatus): void => {
     consultStatusRef.current = status;
     setConsultStatus(status);
+  };
+
+  const publishPendingDelete = (intent: PendingDelete | null): void => {
+    pendingDeleteRef.current = intent;
+    setPendingDelete(intent);
+  };
+
+  const deactivatePendingDelete = useCallback((): void => {
+    const intent = pendingDeleteRef.current;
+    if (!intent?.retryAuthorized) return;
+    publishPendingDelete({ ...intent, retryAuthorized: false });
+  }, []);
+
+  const isCurrentDeleteIntent = (intent: PendingDelete, generation: number): boolean =>
+    mountedRef.current &&
+    pendingDeleteRef.current?.owner === intent.owner &&
+    pendingDeleteRef.current.identitySub === intent.identitySub &&
+    identitySubRef.current === intent.identitySub &&
+    isCurrent(generation);
+
+  const isAuthorizedDeleteIntent = (intent: PendingDelete, generation: number): boolean => {
+    const current = pendingDeleteRef.current;
+    return (
+      isCurrentDeleteIntent(intent, generation) &&
+      current?.retryAuthorized === true &&
+      current.incompatible === false &&
+      selectedIdRef.current === intent.target.id &&
+      activeSurfaceRef.current &&
+      !unavailableRef.current
+    );
+  };
+
+  const stageDeleteFocusHandoff = (
+    intent: PendingDelete,
+    trigger: HTMLElement | null,
+    triggerWasFocused: boolean,
+  ): void => {
+    if (
+      !trigger ||
+      !trigger.isConnected ||
+      (document.activeElement !== trigger &&
+        !(document.activeElement === document.body && triggerWasFocused)) ||
+      !activeSurfaceRef.current ||
+      pausedRef.current ||
+      identitySubRef.current !== intent.identitySub
+    ) {
+      return;
+    }
+    pendingDeleteFocusHandoffRef.current = {
+      identity: intent.identitySub,
+      owner: intent.owner,
+      trigger,
+    };
+  };
+
+  const stageRemovedRowFocusHandoff = (id: string): void => {
+    const radio = Array.from(
+      listRef.current?.querySelectorAll<HTMLInputElement>('input[type="radio"]') ?? [],
+    ).find((candidate) => candidate.value === id);
+    const focusedRadio = radio && document.activeElement === radio ? radio : null;
+    const focusedActionsSummary =
+      selectedIdRef.current === id && detailsSummaryRef.current === document.activeElement
+        ? detailsSummaryRef.current
+        : null;
+    const trigger = focusedRadio ?? focusedActionsSummary;
+    if (!trigger || !activeSurfaceRef.current || pausedRef.current) {
+      return;
+    }
+    pendingDeleteFocusHandoffRef.current = {
+      identity: identitySubRef.current,
+      owner: deleteOwnerIdRef.current,
+      trigger,
+    };
+  };
+
+  const clearPendingDelete = (
+    intent: PendingDelete,
+    trigger: HTMLButtonElement | null = null,
+    triggerWasFocused = false,
+  ): void => {
+    if (pendingDeleteRef.current?.owner !== intent.owner) return;
+    stageDeleteFocusHandoff(intent, trigger, triggerWasFocused);
+    publishPendingDelete(null);
   };
 
   const readersActive = active && operation === null;
@@ -803,12 +918,24 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
   }, [nameMode]);
 
   useLayoutEffect(() => {
+    const surfaceWasActive = previousActiveSurfaceRef.current;
+    const accessWasPaused = pausedRef.current;
+    previousActiveSurfaceRef.current = active;
+    if ((surfaceWasActive && !active) || (!accessWasPaused && paused)) {
+      deleteFeedbackGenerationRef.current += 1;
+    }
     const identityChanged = previousIdentityRef.current !== session.identity.sub;
     previousIdentityRef.current = session.identity.sub;
     identitySubRef.current = session.identity.sub;
     activeSurfaceRef.current = active;
     unavailableRef.current = paused || locked;
+    pausedRef.current = paused;
     if (identityChanged) {
+      deleteFeedbackGenerationRef.current += 1;
+      deleteOwnerIdRef.current += 1;
+      pendingDeleteRef.current = null;
+      pendingDeleteFocusHandoffRef.current = null;
+      setPendingDelete(null);
       createIntentRef.current = null;
       pendingPaginationFocusRef.current = null;
       listRecovery.clear();
@@ -849,6 +976,8 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
       setPendingCopyWrite(null);
     }
 
+    if (!active || paused || locked) deactivatePendingDelete();
+
     if (!readersActive) listRecovery.pause();
     if (!active) {
       abandonCreateIntent(false);
@@ -881,6 +1010,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
     cancelApplication,
     closeCreateForm,
     closeDialog,
+    deactivatePendingDelete,
     listRecovery,
     locked,
     operation,
@@ -889,6 +1019,26 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
     selectedCopyRecovery,
     session.identity.sub,
   ]);
+
+  useLayoutEffect(() => {
+    const handoff = pendingDeleteFocusHandoffRef.current;
+    if (!handoff) return;
+    if (
+      !active ||
+      paused ||
+      identitySubRef.current !== handoff.identity ||
+      deleteOwnerIdRef.current !== handoff.owner
+    ) {
+      pendingDeleteFocusHandoffRef.current = null;
+      return;
+    }
+    if (document.activeElement !== document.body && document.activeElement !== handoff.trigger) {
+      pendingDeleteFocusHandoffRef.current = null;
+      return;
+    }
+    pendingDeleteFocusHandoffRef.current = null;
+    listHeadingRef.current?.focus({ preventScroll: true });
+  }, [active, operation, paused, pendingDelete, robots, session.identity.sub]);
 
   useLayoutEffect(() => {
     const handoff = pendingCreateFocusHandoffRef.current;
@@ -1018,6 +1168,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
         consultStatusRef.current === 'recovering')
     )
       return;
+    deactivatePendingDelete();
     abandonCreateIntent(false);
     cancelApplication();
     editor.current?.cancelApplication?.();
@@ -1025,6 +1176,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
     selectedResourceRef.current = null;
     needsSelectedReadRef.current = false;
     if (!alreadySelected) {
+      deleteFeedbackGenerationRef.current += 1;
       selectedIdRef.current = summary.id;
       selectedSummaryRef.current = summary;
       setSelectedSummary(summary);
@@ -1043,6 +1195,9 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
   };
 
   const leaveSurface = useCallback((): void => {
+    deleteFeedbackGenerationRef.current += 1;
+    activeSurfaceRef.current = false;
+    deactivatePendingDelete();
     abandonCreateIntent(false);
     pendingPaginationFocusRef.current = null;
     const hadApplication = applicationRef.current !== null;
@@ -1064,6 +1219,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
     abandonCreateIntent,
     cancelApplication,
     closeDialog,
+    deactivatePendingDelete,
     editor,
     listRecovery,
     selectedCopyRecovery,
@@ -1201,6 +1357,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
   };
 
   const removeListedRobot = (id: string): void => {
+    stageRemovedRowFocusHandoff(id);
     listRecovery.clear();
     listResourceRef.current = null;
     setListBusy(false);
@@ -1431,6 +1588,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
     desiredName: string,
     candidate: RobotDraft,
   ): Promise<void> => {
+    if (pendingDeleteRef.current !== null) return;
     const pending = pendingCopyWriteRef.current;
     if (pending) {
       if (pending.target.id !== target.id || pending.kind !== kind) {
@@ -1504,7 +1662,8 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
 
   const handleRenameSubmit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
-    if (dialog?.kind !== 'rename' || managementBusy || paused || locked) return;
+    if (dialog?.kind !== 'rename' || managementBusy || paused || locked || pendingDeleteRef.current)
+      return;
     const target = dialog.target;
     const pending = pendingCopyWriteRef.current;
     if (pending) {
@@ -1545,7 +1704,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
   };
 
   const handleReplaceConfirmed = async (target: SavedRobot): Promise<void> => {
-    if (managementBusy || paused || locked) return;
+    if (managementBusy || paused || locked || pendingDeleteRef.current) return;
     const pending = pendingCopyWriteRef.current;
     if (pending) {
       if (pending.target.id !== target.id || pending.kind !== 'replace') {
@@ -1641,6 +1800,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
       paused ||
       locked ||
       !active ||
+      pendingDeleteRef.current !== null ||
       pendingCopyWriteRef.current ||
       operationOwnerRef.current !== null ||
       (listBusy && pendingCreateRef.current === null) ||
@@ -1811,6 +1971,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
       locked ||
       !active ||
       pendingCopyWriteRef.current !== null ||
+      pendingDeleteRef.current !== null ||
       operationOwnerRef.current !== null
     ) {
       return;
@@ -1857,73 +2018,447 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
     }
   };
 
-  const handleDelete = async (target: SavedRobotSummary): Promise<void> => {
-    if (paused || locked || managementBusy) return;
-    if (pendingCopyWriteRef.current) {
-      setError('Hay un cambio pendiente para una copia. Conciliá esa operación antes de eliminar.');
-      setErrorKind('save');
+  const readDeleteTarget = async (target: SavedRobotSummary): Promise<DeleteReadback> => {
+    try {
+      const robot = await api.getRobot(target.id);
+      if (robot.id !== target.id) return { kind: 'foreign' };
+      return robot.version === target.version
+        ? { kind: 'same', robot }
+        : { kind: 'changed', robot };
+    } catch (readError) {
+      if (isMissingError(readError)) return { kind: 'missing' };
+      if (readError instanceof SavedRobotApiFailure && readError.code === 'incompatible') {
+        return { kind: 'incompatible' };
+      }
+      throw readError;
+    }
+  };
+
+  const finishDeleteReadback = (
+    intent: PendingDelete,
+    generation: number,
+    result: DeleteReadback,
+    mode: 'automatic' | 'continuation' | 'check',
+    trigger: HTMLButtonElement | null,
+    triggerWasFocused: boolean,
+    feedbackGeneration?: number,
+  ): boolean => {
+    if (!isCurrentDeleteIntent(intent, generation)) return false;
+    const current = pendingDeleteRef.current;
+    if (!current || current.owner !== intent.owner) return false;
+    if (pausedRef.current || !activeSurfaceRef.current) {
+      publishPendingDelete({
+        ...current,
+        inFlight: false,
+        retryAuthorized: false,
+        error: null,
+      });
+      return false;
+    }
+    const authorized = isAuthorizedDeleteIntent(current, generation);
+    const feedbackIsCurrent =
+      mode !== 'check' || feedbackGeneration === deleteFeedbackGenerationRef.current;
+    const announceResult = authorized || (mode === 'check' && feedbackIsCurrent);
+
+    if (result.kind === 'missing') {
+      const canReturnFocus = authorized || (mode === 'check' && feedbackIsCurrent);
+      clearPendingDelete(
+        current,
+        canReturnFocus ? trigger : null,
+        canReturnFocus && triggerWasFocused,
+      );
+      removeListedRobot(current.target.id);
+      if (authorized && mode !== 'check') {
+        setLibraryNotice(null);
+        setMessage('Eliminaste «' + current.target.name + '».');
+      } else if (announceResult) {
+        setLibraryNotice(
+          `La copia «${current.target.name}» ya no está disponible y se quitó de la lista.`,
+        );
+        setMessage(null);
+      }
+      return false;
+    }
+
+    if (result.kind === 'changed') {
+      const summary = summaryFromRobot(result.robot);
+      clearPendingDelete(
+        current,
+        mode === 'check' && feedbackIsCurrent ? trigger : null,
+        feedbackIsCurrent && triggerWasFocused,
+      );
+      updateListWithSummary(summary);
+      if (authorized && selectedIdRef.current === current.target.id) {
+        setDeleteConflict({ summary });
+      } else if (announceResult) {
+        setLibraryNotice(
+          `La copia «${summary.name}» cambió. Revisá la versión actual y confirmá antes de eliminarla.`,
+        );
+      }
+      return false;
+    }
+
+    if (result.kind === 'same') {
+      updateListWith(result.robot);
+      if (mode === 'check') {
+        clearPendingDelete(
+          current,
+          feedbackIsCurrent ? trigger : null,
+          feedbackIsCurrent && triggerWasFocused,
+        );
+        if (feedbackIsCurrent) {
+          setLibraryNotice(
+            `La copia «${current.target.name}» sigue disponible. Confirmá nuevamente si querés eliminarla.`,
+          );
+        }
+        return false;
+      }
+      publishPendingDelete({
+        ...current,
+        inFlight: false,
+        error: null,
+        incompatible: false,
+        retryAuthorized: authorized,
+      });
+      return mode === 'continuation' && authorized;
+    }
+
+    if (result.kind === 'incompatible') {
+      publishPendingDelete({
+        ...current,
+        inFlight: false,
+        error: null,
+        incompatible: true,
+        retryAuthorized: false,
+      });
+      if (announceResult) {
+        setLibraryNotice(
+          `No se pudo consultar «${current.target.name}». Podés confirmar de nuevo la versión conocida antes de eliminarla.`,
+        );
+      }
+      return false;
+    }
+
+    publishPendingDelete({
+      ...current,
+      inFlight: false,
+      retryAuthorized: authorized,
+      error: announceResult
+        ? 'No se pudo comprobar el resultado de la eliminación. La copia sigue pendiente de revisión.'
+        : null,
+    });
+    return false;
+  };
+
+  const reportDeleteFailure = (
+    intent: PendingDelete,
+    generation: number,
+    failure: unknown,
+    mode: 'automatic' | 'continuation' | 'check',
+    feedbackGeneration?: number,
+  ): void => {
+    if (!isCurrentDeleteIntent(intent, generation)) return;
+    const current = pendingDeleteRef.current;
+    if (!current || current.owner !== intent.owner) return;
+    const authorized = isAuthorizedDeleteIntent(current, generation);
+    const feedbackIsCurrent =
+      mode !== 'check' || feedbackGeneration === deleteFeedbackGenerationRef.current;
+    const errorMessage =
+      failure instanceof Error && failure.name === 'AbortError'
+        ? 'La solicitud se interrumpió y su resultado sigue pendiente.'
+        : apiErrorMessage(
+            failure,
+            mode === 'check'
+              ? 'No se pudo comprobar el resultado de la eliminación.'
+              : 'No se pudo confirmar la eliminación.',
+          );
+    publishPendingDelete({
+      ...current,
+      inFlight: false,
+      error:
+        authorized ||
+        (mode === 'check' && feedbackIsCurrent && activeSurfaceRef.current && !pausedRef.current)
+          ? errorMessage
+          : null,
+      retryAuthorized: authorized,
+    });
+    if (
+      isAuthError(failure) &&
+      mountedRef.current &&
+      identitySubRef.current === intent.identitySub &&
+      isCurrent(generation)
+    ) {
+      onAuthRequired?.(failure.authContext);
+    }
+  };
+
+  const checkDeleteTarget = async (
+    intent: PendingDelete,
+    generation: number,
+    mode: 'automatic' | 'continuation' | 'check',
+    trigger: HTMLButtonElement | null,
+    triggerWasFocused: boolean,
+  ): Promise<DeleteReadback | null> => {
+    if (pausedRef.current || !activeSurfaceRef.current) return null;
+    try {
+      const result = await readDeleteTarget(intent.target);
+      if (!isCurrentDeleteIntent(intent, generation)) return null;
+      finishDeleteReadback(intent, generation, result, mode, trigger, triggerWasFocused);
+      return result;
+    } catch (readError) {
+      reportDeleteFailure(intent, generation, readError, mode);
+      return null;
+    }
+  };
+
+  const runDeleteRequest = async (
+    intent: PendingDelete,
+    generation: number,
+    operationToken: number,
+    priorUncertainty: boolean,
+    trigger: HTMLButtonElement | null,
+    triggerWasFocused: boolean,
+  ): Promise<void> => {
+    const current = pendingDeleteRef.current;
+    if (!current || current.owner !== intent.owner) return;
+    publishPendingDelete({ ...current, inFlight: true, error: null });
+    try {
+      if (!isCurrentDeleteIntent(intent, generation)) return;
+      await api.deleteRobot(intent.target.id, intent.target.version);
+      if (!isCurrentDeleteIntent(intent, generation)) return;
+      const authorized = isAuthorizedDeleteIntent(intent, generation);
+      const latest = pendingDeleteRef.current;
+      if (!latest || latest.owner !== intent.owner) return;
+      clearPendingDelete(latest, authorized ? trigger : null, authorized && triggerWasFocused);
+      removeListedRobot(intent.target.id);
+      if (authorized) {
+        setLibraryNotice(null);
+        setMessage(
+          'Eliminaste «' +
+            intent.target.name +
+            '». Tu configuración actual y tus intentos siguen intactos.',
+        );
+      }
+    } catch (deleteError) {
+      if (!isCurrentDeleteIntent(intent, generation)) return;
+      const authorized = isAuthorizedDeleteIntent(intent, generation);
+      const latest = pendingDeleteRef.current;
+      if (!latest || latest.owner !== intent.owner) return;
+
+      if (isMissingError(deleteError)) {
+        clearPendingDelete(latest, authorized ? trigger : null, authorized && triggerWasFocused);
+        removeListedRobot(intent.target.id);
+        if (authorized) {
+          setLibraryNotice(null);
+          setMessage('La copia «' + intent.target.name + '» ya no está disponible.');
+        }
+      } else if (deleteError instanceof SavedRobotApiFailure && deleteError.code === 'conflict') {
+        const robot = deleteError.current;
+        const summary = deleteError.currentSummary ?? (robot ? summaryFromRobot(robot) : null);
+        if (summary?.id === intent.target.id) {
+          clearPendingDelete(latest);
+          updateListWithSummary(summary);
+          if (authorized && selectedIdRef.current === intent.target.id) {
+            setDeleteConflict({ summary });
+            setError(null);
+            setErrorKind(null);
+          }
+        } else {
+          publishPendingDelete({
+            ...latest,
+            inFlight: false,
+            retryAuthorized: false,
+            error:
+              'El servidor no confirmó el ID de la copia. Comprobá la eliminación antes de continuar.',
+          });
+        }
+      } else if (
+        deleteError instanceof SavedRobotApiFailure &&
+        isDefinitiveWriteRejection(deleteError) &&
+        !priorUncertainty
+      ) {
+        clearPendingDelete(latest, null);
+        if (authorized) {
+          setError(apiErrorMessage(deleteError, 'No se pudo eliminar el robot guardado.'));
+          setErrorKind('delete');
+        }
+        if (
+          isAuthError(deleteError) &&
+          mountedRef.current &&
+          identitySubRef.current === intent.identitySub
+        ) {
+          onAuthRequired?.(deleteError.authContext);
+        }
+      } else if (deleteError instanceof SavedRobotApiFailure && deleteError.ambiguous) {
+        const unsettled = { ...latest, inFlight: false, error: null };
+        publishPendingDelete(unsettled);
+        if (activeSurfaceRef.current && !paused) {
+          await checkDeleteTarget(unsettled, generation, 'automatic', trigger, triggerWasFocused);
+        }
+      } else {
+        reportDeleteFailure(intent, generation, deleteError, 'automatic');
+      }
+    } finally {
+      if (isCurrent(generation)) finishOperation(operationToken);
+    }
+  };
+
+  const handleDelete = async (
+    target: SavedRobotSummary,
+    trigger: HTMLButtonElement,
+  ): Promise<void> => {
+    if (paused || locked || !active || managementBusy || operationOwnerRef.current !== null) return;
+    if (pendingCopyWriteRef.current) return;
+    const pendingCreate = pendingCreateRef.current;
+    if (pendingCreate && (pendingCreate.id !== target.id || pendingCreate.inFlight)) return;
+    const existing = pendingDeleteRef.current;
+    if (existing) {
+      if (
+        existing.inFlight ||
+        existing.target.id !== target.id ||
+        selectedIdRef.current !== target.id
+      ) {
+        return;
+      }
+      if (existing.incompatible) {
+        if (
+          !window.confirm(
+            '¿Eliminar «' +
+              existing.target.name +
+              '» usando la versión conocida? Esta acción no se puede deshacer.',
+          )
+        ) {
+          return;
+        }
+        const generation = generationRef.current;
+        const operationToken = beginOperation('delete');
+        setError(null);
+        setErrorKind(null);
+        setMessage(null);
+        const authorized = {
+          ...existing,
+          retryAuthorized: true,
+          incompatible: false,
+          error: null,
+        };
+        publishPendingDelete(authorized);
+        await runDeleteRequest(
+          authorized,
+          generation,
+          operationToken,
+          true,
+          trigger,
+          document.activeElement === trigger,
+        );
+        return;
+      }
+      if (!existing.retryAuthorized || selectedIdRef.current !== existing.target.id) return;
+      const generation = generationRef.current;
+      const operationToken = beginOperation('delete');
+      setError(null);
+      setErrorKind(null);
+      setMessage(null);
+      const checking = { ...existing, inFlight: true, error: null };
+      publishPendingDelete(checking);
+      const triggerWasFocused = document.activeElement === trigger;
+      try {
+        if (unavailableRef.current || !activeSurfaceRef.current) return;
+        const result = await readDeleteTarget(existing.target);
+        if (!isCurrentDeleteIntent(checking, generation)) return;
+        const shouldContinue = finishDeleteReadback(
+          checking,
+          generation,
+          result,
+          'continuation',
+          trigger,
+          triggerWasFocused,
+        );
+        if (shouldContinue && isAuthorizedDeleteIntent(checking, generation)) {
+          const current = pendingDeleteRef.current;
+          if (current?.owner === checking.owner) {
+            await runDeleteRequest(
+              current,
+              generation,
+              operationToken,
+              true,
+              trigger,
+              triggerWasFocused,
+            );
+            return;
+          }
+        }
+      } catch (readError) {
+        reportDeleteFailure(checking, generation, readError, 'continuation');
+      } finally {
+        if (isCurrent(generation)) finishOperation(operationToken);
+      }
       return;
     }
+
     if (!window.confirm('¿Eliminar «' + target.name + '»? Esta acción no se puede deshacer.'))
       return;
     const generation = generationRef.current;
     const operationToken = beginOperation('delete');
+    const intent: PendingDelete = {
+      target: { ...target },
+      identitySub: session.identity.sub,
+      owner: deleteOwnerIdRef.current + 1,
+      retryAuthorized: true,
+      inFlight: true,
+      incompatible: false,
+      error: null,
+    };
+    deleteOwnerIdRef.current = intent.owner;
+    publishPendingDelete(intent);
     setError(null);
     setErrorKind(null);
     setMessage(null);
+    setLibraryNotice(null);
+    await runDeleteRequest(
+      intent,
+      generation,
+      operationToken,
+      false,
+      trigger,
+      document.activeElement === trigger,
+    );
+  };
+
+  const handleCheckDeleteDebt = async (trigger: HTMLButtonElement): Promise<void> => {
+    const intent = pendingDeleteRef.current;
+    if (
+      !intent ||
+      intent.inFlight ||
+      paused ||
+      !active ||
+      pendingCopyWriteRef.current !== null ||
+      (pendingCreateRef.current !== null &&
+        (pendingCreateRef.current.id !== intent.target.id || pendingCreateRef.current.inFlight)) ||
+      operationOwnerRef.current !== null
+    ) {
+      return;
+    }
+    const generation = generationRef.current;
+    const operationToken = beginOperation('delete');
+    const checking = { ...intent, inFlight: true, error: null };
+    publishPendingDelete(checking);
+    const feedbackGeneration = deleteFeedbackGenerationRef.current;
+    const triggerWasFocused = document.activeElement === trigger;
+    setLibraryNotice(null);
     try {
-      if (!isCurrent(generation)) return;
-      await api.deleteRobot(target.id, target.version);
-      if (!isCurrent(generation)) return;
-      removeListedRobot(target.id);
-      setMessage(
-        'Eliminaste «' + target.name + '». Tu configuración actual y tus intentos siguen intactos.',
+      const result = await readDeleteTarget(checking.target);
+      if (!isCurrentDeleteIntent(checking, generation)) return;
+      finishDeleteReadback(
+        checking,
+        generation,
+        result,
+        'check',
+        trigger,
+        triggerWasFocused,
+        feedbackGeneration,
       );
-    } catch (deleteError) {
-      if (!isCurrent(generation)) return;
-      if (deleteError instanceof SavedRobotApiFailure && deleteError.ambiguous) {
-        try {
-          await api.getRobot(target.id);
-          if (!isCurrent(generation)) return;
-          setError('No se pudo confirmar la eliminación. Revisá la lista y reintentá.');
-          setErrorKind('delete');
-        } catch (readError) {
-          if (!isCurrent(generation)) return;
-          if (isAuthError(readError)) {
-            setError(
-              apiErrorMessage(readError, 'Tu sesión ya no tiene acceso a los robots guardados.'),
-            );
-            setErrorKind('delete');
-            onAuthRequired?.(readError.authContext);
-            return;
-          }
-          if (isMissingError(readError)) {
-            removeListedRobot(target.id);
-            setMessage('Eliminaste «' + target.name + '».');
-          } else {
-            setError(apiErrorMessage(deleteError, 'No se pudo confirmar la eliminación.'));
-            setErrorKind('delete');
-          }
-        }
-      } else if (
-        deleteError instanceof SavedRobotApiFailure &&
-        deleteError.code === 'conflict' &&
-        (deleteError.currentSummary || deleteError.current)
-      ) {
-        const robot = deleteError.current;
-        const summary = deleteError.currentSummary ?? (robot ? summaryFromRobot(robot) : null);
-        if (summary) {
-          setDeleteConflict({ summary });
-          updateListWithSummary(summary);
-        }
-        setError(null);
-        setErrorKind(null);
-      } else {
-        setError(apiErrorMessage(deleteError, 'No se pudo eliminar el robot guardado.'));
-        setErrorKind('delete');
-        if (isMissingError(deleteError)) removeListedRobot(target.id);
-      }
-      if (isAuthError(deleteError)) onAuthRequired?.(deleteError.authContext);
+    } catch (readError) {
+      reportDeleteFailure(checking, generation, readError, 'check', feedbackGeneration);
     } finally {
       if (isCurrent(generation)) finishOperation(operationToken);
     }
@@ -1954,7 +2489,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
   };
 
   const openRename = (trigger: HTMLButtonElement): void => {
-    if (!selected || paused || locked || managementBusy) return;
+    if (!selected || paused || locked || managementBusy || pendingDeleteRef.current) return;
     dialogTriggerRef.current = trigger;
     setError(null);
     setErrorKind(null);
@@ -1970,7 +2505,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
   };
 
   const openReplace = (trigger: HTMLButtonElement): void => {
-    if (!selected || paused || locked || managementBusy) return;
+    if (!selected || paused || locked || managementBusy || pendingDeleteRef.current) return;
     dialogTriggerRef.current = trigger;
     setError(null);
     setErrorKind(null);
@@ -1987,8 +2522,14 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
     !listPageLoading &&
     pendingCopyWrite === null &&
     pendingCreate === null &&
+    pendingDelete === null &&
     !listBusy &&
     canSaveAsNew;
+  const canDeleteSelected =
+    selectedSummary !== null &&
+    (pendingDelete === null ||
+      (pendingDelete.target.id === selectedSummary.id &&
+        (pendingDelete.incompatible || pendingDelete.retryAuthorized)));
   const selectedLimit = selected ? draftLimitMessage(selected.draft) : null;
   const loadMoreBlocked = busy || !!listRecoveryMessage || !!listFailure;
   const keepLoadMoreFocusable = listPageLoading || !!listRecoveryMessage || !!listFailure;
@@ -2108,12 +2649,37 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
                   locked ||
                   !active ||
                   pendingCopyWrite !== null ||
+                  pendingDelete !== null ||
                   (operation !== null && !pendingCreate.inFlight)
                 }
                 aria-disabled={pendingCreate.inFlight || operation !== null ? true : undefined}
               >
                 Comprobar guardado
               </button>
+            </div>
+          )}
+          {pendingDelete && (
+            <div className="saved-robots-pending-create" role="status" aria-live="polite">
+              <p>
+                {pendingDelete.incompatible
+                  ? `No se pudo consultar «${pendingDelete.target.name}». Podés confirmar de nuevo la versión conocida antes de eliminarla.`
+                  : pendingDelete.retryAuthorized
+                    ? `El resultado de eliminar «${pendingDelete.target.name}» sigue pendiente. La próxima acción consultará la misma versión antes de continuar.`
+                    : `El resultado de eliminar «${pendingDelete.target.name}» sigue pendiente. Comprobá esta copia antes de iniciar otra modificación.`}
+              </p>
+              {pendingDelete.error && <p role="alert">{pendingDelete.error}</p>}
+              {!pendingDelete.retryAuthorized && (
+                <button
+                  ref={deleteDebtCheckRef}
+                  className="secondary-button"
+                  type="button"
+                  onClick={(event) => void handleCheckDeleteDebt(event.currentTarget)}
+                  disabled={paused || !active}
+                  aria-disabled={pendingDelete.inFlight || operation !== null ? true : undefined}
+                >
+                  {pendingDelete.inFlight ? 'Comprobando eliminación…' : 'Comprobar eliminación'}
+                </button>
+              )}
             </div>
           )}
           {libraryNotice && (
@@ -2337,6 +2903,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
                       paused ||
                       locked ||
                       managementBusy ||
+                      pendingDelete !== null ||
                       (pendingCopyWrite !== null &&
                         (pendingCopyWrite.target.id !== selectedSummary.id ||
                           pendingCopyWrite.kind !== 'rename'))
@@ -2353,6 +2920,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
                       paused ||
                       locked ||
                       managementBusy ||
+                      pendingDelete !== null ||
                       !configurationAvailable ||
                       (pendingCopyWrite !== null &&
                         (pendingCopyWrite.target.id !== selectedSummary.id ||
@@ -2362,10 +2930,18 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
                     Reemplazar con mi robot actual…
                   </button>
                   <button
+                    ref={deleteButtonRef}
                     className="text-button danger-button"
                     type="button"
-                    onClick={() => void handleDelete(selectedSummary)}
-                    disabled={paused || locked || managementBusy || pendingCopyWrite !== null}
+                    onClick={(event) => void handleDelete(selectedSummary, event.currentTarget)}
+                    disabled={
+                      paused ||
+                      locked ||
+                      managementBusy ||
+                      pendingCopyWrite !== null ||
+                      (pendingCreate !== null && pendingCreate.id !== selectedSummary.id) ||
+                      !canDeleteSelected
+                    }
                   >
                     Eliminar copia…
                   </button>
@@ -2403,6 +2979,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
                   paused ||
                   locked ||
                   managementBusy ||
+                  pendingDelete !== null ||
                   pendingCreate !== null ||
                   pendingCopyWrite !== null ||
                   !configurationAvailable
@@ -2428,6 +3005,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
                     locked ||
                     listBusy ||
                     managementBusy ||
+                    pendingDelete !== null ||
                     pendingCopyWrite !== null ||
                     !canSaveAsNew
                   }
