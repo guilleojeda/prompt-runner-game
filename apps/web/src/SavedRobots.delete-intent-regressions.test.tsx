@@ -119,6 +119,87 @@ afterEach(() => {
 });
 
 describe('SavedRobots delete intent regressions', () => {
+  it('keeps an in-flight delete read as debt across pause and requires a new confirmation', async () => {
+    const target = robot('copy-a', 'Robot A', 'Literal A.');
+    const automaticRead = deferred<SavedRobot>();
+    const explicitRead = deferred<SavedRobot>();
+    let targetReads = 0;
+    const getRobot = vi.fn<SavedRobotApi['getRobot']>().mockImplementation((id) => {
+      if (id !== target.id) return Promise.reject(new Error('ID inesperado'));
+      targetReads += 1;
+      if (targetReads === 2) return automaticRead.promise;
+      if (targetReads === 3) return explicitRead.promise;
+      return Promise.resolve(target);
+    });
+    const deleteRobot = vi
+      .fn<SavedRobotApi['deleteRobot']>()
+      .mockRejectedValueOnce(
+        new SavedRobotApiFailure('network', 'No se confirmó.', undefined, undefined, true),
+      )
+      .mockResolvedValueOnce({ deleted: true });
+    const savedApi = api({ getRobot, deleteRobot });
+    const editorRef = editor();
+    const currentSession = session();
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const renderLibrary = (paused: boolean) => (
+      <SavedRobots api={savedApi} editor={editorRef} session={currentSession} paused={paused} />
+    );
+    const view = render(renderLibrary(false));
+
+    fireEvent.click(await screen.findByRole('radio', { name: /Robot A/u }));
+    await waitFor(() => expect(getRobot).toHaveBeenCalledOnce());
+    startDelete();
+    await waitFor(() => expect(getRobot).toHaveBeenCalledTimes(2));
+    expect(deleteRobot).toHaveBeenCalledOnce();
+    expect(confirm).toHaveBeenCalledOnce();
+
+    view.rerender(renderLibrary(true));
+    const pausedCheck = await screen.findByRole('button', { name: 'Comprobar eliminación' });
+    expect((pausedCheck as HTMLButtonElement).disabled).toBe(true);
+    expect(getRobot).toHaveBeenCalledTimes(2);
+    expect(deleteRobot).toHaveBeenCalledOnce();
+
+    view.rerender(renderLibrary(false));
+    await waitFor(() => expect(getRobot).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      automaticRead.resolve(target);
+      await automaticRead.promise;
+    });
+    await waitFor(() =>
+      expect(
+        (
+          screen.getByRole('button', { name: 'Comprobar eliminación' }) as HTMLButtonElement
+        ).getAttribute('aria-disabled'),
+      ).toBeNull(),
+    );
+    expect(getRobot).toHaveBeenCalledTimes(2);
+    expect(deleteRobot).toHaveBeenCalledOnce();
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('alert')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Comprobar eliminación' }));
+    await waitFor(() => expect(getRobot).toHaveBeenCalledTimes(3));
+    expect(deleteRobot).toHaveBeenCalledOnce();
+    await act(async () => {
+      explicitRead.resolve(target);
+      await explicitRead.promise;
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Comprobar eliminación' })).toBeNull(),
+    );
+    expect(getRobot).toHaveBeenCalledTimes(3);
+    expect(deleteRobot).toHaveBeenCalledOnce();
+    expect(confirm).toHaveBeenCalledOnce();
+
+    startDelete();
+    await waitFor(() => expect(deleteRobot).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByRole('radio', { name: /Robot A/u })).toBeNull());
+    expect(confirm).toHaveBeenCalledTimes(2);
+    expect(getRobot).toHaveBeenCalledTimes(3);
+    expect(editorRef.current?.captureSnapshot).not.toHaveBeenCalled();
+    expect(editorRef.current?.applyDraft).not.toHaveBeenCalled();
+  });
+
   it.each(['radio', 'actions summary'])(
     'returns focus to the library when the currently focused deleted %s disappears',
     async (focusedControl) => {
