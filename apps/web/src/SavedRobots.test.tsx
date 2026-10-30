@@ -996,42 +996,76 @@ describe('SavedRobots', () => {
           name: 'Otra copia',
           draft: { ...draft, instructions: 'Contenido remoto.' },
         }),
+      keepsPending: false,
     },
     {
       label: 'different identity',
       remote: (id: string, draft: RobotDraft) =>
         savedRobot({ id: `${id}-other`, name: 'Guardada', draft }),
+      keepsPending: true,
     },
-  ])('keeps the pending create behind the same-ID $label guard', async ({ remote }) => {
-    const draft = { ...createDefaultDraft(), instructions: 'Contenido local.' };
-    const saveRobot = vi
-      .fn()
-      .mockRejectedValueOnce(
-        new SavedRobotApiFailure('network', 'No se confirmó.', undefined, undefined, true),
-      );
-    const getRobot = vi.fn().mockImplementation(async (id: string) => remote(id, draft));
-    const savedApi = api({
-      listRobots: vi.fn().mockResolvedValue({ robots: [] }),
-      saveRobot,
-      getRobot,
-    });
-    render(<SavedRobots api={savedApi} editor={editor(draft)} session={session()} />);
+  ])(
+    'keeps the pending create behind the same-ID $label guard',
+    async ({ remote, keepsPending }) => {
+      const draft = { ...createDefaultDraft(), instructions: 'Contenido local.' };
+      const saveRobot = vi
+        .fn()
+        .mockRejectedValueOnce(
+          new SavedRobotApiFailure('network', 'No se confirmó.', undefined, undefined, true),
+        );
+      const foreignReadback = deferred<SavedRobot>();
+      let readCount = 0;
+      const getRobot = vi.fn().mockImplementation(async (id: string) => {
+        readCount += 1;
+        if (readCount === 1) {
+          throw new SavedRobotApiFailure('network', 'No se pudo comprobar todavía.');
+        }
+        if (keepsPending && readCount === 2) return foreignReadback.promise;
+        return remote(id, draft);
+      });
+      const savedApi = api({
+        listRobots: vi.fn().mockResolvedValue({ robots: [] }),
+        saveRobot,
+        getRobot,
+      });
+      render(<SavedRobots api={savedApi} editor={editor(draft)} session={session()} />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Guardar robot actual' }));
-    fireEvent.change(screen.getByLabelText('Nombre para la nueva copia'), {
-      target: { value: 'Guardada' },
-    });
-    const form = screen.getByLabelText('Nombre para la nueva copia').closest('form')!;
-    fireEvent.submit(form);
-    await waitFor(() => expect(screen.getByText(/misma copia/)).toBeTruthy());
-    expect(saveRobot).toHaveBeenCalledOnce();
+      fireEvent.click(await screen.findByRole('button', { name: 'Guardar robot actual' }));
+      fireEvent.change(screen.getByLabelText('Nombre para la nueva copia'), {
+        target: { value: 'Guardada' },
+      });
+      const form = screen.getByLabelText('Nombre para la nueva copia').closest('form')!;
+      fireEvent.submit(form);
+      await waitFor(() => expect(screen.getByText(/misma copia/)).toBeTruthy());
+      expect(saveRobot).toHaveBeenCalledOnce();
+      const pendingId = saveRobot.mock.calls[0]?.[0];
 
-    fireEvent.submit(form);
-    await waitFor(() => expect(screen.getByText(/Hay una versión más nueva/)).toBeTruthy());
-    expect(screen.queryByText(/misma copia/)).toBeNull();
-    expect(saveRobot).toHaveBeenCalledOnce();
-    expect(getRobot).toHaveBeenCalledTimes(2);
-  });
+      const retryButton = within(form).getByRole('button', {
+        name: 'Guardar una copia',
+      }) as HTMLButtonElement;
+      fireEvent.submit(form);
+      if (keepsPending) {
+        await waitFor(() => expect(getRobot).toHaveBeenCalledTimes(2));
+        expect(retryButton.disabled).toBe(true);
+        await act(async () => {
+          foreignReadback.resolve(remote(pendingId!, draft));
+          await foreignReadback.promise;
+        });
+        await waitFor(() => expect(retryButton.disabled).toBe(false));
+      } else {
+        await waitFor(() => expect(screen.getByText(/Hay una versión más nueva/)).toBeTruthy());
+      }
+      expect(saveRobot).toHaveBeenCalledOnce();
+      expect(getRobot).toHaveBeenCalledTimes(2);
+      expect(getRobot.mock.calls.map((call) => call[0])).toEqual([pendingId, pendingId]);
+      if (keepsPending) {
+        expect(screen.getByText(/misma copia/)).toBeTruthy();
+        expect(screen.queryByText(/Hay una versión más nueva/)).toBeNull();
+      } else {
+        expect(screen.queryByText(/misma copia/)).toBeNull();
+      }
+    },
+  );
 
   it('preserves an auth failure from ambiguous delete readback', async () => {
     const onAuthRequired = vi.fn();
