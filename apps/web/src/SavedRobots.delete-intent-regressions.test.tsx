@@ -2,6 +2,7 @@
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { User } from 'oidc-client-ts';
+import { createRef } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createDefaultDraft,
@@ -10,7 +11,7 @@ import {
 } from '../../../shared/robot.js';
 import type { AuthSession } from './auth.js';
 import type { RobotEditorHandle } from './RobotEditor.js';
-import { SavedRobots } from './SavedRobots.js';
+import { SavedRobots, type SavedRobotsHandle } from './SavedRobots.js';
 import { SavedRobotApiFailure, type SavedRobotApi } from './saved-robot-api.js';
 
 function session(): AuthSession {
@@ -118,6 +119,138 @@ afterEach(() => {
 });
 
 describe('SavedRobots delete intent regressions', () => {
+  it.each([
+    { change: 'leaving and returning to the library', leave: true },
+    { change: 'changing the selected copy', leave: false },
+  ])('does not publish focus or feedback from a debt check after $change', async ({ leave }) => {
+    const first = robot('copy-a', 'Robot A', 'Literal A.');
+    const second = robot('copy-b', 'Robot B', 'Literal B.');
+    const deferredCheck = deferred<SavedRobot>();
+    let firstReads = 0;
+    const getRobot = vi.fn<SavedRobotApi['getRobot']>().mockImplementation((id) => {
+      if (id === first.id) {
+        firstReads += 1;
+        if (firstReads === 2) {
+          return Promise.reject(
+            new SavedRobotApiFailure('network', 'No se pudo comprobar todavía.'),
+          );
+        }
+        if (firstReads === 3) return deferredCheck.promise;
+        return Promise.resolve(first);
+      }
+      return Promise.resolve(second);
+    });
+    const deleteRobot = vi
+      .fn<SavedRobotApi['deleteRobot']>()
+      .mockRejectedValue(
+        new SavedRobotApiFailure('network', 'No se confirmó.', undefined, undefined, true),
+      );
+    const libraryRef = createRef<SavedRobotsHandle>();
+    const savedApi = api({
+      listRobots: vi.fn().mockResolvedValue({ robots: [summary(first), summary(second)] }),
+      getRobot,
+      deleteRobot,
+    });
+    const editorRef = editor();
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const renderLibrary = (active: boolean) => (
+      <SavedRobots
+        ref={libraryRef}
+        api={savedApi}
+        editor={editorRef}
+        session={session()}
+        active={active}
+      />
+    );
+    const view = render(renderLibrary(true));
+
+    fireEvent.click(await screen.findByRole('radio', { name: /Robot A/u }));
+    await waitFor(() =>
+      expect(getRobot.mock.calls.filter(([id]) => id === first.id)).toHaveLength(1),
+    );
+    startDelete();
+    await waitFor(() =>
+      expect(getRobot.mock.calls.filter(([id]) => id === first.id)).toHaveLength(2),
+    );
+    const secondRadio = screen.getByRole('radio', { name: /Robot B/u }) as HTMLInputElement;
+    fireEvent.click(secondRadio);
+    await waitFor(() => expect(secondRadio.checked).toBe(true));
+    await screen.findByRole('button', { name: 'Comprobar eliminación' });
+
+    const check = screen.getByRole('button', { name: 'Comprobar eliminación' });
+    check.focus();
+    fireEvent.click(check);
+    await waitFor(() =>
+      expect(getRobot.mock.calls.filter(([id]) => id === first.id)).toHaveLength(3),
+    );
+
+    let focusTarget: HTMLInputElement;
+    if (leave) {
+      act(() => libraryRef.current?.leaveSurface());
+      view.rerender(renderLibrary(false));
+      view.rerender(renderLibrary(true));
+      await waitFor(() => expect(secondRadio.checked).toBe(true));
+      focusTarget = secondRadio;
+    } else {
+      const firstRadio = screen.getByRole('radio', { name: /Robot A/u }) as HTMLInputElement;
+      fireEvent.click(firstRadio);
+      await waitFor(() => expect(firstRadio.checked).toBe(true));
+      focusTarget = firstRadio;
+    }
+    focusTarget.focus();
+
+    await act(async () => {
+      deferredCheck.reject(new SavedRobotApiFailure('not_found', 'No existe.', 404));
+      await deferredCheck.promise.catch(() => undefined);
+    });
+
+    await waitFor(() => expect(screen.queryByRole('radio', { name: /Robot A/u })).toBeNull());
+    if (leave) {
+      expect(secondRadio.checked).toBe(true);
+      expect(document.activeElement).toBe(secondRadio);
+    } else {
+      expect(document.activeElement).toBe(document.body);
+    }
+    expect(screen.queryByText(/ya no está disponible y se quitó de la lista/u)).toBeNull();
+    expect(deleteRobot).toHaveBeenCalledOnce();
+    expect(confirm).toHaveBeenCalledOnce();
+  });
+
+  it('does not restore focus after a lock revokes a sent delete', async () => {
+    const pendingDelete = deferred<{ deleted: true }>();
+    const deleteRobot = vi
+      .fn<SavedRobotApi['deleteRobot']>()
+      .mockReturnValue(pendingDelete.promise);
+    const savedApi = api({ deleteRobot });
+    const editorRef = editor();
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const renderLibrary = (locked: boolean) => (
+      <SavedRobots api={savedApi} editor={editorRef} session={session()} locked={locked} />
+    );
+    const view = render(renderLibrary(false));
+
+    fireEvent.click(await screen.findByRole('radio', { name: /Robot A/u }));
+    await waitFor(() => expect(savedApi.getRobot).toHaveBeenCalledOnce());
+    openMoreActions();
+    const deleteButton = screen.getByRole('button', {
+      name: /Eliminar copia/u,
+    }) as HTMLButtonElement;
+    deleteButton.focus();
+    fireEvent.click(deleteButton);
+    await waitFor(() => expect(deleteRobot).toHaveBeenCalledOnce());
+
+    view.rerender(renderLibrary(true));
+    await waitFor(() => expect(deleteButton.disabled).toBe(true));
+    await act(async () => {
+      pendingDelete.resolve({ deleted: true });
+      await pendingDelete.promise;
+    });
+
+    await waitFor(() => expect(screen.queryByRole('radio', { name: /Robot A/u })).toBeNull());
+    expect(document.activeElement).toBe(document.body);
+    expect(confirm).toHaveBeenCalledOnce();
+  });
+
   it('keeps focus on another copy when a focused debt check removes its button', async () => {
     const first = robot('copy-a', 'Robot A', 'Literal A.');
     const second = robot('copy-b', 'Robot B', 'Literal B.');

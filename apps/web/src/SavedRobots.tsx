@@ -362,6 +362,8 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
   const pendingPaginationFocusRef = useRef<PendingPaginationFocus | null>(null);
   const pendingCreateFocusHandoffRef = useRef<PendingCreateFocusHandoff | null>(null);
   const pendingDeleteFocusHandoffRef = useRef<PendingDeleteFocusHandoff | null>(null);
+  const deleteFeedbackGenerationRef = useRef(0);
+  const previousActiveSurfaceRef = useRef(active);
   const identitySubRef = useRef(session.identity.sub);
   const unavailableRef = useRef(paused || locked);
   const pausedRef = useRef(paused);
@@ -896,6 +898,12 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
   }, [nameMode]);
 
   useLayoutEffect(() => {
+    const surfaceWasActive = previousActiveSurfaceRef.current;
+    const accessWasPaused = pausedRef.current;
+    previousActiveSurfaceRef.current = active;
+    if ((surfaceWasActive && !active) || (!accessWasPaused && paused)) {
+      deleteFeedbackGenerationRef.current += 1;
+    }
     const identityChanged = previousIdentityRef.current !== session.identity.sub;
     previousIdentityRef.current = session.identity.sub;
     identitySubRef.current = session.identity.sub;
@@ -903,6 +911,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
     unavailableRef.current = paused || locked;
     pausedRef.current = paused;
     if (identityChanged) {
+      deleteFeedbackGenerationRef.current += 1;
       deleteOwnerIdRef.current += 1;
       pendingDeleteRef.current = null;
       pendingDeleteFocusHandoffRef.current = null;
@@ -1147,6 +1156,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
     selectedResourceRef.current = null;
     needsSelectedReadRef.current = false;
     if (!alreadySelected) {
+      deleteFeedbackGenerationRef.current += 1;
       selectedIdRef.current = summary.id;
       selectedSummaryRef.current = summary;
       setSelectedSummary(summary);
@@ -1165,6 +1175,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
   };
 
   const leaveSurface = useCallback((): void => {
+    deleteFeedbackGenerationRef.current += 1;
     activeSurfaceRef.current = false;
     deactivatePendingDelete();
     abandonCreateIntent(false);
@@ -2009,6 +2020,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
     mode: 'automatic' | 'continuation' | 'check',
     trigger: HTMLButtonElement | null,
     triggerWasFocused: boolean,
+    feedbackGeneration?: number,
   ): boolean => {
     if (!isCurrentDeleteIntent(intent, generation)) return false;
     const current = pendingDeleteRef.current;
@@ -2023,10 +2035,17 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
       return false;
     }
     const authorized = isAuthorizedDeleteIntent(current, generation);
-    const announceResult = authorized || mode === 'check';
+    const feedbackIsCurrent =
+      mode !== 'check' || feedbackGeneration === deleteFeedbackGenerationRef.current;
+    const announceResult = authorized || (mode === 'check' && feedbackIsCurrent);
 
     if (result.kind === 'missing') {
-      clearPendingDelete(current, trigger, triggerWasFocused);
+      const canReturnFocus = authorized || (mode === 'check' && feedbackIsCurrent);
+      clearPendingDelete(
+        current,
+        canReturnFocus ? trigger : null,
+        canReturnFocus && triggerWasFocused,
+      );
       removeListedRobot(current.target.id);
       if (authorized && mode !== 'check') {
         setLibraryNotice(null);
@@ -2042,7 +2061,11 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
 
     if (result.kind === 'changed') {
       const summary = summaryFromRobot(result.robot);
-      clearPendingDelete(current, mode === 'check' ? trigger : null, triggerWasFocused);
+      clearPendingDelete(
+        current,
+        mode === 'check' && feedbackIsCurrent ? trigger : null,
+        feedbackIsCurrent && triggerWasFocused,
+      );
       updateListWithSummary(summary);
       if (authorized && selectedIdRef.current === current.target.id) {
         setDeleteConflict({ summary });
@@ -2057,10 +2080,16 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
     if (result.kind === 'same') {
       updateListWith(result.robot);
       if (mode === 'check') {
-        clearPendingDelete(current, trigger, triggerWasFocused);
-        setLibraryNotice(
-          `La copia «${current.target.name}» sigue disponible. Confirmá nuevamente si querés eliminarla.`,
+        clearPendingDelete(
+          current,
+          feedbackIsCurrent ? trigger : null,
+          feedbackIsCurrent && triggerWasFocused,
         );
+        if (feedbackIsCurrent) {
+          setLibraryNotice(
+            `La copia «${current.target.name}» sigue disponible. Confirmá nuevamente si querés eliminarla.`,
+          );
+        }
         return false;
       }
       publishPendingDelete({
@@ -2105,11 +2134,14 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
     generation: number,
     failure: unknown,
     mode: 'automatic' | 'continuation' | 'check',
+    feedbackGeneration?: number,
   ): void => {
     if (!isCurrentDeleteIntent(intent, generation)) return;
     const current = pendingDeleteRef.current;
     if (!current || current.owner !== intent.owner) return;
     const authorized = isAuthorizedDeleteIntent(current, generation);
+    const feedbackIsCurrent =
+      mode !== 'check' || feedbackGeneration === deleteFeedbackGenerationRef.current;
     const errorMessage =
       failure instanceof Error && failure.name === 'AbortError'
         ? 'La solicitud se interrumpió y su resultado sigue pendiente.'
@@ -2123,7 +2155,8 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
       ...current,
       inFlight: false,
       error:
-        authorized || (mode === 'check' && activeSurfaceRef.current && !pausedRef.current)
+        authorized ||
+        (mode === 'check' && feedbackIsCurrent && activeSurfaceRef.current && !pausedRef.current)
           ? errorMessage
           : null,
       retryAuthorized: authorized,
@@ -2175,7 +2208,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
       const authorized = isAuthorizedDeleteIntent(intent, generation);
       const latest = pendingDeleteRef.current;
       if (!latest || latest.owner !== intent.owner) return;
-      clearPendingDelete(latest, trigger, triggerWasFocused);
+      clearPendingDelete(latest, authorized ? trigger : null, authorized && triggerWasFocused);
       removeListedRobot(intent.target.id);
       if (authorized) {
         setLibraryNotice(null);
@@ -2192,7 +2225,7 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
       if (!latest || latest.owner !== intent.owner) return;
 
       if (isMissingError(deleteError)) {
-        clearPendingDelete(latest, trigger, triggerWasFocused);
+        clearPendingDelete(latest, authorized ? trigger : null, authorized && triggerWasFocused);
         removeListedRobot(intent.target.id);
         if (authorized) {
           setLibraryNotice(null);
@@ -2209,14 +2242,6 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
             setError(null);
             setErrorKind(null);
           }
-        } else if (deleteError.ambiguous || priorUncertainty || summary) {
-          publishPendingDelete({
-            ...latest,
-            inFlight: false,
-            retryAuthorized: false,
-            error:
-              'El servidor no confirmó el ID de la copia. Comprobá la eliminación antes de continuar.',
-          });
         } else {
           publishPendingDelete({
             ...latest,
@@ -2396,14 +2421,23 @@ export const SavedRobots = forwardRef<SavedRobotsHandle, SavedRobotsProps>(funct
     const operationToken = beginOperation('delete');
     const checking = { ...intent, inFlight: true, error: null };
     publishPendingDelete(checking);
+    const feedbackGeneration = deleteFeedbackGenerationRef.current;
     const triggerWasFocused = document.activeElement === trigger;
     setLibraryNotice(null);
     try {
       const result = await readDeleteTarget(checking.target);
       if (!isCurrentDeleteIntent(checking, generation)) return;
-      finishDeleteReadback(checking, generation, result, 'check', trigger, triggerWasFocused);
+      finishDeleteReadback(
+        checking,
+        generation,
+        result,
+        'check',
+        trigger,
+        triggerWasFocused,
+        feedbackGeneration,
+      );
     } catch (readError) {
-      reportDeleteFailure(checking, generation, readError, 'check');
+      reportDeleteFailure(checking, generation, readError, 'check', feedbackGeneration);
     } finally {
       if (isCurrent(generation)) finishOperation(operationToken);
     }
